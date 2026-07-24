@@ -49,4 +49,6 @@ overrides:
   "next-auth": ">=5.0.0-beta.32"
   "next": ">=16.2.11"
   "@types/react-dom": "^19.2.0"
-  "postcss@<8.5.10": ">=8.5.10"
+  # 2026-07-24 advisory: PostCSS path traversal in previous source map,
+  # GHSA-r28c-9q8g-f849 (<=8.5.17) — floor raised from the earlier 8.5.10 line.
+  "postcss@<8.5.18": ">=8.5.18"
