@@ -34,12 +34,14 @@ export const KNOWLEDGE_WIRE_PATHS = {
   status: "/status",
 } as const;
 
-/** POST /search — the wire form of `search(query, ctx)`. `includeInternal`
-    is legitimate on the wire ONLY because every mounting surface is a
-    key-authed, host-trusted hop (R5, KB-COV-7): the OSS composition enforces
-    the trusted-caller rule BEFORE the request leaves the process, and the
-    server trusts the flag because the bearer key already proves the caller
-    is host code, never an end user. */
+/** POST /search — the wire form of `search(query, ctx)`. Response body on
+    200: a `KnowledgeSearchResult` (see knowledge.js) — hits ordered
+    most-relevant-first, refs carrying doc-id + opaque chunk-id.
+    `includeInternal` is legitimate on the wire ONLY because every mounting
+    surface is a key-authed, host-trusted hop (R5, KB-COV-7): the OSS
+    composition enforces the trusted-caller rule BEFORE the request leaves
+    the process, and the server trusts the flag because the bearer key
+    already proves the caller is host code, never an end user. */
 export interface KnowledgeWireSearchRequest {
   query: KnowledgeQuery;
   includeInternal?: boolean;
