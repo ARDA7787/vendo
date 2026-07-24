@@ -10,6 +10,11 @@ import {
 } from "../index.js";
 import type { ConformanceCase, ConformanceSuite } from "./index.js";
 
+/** The suite seeds, mutates, and removes fixed `doc_conformance_*` ids: run
+    it against a dedicated corpus/namespace only — never shared or production
+    data — and never concurrently against one corpus. Isolation is the
+    caller's contract, which is why fixture ids are deliberately stable
+    (reruns self-clean instead of leaking uniquely-named orphans). */
 export interface KnowledgeConformanceOptions {
   makeAdapter(): Promise<{ adapter: KnowledgeAdapter; close?(): Promise<void> }>;
   /** The posture the adapter DECLARES. Cases adapt: required capabilities are
@@ -135,6 +140,17 @@ export function knowledgeAdapterConformance(opts: KnowledgeConformanceOptions): 
         );
       }),
     );
+    if (opts.posture.fetch) {
+      cases.push(adapterCase("R5 — fetch treats internal refs as unknown for default contexts", async (adapter) => {
+        const trusted = await adapter.search({ text: seed.internal.title }, { ...ctx, includeInternal: true });
+        const internalHit = trusted.hits.find((hit) => hit.ref.docId === seed.internal.id);
+        assert(internalHit !== undefined, "includeInternal search did not surface the seeded internal doc — fetch visibility cannot be exercised");
+        assert(await adapter.fetch?.(internalHit.ref, ctx) === null, "fetch leaked an internal doc to a default context — a ref is not a capability");
+        const fetched = await adapter.fetch?.(internalHit.ref, { ...ctx, includeInternal: true });
+        assert(fetched !== null && fetched !== undefined, "fetch denied an internal ref to a trusted includeInternal context");
+        assertParses(knowledgeFetchResultSchema, fetched, "trusted internal fetch result is invalid");
+      }));
+    }
   }
 
   if (opts.posture.fetch) {
@@ -163,6 +179,26 @@ export function knowledgeAdapterConformance(opts: KnowledgeConformanceOptions): 
       assert((await adapter.search({ text: "roundtrip" }, ctx)).hits.some((hit) => hit.ref.docId === doc.id), "upserted doc was not searchable");
       await adapter.remove?.([doc.id]);
       assert(!(await adapter.search({ text: "roundtrip" }, ctx)).hits.some((hit) => hit.ref.docId === doc.id), "removed doc remained searchable");
+    }));
+    cases.push(adapterCase("R3 — limit truncates a multi-hit result to a prefix", async (adapter) => {
+      const sibling: KnowledgeDoc = {
+        id: "doc_conformance_public_sibling",
+        kind: "docs",
+        visibility: "public",
+        title: `${seed.public.title} addendum`,
+        text: "Conformance sibling content for truncation.",
+        source: "conformance/refunds-addendum.md",
+      };
+      await adapter.upsert?.([sibling]);
+      try {
+        const unlimited = await adapter.search({ text: seed.public.title, limit: 10 }, ctx);
+        assert(unlimited.hits.length >= 2, "seeding a sibling doc did not produce a multi-hit result — truncation cannot be exercised");
+        const limited = await adapter.search({ text: seed.public.title, limit: 1 }, ctx);
+        assert(limited.hits.length === 1, "limit: 1 did not truncate the multi-hit result to one hit");
+        assert(limited.hits[0]!.ref.docId === unlimited.hits[0]!.ref.docId, "limit changed the ranking — the limited top hit differs from the unlimited top hit");
+      } finally {
+        await adapter.remove?.([sibling.id]);
+      }
     }));
   }
 

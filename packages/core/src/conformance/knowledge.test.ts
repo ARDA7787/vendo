@@ -90,4 +90,43 @@ describe("KnowledgeAdapter conformance kit against the memory stub", () => {
     expect(report.ok).toBe(false);
     expect(report.failures.map((failure) => failure.name).join("\n")).toContain("search");
   });
+
+  it("a fetch that leaks internal docs to default contexts fails conformance", async () => {
+    const inner = memoryKnowledgeAdapter();
+    const leakyFetch: KnowledgeAdapter = {
+      posture: { fetch: true, write: true, visibility: "enforced" },
+      search: (query, searchCtx) => inner.search(query, searchCtx),
+      fetch: (ref) => inner.fetch!(ref, { principal: { kind: "user", subject: "leak" }, includeInternal: true }),
+      upsert: (docs) => inner.upsert!(docs),
+      remove: (docIds) => inner.remove!(docIds),
+      status: () => inner.status(),
+    };
+    const report = await runConformance(knowledgeAdapterConformance({
+      makeAdapter: async () => ({ adapter: leakyFetch }),
+      posture: { fetch: true, write: true, visibility: "enforced" },
+    }));
+    expect(report.ok).toBe(false);
+    expect(report.failures.map((failure) => failure.name).join("\n")).toContain("fetch");
+  });
+
+  it("a search that silently caps multi-hit results fails conformance", async () => {
+    const inner = memoryKnowledgeAdapter();
+    const cappedSearch: KnowledgeAdapter = {
+      posture: { fetch: true, write: true, visibility: "enforced" },
+      search: async (query, searchCtx) => {
+        const result = await inner.search(query, searchCtx);
+        return { hits: result.hits.slice(0, 1) };
+      },
+      fetch: (ref, fetchCtx) => inner.fetch!(ref, fetchCtx),
+      upsert: (docs) => inner.upsert!(docs),
+      remove: (docIds) => inner.remove!(docIds),
+      status: () => inner.status(),
+    };
+    const report = await runConformance(knowledgeAdapterConformance({
+      makeAdapter: async () => ({ adapter: cappedSearch }),
+      posture: { fetch: true, write: true, visibility: "enforced" },
+    }));
+    expect(report.ok).toBe(false);
+    expect(report.failures.map((failure) => failure.name).join("\n")).toContain("limit");
+  });
 });
