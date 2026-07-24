@@ -143,11 +143,14 @@ export const KNOWLEDGE_WIRE_STATUS_BY_CODE: Record<VendoErrorCode, number> = {
   "not-implemented": 501,
 };
 
+/** 404 is deliberately absent: only an ENVELOPED `not-found` may become the
+    document-absence code (the /fetch 404→null translation). A bare 404 is a
+    mount/deployment failure and degrades to "not-implemented" so it surfaces
+    as an error instead of silently reading as an empty corpus. */
 const STATUS_TO_CODE: Record<number, VendoErrorCode> = {
   400: "validation",
   402: "cloud-required",
   403: "blocked",
-  404: "not-found",
   409: "conflict",
 };
 

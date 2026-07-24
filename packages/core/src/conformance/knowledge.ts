@@ -10,6 +10,11 @@ import {
 } from "../index.js";
 import type { ConformanceCase, ConformanceSuite } from "./index.js";
 
+/** The suite seeds, mutates, and removes fixed `doc_conformance_*` ids: run
+    it against a dedicated corpus/namespace only — never shared or production
+    data — and never concurrently against one corpus. Isolation is the
+    caller's contract, which is why fixture ids are deliberately stable
+    (reruns self-clean instead of leaking uniquely-named orphans). */
 export interface KnowledgeConformanceOptions {
   makeAdapter(): Promise<{ adapter: KnowledgeAdapter; close?(): Promise<void> }>;
   /** The posture the adapter DECLARES. Cases adapt: required capabilities are

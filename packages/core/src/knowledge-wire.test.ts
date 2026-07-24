@@ -65,17 +65,23 @@ describe("vendo/knowledge-wire@1", () => {
 
   it("parseKnowledgeWireError: enveloped code wins, bare statuses map, junk degrades honestly", () => {
     expect(parseKnowledgeWireError(400, { error: { code: "conflict", message: "id taken" } }).code).toBe("conflict");
-    expect(parseKnowledgeWireError(404, "not json at all").code).toBe("not-found");
     expect(parseKnowledgeWireError(402, undefined).code).toBe("cloud-required");
     expect(parseKnowledgeWireError(500, { error: { code: "not-a-real-code", message: "?" } }).code).toBe("not-implemented");
     expect(parseKnowledgeWireError(503, null).code).toBe("not-implemented");
   });
 
+  it("only an enveloped not-found reads as document absence — a bare 404 surfaces as failure", () => {
+    expect(parseKnowledgeWireError(404, { error: { code: "not-found", message: "unknown ref" } }).code).toBe("not-found");
+    expect(parseKnowledgeWireError(404, "<html>nginx 404</html>").code).toBe("not-implemented");
+    expect(parseKnowledgeWireError(404, undefined).code).toBe("not-implemented");
+  });
+
   it("the reverse status table round-trips through the forward table", () => {
-    for (const [status, code] of Object.entries({ 400: "validation", 402: "cloud-required", 403: "blocked", 404: "not-found", 409: "conflict" } as const)) {
+    for (const [status, code] of Object.entries({ 400: "validation", 402: "cloud-required", 403: "blocked", 409: "conflict" } as const)) {
       expect(KNOWLEDGE_WIRE_STATUS_BY_CODE[code]).toBe(Number(status));
       expect(parseKnowledgeWireError(Number(status), undefined).code).toBe(code);
     }
+    expect(KNOWLEDGE_WIRE_STATUS_BY_CODE["not-found"]).toBe(404);
     expect(parseKnowledgeWireError(501, undefined).code).toBe("not-implemented");
   });
 });
