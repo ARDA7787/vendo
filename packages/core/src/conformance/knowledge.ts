@@ -186,7 +186,7 @@ export function knowledgeAdapterConformance(opts: KnowledgeConformanceOptions): 
       };
       await adapter.upsert?.([sibling]);
       try {
-        const unlimited = await adapter.search({ text: seed.public.title }, ctx);
+        const unlimited = await adapter.search({ text: seed.public.title, limit: 10 }, ctx);
         assert(unlimited.hits.length >= 2, "seeding a sibling doc did not produce a multi-hit result — truncation cannot be exercised");
         const limited = await adapter.search({ text: seed.public.title, limit: 1 }, ctx);
         assert(limited.hits.length === 1, "limit: 1 did not truncate the multi-hit result to one hit");

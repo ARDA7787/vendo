@@ -25,7 +25,14 @@ export const VENDO_KNOWLEDGE_WIRE_FORMAT = "vendo/knowledge-wire@1" as const;
     owns auth — the protocol itself is auth-agnostic and carries NO tenant
     selector of any kind (R5 invariant 1: tenancy derives server-side).
     Verbs: the four adapter operations are POST-JSON RPC; `status` is GET and
-    doubles as the discovery handshake (format + posture). */
+    doubles as the discovery handshake (format + posture). Requests to an
+    endpoint the declared posture does not cover (POST /upsert or /remove on
+    `write: false`, POST /fetch on `fetch: false`) are answered with the
+    `not-implemented` envelope, 501 — never a bare 404, never `blocked`.
+    Servers validate request bodies against the schemas in this module and
+    answer schema-invalid bodies with the `validation` envelope, 400. The
+    principal deliberately never crosses the wire — visibility is the only
+    context-derived behavior, and it rides `includeInternal`. */
 export const KNOWLEDGE_WIRE_PATHS = {
   search: "/search",
   fetch: "/fetch",
@@ -56,7 +63,11 @@ export const knowledgeWireSearchRequestSchema = z.object({
     internal-invisible ref is answered with the 404 error envelope, which
     clients translate back to the contract's `null` (a ref is not a
     capability — internal docs behave as unknown without `includeInternal`).
-    Response body on 200: a `KnowledgeFetchResult` (see knowledge.js). */
+    Clients MUST require the envelope for that translation: only an
+    enveloped `not-found` means `null`; a bare 404 with no parseable envelope
+    is a mount/deployment failure and must surface as an error, never as
+    `null` (the hosted-store bare-404 lesson). Response body on 200: a
+    `KnowledgeFetchResult` (see knowledge.js). */
 export interface KnowledgeWireFetchRequest {
   ref: KnowledgeRef;
   includeInternal?: boolean;

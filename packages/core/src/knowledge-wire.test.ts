@@ -70,4 +70,12 @@ describe("vendo/knowledge-wire@1", () => {
     expect(parseKnowledgeWireError(500, { error: { code: "not-a-real-code", message: "?" } }).code).toBe("not-implemented");
     expect(parseKnowledgeWireError(503, null).code).toBe("not-implemented");
   });
+
+  it("the reverse status table round-trips through the forward table", () => {
+    for (const [status, code] of Object.entries({ 400: "validation", 402: "cloud-required", 403: "blocked", 404: "not-found", 409: "conflict" } as const)) {
+      expect(KNOWLEDGE_WIRE_STATUS_BY_CODE[code]).toBe(Number(status));
+      expect(parseKnowledgeWireError(Number(status), undefined).code).toBe(code);
+    }
+    expect(parseKnowledgeWireError(501, undefined).code).toBe("not-implemented");
+  });
 });
