@@ -84,7 +84,9 @@ export interface KnowledgeQuery {
   intent?: KnowledgeIntent;
   /** An empty array matches nothing. */
   kinds?: KnowledgeKind[];
-  /** Absent means an engine-chosen default. */
+  /** Absent means an engine-chosen default. `limit` truncates the
+      most-relevant-first ordering without changing it — a limited query must
+      not rank differently from the same query unlimited. */
   limit?: number;
 }
 

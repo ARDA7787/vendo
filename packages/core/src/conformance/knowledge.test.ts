@@ -70,4 +70,24 @@ describe("KnowledgeAdapter conformance kit against the memory stub", () => {
     expect(report.ok).toBe(false);
     expect(report.failures.map((failure) => failure.name).join("\n")).toContain("search");
   });
+
+  it("a limited search that swaps in a different doc fails conformance", async () => {
+    const divergentAdapter: KnowledgeAdapter = {
+      posture: { fetch: false, write: false, visibility: "public-only" },
+      async search(query) {
+        if (query.text.startsWith("zz_")) return { hits: [] };
+        const docId = query.limit === undefined ? "doc_conformance_public" : "doc_unrelated";
+        return { hits: [{ ref: { docId }, snippet: "hit", kind: "docs", visibility: "public" }] };
+      },
+      async status() {
+        return { docs: 1 };
+      },
+    };
+    const report = await runConformance(knowledgeAdapterConformance({
+      makeAdapter: async () => ({ adapter: divergentAdapter }),
+      posture: { fetch: false, write: false, visibility: "public-only" },
+    }));
+    expect(report.ok).toBe(false);
+    expect(report.failures.map((failure) => failure.name).join("\n")).toContain("search");
+  });
 });

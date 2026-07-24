@@ -100,6 +100,10 @@ export function knowledgeAdapterConformance(opts: KnowledgeConformanceOptions): 
       );
       const limited = await adapter.search({ text: seed.public.title, limit: 1 }, ctx);
       assert(limited.hits.length === 1, "limit: 1 did not truncate to exactly one hit");
+      assert(
+        limited.hits[0]!.ref.docId === result.hits[0]!.ref.docId,
+        "limit changed the ranking — the limited top hit differs from the unlimited top hit",
+      );
     }),
 
     adapterCase("R3 — schema intent answers honestly: unknown terms return zero hits", async (adapter) => {
