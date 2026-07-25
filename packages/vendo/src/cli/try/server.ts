@@ -368,7 +368,9 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       connection: "keep-alive",
     });
     let unsubscribe: () => void = () => undefined;
+    let closed = false;
     const teardown = (): void => {
+      closed = true;
       clearInterval(heartbeat);
       unsubscribe();
       sseClients.delete(response);
@@ -394,6 +396,9 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
     // Latest-known state first: a late subscriber paints current progress
     // immediately instead of waiting for the next emission.
     for (const event of bus.replay()) send(event);
+    // A socket that died DURING the replay burst already ran teardown();
+    // subscribing/registering after it would re-add a dead client.
+    if (closed) return;
     unsubscribe = bus.subscribe(send);
     sseClients.add(response);
     request.once("close", teardown);
