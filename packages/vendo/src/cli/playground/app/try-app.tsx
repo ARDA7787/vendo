@@ -24,7 +24,7 @@ import {
   type TryBootConfig,
   type UsecaseChip,
 } from "./try-boot.js";
-import { TryChips } from "./try-chips.js";
+import { TryChips, pressChip, type PressedChip } from "./try-chips.js";
 
 /** The profile's theme through the SAME gate as the playground's `?theme=`
  *  (partials resolve over the shipped defaults, garbage is dropped). */
@@ -57,15 +57,19 @@ function TryApp({ boot }: { boot: TryBoot }) {
   const chips = usecaseChips(state.profile);
 
   // Unmount hygiene: the boot store dies with the app (this root lives for
-  // the page today, but nothing should rely on that).
+  // the page today, but nothing should rely on that). Teardown-without-setup
+  // is safe here: the CLI serves a production React bundle, so StrictMode's
+  // dev-only effect double-invoke never fires this early.
   useEffect(() => () => boot.close(), [boot]);
 
   // The pressed chip drives the surface: each press remounts TrySurface (the
-  // seq key) with the chip's prompt as its opening send. The active chip is
-  // disabled in the row, so a rapid double-press can't fire a second send.
-  const [pressed, setPressed] = useState<{ chip: UsecaseChip; seq: number } | null>(null);
+  // seq key) with the chip's prompt as its opening send — each press discards
+  // the prior conversation (Task 10's live transport inherits this). The
+  // double-send guard is pressChip's idempotence: re-pressing the active chip
+  // returns the same reference, so no state change, no remount, no re-send.
+  const [pressed, setPressed] = useState<PressedChip | null>(null);
   const onPick = (chip: UsecaseChip): void => {
-    setPressed((current) => (current?.chip.prompt === chip.prompt ? current : { chip, seq: (current?.seq ?? 0) + 1 }));
+    setPressed((current) => pressChip(current, chip));
   };
 
   // The page wears the profile theme edge to edge (the playground's stage

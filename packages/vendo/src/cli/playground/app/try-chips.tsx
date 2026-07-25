@@ -3,9 +3,9 @@
  * above the surface slot, one per suggestion chip. Purely presentational —
  * try-app derives the chip set (usecaseChips in try-boot.ts) and owns the
  * press → surface-remount wiring; this row just renders pills and reports
- * presses. The active chip is marked and disabled, which is also the
- * double-send guard: a second press on it is inert until another chip (or the
- * surface swap) moves the highlight.
+ * presses. The active chip stays a live, focusable button (disabling it would
+ * drop keyboard focus to the body) — it's marked via aria-pressed + styling,
+ * and re-presses are no-ops because pressChip below is idempotent for it.
  *
  * Styling: the row carries its own themeCssVariables scope, the same way the
  * chrome roots in @vendoai/ui do, so the pills re-theme with the profile theme
@@ -16,6 +16,20 @@ import type { VendoTheme } from "@vendoai/core";
 import { themeCssVariables } from "@vendoai/ui";
 import type { CSSProperties } from "react";
 import type { UsecaseChip } from "./try-boot.js";
+
+/** The pressed-chip state try-app keeps: which chip fired, plus a sequence
+ *  that keys the surface remount. */
+export interface PressedChip {
+  chip: UsecaseChip;
+  seq: number;
+}
+
+/** The press updater — THE double-send guard: pressing the already-active
+ *  chip returns the SAME state (no seq bump → no remount → no re-send); any
+ *  other chip bumps the sequence so the surface remounts and fires once. */
+export function pressChip(current: PressedChip | null, chip: UsecaseChip): PressedChip {
+  return current?.chip.prompt === chip.prompt ? current : { chip, seq: (current?.seq ?? 0) + 1 };
+}
 
 export function TryChips({ chips, activePrompt, onPick, theme }: {
   chips: UsecaseChip[];
@@ -44,7 +58,6 @@ export function TryChips({ chips, activePrompt, onPick, theme }: {
           <button
             key={`${index}:${chip.label}`}
             type="button"
-            disabled={active}
             aria-pressed={active}
             onClick={() => onPick(chip)}
             style={{

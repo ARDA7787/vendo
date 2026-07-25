@@ -225,9 +225,9 @@ export interface UsecaseChip {
   prompt: string;
 }
 
-/** Shown until the seeds artifact lands. Surface-side constants mirroring the
- *  tone of FALLBACK_USECASES in cli/extract/seeds.ts — deliberately NOT
- *  imported from there, so no server-side module rides into the bundle. */
+/** Shown until the seeds artifact lands. Surface-side constants copied from
+ *  (kept in sync by hand with) FALLBACK_USECASES in cli/extract/seeds.ts —
+ *  deliberately NOT imported, so no server-side module rides into the bundle. */
 export const FALLBACK_CHIPS: UsecaseChip[] = [
   { label: "Show my recent activity", prompt: "Show me a dashboard of my recent activity" },
   { label: "Summarize my account", prompt: "Give me a summary of my account and flag anything that needs attention" },
