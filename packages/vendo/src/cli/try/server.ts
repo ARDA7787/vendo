@@ -414,7 +414,7 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       // Honest 503: the profile reports capabilities.refine false on this
       // server, so a surface following the contract never lands here.
       json(response, {
-        error: { code: "refine-unavailable", message: "no model available — refine rides the same credential ladder as live chat" },
+        error: { code: "refine-unavailable", message: "no model available. Refine rides the same credential ladder as live chat" },
       }, 503);
       return;
     }
@@ -433,7 +433,7 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
     // One refine run at a time: runs are seconds-scale (one generateObject
     // call), so a simple flag + 409 beats a queue.
     if (refineActive) {
-      json(response, { error: { code: "refine-busy", message: "a refine run is already in flight — wait for it to finish" } }, 409);
+      json(response, { error: { code: "refine-busy", message: "a refine run is already in flight, wait for it to finish" } }, 409);
       return;
     }
     refineActive = true;
@@ -481,28 +481,33 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
     }
     const run = refineRun;
     if (run === undefined || (runId !== undefined && runId !== run.id)) {
-      json(response, { error: { code: "unknown-run", message: "no such refine run — its proposals are gone; run refine again" } }, 404);
+      json(response, { error: { code: "unknown-run", message: "no such refine run. Its proposals are gone, run refine again" } }, 404);
       return;
     }
-    const selected: Array<{ id: number; change: RefineChange }> = [];
+    // EVERY selection is validated — ids AND write targets — before the first
+    // byte is written, so a bad request can never leave a partial apply.
+    const selected: Array<{ id: number; change: RefineChange; target: string }> = [];
     for (const id of changeIds as number[]) {
       const change = run.changes[id];
       if (change === undefined) {
         json(response, { error: { code: "unknown-change", message: `no change ${id} in ${run.id}` } }, 400);
         return;
       }
-      selected.push({ id, change });
-    }
-    for (const { change } of selected) {
       const target = resolve(options.profileRoot, ...change.path.split("/"));
       // Belt-and-braces zero-commit guard: runRefine only ever proposes
       // `.vendo/…` paths, but nothing outside the profile root is writable.
       if (!target.startsWith(resolve(options.profileRoot) + sep)) {
-        throw new Error(`refusing to write outside the profile root: ${change.path}`);
+        json(response, { error: { code: "bad-request", message: `refusing to write outside the profile root: ${change.path}` } }, 400);
+        return;
       }
+      selected.push({ id, change, target });
+    }
+    // Each write is atomic (write-then-rename: the compose-key sweep and the
+    // per-request profile assembly never observe a half-written artifact),
+    // but the BATCH is not — a genuine disk error mid-loop leaves the earlier
+    // files applied, surfaced by route()'s 500.
+    for (const { change, target } of selected) {
       await mkdir(dirname(target), { recursive: true });
-      // Atomic per file (write-then-rename): the compose-key sweep and the
-      // per-request profile assembly never observe a half-written artifact.
       const temporary = `${target}.refine-${refineSeq}.tmp`;
       await writeFile(temporary, change.after, "utf8");
       await rename(temporary, target);

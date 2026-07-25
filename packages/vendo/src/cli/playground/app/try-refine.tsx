@@ -307,7 +307,7 @@ export function TryRefine({ theme }: { theme: VendoTheme }) {
             <input
               value={message}
               onChange={(event) => setMessage(event.target.value)}
-              placeholder="Tell it what to fix — e.g. 'disable the delete tools'"
+              placeholder="Tell it what to fix, e.g. 'disable the delete tools'"
               aria-label="Correction"
               disabled={busy}
               style={{
