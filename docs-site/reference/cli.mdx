@@ -356,8 +356,10 @@ that is swept on exit.
 
 Chat is live when a model credential resolves at startup: a provider env key
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_GENERATIVE_AI_API_KEY`) or
-`VENDO_API_KEY` through the Vendo Cloud model gateway, the same
-[dev-mode credential ladder](/connect/dev-mode) the runtime uses. With a
+`VENDO_API_KEY` through the Vendo Cloud model gateway, with the matching
+`@ai-sdk/*` provider package installed in your app (`@ai-sdk/anthropic` for
+the gateway), the same [dev-mode credential ladder](/connect/dev-mode) the
+runtime uses. With a
 model resolved, the surface also takes corrections in conversation: refine
 proposals arrive as reviewable diffs and apply to the temp profile only,
 never to your repo. With zero keys, or outside a repo, everything still
