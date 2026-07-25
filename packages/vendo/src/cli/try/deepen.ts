@@ -78,8 +78,10 @@ async function readStaticTools(profileRoot: string): Promise<StaticTool[] | null
 }
 
 /** The host product's name, for the extraction prompts (runAiExtraction's
- *  read, against the HOST repo — package.json is optional context). */
-async function readAppName(repoRoot: string): Promise<string> {
+ *  read, against the HOST repo — package.json is optional context). Exported
+ *  so the try command (cli/try.ts) derives the surface's brand.name the SAME
+ *  way instead of keeping a second copy of this read. */
+export async function readAppName(repoRoot: string): Promise<string> {
   try {
     const parsed = JSON.parse((await readOptional(join(repoRoot, "package.json"))) ?? "{}") as { name?: string };
     return parsed.name ?? "app";

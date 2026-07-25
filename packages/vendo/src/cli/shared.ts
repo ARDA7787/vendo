@@ -135,6 +135,7 @@ export function errorClass(error: unknown): string {
     same ceremony stays "cloud-init". */
 export type CommandName =
   | "login"
+  | "try"
   | "extract"
   | "theme"
   | "eject"

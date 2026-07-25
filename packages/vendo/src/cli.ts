@@ -12,12 +12,14 @@ import { runPlayground } from "./cli/playground.js";
 import { runRefineCommand } from "./cli/refine.js";
 import { CLI_VERSION } from "./cli/shared.js";
 import { runSync } from "./cli/sync.js";
+import { runTry } from "./cli/try.js";
 
 const HELP = `vendo — install your product's agent
 
 Usage: vendo <command> [dir] [options]
 
 Commands:
+  try             See your product's agent before installing: profile this repo read-only, serve a live local demo
   init [dir]      Set up Vendo: wire the handler, extract tools + theme, resolve a model key
   login           Claim a Vendo Cloud key: approve in the browser; the key lands in .env.local
   doctor [dir]    Verify the install: wiring, live probes, and one real model turn (--json for agents)
@@ -42,15 +44,16 @@ Options:
   --wait <seconds>           Login only: bound this call's polling to N seconds (agents loop re-runs; each resumes the same request), then exit resumably
   --byo                      Init only: decline the Vendo Cloud offer (bring your own model key)
   --ai-polish                Init only: consent to the AI extraction pass without a prompt (works non-interactively)
-  --engine <name>            Init only: pin the AI-polish engine (claude, codex, npx) instead of first-available
+  --engine <name>            Init/try: pin the AI engine (claude, codex, npx) instead of first-available
   --theme <slot=value>       Init only: override a theme slot value directly (repeatable)
   --list                     Eject only: show the ejectable surfaces
   --model-import <specifier> Refine only: module exporting the host's ai-SDK model
   --ask <text>               Refine only: interview answer (repeatable) for non-interactive runs
   --url <url>                Doctor/refine/server-json: mounted wire base or public MCP URL
   --strict                   Sync only: exit 2 on breaking changes, 3 when saved references are impacted
-  --port <port>              Playground only: listen on a fixed port (default: any free port)
-  --no-open                  Playground only: print the URL without opening the browser
+  --port <port>              Playground/try: listen on a fixed port (default: any free port)
+  --no-open                  Playground/try: print the URL without opening the browser
+  --no-ai                    Try only: skip the background AI deepening (the demo stays on the deterministic profile)
   --json                     Sync/doctor: print one machine-readable report object
   --report                   Sync only: push the report to Vendo Cloud
   --key <key>                Sync/cloud: override VENDO_API_KEY
@@ -79,7 +82,9 @@ const INIT_VALUE_OPTIONS = ["--auth", "--framework", "--cloud-key", "--theme", "
     bad value fails as loudly as an unknown flag, with the valid choices. */
 const INIT_AUTH_VALUES = ["authJs", "clerk", "supabase", "auth0", "jwt", "none"];
 const INIT_FRAMEWORK_VALUES = ["next", "express", "custom"];
-const INIT_ENGINE_VALUES = ["claude", "codex", "npx"];
+/** The user-facing engine families (extraction.ts's ENGINE_FAMILIES values) —
+    one ladder, so `init --engine` and `try --engine` accept the same names. */
+const ENGINE_VALUES = ["claude", "codex", "npx"];
 const EXTRACT_FLAGS = new Set(["--force"]);
 const EXTRACT_VALUE_OPTIONS = ["--apply"];
 const DOCTOR_FLAGS = new Set(["--json", "--yes"]);
@@ -141,6 +146,45 @@ function playgroundOptionErrors(args: string[]): { errors: string[]; port?: numb
   return { errors, port };
 }
 
+/** `vendo try` follows the ENG-335 rule too: unknown flags (and stray
+    positionals — try always profiles the cwd) fail loudly, and a bad
+    --engine names the valid families instead of silently running keyless. */
+function tryOptionErrors(args: string[]): { errors: string[]; port?: number; engine?: string } {
+  const errors: string[] = [];
+  let port: number | undefined;
+  let engine: string | undefined;
+  const parsePort = (value: string | undefined): void => {
+    const parsed = value !== undefined && /^\d+$/.test(value) ? Number(value) : NaN;
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65_535) port = parsed;
+    else errors.push("--port requires a port number (1-65535)");
+  };
+  const parseEngine = (value: string | undefined): void => {
+    if (value !== undefined && ENGINE_VALUES.includes(value)) engine = value;
+    else errors.push(`--engine must be one of ${ENGINE_VALUES.join(", ")} (example: vendo try --engine claude)`);
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--no-open" || arg === "--no-ai") continue;
+    if (arg === "--port" || arg === "--engine") {
+      const value = args[index + 1];
+      const usable = value !== undefined && !value.startsWith("--");
+      (arg === "--port" ? parsePort : parseEngine)(usable ? value : undefined);
+      if (usable) index += 1;
+      continue;
+    }
+    if (arg.startsWith("--port=")) {
+      parsePort(arg.slice("--port=".length));
+      continue;
+    }
+    if (arg.startsWith("--engine=")) {
+      parseEngine(arg.slice("--engine=".length));
+      continue;
+    }
+    errors.push(arg.startsWith("--") ? `unknown option: ${arg}` : `unexpected argument: ${arg}`);
+  }
+  return { errors, port, engine };
+}
+
 function target(args: string[]): string {
   const optionValues = new Set<string>();
   for (const name of ["--model-import", "--url", "--key", "--api-url", "--ask", "--apply",
@@ -191,8 +235,8 @@ export async function main(argv: string[]): Promise<number> {
       problems.push("--cloud-key must be a Vendo Cloud key (vnd_ + 40 hex; `vendo login` issues one)");
     }
     const engine = option(args, "--engine");
-    if (engine !== undefined && !INIT_ENGINE_VALUES.includes(engine)) {
-      problems.push(`--engine must be one of ${INIT_ENGINE_VALUES.join(", ")} (example: vendo init --engine codex)`);
+    if (engine !== undefined && !ENGINE_VALUES.includes(engine)) {
+      problems.push(`--engine must be one of ${ENGINE_VALUES.join(", ")} (example: vendo init --engine codex)`);
     }
     if (cloudKey !== undefined && args.includes("--byo")) {
       problems.push("--cloud-key and --byo answer the same question — pass one or the other");
@@ -280,6 +324,19 @@ export async function main(argv: string[]): Promise<number> {
       modelImport: option(args, "--model-import"),
       asks: options(args, "--ask"),
       yes: args.includes("--yes"),
+    });
+  }
+  if (command === "try") {
+    const { errors, port, engine } = tryOptionErrors(args);
+    if (errors.length > 0) {
+      console.error(`vendo try: ${errors.join("; ")}\n\n${HELP}`);
+      return 1;
+    }
+    return runTry({
+      port,
+      open: !args.includes("--no-open"),
+      ai: !args.includes("--no-ai"),
+      ...(engine === undefined ? {} : { engine }),
     });
   }
   if (command === "playground") {
