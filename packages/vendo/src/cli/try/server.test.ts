@@ -285,6 +285,85 @@ describe("startTryServer /api/vendo mount", () => {
     }
   });
 
+  it("rebuilds the mount when compose-time artifacts change: the next turn sees NEW fixture rows and the landed brief", { timeout: 60_000 }, async () => {
+    const { MockLanguageModelV3, simulateReadableStream } = await import("ai/test");
+    const usage = {
+      inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+      outputTokens: { total: 0, text: 0, reasoning: 0 },
+    };
+    // Each POST /threads turn is two model calls: a host tool call, then the
+    // closing text — scripted, so the server never needs a real key.
+    let calls = 0;
+    const prompts: unknown[] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async ({ prompt }) => {
+        calls += 1;
+        prompts.push(structuredClone(prompt));
+        const chunks = calls % 2 === 1
+          ? [
+              { type: "tool-call" as const, toolCallId: `call_${calls}`, toolName: "host_invoices_list", input: "{}" },
+              { type: "finish" as const, usage, finishReason: { unified: "tool-calls" as const, raw: undefined } },
+            ]
+          : [
+              { type: "text-start" as const, id: `t${calls}` },
+              { type: "text-delta" as const, id: `t${calls}`, delta: "Done." },
+              { type: "text-end" as const, id: `t${calls}` },
+              { type: "finish" as const, usage, finishReason: { unified: "stop" as const, raw: undefined } },
+            ];
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+
+    const { profileRoot } = await extractedProfile();
+    await write(profileRoot, ".vendo/data/extract/fixtures.json", JSON.stringify({
+      format: VENDO_FIXTURES_FORMAT,
+      fixtures: { host_invoices_list: [{ id: "inv_first" }] },
+    }));
+    const server = await serve({ profileRoot, env: {}, model: model as unknown as LanguageModel });
+    const turn = async (threadId: string): Promise<string> => {
+      const response = await fetch(`${server.url}/api/vendo/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          threadId,
+          message: { id: `msg_${threadId}`, role: "user", parts: [{ type: "text", text: "List invoices" }] },
+        }),
+      });
+      expect(response.status).toBe(200);
+      return await response.text();
+    };
+
+    // First composition: the tool result streamed back carries the v1 rows.
+    expect(await turn("thr_rebuild_1")).toContain("inv_first");
+
+    // Deepening lands NEW fixtures and the brief between requests.
+    await write(profileRoot, ".vendo/data/extract/fixtures.json", JSON.stringify({
+      format: VENDO_FIXTURES_FORMAT,
+      fixtures: { host_invoices_list: [{ id: "inv_second" }] },
+    }));
+    await write(profileRoot, ".vendo/brief.md", "Maple is a neobank for freelancers.\n");
+
+    const second = await turn("thr_rebuild_2");
+    expect(second).toContain("inv_second");
+    expect(second).not.toContain("inv_first");
+    // The rebuilt composition also re-read brief.md into the system prompt —
+    // the whole compose-time read set refreshes, not just fixtures.
+    expect(JSON.stringify(prompts[2])).toContain("Maple is a neobank for freelancers.");
+  });
+
+  it("recovers /api/vendo after the profile is repaired: a failed composition is retried, never terminal", { timeout: 60_000 }, async () => {
+    const profileRoot = await tempDir("vendo-try-server-repair-");
+    await write(profileRoot, ".vendo/try-store", "not a directory\n");
+    const server = await serve({ profileRoot, env: {}, heartbeatIntervalMs: 20 });
+
+    expect((await fetch(`${server.url}/api/vendo/status`)).status).toBe(503);
+
+    // Repair: the blocking file goes away (state OUTSIDE the keyed artifact
+    // set — recovery must not depend on a keyed file ever changing).
+    await rm(join(profileRoot, ".vendo", "try-store"));
+    expect((await fetch(`${server.url}/api/vendo/status`)).status).toBe(200);
+  });
+
   it("degrades to 503 JSON naming the composition error while /, /profile.json, /events still paint", { timeout: 60_000 }, async () => {
     const profileRoot = await tempDir("vendo-try-server-corrupt-");
     // A FILE where the try store's PGlite data directory must go: composing

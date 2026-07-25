@@ -271,44 +271,89 @@ type MountState = { vendo: Vendo } | { error: string };
 export async function startTryServer(options: StartTryServerOptions): Promise<TryServer> {
   const bus = options.events ?? createTryEventBus();
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-  const fixturesPath = join(options.profileRoot, ".vendo", "data", "extract", "fixtures.json");
   const liveChat = await detectLiveChat(options);
 
-  // The /api/vendo mount, composed LAZILY on first use and REBUILT when
-  // fixtures.json changes on disk. Chosen over a per-call lazy fixtures read
-  // inside the synthetic fetch because recomposition also refreshes every
-  // other compose-time profile read (brief.md into the system prompt,
-  // theme.json, catalog.json) once deepening lands them — one freshness
-  // mechanism instead of two. The trade (in-memory thread state resets on
-  // rebuild) is bounded: fixtures land exactly once per deepening run, and
-  // durable state lives in the store, which every composition shares (the
-  // PGlite handle is per-dataDir refcounted in-process). A failed composition
-  // is cached under the same key — /api/vendo answers 503 naming the error
-  // while every other route keeps painting — and retried when fixtures change.
-  let mount: { key: string; ready: Promise<MountState> } | undefined;
+  // The /api/vendo mount, composed LAZILY on first use and REBUILT whenever
+  // any compose-time profile read changes on disk. Chosen over a per-call
+  // lazy fixtures read inside the synthetic fetch because recomposition
+  // refreshes EVERY compose-time read at once (brief.md into the system
+  // prompt, theme/catalog/semantics, the tool surface, the fixture rows) —
+  // one freshness mechanism instead of several. The trade (in-memory thread
+  // state resets on rebuild) is bounded: deepening writes each artifact once
+  // per run, and durable state lives in the store, which every composition
+  // shares (the PGlite handle is per-dataDir refcounted in-process). A failed
+  // composition answers 503 naming the error while every other route keeps
+  // painting — and is NEVER cached terminally: the next /api request retries,
+  // because the failure may stem from state outside the keyed set (the store
+  // directory itself, permissions), not just a keyed artifact.
+  //
+  // The key is one stat sweep per request over the exact compose-time read
+  // set: `.vendo/` tools.json + overrides.json + capabilities.json (the
+  // actions registry), theme.json + brief.md + catalog.json + semantics.json
+  // (createVendo's own dotVendo reads), and data/extract/fixtures.json (the
+  // synthetic fetch). design-rules.md needs no recompose (createVendo re-reads
+  // it per generation), and `.vendo/remixable/` pin baselines are left out
+  // deliberately (deepening never writes them; sync does, before the server).
+  const COMPOSE_READ_SET: readonly string[][] = [
+    ["tools.json"],
+    ["overrides.json"],
+    ["capabilities.json"],
+    ["theme.json"],
+    ["brief.md"],
+    ["catalog.json"],
+    ["semantics.json"],
+    ["data", "extract", "fixtures.json"],
+  ];
+  let mount: { key: string; ready: Promise<MountState>; failed: boolean } | undefined;
   const composedStores: Vendo["store"][] = [];
-  const fixturesKey = async (): Promise<string> => {
-    try {
-      const stats = await stat(fixturesPath);
-      return `${stats.mtimeMs}:${stats.size}`;
-    } catch {
-      return "absent";
-    }
+  const composeKey = async (): Promise<string> => {
+    const stamps = await Promise.all(COMPOSE_READ_SET.map(async (segments) => {
+      try {
+        const stats = await stat(join(options.profileRoot, ".vendo", ...segments));
+        return `${stats.mtimeMs}:${stats.size}`;
+      } catch {
+        return "absent";
+      }
+    }));
+    return stamps.join("|");
   };
   const currentMount = async (): Promise<MountState> => {
-    const key = await fixturesKey();
-    if (mount === undefined || mount.key !== key) {
-      const ready = composeTryVendo({
-        profileRoot: options.profileRoot,
-        ...(options.model === undefined ? {} : { model: options.model }),
-      }).then(
-        (vendo): MountState => {
-          composedStores.push(vendo.store);
-          return { vendo };
-        },
-        (error): MountState => ({ error: error instanceof Error ? error.message : String(error) }),
-      );
-      mount = { key, ready };
+    const key = await composeKey();
+    if (mount === undefined || mount.key !== key || mount.failed) {
+      const superseded = mount;
+      const next: { key: string; ready: Promise<MountState>; failed: boolean } = {
+        key,
+        failed: false,
+        ready: composeTryVendo({
+          profileRoot: options.profileRoot,
+          ...(options.model === undefined ? {} : { model: options.model }),
+        }).then(
+          (vendo): MountState => {
+            composedStores.push(vendo.store);
+            return { vendo };
+          },
+          (error): MountState => {
+            next.failed = true;
+            return { error: error instanceof Error ? error.message : String(error) };
+          },
+        ),
+      };
+      mount = next;
+      // Release the superseded composition's store instead of stranding its
+      // PGlite ref until close(). Best-effort: a request still streaming on
+      // the old composition loses its store mid-flight, which is the accepted
+      // rebuild trade above (rebuilds coincide with deepening writes).
+      if (superseded !== undefined) {
+        void superseded.ready
+          .then(async (state) => {
+            if ("vendo" in state) {
+              const index = composedStores.indexOf(state.vendo.store);
+              if (index >= 0) composedStores.splice(index, 1);
+              await state.vendo.store.close();
+            }
+          })
+          .catch(() => undefined);
+      }
     }
     return mount.ready;
   };
@@ -322,21 +367,36 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       "cache-control": "no-store",
       connection: "keep-alive",
     });
-    const send = (event: TryEvent): void => {
-      response.write(`data: ${JSON.stringify(event)}\n\n`);
-    };
-    // Latest-known state first: a late subscriber paints current progress
-    // immediately instead of waiting for the next emission.
-    for (const event of bus.replay()) send(event);
-    const unsubscribe = bus.subscribe(send);
-    const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), heartbeatIntervalMs);
-    heartbeat.unref();
-    sseClients.add(response);
-    request.once("close", () => {
+    let unsubscribe: () => void = () => undefined;
+    const teardown = (): void => {
       clearInterval(heartbeat);
       unsubscribe();
       sseClients.delete(response);
-    });
+    };
+    // A dead socket surfaces as a throw from write(): tear this client down
+    // instead of letting the throw propagate into bus.emit (one bad client
+    // must never break the emitter or its other subscribers).
+    const send = (event: TryEvent): void => {
+      try {
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      } catch {
+        teardown();
+      }
+    };
+    const heartbeat = setInterval(() => {
+      try {
+        response.write(": heartbeat\n\n");
+      } catch {
+        teardown();
+      }
+    }, heartbeatIntervalMs);
+    heartbeat.unref();
+    // Latest-known state first: a late subscriber paints current progress
+    // immediately instead of waiting for the next emission.
+    for (const event of bus.replay()) send(event);
+    unsubscribe = bus.subscribe(send);
+    sseClients.add(response);
+    request.once("close", teardown);
   };
 
   let fallbackHost = "127.0.0.1";
