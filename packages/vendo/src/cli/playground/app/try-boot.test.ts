@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TryProfile } from "../../try/profile.js";
 import {
+  FALLBACK_CHIPS,
   brandTitle,
   createTryBoot,
   depthLabel,
   readTryConfig,
+  usecaseChips,
   type TryBootConfig,
   type TryEventSourceLike,
 } from "./try-boot.js";
@@ -103,6 +105,14 @@ describe("readTryConfig", () => {
     expect(readTryConfig({ __VENDO_TRY__: { profileUrl: "/p" } })).toBeNull();
     expect(readTryConfig({ __VENDO_TRY__: { profileUrl: "/p", eventsUrl: "/e", apiBase: 7 } })).toBeNull();
     expect(readTryConfig({ __VENDO_TRY__: { profileUrl: "", eventsUrl: "/e", apiBase: "/a" } })).toBeNull();
+  });
+});
+
+describe("createTryBoot config", () => {
+  it("exposes the boot config it was created with (Tasks 10/11 read apiBase here)", () => {
+    const { boot } = harness([profileFixture()]);
+    expect(boot.config).toEqual(config);
+    expect(boot.config.apiBase).toBe("/api/vendo");
   });
 });
 
@@ -247,6 +257,28 @@ describe("createTryBoot deepening stream", () => {
     sources[0]!.emit("error");
     expect(sources[0]!.closed).toBe(false);
   });
+
+  it("a throwing listener neither aborts the notify loop nor escapes into the SSE callback", async () => {
+    const { boot, sources } = harness([profileFixture()]);
+    boot.subscribe(() => {
+      throw new Error("bad listener");
+    });
+    let notified = 0;
+    boot.subscribe(() => {
+      notified += 1;
+    });
+
+    // Notify path 1: load's setState — the returned promise must not reject.
+    await expect(boot.load()).resolves.toEqual({ ok: true });
+    expect(notified).toBeGreaterThan(0);
+
+    // Notify path 2: a stage event — the throw must not escape emit (in the
+    // browser that frame IS the EventSource message callback).
+    const before = notified;
+    expect(() => sources[0]!.emit("message", stageEvent("brief", "started"))).not.toThrow();
+    expect(notified).toBeGreaterThan(before);
+    expect(boot.state.stages).toEqual({ brief: "started" });
+  });
 });
 
 describe("depthLabel", () => {
@@ -284,5 +316,48 @@ describe("brandTitle", () => {
     expect(brandTitle(profileFixture({ brand: { name: null, domain: null, logoUrl: null } }))).toBe("Your product");
     expect(brandTitle(profileFixture({ brand: { name: "  ", domain: null, logoUrl: null } }))).toBe("Your product");
     expect(brandTitle(null)).toBe("Your product");
+  });
+});
+
+describe("usecaseChips", () => {
+  const seeded = [
+    { label: "Build a renewals dashboard", prompt: "Build me a dashboard of my upcoming renewals" },
+    { label: "Flag at-risk accounts", prompt: "Which of my accounts look at risk this quarter?" },
+  ];
+
+  it("generic fallbacks before the seeds artifact lands (no profile, or empty usecases)", () => {
+    expect(usecaseChips(null)).toEqual(FALLBACK_CHIPS);
+    expect(usecaseChips(profileFixture())).toEqual(FALLBACK_CHIPS);
+  });
+
+  it("the profile's seeded chips once they exist — same call, so a store update swaps live", () => {
+    expect(usecaseChips(profileFixture({ usecases: seeded }))).toEqual(seeded);
+  });
+
+  it("junk entries are dropped, not rendered as dead pills (tolerant profile parse lets anything in)", () => {
+    const junk = [
+      { label: "", prompt: "blank label" },
+      { label: "blank prompt", prompt: "   " },
+      { label: 7, prompt: "non-string label" },
+      "not even an object",
+      seeded[0],
+    ] as unknown as TryProfile["usecases"];
+    expect(usecaseChips(profileFixture({ usecases: junk }))).toEqual([seeded[0]]);
+  });
+
+  it("all-junk or non-array usecases fall back to the generic set", () => {
+    const blank = [{ label: " ", prompt: "" }] as TryProfile["usecases"];
+    expect(usecaseChips(profileFixture({ usecases: blank }))).toEqual(FALLBACK_CHIPS);
+    const notArray = profileFixture();
+    (notArray as Record<string, unknown>)["usecases"] = { nope: true };
+    expect(usecaseChips(notArray)).toEqual(FALLBACK_CHIPS);
+  });
+
+  it("ships exactly three generic fallbacks, each pressable (label + prompt)", () => {
+    expect(FALLBACK_CHIPS).toHaveLength(3);
+    for (const chip of FALLBACK_CHIPS) {
+      expect(chip.label.trim()).not.toBe("");
+      expect(chip.prompt.trim()).not.toBe("");
+    }
   });
 });

@@ -65,6 +65,9 @@ export interface CreateTryBootOptions {
 }
 
 export interface TryBoot {
+  /** The boot config this store was created with — later surface pieces (live
+   *  chat, refine) read `apiBase` here instead of re-reading `window.__VENDO_TRY__`. */
+  readonly config: TryBootConfig;
   readonly state: TryBootState;
   /** Fetch + parse the initial profile. `{ ok: false }` = fall back to
    *  classic playground mode; `{ ok: true }` also opens the event stream. */
@@ -93,7 +96,16 @@ export function createTryBoot(options: CreateTryBootOptions): TryBoot {
 
   const setState = (patch: Partial<TryBootState>): void => {
     state = { ...state, ...patch };
-    for (const listener of [...listeners]) listener();
+    for (const listener of [...listeners]) {
+      // Guarded per listener: one throwing subscriber must neither starve the
+      // rest nor propagate into whatever triggered the notify (load's promise
+      // chain, the EventSource message callback).
+      try {
+        listener();
+      } catch {
+        /* fail-soft, like everything else on this surface */
+      }
+    }
   };
 
   /** Fail-soft profile read: null on network trouble, non-2xx, bad JSON. */
@@ -158,6 +170,7 @@ export function createTryBoot(options: CreateTryBootOptions): TryBoot {
   };
 
   return {
+    config: options.config,
     get state() {
       return state;
     },
@@ -203,4 +216,36 @@ export function depthLabel(profile: TryProfile | null, stages: Record<string, st
 export function brandTitle(profile: TryProfile | null): string {
   const name = profile?.brand?.name;
   return typeof name === "string" && name.trim() !== "" ? name : "Your product";
+}
+
+/** One pressable suggestion chip (the profile's usecase shape, minus whatever
+ *  extra fields the passthrough schema let ride along). */
+export interface UsecaseChip {
+  label: string;
+  prompt: string;
+}
+
+/** Shown until the seeds artifact lands. Surface-side constants mirroring the
+ *  tone of FALLBACK_USECASES in cli/extract/seeds.ts — deliberately NOT
+ *  imported from there, so no server-side module rides into the bundle. */
+export const FALLBACK_CHIPS: UsecaseChip[] = [
+  { label: "Show my recent activity", prompt: "Show me a dashboard of my recent activity" },
+  { label: "Summarize my account", prompt: "Give me a summary of my account and flag anything that needs attention" },
+  { label: "What can you do?", prompt: "What can you help me with in this product?" },
+];
+
+/** The chips row's data: the profile's AI-seeded usecases once they exist,
+ *  generic fallbacks until then — the same call on every store update, so the
+ *  swap happens live when the seeds artifact lands. The tolerant profile parse
+ *  lets anything through, so junk entries (non-objects, blank or non-string
+ *  label/prompt) are dropped rather than rendered as dead pills. */
+export function usecaseChips(profile: TryProfile | null): UsecaseChip[] {
+  const raw: unknown = profile?.usecases;
+  const seeded = (Array.isArray(raw) ? raw : []).flatMap((entry): UsecaseChip[] => {
+    const chip = entry as { label?: unknown; prompt?: unknown } | null;
+    if (typeof chip?.label !== "string" || chip.label.trim() === "") return [];
+    if (typeof chip.prompt !== "string" || chip.prompt.trim() === "") return [];
+    return [{ label: chip.label, prompt: chip.prompt }];
+  });
+  return seeded.length > 0 ? seeded : FALLBACK_CHIPS;
 }

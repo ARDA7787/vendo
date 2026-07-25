@@ -8,14 +8,23 @@
  */
 import type { VendoTheme } from "@vendoai/core";
 import { defaultVendoTheme } from "@vendoai/ui";
-import { StrictMode, useSyncExternalStore } from "react";
+import { StrictMode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { TryProfile } from "../../try/profile.js";
 import { ScenarioMount } from "./scenario-mount.js";
 import { scenarios } from "./scenarios.js";
 import { useGoogleFont } from "./theme-editor.js";
 import { decodeThemeParam } from "./theme-state.js";
-import { brandTitle, createTryBoot, depthLabel, type TryBoot, type TryBootConfig } from "./try-boot.js";
+import {
+  brandTitle,
+  createTryBoot,
+  depthLabel,
+  usecaseChips,
+  type TryBoot,
+  type TryBootConfig,
+  type UsecaseChip,
+} from "./try-boot.js";
+import { TryChips } from "./try-chips.js";
 
 /** The profile's theme through the SAME gate as the playground's `?theme=`
  *  (partials resolve over the shipped defaults, garbage is dropped). */
@@ -24,10 +33,18 @@ function profileTheme(profile: TryProfile | null): VendoTheme {
   return (raw ? decodeThemeParam(JSON.stringify(raw)) : undefined) ?? defaultVendoTheme;
 }
 
-/** The ONE swappable surface slot: today the default scripted scenario on the
- *  scenario-mount machinery; Tasks 9/10 replace this component's insides. */
-function TrySurface({ theme }: { theme: VendoTheme }) {
-  const scenario = scenarios[0]!;
+/** The ONE swappable surface slot: today scripted scenarios on the
+ *  scenario-mount machinery; Task 10 replaces this component's insides. With
+ *  no send it's the default closed-launcher scenario; a pressed chip needs a
+ *  live composer, so it rides the open-overlay scenario with the chip's
+ *  prompt as the auto-sent opening turn (scenario-mount's useAutoSend types
+ *  it into the REAL composer and submits — one mount, one send). */
+function TrySurface({ theme, autoSend }: { theme: VendoTheme; autoSend?: string }) {
+  const scenario = useMemo(() => {
+    if (!autoSend) return scenarios[0]!;
+    const open = scenarios.find((entry) => entry.id === "overlay-open") ?? scenarios[0]!;
+    return { ...open, autoSend };
+  }, [autoSend]);
   return <ScenarioMount scenario={scenario} theme={theme} />;
 }
 
@@ -37,6 +54,19 @@ function TryApp({ boot }: { boot: TryBoot }) {
   useGoogleFont(theme.typography.fontFamily);
   const label = depthLabel(state.profile, state.stages);
   const logoUrl = state.profile?.brand?.logoUrl ?? null;
+  const chips = usecaseChips(state.profile);
+
+  // Unmount hygiene: the boot store dies with the app (this root lives for
+  // the page today, but nothing should rely on that).
+  useEffect(() => () => boot.close(), [boot]);
+
+  // The pressed chip drives the surface: each press remounts TrySurface (the
+  // seq key) with the chip's prompt as its opening send. The active chip is
+  // disabled in the row, so a rapid double-press can't fire a second send.
+  const [pressed, setPressed] = useState<{ chip: UsecaseChip; seq: number } | null>(null);
+  const onPick = (chip: UsecaseChip): void => {
+    setPressed((current) => (current?.chip.prompt === chip.prompt ? current : { chip, seq: (current?.seq ?? 0) + 1 }));
+  };
 
   // The page wears the profile theme edge to edge (the playground's stage
   // rule): the surface's own canvas never prints an abrupt rectangle.
@@ -73,7 +103,17 @@ function TryApp({ boot }: { boot: TryBoot }) {
         ) : null}
       </header>
       <main style={{ flex: 1, maxWidth: 900, width: "100%", margin: "0 auto", padding: "26px 22px 60px" }}>
-        <TrySurface theme={theme} />
+        <TryChips
+          chips={chips}
+          activePrompt={pressed?.chip.prompt ?? null}
+          onPick={onPick}
+          theme={theme}
+        />
+        <TrySurface
+          key={pressed ? `chip-${pressed.seq}` : "default"}
+          theme={theme}
+          autoSend={pressed?.chip.prompt}
+        />
       </main>
     </div>
   );
