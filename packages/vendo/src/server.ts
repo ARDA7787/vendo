@@ -229,6 +229,20 @@ export interface CreateVendoConfig {
       cwd/.vendo defaults; an explicit object supplies a host root for adapters
       whose process cwd differs. `false` disables the environment default. */
   development?: boolean | { root?: string; out?: string };
+  /** Unified try surface — the project root the `.vendo/` profile is read
+      under: the actions files (tools/overrides/capabilities via the actions
+      block's `dir`), theme.json, brief.md, catalog.json, semantics.json, the
+      per-generation design-rules.md read, the remixable pin baselines, and the
+      development-capture defaults all resolve against it. Unset keeps today's
+      behavior (the process cwd), so `npx vendo try` can mount a real
+      composition over a profile living in a temp directory without chdir. */
+  profileDir?: string;
+  /** Unified try surface — the fetch host route/OpenAPI tool bindings execute
+      through, threaded verbatim into the actions registry. An explicitly
+      passed function always wins (adapter rule); unset keeps the platform
+      fetch. `npx vendo try` injects a synthetic-fixture fetch here so host
+      tool calls succeed with no host API running. */
+  fetch?: typeof fetch;
   /** 10-mcp §1 — the one flag: open the MCP door so outside agents (Claude,
       ChatGPT, Cursor) reach the host's tools through the SAME guard-bound path.
       Opening it is a host decision (10-mcp §2), so it is off by default.
@@ -687,8 +701,8 @@ function dotVendoRoot(): string | undefined {
   }
 }
 
-function dotVendoTheme(): VendoTheme | undefined {
-  const raw = dotVendoFile("theme.json");
+function dotVendoTheme(root?: string): VendoTheme | undefined {
+  const raw = dotVendoFile("theme.json", root);
   if (raw === undefined) return undefined;
   try {
     const parsed = vendoThemeSchema.safeParse(JSON.parse(raw));
@@ -701,11 +715,11 @@ function dotVendoTheme(): VendoTheme | undefined {
 /** 06-apps §8 — load sync-captured host source into the composition. Invalid
     files are warned and skipped so one bad slot cannot crash the host; an
     absent directory is the normal zero-remixable-components case. */
-function dotVendoPinBaselines(): PinBaseline[] {
+function dotVendoPinBaselines(root?: string): PinBaseline[] {
   const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
   const fs = proc?.getBuiltinModule?.("node:fs") as typeof import("node:fs") | undefined;
   if (fs === undefined) return [];
-  const directory = ".vendo/remixable";
+  const directory = `${root === undefined ? "." : root}/.vendo/remixable`;
   let names: string[];
   try {
     names = fs.readdirSync(directory).filter((name) => name.endsWith(".json")).sort();
@@ -1077,14 +1091,17 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     serverActions?: Record<string, ServerActionHandler>;
     baseUrl?: string;
     baseUrlTrusted?: boolean;
+    fetch?: typeof fetch;
     onPresentCredentialsNotForwarded: typeof warnPresentCredentialsNotForwarded;
     untrustedOriginPolicy?: "warn" | "fail";
     invokeTool?: ToolRegistry["execute"];
   } = {
-    dir: ".",
+    dir: config.profileDir ?? ".",
     ...(resolvedConnectors.length === 0 ? {} : { connectors: resolvedConnectors }),
     ...(actAsSeam === undefined ? {} : { actAs: actAsSeam }),
     ...(config.serverActions === undefined ? {} : { serverActions: config.serverActions }),
+    // Try-surface seam: an explicitly passed fetch always wins (adapter rule).
+    ...(config.fetch === undefined ? {} : { fetch: config.fetch }),
     ...(configuredBaseUrl === undefined ? {} : { baseUrl: configuredBaseUrl, baseUrlTrusted: true }),
     onPresentCredentialsNotForwarded: warnPresentCredentialsNotForwarded,
     // 09-vendo §2 install-dx wave 1.1: production refuses a present-mode call
@@ -1135,21 +1152,21 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // automations ride), the wire's per-approval read, and the TTL sweep leg.
   const byoApprovals = createByoApprovals({ guard, tools: boundTools, store });
   const parkedCallTtlMs = validateParkedCallTtl(config.approvals);
-  const theme = dotVendoTheme();
+  const theme = dotVendoTheme(config.profileDir);
   // App design rules (spec 2026-07-20): explicit config wins; otherwise the
-  // file is re-read per generation (from the compose-time root) so brief
-  // tuning never needs a restart.
+  // file is re-read per generation (from profileDir when set, else the
+  // compose-time root) so brief tuning never needs a restart.
   const configDesignRules = config.apps?.designRules?.trim();
-  const designRulesRoot = dotVendoRoot();
+  const designRulesRoot = config.profileDir ?? dotVendoRoot();
   const designRules = configDesignRules
     ? configDesignRules
     : () => dotVendoFile("design-rules.md", designRulesRoot);
-  const pinBaselines = dotVendoPinBaselines();
+  const pinBaselines = dotVendoPinBaselines(config.profileDir);
   // W3 — .vendo/semantics.json (field semantics + domain manifest), written
   // by `vendo sync`, host-edited, treated as generation fact. Malformed →
   // loud + absent, same stance as catalog.json.
   const semanticsFile = (() => {
-    const raw = dotVendoFile("semantics.json");
+    const raw = dotVendoFile("semantics.json", config.profileDir);
     if (raw === undefined) return undefined;
     try {
       return semanticsFileSchema.parse(JSON.parse(raw));
@@ -1159,7 +1176,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     }
   })();
   const catalog = mergeRuntimeCatalog(
-    runtimeCatalogFromJson(dotVendoFile("catalog.json")),
+    runtimeCatalogFromJson(dotVendoFile("catalog.json", config.profileDir)),
     normalizeCatalogConfig(config.catalog),
   );
   // execution-v2 Lane C — the per-app box bearer store (hash rows are the
@@ -1315,7 +1332,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // AGENT-1/2 — 03 §3: the host product brief (init writes .vendo/brief.md)
   // and the catalog+theme summary feed the system prompt; prompt.ts places
   // them (brief = Product section; summary only where trees render).
-  const brief = dotVendoFile("brief.md")?.trim();
+  const brief = dotVendoFile("brief.md", config.profileDir)?.trim();
   const promptCatalog = catalogThemeSummary(catalog, theme);
   const system = brief || promptCatalog !== undefined
     ? {
@@ -1543,7 +1560,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const development = config.development !== undefined
     ? config.development !== false
     : isDevelopmentEnv;
-  const developmentPaths = typeof config.development === "object" ? config.development : {};
+  // profileDir fills the capture-root default (its out then derives under it);
+  // an explicit development.root/out always wins.
+  const developmentPaths = {
+    ...(config.profileDir === undefined ? {} : { root: config.profileDir }),
+    ...(typeof config.development === "object" ? config.development : {}),
+  };
   const runtimeCapture = development ? createRuntimeCapture(developmentPaths) : null;
   const handler = createWireHandler({
     principal: resolvePrincipal,

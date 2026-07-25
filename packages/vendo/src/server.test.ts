@@ -2788,6 +2788,84 @@ describe("ENG-353 — turn liveness: heartbeat-armed idle abort for disconnects 
   });
 });
 
+describe("unified try surface (Task 4) — profileDir + fetch seams", () => {
+  /** A minimal on-disk profile (tools.json + theme.json) in a temp root that
+   *  is NOT the process cwd — exactly the shape `npx vendo try` writes. */
+  async function tempProfile(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "vendo-profile-dir-"));
+    cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
+    await mkdir(join(root, ".vendo"), { recursive: true });
+    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
+      format: "vendo/tools@1",
+      tools: [{
+        name: "host_invoices_list",
+        description: "GET /api/invoices",
+        inputSchema: { type: "object", properties: {}, additionalProperties: true },
+        risk: "read",
+        binding: { kind: "route", method: "GET", path: "/api/invoices", argsIn: "query" },
+      }],
+    }));
+    await writeFile(join(root, ".vendo", "theme.json"), JSON.stringify({
+      colors: {
+        background: "#fff", surface: "#fff", text: "#111", muted: "#777",
+        accent: "#00f", accentText: "#fff", danger: "#f00", border: "#ddd",
+      },
+      typography: { fontFamily: "Inter", baseSize: "16px" },
+      radius: { small: "4px", medium: "8px", large: "16px" },
+      density: "comfortable",
+      motion: "reduced",
+    }));
+    return root;
+  }
+
+  it("reads the .vendo profile from profileDir, not the process cwd", async () => {
+    const root = await tempProfile();
+    const store = await tempStore("vendo-profile-dir-store-");
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      profileDir: root,
+    });
+
+    // The cwd (this package) has no .vendo/, so the tool can only have come
+    // from the profileDir read.
+    const names = (await vendo.actions.descriptors()).map((descriptor) => descriptor.name);
+    expect(names).toContain("host_invoices_list");
+  });
+
+  it("threads config.fetch into route-tool execution; the real network is never touched", async () => {
+    const root = await tempProfile();
+    const store = await tempStore("vendo-profile-fetch-store-");
+    vi.stubEnv("VENDO_BASE_URL", "https://host.example");
+    const syntheticFetch = vi.fn(async () => new Response(
+      JSON.stringify([{ id: "inv_1" }]),
+      { headers: { "content-type": "application/json" } },
+    ));
+    const realFetch = vi.fn(async () => { throw new Error("real network reached"); });
+    vi.stubGlobal("fetch", realFetch);
+
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      profileDir: root,
+      fetch: syntheticFetch as unknown as typeof fetch,
+    });
+    const outcome = await vendo.actions.execute(
+      { id: "call_try_fetch", tool: "host_invoices_list", args: {} },
+      ctx,
+    );
+
+    expect(outcome).toEqual({ status: "ok", output: [{ id: "inv_1" }] });
+    expect(syntheticFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = syntheticFetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(url)).toBe("https://host.example/api/invoices");
+    expect(init.method).toBe("GET");
+    expect(realFetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("execution-v2 — box-edit env knobs", () => {
   it("rejects malformed VENDO_BOX_EDIT_TIMEOUT_MS/POLL_MS at compose time instead of passing NaN into the machine config", async () => {
     // A units-suffixed operator value like "8m" would flow as NaN into
