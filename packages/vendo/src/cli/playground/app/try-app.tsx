@@ -2,12 +2,13 @@
  * Try-mode chrome (unified try surface, Task 8): the layout the surface wears
  * when the page carries a `window.__VENDO_TRY__` boot object — brand header,
  * the surface slot, the live depth indicator — all rendered from the try-boot
- * store. The slot keeps riding the playground's scenario-mount machinery on
- * the default scripted scenario for now; Tasks 9/10 swap TrySurface's data
- * source without touching the frame around it.
+ * store. The slot's data source is decided per render by selectSurfaceMode
+ * (Task 10): when the profile reports liveChat, the surface talks to the real
+ * wire at the boot config's apiBase; otherwise the playground's scripted
+ * scenario machinery, exactly as before.
  */
 import type { VendoTheme } from "@vendoai/core";
-import { defaultVendoTheme } from "@vendoai/ui";
+import { defaultVendoTheme, type ToolMetaMap } from "@vendoai/ui";
 import { StrictMode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { TryProfile } from "../../try/profile.js";
@@ -19,12 +20,16 @@ import {
   brandTitle,
   createTryBoot,
   depthLabel,
+  liveToolMeta,
+  selectSurfaceMode,
   usecaseChips,
   type TryBoot,
   type TryBootConfig,
+  type TrySurfaceMode,
   type UsecaseChip,
 } from "./try-boot.js";
 import { TryChips, pressChip, type PressedChip } from "./try-chips.js";
+import { LiveSurfaceMount } from "./try-surface-live.js";
 
 /** The profile's theme through the SAME gate as the playground's `?theme=`
  *  (partials resolve over the shipped defaults, garbage is dropped). */
@@ -33,18 +38,28 @@ function profileTheme(profile: TryProfile | null): VendoTheme {
   return (raw ? decodeThemeParam(JSON.stringify(raw)) : undefined) ?? defaultVendoTheme;
 }
 
-/** The ONE swappable surface slot: today scripted scenarios on the
- *  scenario-mount machinery; Task 10 replaces this component's insides. With
- *  no send it's the default closed-launcher scenario; a pressed chip needs a
- *  live composer, so it rides the open-overlay scenario with the chip's
- *  prompt as the auto-sent opening turn (scenario-mount's useAutoSend types
- *  it into the REAL composer and submits — one mount, one send). */
-function TrySurface({ theme, autoSend }: { theme: VendoTheme; autoSend?: string }) {
+/** The ONE swappable surface slot. Live mode (profile reports liveChat) is
+ *  the same overlay chrome on the REAL wire at `apiBase`; scripted mode is
+ *  the scenario-mount machinery, unchanged. Both stances match: with no send
+ *  it's the default closed launcher; a pressed chip needs a live composer, so
+ *  the overlay opens with the chip's prompt as the auto-sent opening turn
+ *  (the shared useAutoSend seam types it into the REAL composer and submits —
+ *  one mount, one send, over whichever transport the mode wired). */
+function TrySurface({ mode, apiBase, theme, tools, autoSend }: {
+  mode: TrySurfaceMode;
+  apiBase: string;
+  theme: VendoTheme;
+  tools: ToolMetaMap;
+  autoSend?: string;
+}) {
   const scenario = useMemo(() => {
     if (!autoSend) return scenarios[0]!;
     const open = scenarios.find((entry) => entry.id === "overlay-open") ?? scenarios[0]!;
     return { ...open, autoSend };
   }, [autoSend]);
+  if (mode === "live") {
+    return <LiveSurfaceMount apiBase={apiBase} theme={theme} tools={tools} autoSend={autoSend} />;
+  }
   return <ScenarioMount scenario={scenario} theme={theme} />;
 }
 
@@ -55,6 +70,10 @@ function TryApp({ boot }: { boot: TryBoot }) {
   const label = depthLabel(state.profile, state.stages);
   const logoUrl = state.profile?.brand?.logoUrl ?? null;
   const chips = usecaseChips(state.profile);
+  // Re-derived on every store update (liveChat happens to be fixed at server
+  // startup today, but nothing here assumes that).
+  const mode = selectSurfaceMode(state.profile);
+  const tools = useMemo(() => liveToolMeta(state.profile), [state.profile]);
 
   // Unmount hygiene: the boot store dies with the app (this root lives for
   // the page today, but nothing should rely on that). Teardown-without-setup
@@ -64,7 +83,8 @@ function TryApp({ boot }: { boot: TryBoot }) {
 
   // The pressed chip drives the surface: each press remounts TrySurface (the
   // seq key) with the chip's prompt as its opening send — each press discards
-  // the prior conversation (Task 10's live transport inherits this). The
+  // the prior conversation (inherited contract; live mode too, where the
+  // remount means a fresh thread over the real wire). The
   // double-send guard is pressChip's idempotence: re-pressing the active chip
   // returns the same reference, so no state change, no remount, no re-send.
   const [pressed, setPressed] = useState<PressedChip | null>(null);
@@ -113,9 +133,14 @@ function TryApp({ boot }: { boot: TryBoot }) {
           onPick={onPick}
           theme={theme}
         />
+        {/* Keyed by mode too: a mode flip (server-reported, never a client-
+            side fallback) must remount onto the other data source cleanly. */}
         <TrySurface
-          key={pressed ? `chip-${pressed.seq}` : "default"}
+          key={`${mode}:${pressed ? `chip-${pressed.seq}` : "default"}`}
+          mode={mode}
+          apiBase={boot.config.apiBase}
           theme={theme}
+          tools={tools}
           autoSend={pressed?.chip.prompt}
         />
       </main>

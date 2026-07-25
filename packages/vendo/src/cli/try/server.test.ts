@@ -219,6 +219,21 @@ describe("startTryServer events (SSE)", () => {
     await server.close();
   });
 
+  it("flushes SSE headers immediately: an idle stream (no events, distant heartbeat) still answers", async () => {
+    const { profileRoot } = await extractedProfile();
+    // Nothing ever emitted and the first heartbeat is a minute away — without
+    // an explicit header flush, Node would hold the response head until the
+    // first body write and this fetch would hang past the timeout.
+    const server = await serve({ profileRoot, env: {}, heartbeatIntervalMs: 60_000 });
+
+    const stream = await fetch(`${server.url}/events`, { signal: AbortSignal.timeout(2_000) });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    await stream.body?.cancel();
+
+    await server.close();
+  });
+
   it("replays latest-known state to a late subscriber and overrides profile stage statuses", async () => {
     const { profileRoot } = await extractedProfile();
     const bus = createTryEventBus();

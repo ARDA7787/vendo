@@ -5,7 +5,9 @@ import {
   brandTitle,
   createTryBoot,
   depthLabel,
+  liveToolMeta,
   readTryConfig,
+  selectSurfaceMode,
   usecaseChips,
   type TryBootConfig,
   type TryEventSourceLike,
@@ -359,5 +361,62 @@ describe("usecaseChips", () => {
       expect(chip.label.trim()).not.toBe("");
       expect(chip.prompt.trim()).not.toBe("");
     }
+  });
+});
+
+describe("selectSurfaceMode", () => {
+  it("live only when the profile honestly reports the liveChat capability", () => {
+    expect(selectSurfaceMode(profileFixture({ capabilities: { liveChat: true, refine: false } }))).toBe("live");
+  });
+
+  it("scripted when liveChat is false, or there is no profile yet", () => {
+    expect(selectSurfaceMode(profileFixture())).toBe("scripted");
+    expect(selectSurfaceMode(null)).toBe("scripted");
+  });
+
+  it("scripted on malformed capabilities (tolerant profile parse lets anything in)", () => {
+    const withCapabilities = (capabilities: unknown): TryProfile => {
+      const profile = profileFixture();
+      (profile as Record<string, unknown>)["capabilities"] = capabilities;
+      return profile;
+    };
+    expect(selectSurfaceMode(withCapabilities(undefined))).toBe("scripted");
+    expect(selectSurfaceMode(withCapabilities("yes"))).toBe("scripted");
+    expect(selectSurfaceMode(withCapabilities({ liveChat: "true" }))).toBe("scripted");
+    expect(selectSurfaceMode(withCapabilities({ liveChat: 1 }))).toBe("scripted");
+  });
+});
+
+describe("liveToolMeta", () => {
+  it("maps the profile's merged tool summaries into provider tool meta (name → description)", () => {
+    const profile = profileFixture({
+      tools: {
+        list: [
+          { name: "host_invoices_list", description: "List the signed-in user's invoices", risk: "read", disabled: false },
+          { name: "host_invoice_send", description: "Send an invoice", risk: "write", disabled: true },
+        ],
+        counts: { total: 2, enabled: 1 },
+      },
+    });
+    expect(liveToolMeta(profile)).toEqual({
+      host_invoices_list: { description: "List the signed-in user's invoices" },
+      host_invoice_send: { description: "Send an invoice" },
+    });
+  });
+
+  it("drops junk/blank entries and answers empty for no profile (chrome's humanize fallback takes over)", () => {
+    expect(liveToolMeta(null)).toEqual({});
+    expect(liveToolMeta(profileFixture())).toEqual({});
+    const profile = profileFixture();
+    (profile as Record<string, unknown>)["tools"] = {
+      list: [
+        { name: "", description: "blank name" },
+        { name: "host_ok", description: "   " },
+        { name: 7, description: "non-string name" },
+        "not even an object",
+        { name: "host_good", description: "A real one" },
+      ],
+    };
+    expect(liveToolMeta(profile)).toEqual({ host_good: { description: "A real one" } });
   });
 });

@@ -367,6 +367,10 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       "cache-control": "no-store",
       connection: "keep-alive",
     });
+    // Node holds headers until the first body write; flush now so EventSource
+    // fires `open` immediately instead of waiting on the first event or
+    // heartbeat (an idle stream would otherwise sit head-less for 15s).
+    response.flushHeaders();
     let unsubscribe: () => void = () => undefined;
     let closed = false;
     const teardown = (): void => {

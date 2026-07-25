@@ -13,6 +13,7 @@
  * profile it had, and a dead event stream just stops. The surface never
  * crashes on wire trouble.
  */
+import type { ToolMetaMap } from "@vendoai/ui";
 import type { TryProfile } from "../../try/profile.js";
 
 /** The boot object the try server injects as `window.__VENDO_TRY__`. */
@@ -216,6 +217,38 @@ export function depthLabel(profile: TryProfile | null, stages: Record<string, st
 export function brandTitle(profile: TryProfile | null): string {
   const name = profile?.brand?.name;
   return typeof name === "string" && name.trim() !== "" ? name : "Your product";
+}
+
+/** Which data source the surface slot rides (Task 10). Decided from the
+ *  profile ALONE — re-evaluated on every store update, never latched — and
+ *  strictly `liveChat === true`: an absent, false, or malformed capability
+ *  (the tolerant profile parse lets anything through) means today's scripted
+ *  behavior. There is deliberately NO runtime fallback the other way: once
+ *  live, wire trouble surfaces as the chrome's real error states, never as a
+ *  silent swap to scripted data faking a working agent. */
+export type TrySurfaceMode = "live" | "scripted";
+
+export function selectSurfaceMode(profile: TryProfile | null): TrySurfaceMode {
+  const capabilities = (profile as { capabilities?: unknown } | null)?.capabilities;
+  const liveChat = (capabilities as { liveChat?: unknown } | null | undefined)?.liveChat;
+  return liveChat === true ? "live" : "scripted";
+}
+
+/** Live mode's provider `tools` prop, from the profile's merged tool
+ *  summaries (extracted descriptions with overrides.json corrections already
+ *  applied — the same metadata a host would hand its own VendoProvider). Junk
+ *  entries are dropped; missing meta just means chrome's humanize fallback
+ *  prettifies the raw tool id. */
+export function liveToolMeta(profile: TryProfile | null): ToolMetaMap {
+  const list = (profile?.tools as { list?: unknown } | undefined)?.list;
+  const meta: ToolMetaMap = {};
+  for (const entry of Array.isArray(list) ? list : []) {
+    const tool = entry as { name?: unknown; description?: unknown } | null;
+    if (typeof tool?.name !== "string" || tool.name.trim() === "") continue;
+    if (typeof tool.description !== "string" || tool.description.trim() === "") continue;
+    meta[tool.name] = { description: tool.description };
+  }
+  return meta;
 }
 
 /** One pressable suggestion chip (the profile's usecase shape, minus whatever
