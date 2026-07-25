@@ -334,9 +334,10 @@ export const compoundToolSchema = toolDescriptorSchema.extend({
 }) satisfies z.ZodType<CompoundTool>;
 
 /**
- * `.vendo/capabilities.json` — agent-authored (refine engine), human-reviewed
- * diffs, host-committed (04 §1/§6). Passthrough like `tools.json`: a generated
- * artifact evolves additively, unknown keys must survive.
+ * `.vendo/capabilities.json` — RETIRED in format v3 (compounds/briefs live in
+ * `.vendo/overrides.json` now); this schema remains the migration reader for
+ * legacy dirs. Agent-authored, human-reviewed, host-committed (04 §1/§6).
+ * Passthrough like `tools.json`: unknown keys must survive the fold.
  */
 export interface CapabilitiesFile {
   format: typeof VENDO_CAPABILITIES_FORMAT;
@@ -362,6 +363,13 @@ export const capabilitiesFileSchema = z.object({
 export const VENDO_TOOLS_FORMAT_V3 = "vendo/tools@3" as const;
 
 export const VENDO_OVERRIDES_FORMAT_V3 = "vendo/overrides@3" as const;
+
+/** ONE DomainManifest definition for the v3 pair: the generated copy
+ *  (tools.json) evolves additively like every generated artifact, the
+ *  authored copy (overrides.json) fails loudly on a typo. */
+const domainManifestShape = { has: z.array(z.string()), hasNot: z.array(z.string()) };
+const generatedDomainManifestSchema = z.object(domainManifestShape).passthrough() satisfies z.ZodType<DomainManifest>;
+const authoredDomainManifestSchema = z.object(domainManifestShape).strict() satisfies z.ZodType<DomainManifest>;
 
 /** One entry of `.vendo/tools.json` (vendo/tools@3): the v1 descriptor +
  *  binding, plus the machine-layer fields sync now owns — audience provenance,
@@ -406,7 +414,7 @@ export const toolsFileV3Schema = z.object({
   format: z.literal(VENDO_TOOLS_FORMAT_V3),
   tools: z.array(extractedToolV3Schema),
   watermark: z.string().min(1).optional(),
-  domains: z.object({ has: z.array(z.string()), hasNot: z.array(z.string()) }).optional(),
+  domains: generatedDomainManifestSchema.optional(),
 }).passthrough() satisfies z.ZodType<ToolsFileV3>;
 
 /**
@@ -429,7 +437,7 @@ export interface OverridesFileV3 {
 export const overridesFileV3Schema = z.object({
   format: z.literal(VENDO_OVERRIDES_FORMAT_V3),
   tools: z.record(toolOverrideSchema),
-  domains: z.object({ has: z.array(z.string()), hasNot: z.array(z.string()) }).strict().optional(),
+  domains: authoredDomainManifestSchema.optional(),
   compounds: z.array(compoundToolSchema).optional(),
   briefs: z.array(capabilityBriefSchema).optional(),
   remix: z.object({
