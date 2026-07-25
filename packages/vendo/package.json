@@ -43,6 +43,10 @@
       "types": "./dist/cli/extract/index.d.ts",
       "default": "./dist/cli/extract/index.js"
     },
+    "./try": {
+      "types": "./dist/try.d.ts",
+      "default": "./dist/try.js"
+    },
     "./react": {
       "types": "./dist/react.d.ts",
       "default": "./dist/react.js"

@@ -951,3 +951,50 @@ describe("zero-live-host-tools boot warning", () => {
     }
   });
 });
+
+describe("in-memory overrides (unified try surface Task 15a)", () => {
+  it("applies config.overrides to in-memory tools exactly like a dir read's overrides.json", async () => {
+    const actions = createActions({
+      tools: [routeTool("host_probe"), routeTool("host_hidden")],
+      overrides: {
+        format: VENDO_OVERRIDES_FORMAT,
+        tools: {
+          host_probe: { risk: "destructive", critical: true, description: "Overridden host" },
+          host_hidden: { disabled: true },
+        },
+      },
+    });
+
+    await expect(actions.descriptors()).resolves.toEqual([
+      { name: "host_probe", description: "Overridden host", inputSchema: { type: "object" }, risk: "destructive", critical: true },
+    ]);
+    await expect(actions.execute({ id: "1", tool: "host_hidden", args: {} }, ctx)).resolves.toMatchObject({
+      status: "error",
+      error: { code: "not-found" },
+    });
+  });
+
+  it("config.overrides wins over the dir's overrides.json (in-memory precedence, whole-file)", async () => {
+    const root = await tempVendo(
+      { format: VENDO_TOOLS_FORMAT, tools: [routeTool("host_probe")] },
+      { format: VENDO_OVERRIDES_FORMAT, tools: { host_probe: { disabled: true } } },
+    );
+    const actions = createActions({
+      dir: root,
+      overrides: { format: VENDO_OVERRIDES_FORMAT, tools: { host_probe: { description: "kept live" } } },
+    });
+
+    // The disk file's disable never applies: the in-memory file replaces it whole.
+    const descriptors = await actions.descriptors();
+    expect(descriptors.map((descriptor) => descriptor.name)).toEqual(["host_probe"]);
+    expect(descriptors[0]!.description).toBe("kept live");
+  });
+
+  it("rejects a malformed config.overrides loudly (same posture as config.capabilities)", async () => {
+    const actions = createActions({
+      tools: [routeTool("host_probe")],
+      overrides: { format: "not-overrides", tools: {} } as never,
+    });
+    await expect(actions.descriptors()).rejects.toMatchObject({ name: "VendoError", code: "validation" });
+  });
+});

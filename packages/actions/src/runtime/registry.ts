@@ -115,6 +115,11 @@ interface RegistryConfig {
   fetch?: typeof fetch;
   /** Inject `.vendo/capabilities.json` directly (tests, non-file hosts); takes precedence over `dir` (04 §1/§6). */
   capabilities?: CapabilitiesFile;
+  /** Inject `.vendo/overrides.json` directly (non-file hosts — unified try
+   * surface Task 15a); takes precedence over `dir`, whole-file, exactly as
+   * `tools`/`capabilities` do. The corrections apply to host and connector
+   * tools the same way the dir read's do (mergeOverride at load). */
+  overrides?: OverridesFile;
   /**
    * 04 §6: the guard-bound execution seam every compound step routes through.
    * The umbrella assigns it AFTER `guard.bind(actions)` — read at execution
@@ -685,6 +690,16 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
     }
   }
 
+  function parseOverrides(value: unknown, source: string): OverridesFile {
+    try {
+      return overridesFileSchema.parse(value);
+    } catch (cause) {
+      throw new VendoError("validation", `Invalid Vendo actions file ${source}`, {
+        cause: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }
+
   // The product's core promise, warned at the seam that knows: an agent with
   // zero live host tools serves users it cannot help (field case: an
   // extraction stripped to tools: [] shipped a silently useless agent).
@@ -710,10 +725,13 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
       const configuredCapabilities = config.capabilities === undefined
         ? undefined
         : parseCapabilities(config.capabilities, "config.capabilities");
+      const configuredOverrides = config.overrides === undefined
+        ? undefined
+        : parseOverrides(config.overrides, "config.overrides");
       if (!config.dir) {
         return {
           tools: configuredTools ?? [],
-          overrides: emptyOverrides,
+          overrides: configuredOverrides ?? emptyOverrides,
           ...(configuredCapabilities === undefined ? {} : { capabilities: configuredCapabilities }),
         };
       }
@@ -725,7 +743,7 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
       const capabilities = configuredCapabilities ?? capabilitiesFile;
       return {
         tools: configuredTools ?? toolsFile?.tools ?? [],
-        overrides: overrides ?? emptyOverrides,
+        overrides: configuredOverrides ?? overrides ?? emptyOverrides,
         ...(capabilities === undefined ? {} : { capabilities }),
       };
     })();

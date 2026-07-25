@@ -2,7 +2,11 @@ import {
   createActions,
   type ActionsRegistry,
   type ActionsRunContext,
+  type CapabilitiesFile,
+  type CatalogFile,
   type Connector,
+  type ExtractedTool,
+  type OverridesFile,
   type ServerActionHandler,
 } from "@vendoai/actions";
 import { createAgent, type VendoAgent } from "@vendoai/agent";
@@ -36,6 +40,7 @@ import {
   type RunContext,
   type RunId,
   type SecretsProvider,
+  type SemanticsFile,
   type ToolDescriptor,
   type ToolOutcome,
   type ToolRegistry,
@@ -85,7 +90,7 @@ import {
   capabilitySurfaceSnapshot,
   createCapabilityMissCapture,
 } from "./capability-misses.js";
-import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromJson } from "./catalog.js";
+import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson } from "./catalog.js";
 import { devModel } from "#dev-creds/model";
 // install-dx v1 — `devModel()` is the env-resolving model createVendo composes
 // when the host passes none; the resolver is shared by init and doctor (one
@@ -243,6 +248,36 @@ export interface CreateVendoConfig {
       fetch. `npx vendo try` injects a synthetic-fixture fetch here so host
       tool calls succeed with no host API running. */
   fetch?: typeof fetch;
+  /** Unified try surface (Task 15a) — the `.vendo/` profile pieces as
+      IN-MEMORY compose-time inputs, for venues with no filesystem (the hosted
+      try venue composes per anonymous session from an AI-generated tool
+      catalog + theme + brief held in memory; the `profileDir` seam can't
+      reach it). Precedence PER PIECE, each independent of the others:
+      `profile.<piece>` (in-memory, wins) → the `profileDir` file → the cwd
+      default. A caller may pass only `tools` + `theme` and still read
+      `brief.md` from disk. Each piece's type is exactly what the
+      corresponding file read parses today (the zod-inferred file shapes —
+      never a new shape): `tools`/`overrides`/`capabilities` ride the actions
+      registry's existing in-memory inputs and are validated THERE (its
+      config-parse posture: a malformed piece throws `validation` loudly);
+      `theme`/`brief`/`catalog`/`semantics` are trusted typed config, the same
+      posture as the existing `catalog` key (zod parsing exists for untyped
+      file bytes, not typed config). `designRules` is a convenience alias for
+      `apps.designRules` — one seam, so a host composing everything from one
+      profile object doesn't have to split it; when both are set the
+      longer-standing `apps.designRules` knob wins, and either fixes the rules
+      for the instance lifetime exactly as `apps.designRules` documents.
+      Unset `profile` (or any unset piece) keeps today's behavior unchanged. */
+  profile?: {
+    tools?: ExtractedTool[];
+    overrides?: OverridesFile;
+    capabilities?: CapabilitiesFile;
+    theme?: VendoTheme;
+    brief?: string;
+    catalog?: CatalogFile;
+    semantics?: SemanticsFile;
+    designRules?: string;
+  };
   /** 10-mcp §1 — the one flag: open the MCP door so outside agents (Claude,
       ChatGPT, Cursor) reach the host's tools through the SAME guard-bound path.
       Opening it is a host decision (10-mcp §2), so it is off by default.
@@ -1086,6 +1121,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const resolvedConnectors = selectConnectors(config.connectors);
   const actionsConfig: {
     dir: string;
+    tools?: ExtractedTool[];
+    overrides?: OverridesFile;
+    capabilities?: CapabilitiesFile;
     connectors?: Connector[];
     actAs?: ActAs;
     serverActions?: Record<string, ServerActionHandler>;
@@ -1097,6 +1135,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     invokeTool?: ToolRegistry["execute"];
   } = {
     dir: config.profileDir ?? ".",
+    // Task 15a — the in-memory actions pieces ride the registry's own config
+    // inputs (tools/capabilities existed; overrides is the parallel input
+    // added with this seam). Inside the registry each wins over its dir-read
+    // file, so per-piece precedence needs no second path here.
+    ...(config.profile?.tools === undefined ? {} : { tools: config.profile.tools }),
+    ...(config.profile?.overrides === undefined ? {} : { overrides: config.profile.overrides }),
+    ...(config.profile?.capabilities === undefined ? {} : { capabilities: config.profile.capabilities }),
     ...(resolvedConnectors.length === 0 ? {} : { connectors: resolvedConnectors }),
     ...(actAsSeam === undefined ? {} : { actAs: actAsSeam }),
     ...(config.serverActions === undefined ? {} : { serverActions: config.serverActions }),
@@ -1113,7 +1158,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const actions = createActions(actionsConfig);
   const doctor = {
     present(ctx: RunContext): Promise<ToolOutcome> {
-      const probes = createActions({ ...actionsConfig, dir: undefined, tools: [doctorPresentTool] });
+      // The probe registries carry ONLY the probe tool — dir: undefined
+      // stripped the file reads before Task 15a; the in-memory profile pieces
+      // are stripped the same way so a profile override/compound can never
+      // leak into a doctor probe.
+      const probes = createActions({ ...actionsConfig, dir: undefined, overrides: undefined, capabilities: undefined, tools: [doctorPresentTool] });
       return probes.execute({ id: "call_vendo_doctor_present", tool: doctorPresentTool.name, args: {} }, ctx);
     },
     actAs(): Promise<ToolOutcome> {
@@ -1136,7 +1185,8 @@ export function createVendo(config: CreateVendoConfig): Vendo {
         appId: DOCTOR_ACT_AS_APP_ID,
         grant,
       };
-      const probes = createActions({ ...actionsConfig, dir: undefined, tools: [doctorActAsTool] });
+      // Same probe isolation as doctor.present above.
+      const probes = createActions({ ...actionsConfig, dir: undefined, overrides: undefined, capabilities: undefined, tools: [doctorActAsTool] });
       return probes.execute({ id: "call_vendo_doctor_act_as", tool: doctorActAsTool.name, args: {} }, ctx);
     },
   };
@@ -1152,11 +1202,16 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // automations ride), the wire's per-approval read, and the TTL sweep leg.
   const byoApprovals = createByoApprovals({ guard, tools: boundTools, store });
   const parkedCallTtlMs = validateParkedCallTtl(config.approvals);
-  const theme = dotVendoTheme(config.profileDir);
+  // Task 15a precedence: the in-memory theme wins; only an unset piece falls
+  // through to the profileDir/cwd file read.
+  const theme = config.profile?.theme ?? dotVendoTheme(config.profileDir);
   // App design rules (spec 2026-07-20): explicit config wins; otherwise the
   // file is re-read per generation (from profileDir when set, else the
-  // compose-time root) so brief tuning never needs a restart.
-  const configDesignRules = config.apps?.designRules?.trim();
+  // compose-time root) so brief tuning never needs a restart. Task 15a:
+  // profile.designRules is a convenience alias into this SAME seam — a
+  // non-blank apps.designRules wins over it (the longer-standing knob), and a
+  // non-blank value from either fixes the rules for the instance lifetime.
+  const configDesignRules = config.apps?.designRules?.trim() || config.profile?.designRules?.trim();
   const designRulesRoot = config.profileDir ?? dotVendoRoot();
   const designRules = configDesignRules
     ? configDesignRules
@@ -1165,7 +1220,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // W3 — .vendo/semantics.json (field semantics + domain manifest), written
   // by `vendo sync`, host-edited, treated as generation fact. Malformed →
   // loud + absent, same stance as catalog.json.
-  const semanticsFile = (() => {
+  const semanticsFile = config.profile?.semantics ?? (() => {
     const raw = dotVendoFile("semantics.json", config.profileDir);
     if (raw === undefined) return undefined;
     try {
@@ -1175,8 +1230,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       return undefined;
     }
   })();
+  // Task 15a: an in-memory profile.catalog replaces the DISK leg of the merge
+  // (it normalizes through the same validator-building path as the file
+  // read); explicit createVendo({ catalog }) registrations still win by name.
   const catalog = mergeRuntimeCatalog(
-    runtimeCatalogFromJson(dotVendoFile("catalog.json", config.profileDir)),
+    config.profile?.catalog !== undefined
+      ? runtimeCatalogFromFile(config.profile.catalog)
+      : runtimeCatalogFromJson(dotVendoFile("catalog.json", config.profileDir)),
     normalizeCatalogConfig(config.catalog),
   );
   // execution-v2 Lane C — the per-app box bearer store (hash rows are the
@@ -1332,7 +1392,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // AGENT-1/2 — 03 §3: the host product brief (init writes .vendo/brief.md)
   // and the catalog+theme summary feed the system prompt; prompt.ts places
   // them (brief = Product section; summary only where trees render).
-  const brief = dotVendoFile("brief.md", config.profileDir)?.trim();
+  // Task 15a: an in-memory brief wins over the file read (an explicitly empty
+  // one means "no brief" — it never falls through to disk).
+  const brief = (config.profile?.brief ?? dotVendoFile("brief.md", config.profileDir))?.trim();
   const promptCatalog = catalogThemeSummary(catalog, theme);
   const system = brief || promptCatalog !== undefined
     ? {

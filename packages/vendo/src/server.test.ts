@@ -2866,6 +2866,128 @@ describe("unified try surface (Task 4) — profileDir + fetch seams", () => {
   });
 });
 
+describe("unified try surface (Task 15a) — in-memory profile", () => {
+  const profileTheme = {
+    colors: {
+      background: "#fff", surface: "#fff", text: "#111", muted: "#777",
+      accent: "#00f", accentText: "#fff", danger: "#f00", border: "#ddd",
+    },
+    typography: { fontFamily: "Inter", baseSize: "16px" },
+    radius: { small: "4px", medium: "8px", large: "16px" },
+    density: "comfortable" as const,
+    motion: "reduced" as const,
+  };
+
+  function profileTool(name: string) {
+    return {
+      name,
+      description: `GET tool ${name}`,
+      inputSchema: { type: "object", properties: {}, additionalProperties: true },
+      risk: "read" as const,
+      binding: { kind: "route" as const, method: "GET" as const, path: `/api/${name}`, argsIn: "query" as const },
+    };
+  }
+
+  /** Pin the cwd to an EMPTY temp dir so no `.vendo/` exists anywhere the
+   *  composition could read from — everything must come from `profile`. */
+  async function emptyCwd(): Promise<void> {
+    const root = await mkdtemp(join(tmpdir(), "vendo-profile-mem-"));
+    const originalCwd = process.cwd();
+    process.chdir(root);
+    cleanups.push(async () => {
+      process.chdir(originalCwd);
+      await rm(root, { recursive: true, force: true });
+    });
+  }
+
+  it("composes from ONLY the in-memory profile: tools + overrides list, brief and theme ride the system prompt", async () => {
+    const { MockLanguageModelV3, simulateReadableStream } = await import("ai/test");
+    await emptyCwd();
+    const store = await tempStore("vendo-profile-mem-store-");
+    const prompts: Array<Array<{ role: string; content: unknown }>> = [];
+    const model = new MockLanguageModelV3({
+      doStream: async ({ prompt }) => {
+        prompts.push(structuredClone(prompt) as never);
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start", id: "t1" },
+              { type: "text-delta", id: "t1", delta: "Hi." },
+              { type: "text-end", id: "t1" },
+              {
+                type: "finish",
+                usage: {
+                  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 0, text: 0, reasoning: 0 },
+                },
+                finishReason: { unified: "stop", raw: undefined },
+              },
+            ],
+          }),
+        };
+      },
+    });
+
+    const vendo = createVendo({
+      model: model as unknown as LanguageModel,
+      principal: async () => principal,
+      store,
+      profile: {
+        tools: [profileTool("host_invoices_list"), profileTool("host_dangerous")],
+        overrides: { format: "vendo/overrides@1", tools: { host_dangerous: { disabled: true } } },
+        theme: profileTheme,
+        brief: "Maple is a neobank for freelancers.",
+      },
+    });
+
+    // The actions surface lists the in-memory tools with the in-memory
+    // overrides applied — nothing was ever read from disk.
+    const names = (await vendo.actions.descriptors()).map((descriptor) => descriptor.name);
+    expect(names).toContain("host_invoices_list");
+    expect(names).not.toContain("host_dangerous");
+
+    // A wire turn works, and the system prompt carries the in-memory brief
+    // (Product section) plus the theme summary — where the server surfaces
+    // the theme to the model.
+    const turn = await vendo.handler(request("POST", "/threads", {
+      threadId: "thr_profile_mem",
+      message: { id: "m_profile", role: "user", parts: [{ type: "text", text: "Hello" }] },
+    }));
+    expect(turn.status).toBe(200);
+    await turn.text();
+    const system = prompts[0]?.find((message) => message.role === "system");
+    expect(system).toBeDefined();
+    const content = typeof system!.content === "string" ? system!.content : JSON.stringify(system!.content);
+    expect(content).toContain("Product\nMaple is a neobank for freelancers.");
+    expect(content).toContain("comfortable");
+    expect(content).toContain("Inter");
+  });
+
+  it("in-memory profile.tools beat a profileDir tools.json; unset pieces still read from profileDir", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vendo-profile-prec-"));
+    cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
+    await mkdir(join(root, ".vendo"), { recursive: true });
+    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
+      format: "vendo/tools@1",
+      tools: [profileTool("host_from_disk")],
+    }));
+    await writeFile(join(root, ".vendo", "theme.json"), JSON.stringify(profileTheme));
+    const store = await tempStore("vendo-profile-prec-store-");
+
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      profileDir: root,
+      profile: { tools: [profileTool("host_in_memory")] },
+    });
+
+    const names = (await vendo.actions.descriptors()).map((descriptor) => descriptor.name);
+    expect(names).toContain("host_in_memory");
+    expect(names).not.toContain("host_from_disk");
+  });
+});
+
 describe("execution-v2 — box-edit env knobs", () => {
   it("rejects malformed VENDO_BOX_EDIT_TIMEOUT_MS/POLL_MS at compose time instead of passing NaN into the machine config", async () => {
     // A units-suffixed operator value like "8m" would flow as NaN into
