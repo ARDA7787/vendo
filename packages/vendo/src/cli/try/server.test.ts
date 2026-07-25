@@ -345,6 +345,74 @@ describe("startTryServer /api/vendo mount", () => {
     }
   });
 
+  it("resolves a GENERATED APP's query bindings through the synthetic fetch (the same fixture rows the chat tool path gets)", { timeout: 60_000 }, async () => {
+    const { simulateReadableStream } = await import("ai/test");
+    const { profileRoot } = await extractedProfile();
+    await write(profileRoot, ".vendo/data/extract/fixtures.json", JSON.stringify({
+      format: VENDO_FIXTURES_FORMAT,
+      fixtures: { host_invoices_list: [{ id: "inv_1", total: 4200 }] },
+    }));
+    const usage = {
+      inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+      outputTokens: { total: 0, text: 0, reasoning: 0 },
+    };
+    // One-shot valid wire: a Query bound to the real extracted tool, and a
+    // Table whose `rows` prop binds the WHOLE query result (Law 1 — a real
+    // $path binding, never a literal).
+    const wire = '<App name="Invoices board"><Query id="invoices" tool="host_invoices_list"/>'
+      + '<Table rows={invoices}/></App>';
+    const model = {
+      specificationVersion: "v2" as const,
+      provider: "vendo-scripted",
+      modelId: "vendo-scripted-v1",
+      supportedUrls: {},
+      async doStream() {
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start" as const, id: "t1" },
+              { type: "text-delta" as const, id: "t1", delta: wire },
+              { type: "text-end" as const, id: "t1" },
+              { type: "finish" as const, usage, finishReason: { unified: "stop" as const, raw: undefined } },
+            ],
+          }),
+        };
+      },
+    } as unknown as LanguageModel;
+
+    const vendo = await composeTryVendo({ profileRoot, model });
+    try {
+      // THROUGH THE WIRE, like the real try surface: POST /apps to create,
+      // GET /apps/:id/open to read the rendered tree — never the runtime
+      // methods called directly (that bypasses onRequestOrigin's baseUrl
+      // learning entirely, which is not what a browser client does).
+      const createResponse = await vendo.handler(new Request("http://127.0.0.1/api/vendo/apps", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "Build an invoices board" }),
+      }));
+      expect(createResponse.status).toBe(200);
+      const created = await createResponse.json() as { id: string };
+      // The SAME anon principal must carry into the open() poll — an app is
+      // owner-scoped, and the anon session rides the Set-Cookie the create
+      // response minted.
+      const anonCookie = createResponse.headers.getSetCookie()[0];
+
+      const openResponse = await vendo.handler(new Request(`http://127.0.0.1/api/vendo/apps/${created.id}/open`, {
+        headers: anonCookie === undefined ? {} : { cookie: anonCookie.split(";")[0]! },
+      }));
+      expect(openResponse.status).toBe(200);
+      const opened = await openResponse.json() as { kind: string; payload?: { data?: { invoices?: unknown } } };
+      expect(opened.kind).toBe("tree");
+      // The app's own data binding resolved through the SAME synthetic
+      // fixture rows the chat tool-call path gets in the test above — one
+      // mechanism, no special-case data for the app-data path.
+      expect(opened.payload?.data?.invoices).toEqual([{ id: "inv_1", total: 4200 }]);
+    } finally {
+      await vendo.store.close();
+    }
+  });
+
   it("rebuilds the mount when compose-time artifacts change: the next turn sees NEW fixture rows and the landed brief", { timeout: 60_000 }, async () => {
     const { MockLanguageModelV3, simulateReadableStream } = await import("ai/test");
     const usage = {
