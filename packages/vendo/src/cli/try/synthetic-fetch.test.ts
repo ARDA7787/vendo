@@ -125,6 +125,69 @@ describe("createSyntheticFetch", () => {
     expect(await body(response)).toEqual({ error: "no synthetic route for GET /api/ghosts" });
   });
 
+  it("prefers the most specific template: a static segment beats a {param} declared earlier", async () => {
+    // {id} declared FIRST — declaration-order matching would shadow /me and
+    // show another user's fixture row as "me".
+    const overlapping: ExtractedTool[] = [
+      {
+        name: "host_users_get",
+        description: "GET /api/users/{id}",
+        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: true },
+        risk: "read",
+        binding: { kind: "route", method: "GET", path: "/api/users/{id}", argsIn: "query" },
+      },
+      {
+        name: "host_users_me",
+        description: "GET /api/users/me",
+        inputSchema: { type: "object", properties: {}, additionalProperties: true },
+        risk: "read",
+        binding: { kind: "route", method: "GET", path: "/api/users/me", argsIn: "query" },
+      },
+    ];
+    const overlappingFetch = createSyntheticFetch({
+      tools: overlapping,
+      fixtures: {
+        format: VENDO_FIXTURES_FORMAT,
+        fixtures: {
+          host_users_get: [{ id: "usr_42", name: "Ada Lovelace" }],
+          host_users_me: [{ id: "usr_me", name: "Demo Visitor" }],
+        },
+      },
+    });
+
+    const me = await overlappingFetch("https://host.example/api/users/me", { method: "GET" });
+    expect(await body(me)).toEqual([{ id: "usr_me", name: "Demo Visitor" }]);
+
+    // The param tool still serves every non-static id (single-item shape).
+    const byId = await overlappingFetch("https://host.example/api/users/42", { method: "GET" });
+    expect(await body(byId)).toEqual({ id: "usr_42", name: "Ada Lovelace" });
+  });
+
+  it("documented gap: an array-valued {param} spanning multiple segments answers an honest 404", async () => {
+    // withPathArgs joins array params into several path segments; the
+    // segment-count check then never matches — 404, not a wrong fixture.
+    const response = await syntheticFetch("https://host.example/api/invoices/a/b", { method: "GET" });
+    expect(response.status).toBe(404);
+    expect(await body(response)).toEqual({ error: "no synthetic route for GET /api/invoices/a/b" });
+  });
+
+  it("normalizes a lowercase binding method so the route still matches", async () => {
+    const lax: ExtractedTool[] = [{
+      name: "host_reports_list",
+      description: "GET /api/reports",
+      inputSchema: { type: "object", properties: {}, additionalProperties: true },
+      risk: "read",
+      binding: { kind: "route", method: "get" as never, path: "/api/reports", argsIn: "query" },
+    }];
+    const laxFetch = createSyntheticFetch({
+      tools: lax,
+      fixtures: { format: VENDO_FIXTURES_FORMAT, fixtures: { host_reports_list: [{ id: "rep_1" }] } },
+    });
+    const response = await laxFetch("https://host.example/api/reports", { method: "GET" });
+    expect(response.status).toBe(200);
+    expect(await body(response)).toEqual([{ id: "rep_1" }]);
+  });
+
   it("decodes encoded {param} segments the way withPathArgs encoded them", async () => {
     const response = await syntheticFetch(`https://host.example/api/invoices/${encodeURIComponent("inv/odd id")}`, {
       method: "GET",

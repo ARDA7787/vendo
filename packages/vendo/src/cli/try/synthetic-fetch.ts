@@ -14,8 +14,13 @@ import type { FixturesFile } from "./profile.js";
  * params substituted with `encodeURIComponent(...)` and joins the configured
  * base URL, so a request matches a tool when the method equals the binding's
  * and every path segment equals the template's — a `{param}` template segment
- * matching any one (decoded) segment. Bindings without a method+path shape
- * (trpc, graphql, server-action) never match here.
+ * matching any one (decoded) segment. Overlapping templates resolve by
+ * specificity: the template binding the fewest `{param}` segments wins, so
+ * `GET /api/users/{id}` can never shadow `GET /api/users/me`. Bindings without
+ * a method+path shape (trpc, graphql, server-action) never match here.
+ * Documented gap: an array-valued path param (withPathArgs joins arrays into
+ * MULTIPLE segments) never survives the segment-count check — such a request
+ * answers the honest 404 below rather than a wrong fixture.
  *
  * The response contract — every match answers 200 application/json:
  * - GET matching a tool WITH fixture rows → the rows array; a path that binds
@@ -33,8 +38,8 @@ interface SyntheticRoute {
   method: string;
   /** The binding's path template, split into segments. */
   segments: string[];
-  /** Single-item shape: the path binds at least one `{param}`. */
-  hasParams: boolean;
+  /** How many `{param}` segments the template binds; >0 = single-item shape. */
+  paramCount: number;
 }
 
 const isParamSegment = (segment: string): boolean => segment.startsWith("{") && segment.endsWith("}");
@@ -45,9 +50,18 @@ function syntheticRoutes(tools: ExtractedTool[]): SyntheticRoute[] {
     const binding = tool.binding;
     if (binding.kind !== "route" && binding.kind !== "openapi") continue;
     const segments = binding.path.split("/").filter((segment) => segment !== "");
-    routes.push({ tool, method: binding.method, segments, hasParams: segments.some(isParamSegment) });
+    routes.push({
+      tool,
+      // Normalized like the incoming method below, so a lax lowercase binding
+      // can't silently never-match.
+      method: binding.method.toUpperCase(),
+      segments,
+      paramCount: segments.filter(isParamSegment).length,
+    });
   }
-  return routes;
+  // Specificity precedence: fewer bound params match first (stable, so ties
+  // keep tools.json order) — a static /me is never shadowed by /{id}.
+  return routes.sort((a, b) => a.paramCount - b.paramCount);
 }
 
 /** executeHost encodes each substituted `{param}` with encodeURIComponent, so
@@ -106,7 +120,7 @@ export function createSyntheticFetch(options: { tools: ExtractedTool[]; fixtures
     }
     if (method === "GET") {
       const rows = rowsByTool[route.tool.name] ?? [];
-      return jsonResponse(route.hasParams && rows.length > 0 ? rows[0] : rows);
+      return jsonResponse(route.paramCount > 0 && rows.length > 0 ? rows[0] : rows);
     }
     return jsonResponse({ ok: true, synthetic: true, ...await echoableBody(input, init) });
   };
