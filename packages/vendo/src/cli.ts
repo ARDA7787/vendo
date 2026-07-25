@@ -8,7 +8,6 @@ import { runEject } from "./cli/eject.js";
 import { runExtractApply } from "./cli/extract/apply.js";
 import { runInit, type InitOptions } from "./cli/init.js";
 import { runMcp } from "./cli/mcp/index.js";
-import { runPlayground } from "./cli/playground.js";
 import { runRefineCommand } from "./cli/refine.js";
 import { CLI_VERSION } from "./cli/shared.js";
 import { runSync } from "./cli/sync.js";
@@ -29,7 +28,6 @@ Advanced:
   eject <surface> [dir]  Copy a shipped chrome surface's presentation source into your repo (--list to see surfaces)
   extract [dir]   Apply a coding agent's extraction draft through the deterministic guards (--apply <draft.json>)
   refine [dir]    Propose compound capabilities, risk corrections, and brief updates as reviewable diffs
-  playground      Render every Vendo surface against scripted data in the browser — no model key needed
   mcp <command>   Generate MCP registry discovery and domain-verification files
   cloud <command> Use the public Vendo Cloud API
 
@@ -51,8 +49,8 @@ Options:
   --ask <text>               Refine only: interview answer (repeatable) for non-interactive runs
   --url <url>                Doctor/refine/server-json: mounted wire base or public MCP URL
   --strict                   Sync only: exit 2 on breaking changes, 3 when saved references are impacted
-  --port <port>              Playground/try: listen on a fixed port (default: any free port)
-  --no-open                  Playground/try: print the URL without opening the browser
+  --port <port>              Try only: listen on a fixed port (default: any free port)
+  --no-open                  Try only: print the URL without opening the browser
   --no-ai                    Try only: skip the background AI deepening (the demo stays on the deterministic profile)
   --json                     Sync/doctor: print one machine-readable report object
   --report                   Sync only: push the report to Vendo Cloud
@@ -117,33 +115,6 @@ function optionErrors(args: string[], flags: Set<string>, valueOptions: string[]
     errors.push(`unknown option: ${arg}`);
   }
   return errors;
-}
-
-/** Playground follows the ENG-335 rule too: unknown flags fail loudly. */
-function playgroundOptionErrors(args: string[]): { errors: string[]; port?: number } {
-  const errors: string[] = [];
-  let port: number | undefined;
-  const parsePort = (value: string | undefined, flag: string): void => {
-    const parsed = value !== undefined && /^\d+$/.test(value) ? Number(value) : NaN;
-    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65_535) port = parsed;
-    else errors.push(`${flag} requires a port number (1-65535)`);
-  };
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!;
-    if (arg === "--no-open") continue;
-    if (arg === "--port") {
-      const value = args[index + 1];
-      parsePort(value !== undefined && value.startsWith("--") ? undefined : value, "--port");
-      if (value !== undefined && !value.startsWith("--")) index += 1;
-      continue;
-    }
-    if (arg.startsWith("--port=")) {
-      parsePort(arg.slice("--port=".length), "--port");
-      continue;
-    }
-    errors.push(arg.startsWith("--") ? `unknown option: ${arg}` : `unexpected argument: ${arg}`);
-  }
-  return { errors, port };
 }
 
 /** `vendo try` follows the ENG-335 rule too: unknown flags (and stray
@@ -342,12 +313,11 @@ export async function main(argv: string[]): Promise<number> {
     });
   }
   if (command === "playground") {
-    const { errors, port } = playgroundOptionErrors(args);
-    if (errors.length > 0) {
-      console.error(`vendo playground: ${errors.join("; ")}\n\n${HELP}`);
-      return 1;
-    }
-    return runPlayground({ port, open: !args.includes("--no-open") });
+    // Retired: `vendo try` absorbed the playground's job (the scripted
+    // surfaces still serve when try runs keyless or outside a repo). The
+    // bundle machinery lives on in cli/playground.ts and cli/playground/.
+    console.error("vendo playground was retired — `vendo try` does the same job (and more): scripted surfaces with no model key, plus a live profile of your repo when run inside one. Run: vendo try");
+    return 1;
   }
   if (command === "sync") {
     const problems = optionErrors(args, SYNC_FLAGS, SYNC_VALUE_OPTIONS);
