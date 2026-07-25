@@ -2900,10 +2900,13 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
     });
   }
 
-  it("composes from ONLY the in-memory profile: tools + overrides list, brief and theme ride the system prompt", async () => {
+  /** A mock model that records every prompt it is streamed (the 03 §3 prompt
+   *  wiring test's capture, shared by the profile-seam tests below). */
+  async function promptCapture(): Promise<{
+    model: LanguageModel;
+    prompts: Array<Array<{ role: string; content: unknown }>>;
+  }> {
     const { MockLanguageModelV3, simulateReadableStream } = await import("ai/test");
-    await emptyCwd();
-    const store = await tempStore("vendo-profile-mem-store-");
     const prompts: Array<Array<{ role: string; content: unknown }>> = [];
     const model = new MockLanguageModelV3({
       doStream: async ({ prompt }) => {
@@ -2927,9 +2930,51 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
         };
       },
     });
+    return { model: model as unknown as LanguageModel, prompts };
+  }
+
+  async function runTurn(vendo: Vendo, threadId: string): Promise<void> {
+    const turn = await vendo.handler(request("POST", "/threads", {
+      threadId,
+      message: { id: `m_${threadId}`, role: "user", parts: [{ type: "text", text: "Hello" }] },
+    }));
+    expect(turn.status).toBe(200);
+    await turn.text();
+  }
+
+  function systemContent(prompts: Array<Array<{ role: string; content: unknown }>>): string {
+    const system = prompts[0]?.find((message) => message.role === "system");
+    expect(system).toBeDefined();
+    return typeof system!.content === "string" ? system!.content : JSON.stringify(system!.content);
+  }
+
+  /** A profileDir fixture carrying tools.json + theme.json + brief.md — the
+   *  disk half the precedence and equivalence tests below compose against.
+   *  The theme's fontFamily is distinctive so "came from the disk file" is
+   *  assertable in the system prompt's theme summary. */
+  async function diskProfile(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "vendo-profile-disk-"));
+    cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
+    await mkdir(join(root, ".vendo"), { recursive: true });
+    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
+      format: "vendo/tools@1",
+      tools: [profileTool("host_from_disk")],
+    }));
+    await writeFile(join(root, ".vendo", "theme.json"), JSON.stringify({
+      ...profileTheme,
+      typography: { fontFamily: "Disk Grotesk", baseSize: "16px" },
+    }));
+    await writeFile(join(root, ".vendo", "brief.md"), "Disk brief for the profile seam.\n");
+    return root;
+  }
+
+  it("composes from ONLY the in-memory profile: tools + overrides list, brief and theme ride the system prompt", async () => {
+    await emptyCwd();
+    const store = await tempStore("vendo-profile-mem-store-");
+    const { model, prompts } = await promptCapture();
 
     const vendo = createVendo({
-      model: model as unknown as LanguageModel,
+      model,
       principal: async () => principal,
       store,
       profile: {
@@ -2949,42 +2994,71 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
     // A wire turn works, and the system prompt carries the in-memory brief
     // (Product section) plus the theme summary — where the server surfaces
     // the theme to the model.
-    const turn = await vendo.handler(request("POST", "/threads", {
-      threadId: "thr_profile_mem",
-      message: { id: "m_profile", role: "user", parts: [{ type: "text", text: "Hello" }] },
-    }));
-    expect(turn.status).toBe(200);
-    await turn.text();
-    const system = prompts[0]?.find((message) => message.role === "system");
-    expect(system).toBeDefined();
-    const content = typeof system!.content === "string" ? system!.content : JSON.stringify(system!.content);
+    await runTurn(vendo, "thr_profile_mem");
+    const content = systemContent(prompts);
     expect(content).toContain("Product\nMaple is a neobank for freelancers.");
     expect(content).toContain("comfortable");
     expect(content).toContain("Inter");
   });
 
-  it("in-memory profile.tools beat a profileDir tools.json; unset pieces still read from profileDir", async () => {
-    const root = await mkdtemp(join(tmpdir(), "vendo-profile-prec-"));
-    cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
-    await mkdir(join(root, ".vendo"), { recursive: true });
-    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
-      format: "vendo/tools@1",
-      tools: [profileTool("host_from_disk")],
-    }));
-    await writeFile(join(root, ".vendo", "theme.json"), JSON.stringify(profileTheme));
+  it("pieces are independent: in-memory profile.tools beat the profileDir tools.json while the unset theme + brief pieces are read from disk", async () => {
+    const root = await diskProfile();
     const store = await tempStore("vendo-profile-prec-store-");
+    const { model, prompts } = await promptCapture();
 
     const vendo = createVendo({
-      model: {} as LanguageModel,
+      model,
       principal: async () => principal,
       store,
       profileDir: root,
       profile: { tools: [profileTool("host_in_memory")] },
     });
 
+    // The in-memory tools piece wins over the profileDir tools.json…
     const names = (await vendo.actions.descriptors()).map((descriptor) => descriptor.name);
     expect(names).toContain("host_in_memory");
     expect(names).not.toContain("host_from_disk");
+
+    // …while the pieces the profile left UNSET still resolve from the
+    // profileDir files: the disk theme's distinctive fontFamily rides the
+    // system prompt's theme summary, and the disk brief rides Product.
+    await runTurn(vendo, "thr_profile_prec");
+    const content = systemContent(prompts);
+    expect(content).toContain("Disk Grotesk");
+    expect(content).toContain("Product\nDisk brief for the profile seam.");
+  });
+
+  it("unset equivalence: `profile` unset and `profile: {}` compose identical observable state", async () => {
+    const root = await diskProfile();
+
+    // The same minimal host, observed through the seam's outputs: the
+    // descriptor list, and the system prompt (brief + theme surface).
+    async function observe(profile?: CreateVendoConfig["profile"]): Promise<{ names: string[]; system: string }> {
+      const store = await tempStore("vendo-profile-equiv-store-");
+      const { model, prompts } = await promptCapture();
+      const vendo = createVendo({
+        model,
+        principal: async () => principal,
+        store,
+        profileDir: root,
+        ...(profile === undefined ? {} : { profile }),
+      });
+      const names = (await vendo.actions.descriptors()).map((descriptor) => descriptor.name).sort();
+      await runTurn(vendo, "thr_profile_equiv");
+      return { names, system: systemContent(prompts) };
+    }
+
+    const unset = await observe();
+    const empty = await observe({});
+
+    // Pin the property directly: an empty profile changes NOTHING observable.
+    expect(empty.names).toEqual(unset.names);
+    expect(empty.system).toBe(unset.system);
+
+    // And the shared state is the real disk profile, not two empty surfaces.
+    expect(unset.names).toContain("host_from_disk");
+    expect(unset.system).toContain("Product\nDisk brief for the profile seam.");
+    expect(unset.system).toContain("Disk Grotesk");
   });
 });
 
