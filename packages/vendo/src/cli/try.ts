@@ -15,10 +15,14 @@ import { startTryServer, type TryServer } from "./try/server.js";
  * root is swept on shutdown.
  *
  * The LATENCY LAW, enforced here at the call site: deepening starts strictly
- * AFTER the server is listening and is never awaited (`void deepen(...)` —
- * runDeepening resolves for every failure by contract, so the dropped promise
- * is safe). A repo where the deterministic pass finds nothing still serves:
- * the surface paints a shallow, generic-data profile instead of erroring.
+ * AFTER the server is listening and is never awaited before serving —
+ * runDeepening resolves for every failure by contract, so nothing gates on
+ * it. Shutdown is the ONE place the captured promise is awaited (after the
+ * server closes, before the sweep), so the sweep is the guaranteed last
+ * writer of the profile root: a Ctrl+C mid-deepening cannot have the still-
+ * live orchestrator write the swept directory back. A repo where the
+ * deterministic pass finds nothing still serves: the surface paints a
+ * shallow, generic-data profile instead of erroring.
  */
 
 export interface TryOptions {
@@ -101,14 +105,18 @@ async function tryCommand(
     return 1;
   }
 
+  let deepening: Promise<DeepeningSummary> | undefined;
+  let deepeningPending = false;
   try {
     output.log(`Vendo try running at ${server.url}`);
     output.log("Your product's agent on extracted data. Press Ctrl+C to stop.");
     if (options.open !== false) (options.openBrowser ?? defaultOpenBrowser)(server.url);
 
-    // Fire-and-forget, only now that the server is up (the latency law).
+    // Started only now that the server is up, and never awaited before
+    // serving (the latency law) — the promise is captured for shutdown alone.
     if (options.ai !== false) {
-      void (options.deepen ?? runDeepening)({
+      deepeningPending = true;
+      deepening = (options.deepen ?? runDeepening)({
         repoRoot,
         profileRoot,
         events: server.events,
@@ -116,12 +124,22 @@ async function tryCommand(
         output,
         ...(options.engine === undefined ? {} : { engine: options.engine }),
       });
+      const settle = (): void => {
+        deepeningPending = false;
+      };
+      void deepening.then(settle, settle);
     }
 
     if (typeof options.wait === "function") await options.wait({ url: server.url, profileRoot });
     else if (options.wait !== false) await new Promise<void>((resolveWait) => process.once("SIGINT", resolveWait));
   } finally {
     await server.close();
+    // Let a mid-flight deepening settle before sweeping, so the sweep is the
+    // LAST writer of profileRoot — otherwise its still-live writes would put
+    // the swept directory right back. No added Ctrl+C latency versus not
+    // waiting: the dropped promise's work kept running until now anyway.
+    if (deepeningPending) output.log("Finishing background extraction before cleanup…");
+    await deepening?.catch(() => undefined);
     await sweep();
   }
 

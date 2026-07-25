@@ -39,6 +39,8 @@ describe("vendo try CLI wiring", () => {
     expect(error.mock.calls.flat().join("\n")).toContain("--bogus");
 
     expect(await main(["try", "some-dir"])).toBe(1);
+    // A stray positional explains itself instead of a bare rejection.
+    expect(error.mock.calls.flat().join("\n")).toContain("try profiles the current directory");
     expect(await main(["try", "--port", "not-a-port"])).toBe(1);
     expect(await main(["try", "--port"])).toBe(1);
     expect(runTryMock).not.toHaveBeenCalled();

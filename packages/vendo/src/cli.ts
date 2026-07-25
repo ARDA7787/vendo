@@ -180,7 +180,9 @@ function tryOptionErrors(args: string[]): { errors: string[]; port?: number; eng
       parseEngine(arg.slice("--engine=".length));
       continue;
     }
-    errors.push(arg.startsWith("--") ? `unknown option: ${arg}` : `unexpected argument: ${arg}`);
+    errors.push(arg.startsWith("--")
+      ? `unknown option: ${arg}`
+      : `unexpected argument: ${arg} — try profiles the current directory; cd there and rerun`);
   }
   return { errors, port, engine };
 }

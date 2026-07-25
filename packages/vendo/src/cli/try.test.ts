@@ -143,17 +143,64 @@ describe("runTry", () => {
     expect(printed).toContain("vendo init");
   });
 
-  it("never awaits deepening (latency law): a hung deepen does not block exit", async () => {
+  it("never gates serving on deepening (latency law): the surface paints while deepening is still pending", async () => {
     const repoRoot = await nextFixture();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    let servedWhilePending = false;
+
     const code = await runTry({
       repoRoot,
       output: output().sink,
       env: {},
       open: false,
-      wait: false,
-      deepen: () => new Promise<DeepeningSummary>(() => {}),
+      deepen: async () => {
+        await gate;
+        return { extraction: "skipped", seeds: "skipped" };
+      },
+      wait: async ({ url }) => {
+        // Deepening cannot settle yet (the gate is closed), and the server
+        // already answers — the first paint never waited on it.
+        servedWhilePending = (await fetch(`${url}/profile.json`)).status === 200;
+        release();
+      },
     });
+
     expect(code).toBe(0);
+    expect(servedWhilePending).toBe(true);
+  });
+
+  it("sweeps AFTER deepening settles: a mid-flight deepen cannot write the swept profile root back", async () => {
+    const repoRoot = await nextFixture();
+    const { logs, sink } = output();
+    let seenProfileRoot = "";
+    let deepenSettled: Promise<unknown> = Promise.resolve();
+
+    // A deepen still writing at shutdown: wait: false shuts down immediately,
+    // while this write lands only after a delay.
+    const deepen = (deepenOptions: RunDeepeningOptions): Promise<DeepeningSummary> => {
+      seenProfileRoot = deepenOptions.profileRoot;
+      const work = (async (): Promise<DeepeningSummary> => {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+        await mkdir(join(deepenOptions.profileRoot, ".vendo"), { recursive: true });
+        await writeFile(join(deepenOptions.profileRoot, ".vendo", "late-artifact.json"), "{}\n", "utf8");
+        return { extraction: "ran", seeds: "written" };
+      })();
+      deepenSettled = work.catch(() => undefined);
+      return work;
+    };
+
+    const code = await runTry({ repoRoot, output: sink, env: {}, open: false, wait: false, deepen });
+    // Under shutdown-then-sweep ordering this is already settled; under the
+    // broken ordering (sweep first) this is where the late write lands.
+    await deepenSettled;
+
+    expect(code).toBe(0);
+    expect(logs.join("\n")).toContain("Finishing background extraction");
+    expect(seenProfileRoot).not.toBe("");
+    expect(await exists(seenProfileRoot)).toBe(false);
   });
 
   it("--no-ai skips deepening entirely", async () => {
@@ -206,20 +253,30 @@ describe("runTry", () => {
     expect(logs.join("\n")).toContain("generic data");
   });
 
-  it("fails loudly when the requested port is already taken", async () => {
+  it("fails loudly when the requested port is already taken — and still sweeps the temp profile root", async () => {
     const squatter = createServer(() => {});
     await new Promise<void>((resolve) => squatter.listen(0, "127.0.0.1", resolve));
     const { port } = squatter.address() as AddressInfo;
+    const repoRoot = await nextFixture();
+    // Pin the OS temp home (forks pool: our process alone) so the failure
+    // path's sweep is observable — the profileRoot seams never fire here.
+    const tmpHome = await tempDir("vendo-try-cmd-tmp-home-");
+    const previousTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = tmpHome;
     try {
       const { errors, sink } = output();
       const { deepen } = deepenStub();
       const code = await runTry({
-        repoRoot: await nextFixture(), output: sink, env: {}, open: false, wait: false, port, deepen,
+        repoRoot, output: sink, env: {}, open: false, wait: false, port, deepen,
       });
       expect(code).toBe(1);
       expect(errors.join("\n")).toContain(String(port));
       expect(errors.join("\n")).toContain("--port");
+      // The temp profile root created before the listen failure is gone.
+      expect(await readdir(tmpHome)).toEqual([]);
     } finally {
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
       await new Promise<void>((resolve) => squatter.close(() => resolve()));
     }
   });
