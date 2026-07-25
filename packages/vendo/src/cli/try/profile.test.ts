@@ -209,7 +209,7 @@ describe("try artifacts and depth", () => {
     await writeFile(join(root, ".vendo", "brief.md"), "# Acme\nAcme is a demo product.\n");
     await writeFile(join(extractDir, "usecases.json"), JSON.stringify({
       format: "vendo/usecases@1",
-      usecases: [{ label: "See spending", prompt: "Show my spending this month" }],
+      usecases: [{ label: "See spending", prompt: "Show my spending this month", icon: "chart" }],
     }));
     await writeFile(join(extractDir, "fixtures.json"), JSON.stringify({
       format: "vendo/fixtures@1",
@@ -218,7 +218,8 @@ describe("try artifacts and depth", () => {
 
     const profile = await assembleTryProfile(root);
 
-    expect(profile.usecases).toEqual([{ label: "See spending", prompt: "Show my spending this month" }]);
+    // Passthrough fields a future producer emits survive into the profile.
+    expect(profile.usecases).toEqual([{ label: "See spending", prompt: "Show my spending this month", icon: "chart" }]);
     expect(profile.fixturesAvailable).toBe(true);
     expect(profile.depth.level).toBe("deep");
     expect(profile.depth.stages).toMatchObject({ tools: "done", brief: "done", usecases: "done", fixtures: "done" });
@@ -238,6 +239,21 @@ describe("try artifacts and depth", () => {
     const profile = await assembleTryProfile(root);
 
     expect(profile.depth.level).toBe("deepening");
+  });
+
+  it("counts usecases by content: a parsed file with zero chips deepens nothing", async () => {
+    const root = await emptyRoot();
+    const extractDir = join(root, ".vendo", "data", "extract");
+    await mkdir(extractDir, { recursive: true });
+    await writeFile(join(root, ".vendo", "brief.md"), "# Acme\nAcme is a demo product.\n");
+    await writeFile(join(extractDir, "usecases.json"), JSON.stringify({ format: "vendo/usecases@1", usecases: [] }));
+
+    const profile = await assembleTryProfile(root);
+
+    // Brief counts, the empty usecases file does not — matching the
+    // empty-brief rule; the stage itself still reads done (the pass ran).
+    expect(profile.depth.level).toBe("deepening");
+    expect(profile.depth.stages["usecases"]).toBe("done");
   });
 
   it("reports shallow for a pure-deterministic profile (tools without AI artifacts)", async () => {

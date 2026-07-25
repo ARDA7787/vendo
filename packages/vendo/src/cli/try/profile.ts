@@ -26,14 +26,18 @@ import { z } from "zod";
  * whole (its own pre-existing failure surface, never this profile's).
  *
  * Depth rule (kept deliberately simple): the two AI deepening artifacts are
- * the brief and the usecases chips. Neither present → "shallow" (this is also
- * the pure-deterministic report: tools alone never deepen anything); exactly
- * one present → "deepening" (a deepening run is partway through); both
- * present → "deep". `stages` defaults to done/pending from artifact presence;
- * only the live server knows in-flight status, so caller-supplied statuses
- * win per stage.
+ * the brief and the usecases chips, both counted by CONTENT — an empty
+ * brief.md and a usecases file with zero chips deepen nothing. Neither
+ * present → "shallow" (this is also the pure-deterministic report: tools
+ * alone never deepen anything); exactly one present → "deepening" (a
+ * deepening run is partway through); both present → "deep". `stages`
+ * defaults to done/pending from artifact PRESENCE (an empty-but-parsed
+ * artifact is still a completed stage); only the live server knows in-flight
+ * status, so caller-supplied statuses win per stage.
  */
 
+/** The future producer (the seeds extraction pass) imports these schemas and
+ *  format literals from HERE — never a second copy of the `@1` strings. */
 export const VENDO_USECASES_FORMAT = "vendo/usecases@1" as const;
 export const VENDO_FIXTURES_FORMAT = "vendo/fixtures@1" as const;
 
@@ -185,10 +189,12 @@ export async function assembleTryProfile(
   const list = mergedToolSummaries(toolsFile, parseArtifact(overridesRaw, overridesFileSchema));
   const catalog = (parseArtifact(catalogRaw, catalogFileSchema)?.entries ?? []).map((entry) => entry.name);
   const usecasesFile = parseArtifact(usecasesRaw, usecasesFileSchema);
-  const usecases = (usecasesFile?.usecases ?? []).map(({ label, prompt }) => ({ label, prompt }));
+  // Whole parsed entries: usecaseSchema is passthrough, so additive fields a
+  // future producer emits survive into the profile instead of being dropped.
+  const usecases = usecasesFile?.usecases ?? [];
   const fixturesAvailable = parseArtifact(fixturesRaw, fixturesFileSchema) !== null;
 
-  const deepened = [brief !== null, usecasesFile !== null].filter(Boolean).length;
+  const deepened = [brief !== null, usecases.length > 0].filter(Boolean).length;
   const level: TryDepthLevel = deepened === 2 ? "deep" : deepened === 1 ? "deepening" : "shallow";
 
   const done = (present: boolean): TryStageStatus => (present ? "done" : "pending");
