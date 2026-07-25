@@ -147,4 +147,20 @@ describe("runDeterministicPass degradation", () => {
     const profile = await assembleTryProfile(result.profileRoot);
     expect(profile.depth.level).toBe("shallow");
   });
+
+  it("degrades both extractors to failed — carrying the error — when profileRoot cannot be created", async () => {
+    const repoRoot = await nextFixture();
+    // A FILE where a directory ancestor must go: outside repoRoot (so the
+    // placement guard allows it), but every write under it fails (ENOTDIR).
+    const blocker = join(await tempDir("vendo-try-blocker-"), "occupied");
+    await writeFile(blocker, "not a directory\n");
+
+    const result = await runDeterministicPass({ repoRoot, profileRoot: join(blocker, "sub") });
+
+    expect(result.theme.status).toBe("failed");
+    expect(result.theme.error).toMatch(/ENOTDIR/);
+    expect(result.tools.status).toBe("failed");
+    expect(result.tools.count).toBe(0);
+    expect(result.tools.warnings.join("\n")).toMatch(/ENOTDIR/);
+  });
 });
