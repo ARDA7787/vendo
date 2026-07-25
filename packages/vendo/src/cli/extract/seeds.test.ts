@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -125,6 +125,37 @@ describe("runSeedsPass", () => {
 
     expect(result).toEqual({ status: "failed", fallbackUsecases: FALLBACK_USECASES });
     expect(await exists(join(root, ".vendo"))).toBe(false);
+  });
+
+  it("a mid-write failure removes the already-written artifact (depth honesty)", async () => {
+    const root = await profileRoot();
+    // fixtures.json pre-created as a DIRECTORY: writeText(usecases.json)
+    // succeeds, then writeText(fixtures.json) throws EISDIR — the exact
+    // half-written-pair window the catch must clean up.
+    await mkdir(join(root, ".vendo", "data", "extract", "fixtures.json"), { recursive: true });
+    const { harness } = seedsHarness(() => ANSWER);
+    const result = await runSeedsPass({ harness, profileRoot: root, brief: BRIEF, tools: TOOLS });
+
+    expect(result).toEqual({ status: "failed", fallbackUsecases: FALLBACK_USECASES });
+    expect(await exists(join(root, ".vendo", "data", "extract", "usecases.json"))).toBe(false);
+  });
+
+  it("drops fixture keys that name no extracted tool", async () => {
+    const root = await profileRoot();
+    const { harness } = seedsHarness(() => ({
+      ...ANSWER,
+      fixtures: {
+        ...ANSWER.fixtures,
+        hallucinated_tool: [{ id: "row_001" }, { id: "row_002" }, { id: "row_003" }],
+      },
+    }));
+    const result = await runSeedsPass({ harness, profileRoot: root, brief: BRIEF, tools: TOOLS });
+
+    expect(result.status).toBe("written");
+    if (result.status !== "written") throw new Error("unreachable");
+    expect(result.fixtures).toEqual(ANSWER.fixtures);
+    const fixturesFile = fixturesFileSchema.parse(await readArtifact(root, "fixtures"));
+    expect(fixturesFile.fixtures).toEqual(ANSWER.fixtures);
   });
 
   it("a null brief still composes (unknown product) and the pass still succeeds", async () => {

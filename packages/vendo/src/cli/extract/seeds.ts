@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { parseArtifact, type ExtractionHarness } from "./harness.js";
@@ -72,9 +73,9 @@ function composeSeedsInstructions(brief: string | null, tools: StaticTool[]): st
     "- usecases: 4-6 product-specific suggestion chips a first-time visitor would press.",
     '  label: the chip text, <= 40 chars ("Build a renewals dashboard"). prompt: the full',
     "  message that visitor would send the agent to get that outcome.",
-    "- fixtures: for each READ/list-shaped tool the use cases rely on, 3-8 plausible rows",
-    "  shaped like that tool's real response items, keyed by the exact tool name from the",
-    "  list above. {} is acceptable when no read tool fits.",
+    "- fixtures: for each READ/list-shaped tool the use cases rely on, 3-8 plausible rows,",
+    "  each shaped like a plausible response item for that endpoint, keyed by the exact tool",
+    "  name from the list above. {} is acceptable when no read tool fits.",
     "- Synthetic data ONLY: plausible but obviously fake names and values (Ada Lovelace,",
     '  "Acme Demo Co", 555 phone numbers, example.com emails). Never real people, real',
     "  companies' data, or real-world PII.",
@@ -104,23 +105,38 @@ export type SeedsPassResult =
  *  degrades to the fallback chips with nothing on disk. */
 export async function runSeedsPass(options: SeedsPassOptions): Promise<SeedsPassResult> {
   const { harness, profileRoot, brief, tools, output } = options;
+  const artifactDir = join(profileRoot, ".vendo", "data", "extract");
   output?.log("seeds: drafting use-case chips and synthetic fixtures");
   try {
+    // onProgress stays unwired: this is one bounded generative call with no
+    // repo exploration, so there is no live narration worth relaying.
     const text = await harness.run({
       root: profileRoot,
       env: options.env ?? {},
       instructions: composeSeedsInstructions(brief, tools),
     });
     const parsed = parseArtifact(text, seedsResponseSchema);
+    // A hallucinated fixture key would ship dead rows to the synthetic
+    // executor — keep only keys naming a tool that actually exists.
+    const known = new Set(tools.map((tool) => tool.name));
+    const fixtures = Object.fromEntries(Object.entries(parsed.fixtures).filter(([name]) => known.has(name)));
     // Both artifacts are validated through the profile's own file schemas
-    // BEFORE the first write — a half-written pair can't happen here.
+    // BEFORE the first write — a VALIDATION failure can't leave a half-written
+    // pair (a mid-write disk failure is cleaned up in the catch below).
     const usecasesFile = usecasesFileSchema.parse({ format: VENDO_USECASES_FORMAT, usecases: parsed.usecases });
-    const fixturesFile = fixturesFileSchema.parse({ format: VENDO_FIXTURES_FORMAT, fixtures: parsed.fixtures });
-    const artifactDir = join(profileRoot, ".vendo", "data", "extract");
+    const fixturesFile = fixturesFileSchema.parse({ format: VENDO_FIXTURES_FORMAT, fixtures });
     await writeText(join(artifactDir, "usecases.json"), `${JSON.stringify(usecasesFile, null, 2)}\n`);
     await writeText(join(artifactDir, "fixtures.json"), `${JSON.stringify(fixturesFile, null, 2)}\n`);
     return { status: "written", usecases: usecasesFile.usecases, fixtures: fixturesFile.fixtures };
   } catch (error) {
+    // Depth honesty even on a partial write failure: if usecases.json landed
+    // before fixtures.json threw, the assembler would count it toward depth
+    // while the server serves fallbacks. Best-effort remove exactly OUR two
+    // files — never the dir, sibling stage artifacts live there — and swallow
+    // rm errors (there may be nothing to remove).
+    await Promise.all(["usecases.json", "fixtures.json"].map((name) =>
+      rm(join(artifactDir, name), { force: true }).catch(() => {}),
+    ));
     const message = error instanceof Error ? error.message : "unknown error";
     output?.error(`seeds pass failed (${message}) — serving generic chips instead`);
     return { status: "failed", fallbackUsecases: FALLBACK_USECASES };
