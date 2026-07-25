@@ -318,6 +318,55 @@ describe("startTryServer /api/vendo mount", () => {
     expect(body.blocks["agent"]).toBe(true);
   });
 
+  it("reports a configured guard posture (never \"unconfigured\") once the deterministic pass has run — the demo policy.json it always leaves behind silences the \"running without a policy\" banner", { timeout: 60_000 }, async () => {
+    // extractedProfile() runs the SAME runDeterministicPass a real `npx vendo
+    // try` does; this host fixture carries no .vendo/policy.json of its own,
+    // so the temp profile gets the honest permissive demo policy.
+    const { profileRoot } = await extractedProfile();
+
+    const vendo = await composeTryVendo({ profileRoot });
+    try {
+      expect(vendo.guard.status().posture).not.toBe("unconfigured");
+      expect(vendo.guard.status().posture).toBe("rules");
+    } finally {
+      await vendo.store.close();
+    }
+  });
+
+  it("honors the HOST's own carried-over policy.json — a real rule change, not just a cosmetic posture flip", { timeout: 60_000 }, async () => {
+    const { repoRoot, profileRoot } = await extractedProfile();
+    // A rule this fixture's default posture would never produce on its own
+    // (blocking this exact tool outright) — proof the guard is reading the
+    // CARRIED file's rules, not falling back to its own default.
+    await write(repoRoot, ".vendo/policy.json", JSON.stringify({
+      format: "vendo/policy@1",
+      rules: [{ match: { tool: "host_invoices_list" }, action: "block", note: "host lockdown" }],
+    }));
+    // Re-run the pass into the SAME profileRoot the way `vendo try` would on
+    // a fresh boot — the carry-over reads repoRoot, not a stale profileRoot.
+    await runDeterministicPass({ repoRoot, profileRoot });
+
+    const vendo = await composeTryVendo({ profileRoot });
+    try {
+      expect(vendo.guard.status().posture).toBe("rules");
+      // A validated wire request teaches the same-origin baseUrl default the
+      // route-binding executor joins paths against (server.ts onRequestOrigin) —
+      // same priming the synthetic-fetch test above uses before calling
+      // vendo.actions.execute directly.
+      await vendo.handler(new Request("http://127.0.0.1/api/vendo/status"));
+      // guardedTools (not the raw `actions` registry) is the guard-bound
+      // execution path chat/apps/automations actually ride — see Vendo's own
+      // guardedTools doc comment.
+      const outcome = await vendo.guardedTools.execute(
+        { id: "call_policy_check", tool: "host_invoices_list", args: {} },
+        { principal: { kind: "user", subject: "try_user" }, venue: "chat", presence: "present", sessionId: "session_try" },
+      );
+      expect(outcome).toMatchObject({ status: "blocked", reason: "host lockdown" });
+    } finally {
+      await vendo.store.close();
+    }
+  });
+
   it("executes host route tools through the synthetic fetch (composition-level: the wire's only no-inference tool paths are bearer/model-gated)", { timeout: 60_000 }, async () => {
     const { profileRoot } = await extractedProfile();
     await write(profileRoot, ".vendo/data/extract/fixtures.json", JSON.stringify({

@@ -180,6 +180,15 @@ export async function composeTryVendo(options: {
     profileDir: options.profileRoot,
     fetch: createSyntheticFetch({ tools, fixtures }),
     store,
+    // Task 2's carry-over (extract.ts's runDeterministicPass) always leaves a
+    // policy.json here — the host's own, or an honest permissive demo one —
+    // so the guard reads it from THIS explicit absolute path (never the
+    // package's CWD-relative ".vendo/policy.json" default, which would answer
+    // for the wrong directory entirely under `npx vendo try`). Passing this
+    // object form unconditionally is what flips the guard's reported posture
+    // off "unconfigured" — the "Vendo is running without a policy" banner
+    // reads that posture, not file presence directly.
+    policy: { file: join(vendoDir, "policy.json") },
     ...(options.model === undefined ? {} : { model: options.model }),
   });
   try {

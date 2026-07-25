@@ -133,6 +133,79 @@ describe("runDeterministicPass artifacts", () => {
   });
 });
 
+describe("runDeterministicPass host .vendo carry-over", () => {
+  it("carries the host's OWN policy.json, brief.md, design-rules.md, and theme.json — the host's explicit choice wins over fresh extraction", async () => {
+    const repoRoot = await nextFixture();
+    const hostPolicy = { format: "vendo/policy@1", rules: [{ match: { risk: "write" as const }, action: "ask" as const }] };
+    await write(repoRoot, ".vendo/policy.json", `${JSON.stringify(hostPolicy, null, 2)}\n`);
+    await write(repoRoot, ".vendo/brief.md", "Acme is a host-authored product brief.\n");
+    await write(repoRoot, ".vendo/design-rules.md", "# House rules\nAlways use the brand accent.\n");
+    // A host theme with a DIFFERENT accent than nextFixture's globals.css would
+    // extract — proof the carried file wins, not a coincidence of matching.
+    await write(repoRoot, ".vendo/theme.json", `${JSON.stringify({
+      colors: {
+        background: "#000000",
+        surface: "#111111",
+        text: "#ffffff",
+        muted: "#888888",
+        accent: "#ff0000",
+        accentText: "#ffffff",
+        danger: "#ff4444",
+        border: "#222222",
+      },
+      typography: { fontFamily: "Georgia", baseSize: "16px" },
+      radius: { small: "2px", medium: "4px", large: "8px" },
+      density: "comfortable",
+      motion: "full",
+    }, null, 2)}\n`);
+    const profileRoot = await tempDir("vendo-try-profile-");
+
+    const result = await runDeterministicPass({ repoRoot, profileRoot });
+
+    expect(result.carriedHostInputs).toEqual({ theme: true, brief: true, designRules: true, policy: "carried" });
+    expect(JSON.parse(await readFile(join(profileRoot, ".vendo", "policy.json"), "utf8"))).toEqual(hostPolicy);
+    expect(await readFile(join(profileRoot, ".vendo", "brief.md"), "utf8")).toBe("Acme is a host-authored product brief.\n");
+    expect(await readFile(join(profileRoot, ".vendo", "design-rules.md"), "utf8"))
+      .toBe("# House rules\nAlways use the brand accent.\n");
+    const theme = vendoThemeSchema.parse(JSON.parse(await readFile(join(profileRoot, ".vendo", "theme.json"), "utf8")));
+    expect(theme.colors.accent).toBe("#ff0000");
+    expect(result.theme.status).toBe("written");
+  });
+
+  it("writes an honest permissive demo policy.json when the host has none, and leaves brief/design-rules absent", async () => {
+    const repoRoot = await nextFixture();
+    const profileRoot = await tempDir("vendo-try-profile-");
+
+    const result = await runDeterministicPass({ repoRoot, profileRoot });
+
+    expect(result.carriedHostInputs).toEqual({ theme: false, brief: false, designRules: false, policy: "demo" });
+    const policy = JSON.parse(await readFile(join(profileRoot, ".vendo", "policy.json"), "utf8")) as {
+      format: string;
+      directions?: string[];
+      rules?: Array<{ match: Record<string, unknown>; action: string }>;
+    };
+    expect(policy.format).toBe("vendo/policy@1");
+    // Permissive: matches every call and runs it — the SAME behavior an
+    // unconfigured guard already falls through to (this only changes the
+    // REPORTED posture, never what actually executes).
+    expect(policy.rules).toEqual([{ match: {}, action: "run" }]);
+    expect(policy.directions?.join(" ")).toContain("vendo try");
+    await expect(readFile(join(profileRoot, ".vendo", "brief.md"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(profileRoot, ".vendo", "design-rules.md"), "utf8")).rejects.toThrow();
+  });
+
+  it("stays zero-commit even when carrying over host .vendo inputs", async () => {
+    const repoRoot = await nextFixture();
+    await write(repoRoot, ".vendo/policy.json", `${JSON.stringify({ format: "vendo/policy@1" }, null, 2)}\n`);
+    await write(repoRoot, ".vendo/brief.md", "Host brief.\n");
+    const before = await inventory(repoRoot);
+
+    await runDeterministicPass({ repoRoot, profileRoot: await tempDir("vendo-try-profile-") });
+
+    expect(await inventory(repoRoot)).toEqual(before);
+  });
+});
+
 describe("runDeterministicPass degradation", () => {
   it("still returns a paintable profileRoot for a repo where extraction finds nothing", async () => {
     const repoRoot = await tempDir("vendo-try-empty-");
