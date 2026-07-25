@@ -1,15 +1,17 @@
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { toolsFileSchema, type ExtractedTool } from "@vendoai/actions";
 import { createStore } from "@vendoai/store";
 import type { LanguageModel } from "ai";
+import { runRefine, type RefineChange } from "../../refine.js";
 import { createVendo, type Vendo } from "../../server.js";
 import { PLAYGROUND_BUNDLE_SOURCE } from "../playground/bundle.gen.js";
 import { resolveRefineModel } from "../refine.js";
+import { exists } from "../shared.js";
 import {
   assembleTryProfile,
   fixturesFileSchema,
@@ -27,15 +29,17 @@ import { createSyntheticFetch } from "./synthetic-fetch.js";
  * The LATENCY LAW: the first paint never gates on AI. `/`, `/playground.js`,
  * `/profile.json`, and `/events` serve from disk state and in-process memory
  * alone — no model call, no network, no browser launch, no child process. The
- * model only ever matters on `/api/vendo` chat turns the USER starts, and the
- * `liveChat` capability the profile reports is resolved once at startup
- * without failing the server (a keyless machine still paints everything).
+ * model only ever matters on turns the USER starts — `/api/vendo` chat and
+ * `POST /api/refine` corrections (Task 11) — and the `liveChat`/`refine`
+ * capabilities the profile reports come from ONE model resolution at startup
+ * that never fails the server (a keyless machine still paints everything).
  *
  * The ZERO-COMMIT GUARANTEE (extends Task 2's): every byte this server writes
  * lands under `profileRoot` — the composed vendo store's PGlite data dir is
  * pinned there explicitly (never the process cwd `createStore` would default
- * to), and `profileDir: profileRoot` points every `.vendo/` read/capture at
- * the same root. The host repo stays read-only.
+ * to), `profileDir: profileRoot` points every `.vendo/` read/capture at the
+ * same root, and approved refine changes are written back to the profile
+ * root's `.vendo/` files only. The host repo stays read-only.
  */
 
 /** One event on the try surface's deepening stream. Task 6 (the deepening
@@ -102,8 +106,9 @@ export interface StartTryServerOptions {
   port?: number;
   venue?: "local";
   brand?: Partial<TryProfile["brand"]>;
-  /** Explicit capability flags win over detection; `refine` defaults false
-   *  until Task 11 turns it on. */
+  /** Explicit capability flags win over detection. Detected defaults:
+   *  `liveChat` = a model resolved; `refine` = a model resolved AND the
+   *  profile root has `.vendo/tools.json` (runRefine's hard input). */
   capabilities?: { liveChat?: boolean; refine?: boolean };
   /** BYO model, threaded into the vendo composition; also flips liveChat on. */
   model?: LanguageModel;
@@ -186,21 +191,20 @@ export async function composeTryVendo(options: {
   return vendo;
 }
 
-/** liveChat is an honest capability flag, resolved ONCE at startup: a passed
- *  model (or explicit flag) wins; otherwise the same dev-credential ladder
- *  `vendo refine` rides (resolveRefineModel → DevModelController) decides —
- *  and a resolution failure means `false`, never a failed server. */
-async function detectLiveChat(options: StartTryServerOptions): Promise<boolean> {
-  if (options.capabilities?.liveChat !== undefined) return options.capabilities.liveChat;
-  if (options.model !== undefined) return true;
+/** The ONE startup model resolution behind both capability flags AND the
+ *  turns that need a model (`/api/vendo` chat, `POST /api/refine`): a passed
+ *  model wins; otherwise the same dev-credential ladder `vendo refine` rides
+ *  (resolveRefineModel → DevModelController). A resolution failure means
+ *  `null` — honest false capabilities, never a failed server. */
+async function resolveTryModel(options: StartTryServerOptions): Promise<LanguageModel | null> {
+  if (options.model !== undefined) return options.model;
   try {
-    await resolveRefineModel({
+    return await resolveRefineModel({
       root: options.repoRoot ?? options.profileRoot,
       env: options.env ?? process.env,
     });
-    return true;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -266,12 +270,43 @@ function json(response: ServerResponse, value: unknown, status = 200): void {
   response.end(JSON.stringify(value));
 }
 
+/** Buffer + parse a JSON request body (the refine endpoints' tiny payloads —
+ *  a 1 MiB cap keeps a hostile local client from ballooning memory). Throws
+ *  on overflow or malformed JSON; callers answer 400. */
+async function readJsonBody(request: IncomingMessage, limitBytes = 1_048_576): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = chunk as Buffer;
+    size += buffer.length;
+    if (size > limitBytes) throw new Error("request body too large");
+    chunks.push(buffer);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+/** The review card's one-line summary. Keyed on the artifact the change
+ *  targets — RefineChange carries a diff and warnings but no prose of its
+ *  own, and the target file IS the taxonomy (refine.ts's doc block). */
+function refineChangeSummary(path: string): string {
+  if (path.endsWith("capabilities.json")) return "New agent capabilities (compound tools and playbooks)";
+  if (path.endsWith("overrides.json")) return "Tool corrections (risk labels, enable/disable, descriptions)";
+  if (path.endsWith("brief.md")) return "Product brief update";
+  return `Update ${path}`;
+}
+
 type MountState = { vendo: Vendo } | { error: string };
 
 export async function startTryServer(options: StartTryServerOptions): Promise<TryServer> {
   const bus = options.events ?? createTryEventBus();
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-  const liveChat = await detectLiveChat(options);
+  const model = await resolveTryModel(options);
+  const liveChat = options.capabilities?.liveChat ?? model !== null;
+  // refine (Task 11) = (model resolved) AND (tools.json present), decided once
+  // at startup like liveChat: the deterministic pass writes tools.json before
+  // the server ever starts, so presence never changes under a running server.
+  const refine = options.capabilities?.refine
+    ?? (model !== null && await exists(join(options.profileRoot, ".vendo", "tools.json")));
 
   // The /api/vendo mount, composed LAZILY on first use and REBUILT whenever
   // any compose-time profile read changes on disk. Chosen over a per-call
@@ -324,9 +359,12 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       const next: { key: string; ready: Promise<MountState>; failed: boolean } = {
         key,
         failed: false,
+        // The startup-resolved model (passed OR ladder) threads into every
+        // composition, so chat, refine, and the capability flags all agree on
+        // one resolution against one env seam.
         ready: composeTryVendo({
           profileRoot: options.profileRoot,
-          ...(options.model === undefined ? {} : { model: options.model }),
+          ...(model === null ? {} : { model }),
         }).then(
           (vendo): MountState => {
             composedStores.push(vendo.store);
@@ -356,6 +394,122 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       }
     }
     return mount.ready;
+  };
+
+  // ---------------------------------------------------------------------
+  // The refine lane (Task 11): POST /api/refine runs the SAME engine `vendo
+  // refine` rides, against the TEMP profile root; POST /api/refine/apply
+  // writes the approved proposals back into it. Proposed whole-file bodies
+  // stay server-side in this per-run cache (the simpler-but-honest option:
+  // the apply step needs the exact bytes HERE anyway, and the client only
+  // ever needs the rendered diff to review) — one run cached at a time,
+  // replaced by the next run, matching the one-run-at-a-time flag below.
+  // ---------------------------------------------------------------------
+  let refineRun: { id: string; changes: RefineChange[] } | undefined;
+  let refineActive = false;
+  let refineSeq = 0;
+
+  const serveRefine = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    if (model === null) {
+      // Honest 503: the profile reports capabilities.refine false on this
+      // server, so a surface following the contract never lands here.
+      json(response, {
+        error: { code: "refine-unavailable", message: "no model available — refine rides the same credential ladder as live chat" },
+      }, 503);
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      json(response, { error: { code: "bad-request", message: error instanceof Error ? error.message : "invalid JSON body" } }, 400);
+      return;
+    }
+    const message = (body as { message?: unknown } | null)?.message;
+    if (typeof message !== "string" || message.trim() === "") {
+      json(response, { error: { code: "bad-request", message: "body must be { message: string } with a non-empty message" } }, 400);
+      return;
+    }
+    // One refine run at a time: runs are seconds-scale (one generateObject
+    // call), so a simple flag + 409 beats a queue.
+    if (refineActive) {
+      json(response, { error: { code: "refine-busy", message: "a refine run is already in flight — wait for it to finish" } }, 409);
+      return;
+    }
+    refineActive = true;
+    try {
+      // root = the TEMP profile root: tools.json lives there, and every
+      // proposed diff targets ITS `.vendo/` files — never the host repo.
+      // Deliberately NO `url`: no dev app runs behind the try surface, and
+      // with the url absent the engine's probes degrade to static-only
+      // checks ("validated statically") instead of fabricating live results.
+      const result = await runRefine({ root: options.profileRoot, model, interview: [message.trim()] });
+      refineSeq += 1;
+      const runId = `run_${refineSeq}`;
+      refineRun = { id: runId, changes: result.changes };
+      json(response, {
+        runId,
+        changes: result.changes.map((change, index) => ({
+          id: index,
+          file: change.path,
+          summary: refineChangeSummary(change.path),
+          diff: change.diff,
+          warnings: change.warnings,
+        })),
+        dropped: result.dropped,
+        probes: result.probes,
+      });
+    } catch (error) {
+      json(response, { error: { code: "refine-failed", message: error instanceof Error ? error.message : String(error) } }, 500);
+    } finally {
+      refineActive = false;
+    }
+  };
+
+  const serveRefineApply = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    let body: unknown;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      json(response, { error: { code: "bad-request", message: error instanceof Error ? error.message : "invalid JSON body" } }, 400);
+      return;
+    }
+    const { runId, changeIds } = (body ?? {}) as { runId?: unknown; changeIds?: unknown };
+    if (!Array.isArray(changeIds) || !changeIds.every((id) => typeof id === "number" && Number.isInteger(id))) {
+      json(response, { error: { code: "bad-request", message: "body must carry changeIds: an array of change ids" } }, 400);
+      return;
+    }
+    const run = refineRun;
+    if (run === undefined || (runId !== undefined && runId !== run.id)) {
+      json(response, { error: { code: "unknown-run", message: "no such refine run — its proposals are gone; run refine again" } }, 404);
+      return;
+    }
+    const selected: Array<{ id: number; change: RefineChange }> = [];
+    for (const id of changeIds as number[]) {
+      const change = run.changes[id];
+      if (change === undefined) {
+        json(response, { error: { code: "unknown-change", message: `no change ${id} in ${run.id}` } }, 400);
+        return;
+      }
+      selected.push({ id, change });
+    }
+    for (const { change } of selected) {
+      const target = resolve(options.profileRoot, ...change.path.split("/"));
+      // Belt-and-braces zero-commit guard: runRefine only ever proposes
+      // `.vendo/…` paths, but nothing outside the profile root is writable.
+      if (!target.startsWith(resolve(options.profileRoot) + sep)) {
+        throw new Error(`refusing to write outside the profile root: ${change.path}`);
+      }
+      await mkdir(dirname(target), { recursive: true });
+      // Atomic per file (write-then-rename): the compose-key sweep and the
+      // per-request profile assembly never observe a half-written artifact.
+      const temporary = `${target}.refine-${refineSeq}.tmp`;
+      await writeFile(temporary, change.after, "utf8");
+      await rename(temporary, target);
+    }
+    // The compose-key sweep picks the changed artifacts up on the next
+    // /api/vendo request; /profile.json re-assembles from disk per request.
+    json(response, { applied: selected.map(({ id, change }) => ({ id, file: change.path })) });
   };
 
   // Open SSE responses, tracked so close() can end them (an idle EventSource
@@ -422,6 +576,14 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       await serveWireRequest(state.vendo, request, response, fallbackHost);
       return;
     }
+    if (path === "/api/refine" && request.method === "POST") {
+      await serveRefine(request, response);
+      return;
+    }
+    if (path === "/api/refine/apply" && request.method === "POST") {
+      await serveRefineApply(request, response);
+      return;
+    }
     if (request.method !== "GET") {
       response.writeHead(405).end();
       return;
@@ -437,7 +599,7 @@ export async function startTryServer(options: StartTryServerOptions): Promise<Tr
       const profile = await assembleTryProfile(options.profileRoot, {
         venue: options.venue ?? "local",
         ...(options.brand === undefined ? {} : { brand: options.brand }),
-        capabilities: { liveChat, refine: options.capabilities?.refine ?? false },
+        capabilities: { liveChat, refine },
         stages: bus.stages(),
       });
       json(response, profile);

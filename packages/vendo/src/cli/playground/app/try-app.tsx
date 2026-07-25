@@ -29,6 +29,7 @@ import {
   type UsecaseChip,
 } from "./try-boot.js";
 import { TryChips, pressChip, type PressedChip } from "./try-chips.js";
+import { TryRefine, refineEnabled } from "./try-refine.js";
 import { LiveSurfaceMount } from "./try-surface-live.js";
 
 /** The profile's theme through the SAME gate as the playground's `?theme=`
@@ -120,11 +121,16 @@ function TryApp({ boot }: { boot: TryBoot }) {
         <span style={{ fontSize: 14, fontWeight: 650, letterSpacing: "-0.01em" }}>
           {brandTitle(state.profile)}
         </span>
-        {label ? (
-          <span style={{ marginLeft: "auto", fontSize: 12, color: theme.colors.muted }} aria-live="polite">
-            {label}
-          </span>
-        ) : null}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          {label ? (
+            <span style={{ fontSize: 12, color: theme.colors.muted }} aria-live="polite">
+              {label}
+            </span>
+          ) : null}
+          {/* Only rendered when the server reports the capability: a keyless
+              run never shows a Refine affordance it couldn't honor. */}
+          {refineEnabled(state.profile) ? <TryRefine theme={theme} /> : null}
+        </div>
       </header>
       <main style={{ flex: 1, maxWidth: 900, width: "100%", margin: "0 auto", padding: "26px 22px 60px" }}>
         <TryChips

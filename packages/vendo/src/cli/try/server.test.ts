@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LanguageModel } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
+import type { RefineProposals } from "../../refine.js";
 import { runDeterministicPass } from "./extract.js";
 import { VENDO_FIXTURES_FORMAT, VENDO_USECASES_FORMAT, type TryProfile } from "./profile.js";
 import {
@@ -106,6 +108,49 @@ function stubModel(): LanguageModel {
     doGenerate: async () => { throw new Error("the try server must never call the model on its own"); },
     doStream: async () => { throw new Error("the try server must never call the model on its own"); },
   } as unknown as LanguageModel;
+}
+
+const ZERO_USAGE = {
+  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 0, text: 0, reasoning: 0 },
+} as const;
+
+/** refine.test.ts's mock BYO model: ONE scripted generateObject answer, with
+ *  the prompts captured so tests can assert the panel message rode in as the
+ *  interview. `onCall` is the concurrency test's gate seam. */
+function proposalModel(
+  proposals: RefineProposals,
+  onCall?: () => Promise<void>,
+): LanguageModel & { prompts: string[] } {
+  const prompts: string[] = [];
+  const model = new MockLanguageModelV3({
+    doGenerate: async (request) => {
+      const last = request.prompt[request.prompt.length - 1];
+      const content = last !== undefined && Array.isArray(last.content) ? last.content : [];
+      prompts.push(content
+        .filter((part): part is { type: "text"; text: string } => (part as { type: string }).type === "text")
+        .map((part) => part.text)
+        .join(""));
+      await onCall?.();
+      return {
+        content: [{ type: "text", text: JSON.stringify(proposals) }],
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: ZERO_USAGE,
+        warnings: [],
+      };
+    },
+  }) as LanguageModel & { prompts: string[] };
+  (model as { prompts: string[] }).prompts = prompts;
+  return model;
+}
+
+async function postJson(url: string, body: unknown): Promise<{ status: number; body: unknown }> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, body: await response.json().catch(() => null) };
 }
 
 /** Read SSE frames off a fetch body until `count` data frames (and
@@ -400,6 +445,121 @@ describe("startTryServer /api/vendo mount", () => {
     const events = await fetch(`${server.url}/events`);
     expect(events.status).toBe(200);
     await events.body?.cancel();
+  });
+});
+
+describe("startTryServer refine endpoints", () => {
+  it("turns a correction into projected review changes, applies approved ones to the TEMP profile, and the next profile reflects them", { timeout: 60_000 }, async () => {
+    const { repoRoot, profileRoot } = await extractedProfile();
+    const before = await inventory(repoRoot);
+    const model = proposalModel({
+      compounds: [{
+        name: "host_invoice_digest",
+        description: "Summarize recent invoices",
+        inputSchema: { type: "object" },
+        steps: [{ id: "list", tool: "host_invoices_list" }],
+      }],
+      curation: [{ tool: "host_invoices_list", disabled: true, reason: "too risky for the demo" }],
+    });
+    const server = await serve({ profileRoot, repoRoot, model, env: {} });
+
+    // Task 11 flips the capability on: model resolved AND tools.json present.
+    expect((await fetchProfile(server)).capabilities).toEqual({ liveChat: true, refine: true });
+
+    const run = await postJson(`${server.url}/api/refine`, { message: "that invoices tool is riskier than it looks — disable it" });
+    expect(run.status).toBe(200);
+    const result = run.body as {
+      runId: string;
+      changes: Array<{ id: number; file: string; summary: string; diff: string; warnings: string[] }>;
+      dropped: unknown[];
+      probes: Array<{ tool: string; status: string }>;
+    };
+    expect(result.changes.map((change) => ({ id: change.id, file: change.file }))).toEqual([
+      { id: 0, file: ".vendo/capabilities.json" },
+      { id: 1, file: ".vendo/overrides.json" },
+    ]);
+    expect(result.changes[0]!.summary).not.toBe("");
+    expect(result.changes[1]!.diff).toContain("+++ b/.vendo/overrides.json");
+    expect(result.changes[1]!.diff).toContain('"disabled": true');
+    // The panel message rode into the engine as the interview leg.
+    expect(model.prompts[0]).toContain("riskier than it looks");
+    // No url → the probe NEVER fabricates a live check: static-only, with
+    // every check honestly reporting static validation.
+    expect(result.probes).toHaveLength(1);
+    expect(result.probes[0]!.tool).toBe("host_invoice_digest");
+    expect(result.probes[0]!.status).toBe("static-only");
+    for (const check of (result.probes[0] as { checks: Array<{ ok: boolean; detail: string }> }).checks) {
+      expect(check.ok).toBe(true);
+      expect(check.detail).toContain("validated statically");
+    }
+
+    // Approve ONLY the overrides change; the dismissed compound never lands.
+    const apply = await postJson(`${server.url}/api/refine/apply`, { runId: result.runId, changeIds: [1] });
+    expect(apply.status).toBe(200);
+    expect(apply.body).toEqual({ applied: [{ id: 1, file: ".vendo/overrides.json" }] });
+
+    const profile = await fetchProfile(server);
+    expect(profile.tools.list.find((tool) => tool.name === "host_invoices_list")?.disabled).toBe(true);
+    expect(profile.tools.counts.enabled).toBe(profile.tools.counts.total - 1);
+    const written = JSON.parse(await readFile(join(profileRoot, ".vendo", "overrides.json"), "utf8")) as {
+      tools: Record<string, { disabled?: boolean }>;
+    };
+    expect(written.tools["host_invoices_list"]?.disabled).toBe(true);
+    await expect(readFile(join(profileRoot, ".vendo", "capabilities.json"), "utf8")).rejects.toThrow();
+
+    // The zero-commit guarantee holds across the whole refine round trip.
+    expect(await inventory(repoRoot)).toEqual(before);
+  });
+
+  it("answers 409 to a second concurrent run: one refine at a time", { timeout: 60_000 }, async () => {
+    let releaseRun!: () => void;
+    const gate = new Promise<void>((resolveGate) => { releaseRun = resolveGate; });
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolveStarted) => { signalStarted = resolveStarted; });
+    const model = proposalModel({}, async () => {
+      signalStarted();
+      await gate;
+    });
+    const { profileRoot } = await extractedProfile();
+    const server = await serve({ profileRoot, model, env: {} });
+
+    const first = postJson(`${server.url}/api/refine`, { message: "first correction" });
+    await started;
+    const second = await postJson(`${server.url}/api/refine`, { message: "second correction" });
+    expect(second.status).toBe(409);
+    releaseRun();
+    expect((await first).status).toBe(200);
+  });
+
+  it("stays honest keyless: capabilities.refine false and POST /api/refine answers 503, never a fake run", { timeout: 60_000 }, async () => {
+    const { profileRoot } = await extractedProfile();
+    const server = await serve({ profileRoot, env: {} });
+
+    expect((await fetchProfile(server)).capabilities).toEqual({ liveChat: false, refine: false });
+    const response = await postJson(`${server.url}/api/refine`, { message: "disable the delete tools" });
+    expect(response.status).toBe(503);
+  });
+
+  it("reports refine false without tools.json even when a model resolved (runRefine's hard input)", async () => {
+    const profileRoot = await tempDir("vendo-try-server-notools-");
+    const server = await serve({ profileRoot, model: stubModel(), env: {} });
+    expect((await fetchProfile(server)).capabilities).toEqual({ liveChat: true, refine: false });
+  });
+
+  it("guards the lanes: blank message 400, apply with no run 404, stale run 404, unknown change id 400", { timeout: 60_000 }, async () => {
+    const { profileRoot } = await extractedProfile();
+    const model = proposalModel({ curation: [{ tool: "host_invoices_list", disabled: true }] });
+    const server = await serve({ profileRoot, model, env: {} });
+
+    expect((await postJson(`${server.url}/api/refine`, { message: "   " })).status).toBe(400);
+    expect((await postJson(`${server.url}/api/refine/apply`, { changeIds: [0] })).status).toBe(404);
+
+    const run = await postJson(`${server.url}/api/refine`, { message: "disable the invoices tool" });
+    expect(run.status).toBe(200);
+    const runId = (run.body as { runId: string }).runId;
+    expect((await postJson(`${server.url}/api/refine/apply`, { runId: "run_999", changeIds: [0] })).status).toBe(404);
+    expect((await postJson(`${server.url}/api/refine/apply`, { runId, changeIds: [7] })).status).toBe(400);
+    expect((await postJson(`${server.url}/api/refine/apply`, { runId, changeIds: "0" })).status).toBe(400);
   });
 });
 
