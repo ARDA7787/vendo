@@ -176,19 +176,25 @@ export async function composeTryVendo(options: {
     // dev-mode plaintext is the honest posture (02-store §4).
     allowUnencryptedSecrets: true,
   });
+  // Task 2's carry-over (extract.ts's runDeterministicPass) always TRIES to
+  // leave a policy.json here — the host's own, or an honest permissive demo
+  // one — so the guard reads it from THIS explicit absolute path (never the
+  // package's CWD-relative ".vendo/policy.json" default, which would answer
+  // for the wrong directory entirely under `npx vendo try`). Passing this
+  // object form is what flips the guard's reported posture off
+  // "unconfigured" — the "Vendo is running without a policy" banner reads
+  // that posture, not file presence directly. BUT: only when the file is
+  // actually THERE — an explicit `policy.file` that doesn't exist makes
+  // readPolicyFile throw instead of degrading like the unset default does
+  // (its ENOENT fallback is `!explicit` only), so a degraded carry-over
+  // (write failed) must fall through to the honest "unconfigured" posture
+  // rather than turning every /api/vendo request into a 503.
+  const policyPath = join(vendoDir, "policy.json");
   const vendo = createVendo({
     profileDir: options.profileRoot,
     fetch: createSyntheticFetch({ tools, fixtures }),
     store,
-    // Task 2's carry-over (extract.ts's runDeterministicPass) always leaves a
-    // policy.json here — the host's own, or an honest permissive demo one —
-    // so the guard reads it from THIS explicit absolute path (never the
-    // package's CWD-relative ".vendo/policy.json" default, which would answer
-    // for the wrong directory entirely under `npx vendo try`). Passing this
-    // object form unconditionally is what flips the guard's reported posture
-    // off "unconfigured" — the "Vendo is running without a policy" banner
-    // reads that posture, not file presence directly.
-    policy: { file: join(vendoDir, "policy.json") },
+    ...(await exists(policyPath) ? { policy: { file: policyPath } } : {}),
     ...(options.model === undefined ? {} : { model: options.model }),
   });
   try {

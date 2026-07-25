@@ -172,6 +172,28 @@ describe("runDeterministicPass host .vendo carry-over", () => {
     expect(result.theme.status).toBe("written");
   });
 
+  it("falls back to fresh theme extraction when the host's OWN theme.json is malformed — present-but-corrupt is never worse than absent", async () => {
+    const repoRoot = await nextFixture();
+    // Invalid per vendoThemeSchema (colors is a string, not the required
+    // object shape) — a real host artifact that just happens to be broken,
+    // not literally-unparseable JSON, to prove the SCHEMA check triggers the
+    // fallback too, not merely a JSON.parse failure.
+    await write(repoRoot, ".vendo/theme.json", `${JSON.stringify({ colors: "not-an-object" }, null, 2)}\n`);
+    const profileRoot = await tempDir("vendo-try-profile-");
+
+    const result = await runDeterministicPass({ repoRoot, profileRoot });
+
+    // The host's theme did NOT win — extraction did, from nextFixture's own
+    // globals.css allowlist tokens.
+    expect(result.carriedHostInputs.theme).toBe(false);
+    expect(result.theme.status).toBe("written");
+    expect(result.theme.slotsMatched).toBeGreaterThan(0);
+    expect(result.theme.error).toMatch(/colors/);
+    const theme = vendoThemeSchema.parse(JSON.parse(await readFile(join(profileRoot, ".vendo", "theme.json"), "utf8")));
+    // nextFixture's globals.css accent, not anything from the broken host file.
+    expect(theme.colors.accent).toBe("#7c3aed");
+  });
+
   it("writes an honest permissive demo policy.json when the host has none, and leaves brief/design-rules absent", async () => {
     const repoRoot = await nextFixture();
     const profileRoot = await tempDir("vendo-try-profile-");

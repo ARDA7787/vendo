@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { toolsFileSchema } from "@vendoai/actions";
 import { vendoSync } from "@vendoai/actions/sync";
 import { VENDO_POLICY_FORMAT, vendoThemeSchema } from "@vendoai/core";
+import { resolvePolicyConfig } from "@vendoai/guard";
 import { toVendoTheme } from "../init.js";
 import { readOptional, writeText } from "../shared.js";
 import { extractTheme } from "../theme/extract-theme.js";
@@ -53,19 +54,24 @@ export interface DeterministicPassResult {
   tools: { status: "written" | "failed"; count: number; warnings: string[] };
   /** Caller-authored `.vendo/` INPUTS carried read-only from the host repo,
    *  never derived by this pass on its own: an existing artifact is the
-   *  host's explicit choice and wins outright (theme.json over this pass's
-   *  own extraction; brief.md/design-rules.md over the later AI deepening
-   *  draft, which only drafts when absent). `policy` is the one exception —
-   *  it is either carried from the host or a fresh honest demo policy is
-   *  written (never left absent): a temp profile with no policy.json makes
-   *  the guard report "unconfigured" and the surface nags with the
-   *  "Vendo is running without a policy" banner for every session, not just
-   *  the first paint. */
+   *  host's explicit choice and wins outright (a VALID theme.json over this
+   *  pass's own extraction — a malformed one falls back to extraction rather
+   *  than shipping a worse-than-absent hardcoded default, see `theme` above;
+   *  brief.md/design-rules.md over the later AI deepening draft, which only
+   *  drafts when absent). `policy` is the one exception with a fallback of
+   *  its own — it is either carried from the host or a fresh honest demo
+   *  policy is written (never left absent when the write itself succeeds): a
+   *  temp profile with no policy.json makes the guard report "unconfigured"
+   *  and the surface nags with the "Vendo is running without a policy"
+   *  banner for every session, not just the first paint. `"absent"` is the
+   *  fail-soft floor — a profileRoot too broken to write ANYTHING into (the
+   *  same failure theme/tools report in their own summaries) rather than a
+   *  claim this pass can't back up. */
   carriedHostInputs: {
     theme: boolean;
     brief: boolean;
     designRules: boolean;
-    policy: "carried" | "demo";
+    policy: "carried" | "demo" | "absent";
   };
 }
 
@@ -75,8 +81,11 @@ export interface DeterministicPassResult {
  *  `#pipeline` default is `{ action: "run", decidedBy: "default" }` with no
  *  policy configured at all) — this only changes the REPORTED posture from
  *  "unconfigured" to "rules" (silencing the nag banner), never what actually
- *  runs. `directions` carries the honest comment-equivalent marker JSON has
- *  no syntax for. */
+ *  runs. The rules themselves are `@vendoai/guard`'s OWN "autopilot" preset,
+ *  resolved through the same `resolvePolicyConfig` `createGuard` calls at
+ *  compose time — never a hand-typed duplicate that could quietly drift from
+ *  the real fallthrough if the preset ever changes. `directions` carries the
+ *  honest comment-equivalent marker JSON has no syntax for. */
 const DEMO_POLICY = {
   format: VENDO_POLICY_FORMAT,
   directions: [
@@ -84,7 +93,7 @@ const DEMO_POLICY = {
       + "host, and every action here runs against synthetic fixture data anyway, "
       + "so this demo policy runs everything without asking.",
   ],
-  rules: [{ match: {}, action: "run" as const }],
+  rules: resolvePolicyConfig("autopilot")!.rules!,
 };
 
 /** Resolve symlinks through the nearest EXISTING ancestor, re-joining any
@@ -135,9 +144,11 @@ export async function runDeterministicPass(
   // Fail-soft like every other artifact in this pass (theme/tools below): a
   // profileRoot that can't be written to degrades this carry-over quietly
   // instead of throwing — the surface still paints from whatever landed.
+  // Each outcome is tracked from the exact write it names — never inferred
+  // from input presence alone, which would misreport a write that failed.
   let briefCarried = false;
   let designRulesCarried = false;
-  let policyCarried = false;
+  let policyOutcome: DeterministicPassResult["carriedHostInputs"]["policy"] = "absent";
   try {
     if (hostBrief !== null) {
       await writeText(join(vendoDir, "brief.md"), hostBrief);
@@ -151,29 +162,47 @@ export async function runDeterministicPass(
       join(vendoDir, "policy.json"),
       hostPolicy ?? `${JSON.stringify(DEMO_POLICY, null, 2)}\n`,
     );
-    policyCarried = true;
+    policyOutcome = hostPolicy !== null ? "carried" : "demo";
   } catch {
     // Degraded profileRoot: the theme/tools passes below hit the identical
     // failure and report it in their own summaries; this carry-over just
     // leaves its artifacts absent rather than throwing a second time.
   }
 
-  let theme: DeterministicPassResult["theme"];
+  // A malformed host theme.json falls back to extraction rather than
+  // shipping assembleTryProfile's hardcoded default — present-but-corrupt
+  // must never paint worse than the host having no theme.json at all. The
+  // parse failure still rides the summary (`theme.error`) even though the
+  // overall status recovers to "written" via the fallback.
+  let hostThemeError: string | undefined;
+  let hostThemeParsed: ReturnType<typeof vendoThemeSchema.parse> | undefined;
   if (hostTheme !== null) {
     try {
-      const parsed = vendoThemeSchema.parse(JSON.parse(hostTheme));
-      await writeText(join(vendoDir, "theme.json"), `${JSON.stringify(parsed, null, 2)}\n`);
-      theme = { status: "written", slotsMatched: Object.keys(parsed).length };
+      hostThemeParsed = vendoThemeSchema.parse(JSON.parse(hostTheme));
     } catch (error) {
-      theme = { status: "failed", slotsMatched: 0, error: String(error) };
+      hostThemeError = String(error);
     }
+  }
+  let theme: DeterministicPassResult["theme"];
+  const themeCarried = hostThemeParsed !== undefined;
+  if (hostThemeParsed !== undefined) {
+    await writeText(join(vendoDir, "theme.json"), `${JSON.stringify(hostThemeParsed, null, 2)}\n`);
+    theme = { status: "written", slotsMatched: Object.keys(hostThemeParsed).length };
   } else {
     try {
       const summary = await extractTheme(repoRoot);
       await writeText(join(vendoDir, "theme.json"), `${JSON.stringify(toVendoTheme(summary.slots), null, 2)}\n`);
-      theme = { status: "written", slotsMatched: Object.keys(summary.matched).length };
+      theme = {
+        status: "written",
+        slotsMatched: Object.keys(summary.matched).length,
+        ...(hostThemeError === undefined ? {} : { error: hostThemeError }),
+      };
     } catch (error) {
-      theme = { status: "failed", slotsMatched: 0, error: String(error) };
+      // Extraction itself failed too: the host's own parse error (when there
+      // was one) is the more actionable of the two — it names a real file the
+      // host repo carries, where the extractor's failure is often just "no
+      // matching CSS tokens".
+      theme = { status: "failed", slotsMatched: 0, error: hostThemeError ?? String(error) };
     }
   }
 
@@ -191,10 +220,10 @@ export async function runDeterministicPass(
     theme,
     tools,
     carriedHostInputs: {
-      theme: hostTheme !== null && theme.status === "written",
+      theme: themeCarried,
       brief: briefCarried,
       designRules: designRulesCarried,
-      policy: hostPolicy !== null ? "carried" : "demo",
+      policy: policyOutcome,
     },
   };
 }
