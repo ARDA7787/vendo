@@ -190,6 +190,13 @@ export interface Vendo {
   store: VendoStore;
 }
 
+// Task 15a — the profile piece types, named from THIS entry so they sit
+// beside createVendo/CreateVendoConfig: the hosted try venue (a Worker in the
+// console repo) composes typed `profile` pieces against the umbrella alone,
+// without adding a direct @vendoai/actions or @vendoai/core dependency.
+export type { CapabilitiesFile, CatalogFile, ExtractedTool, OverridesFile } from "@vendoai/actions";
+export type { SemanticsFile, VendoTheme } from "@vendoai/core";
+
 export interface CreateVendoConfig {
   /** The agent's LLM — the inference adapter seam (03-agent §1): any ai-SDK
       LanguageModel. Optional since install-dx v1: an explicitly passed model
@@ -259,7 +266,10 @@ export interface CreateVendoConfig {
       corresponding file read parses today (the zod-inferred file shapes —
       never a new shape): `tools`/`overrides`/`capabilities` ride the actions
       registry's existing in-memory inputs and are validated THERE (its
-      config-parse posture: a malformed piece throws `validation` loudly);
+      config-parse posture: a malformed piece throws `validation` loudly —
+      note the registry loads lazily, so that throw surfaces on the FIRST
+      ACTIONS USE (`actions.descriptors()`/`execute()`, or the first turn
+      that loads tools), not at `createVendo` itself — wrap that call);
       `theme`/`brief`/`catalog`/`semantics` are trusted typed config, the same
       posture as the existing `catalog` key (zod parsing exists for untyped
       file bytes, not typed config). `designRules` is a convenience alias for
