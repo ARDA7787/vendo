@@ -215,6 +215,7 @@ function FinanceStage({ brandName, logoUrl, navLabels }: StageContentProps) {
   const txns: Array<[string, string, number, boolean]> = [
     ["46%", "28%", 58, true], ["58%", "22%", 46, false], ["39%", "31%", 64, true], ["52%", "25%", 50, false],
     ["44%", "34%", 54, true], ["61%", "27%", 60, false], ["48%", "30%", 48, true], ["55%", "24%", 62, false],
+    ["42%", "29%", 52, true], ["57%", "26%", 44, false], ["50%", "32%", 66, true],
   ];
   const legend = [76, 46, 26, 11];
   return (
@@ -342,6 +343,8 @@ function ContentStage({ brandName, logoUrl, navLabels }: StageContentProps) {
     ["34%", ["96%", "88%", "52%"], true],
     ["42%", ["90%", "64%"], false],
     ["30%", ["94%", "82%", "46%"], true],
+    ["38%", ["92%", "70%"], false],
+    ["33%", ["96%", "84%", "58%"], true],
   ];
   return (
     <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: "var(--vendo-color-background)" }}>
@@ -434,6 +437,11 @@ function DocsStage({ brandName, logoUrl, navLabels }: StageContentProps) {
           <Bar w="30%" h={16} deep style={{ margin: "15px 0 3px" }} />
           <Bar w="86%" h={12} />
           <Bar w="74%" h={12} />
+          <Bar w="92%" h={12} />
+          <Bar w="60%" h={12} />
+          <Bar w="34%" h={16} deep style={{ margin: "15px 0 3px" }} />
+          <Bar w="88%" h={12} />
+          <Bar w="48%" h={12} />
         </div>
       </main>
     </div>

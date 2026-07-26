@@ -22,7 +22,7 @@
  * ever remounting a conversation in progress.
  */
 import { openVendoConversation, VendoThread, type VendoThreadProps } from "@vendoai/ui/chrome";
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import type { UsecaseChip } from "./try-boot.js";
 
 export interface TryPanelContent {
@@ -42,7 +42,17 @@ export function TryPanelProvider({ content, children }: { content: TryPanelConte
  *  the landing (the accessory slot renders in both layouts) and so smoke
  *  probes can find it. */
 function PanelChips({ chips }: { chips: UsecaseChip[] }) {
+  // The double-send guard: one press fires one send, then every chip goes
+  // quiet until the landing leaves (the sent message swaps it away; a fresh
+  // conversation remounts this row and re-arms it). The buttons stay real,
+  // focusable elements — disabling would drop keyboard focus to the body.
+  const [sent, setSent] = useState(false);
   if (chips.length === 0) return null;
+  const press = (chip: UsecaseChip): void => {
+    if (sent) return;
+    setSent(true);
+    openVendoConversation({ prompt: chip.prompt, send: true });
+  };
   return (
     <div className="fl-chips" data-vendo-try-chips="" role="group" aria-label="Suggestions">
       {chips.map((chip, index) => (
@@ -50,7 +60,8 @@ function PanelChips({ chips }: { chips: UsecaseChip[] }) {
           key={`${index}:${chip.label}`}
           type="button"
           className="fl-chip"
-          onClick={() => openVendoConversation({ prompt: chip.prompt, send: true })}
+          aria-disabled={sent}
+          onClick={() => press(chip)}
         >
           {chip.label}
         </button>

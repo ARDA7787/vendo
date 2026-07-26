@@ -53,10 +53,14 @@ function profileTheme(profile: TryProfile | null): VendoTheme {
 
 /** Page-level styling the shell owns: the panel chips render through the
  *  thread's composerAccessory seam, which mounts in BOTH layouts — this keeps
- *  them to the landing (the canvas only puts chips in the empty state). */
+ *  them to the landing (the canvas only puts chips in the empty state). And
+ *  the canvas never shows the launcher pill behind the open overlay's scrim,
+ *  so it hides while open (aria-expanded is the chrome's own open state) and
+ *  returns on close — focus restoration already skips non-visible targets. */
 const TRY_SHELL_CSS = `
 .fl-chips[data-vendo-try-chips] { display: none; }
 .fl-landing .fl-chips[data-vendo-try-chips] { display: flex; }
+.fl-launcher[aria-expanded="true"] { display: none; }
 `;
 
 /** The scripted stance: the overlay-open scenario's script and fixtures, but
