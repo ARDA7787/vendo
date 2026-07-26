@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { toolsFileSchema } from "@vendoai/actions";
+import { toolsFileV3Schema } from "@vendoai/actions";
 import { vendoSync } from "@vendoai/actions/sync";
 import { VENDO_POLICY_FORMAT, vendoThemeSchema } from "@vendoai/core";
 import { resolvePolicyConfig } from "@vendoai/guard";
@@ -209,7 +209,8 @@ export async function runDeterministicPass(
   let tools: DeterministicPassResult["tools"];
   try {
     const report = await vendoSync({ root: repoRoot, out: vendoDir });
-    const written = toolsFileSchema.parse(JSON.parse(await readFile(join(vendoDir, "tools.json"), "utf8")));
+    // vendoSync writes the v3 format (post-#568); parse what it just wrote.
+    const written = toolsFileV3Schema.parse(JSON.parse(await readFile(join(vendoDir, "tools.json"), "utf8")));
     tools = { status: "written", count: written.tools.length, warnings: report.warnings };
   } catch (error) {
     tools = { status: "failed", count: 0, warnings: [String(error)] };

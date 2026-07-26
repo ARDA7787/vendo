@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VENDO_TOOLS_FORMAT, VENDO_CAPABILITIES_FORMAT, VENDO_OVERRIDES_FORMAT } from "@vendoai/core";
+import { VENDO_OVERRIDES_FORMAT_V3, VENDO_TOOLS_FORMAT_V3 } from "@vendoai/actions";
 import type { LanguageModel } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -478,5 +479,66 @@ describe("runRefine — the cloud-seam transcript", () => {
     expect((transcript.proposals.compounds ?? [])[0]?.name).toBe("host_complete_open_tasks");
     expect(transcript.probes).toHaveLength(1);
     expect(transcript.decisions).toEqual([]);
+  });
+});
+
+// Format v3 (post-#568): on a v3 profile the engine folds compounds, briefs,
+// and override corrections into the ONE authored file, overrides.json@3 —
+// capabilities.json is never proposed.
+describe("runRefine — v3 profiles fold everything into overrides.json", () => {
+  const TOOLS_FILE_V3 = { ...TOOLS_FILE, format: VENDO_TOOLS_FORMAT_V3 };
+
+  it("proposes a single overrides.json@3 diff carrying compounds, briefs, and corrections", async () => {
+    const root = await makeRoot({
+      ".vendo/tools.json": JSON.stringify(TOOLS_FILE_V3),
+      ".vendo/overrides.json": JSON.stringify({
+        format: VENDO_OVERRIDES_FORMAT_V3,
+        tools: { host_deleteTask: { critical: true } },
+      }),
+    });
+    const result = await runRefine({
+      root,
+      model: proposalModel({
+        compounds: [completeAllOpen],
+        briefs: [{ name: "sweeps", text: "Use host_complete_open_tasks for bulk sweeps." }],
+        riskCorrections: [{ tool: "host_listTasks", risk: "write" }],
+      }),
+    });
+
+    expect(result.changes.map((change) => change.path)).toEqual([".vendo/overrides.json"]);
+    const file = JSON.parse(result.changes[0]!.after) as {
+      format: string;
+      tools: Record<string, Record<string, unknown>>;
+      compounds: Array<Record<string, unknown>>;
+      briefs: Array<Record<string, unknown>>;
+    };
+    expect(file.format).toBe(VENDO_OVERRIDES_FORMAT_V3);
+    // The existing authored entry survives; the correction merges beside it.
+    expect(file.tools["host_deleteTask"]).toEqual({ critical: true });
+    expect(file.tools["host_listTasks"]).toEqual({ risk: "write" });
+    expect(file.compounds).toHaveLength(1);
+    expect(file.compounds[0]!.name).toBe("host_complete_open_tasks");
+    expect(file.compounds[0]!.risk).toBe("write");
+    expect(file.briefs).toEqual([{ name: "sweeps", text: "Use host_complete_open_tasks for bulk sweeps." }]);
+  });
+
+  it("reads existing v3 compounds from overrides.json for collision checks", async () => {
+    const root = await makeRoot({
+      ".vendo/tools.json": JSON.stringify(TOOLS_FILE_V3),
+      ".vendo/overrides.json": JSON.stringify({
+        format: VENDO_OVERRIDES_FORMAT_V3,
+        tools: {},
+        compounds: [{
+          name: "host_complete_open_tasks",
+          description: "already authored",
+          inputSchema: { type: "object" },
+          risk: "write",
+          binding: { kind: "compound", steps: [{ id: "list", tool: "host_listTasks" }] },
+        }],
+      }),
+    });
+    const result = await runRefine({ root, model: proposalModel({ compounds: [completeAllOpen] }) });
+    expect(result.changes).toHaveLength(0);
+    expect(result.dropped[0]!.reason).toContain("collides with an existing compound");
   });
 });

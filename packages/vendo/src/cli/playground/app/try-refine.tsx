@@ -5,7 +5,9 @@
  * change renders as a review card (file, summary, whole-file diff, warnings)
  * → Approve/Dismiss per card → Apply approved POSTs /api/refine/apply. The
  * writes land in the TEMP profile only; the success note points at
- * `vendo init` + `vendo refine` for the permanent path.
+ * `vendo init` + `vendo sync` for the permanent path (the retired `vendo
+ * refine` command's job moved into sync's AI enrichment; this panel is the
+ * refine ENGINE's surviving surface).
  *
  * DELIBERATE design point: this panel is a DEDICATED input, never
  * AI-classification of main-chat messages — a correction typed here is
@@ -363,8 +365,9 @@ export function TryRefine({ theme }: { theme: VendoTheme }) {
               </button>
               {phase === "applied" ? (
                 <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--vendo-color-muted, #6b6b76)" }}>
-                  Applied to this demo. <code style={{ fontFamily: MONO }}>npx vendo init</code> +{" "}
-                  <code style={{ fontFamily: MONO }}>vendo refine</code> make this permanent in your repo.
+                  Applied to this demo. <code style={{ fontFamily: MONO }}>npx vendo init</code> installs the
+                  agent for real, and <code style={{ fontFamily: MONO }}>vendo sync</code> keeps its tools
+                  enriched as your code changes.
                 </p>
               ) : null}
             </div>

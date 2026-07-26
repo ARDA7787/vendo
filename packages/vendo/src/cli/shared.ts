@@ -139,7 +139,6 @@ export type CommandName =
   | "extract"
   | "theme"
   | "eject"
-  | "refine"
   | "sync"
   | "cloud-init"
   | "mcp";

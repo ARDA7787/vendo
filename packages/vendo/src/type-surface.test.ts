@@ -140,7 +140,7 @@ describe("09-vendo §1 — umbrella root type surface", () => {
         "CapabilitiesFile",
         "CatalogFile",
         "ExtractedTool",
-        "OverridesFile",
+        "OverridesFileV3",
         "SemanticsFile",
         "VendoTheme",
       ],

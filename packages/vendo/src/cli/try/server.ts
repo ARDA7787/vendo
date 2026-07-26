@@ -4,13 +4,13 @@ import type { AddressInfo } from "node:net";
 import { dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { toolsFileSchema, type ExtractedTool } from "@vendoai/actions";
+import { toolsFileSchema, toolsFileV3Schema, vendoFileVersion, type ExtractedTool } from "@vendoai/actions";
 import { createStore } from "@vendoai/store";
 import type { LanguageModel } from "ai";
+import { DevModelController } from "../../dev-creds/model.js";
 import { runRefine, type RefineChange } from "../../refine.js";
 import { createVendo, type Vendo } from "../../server.js";
 import { PLAYGROUND_BUNDLE_SOURCE } from "../playground/bundle.gen.js";
-import { resolveRefineModel } from "../refine.js";
 import { exists } from "../shared.js";
 import {
   assembleTryProfile,
@@ -162,7 +162,11 @@ export async function composeTryVendo(options: {
   const vendoDir = join(options.profileRoot, ".vendo");
   const tools = await readProfileArtifact<ExtractedTool[]>(
     join(vendoDir, "tools.json"),
-    (raw) => toolsFileSchema.parse(JSON.parse(raw)).tools,
+    (raw) => {
+      // v3 from today's extraction, v1 from a legacy carried-over profile.
+      const parsed = JSON.parse(raw) as unknown;
+      return (vendoFileVersion(parsed) === 1 ? toolsFileSchema : toolsFileV3Schema).parse(parsed).tools;
+    },
     [],
   );
   const fixtures = await readProfileArtifact<FixturesFile>(
@@ -208,16 +212,20 @@ export async function composeTryVendo(options: {
 
 /** The ONE startup model resolution behind both capability flags AND the
  *  turns that need a model (`/api/vendo` chat, `POST /api/refine`): a passed
- *  model wins; otherwise the same dev-credential ladder `vendo refine` rides
- *  (resolveRefineModel → DevModelController). A resolution failure means
- *  `null` — honest false capabilities, never a failed server. */
+ *  model wins; otherwise the shared dev-credential ladder (DevModelController
+ *  — the same resolver init, doctor, and createVendo ride; the retired
+ *  `vendo refine` command rode it too). A resolution failure means `null` —
+ *  honest false capabilities, never a failed server. */
 async function resolveTryModel(options: StartTryServerOptions): Promise<LanguageModel | null> {
   if (options.model !== undefined) return options.model;
   try {
-    return await resolveRefineModel({
+    const controller = new DevModelController({
       root: options.repoRoot ?? options.profileRoot,
       env: options.env ?? process.env,
     });
+    const resolution = await controller.resolve();
+    if (resolution.mode === "unavailable") return null;
+    return resolution.model as unknown as LanguageModel;
   } catch {
     return null;
   }
@@ -305,7 +313,9 @@ async function readJsonBody(request: IncomingMessage, limitBytes = 1_048_576): P
  *  own, and the target file IS the taxonomy (refine.ts's doc block). */
 function refineChangeSummary(path: string): string {
   if (path.endsWith("capabilities.json")) return "New agent capabilities (compound tools and playbooks)";
-  if (path.endsWith("overrides.json")) return "Tool corrections (risk labels, enable/disable, descriptions)";
+  // v3 (post-#568): overrides.json is the ONE authored file — corrections
+  // plus any new compound capabilities and playbooks fold into it.
+  if (path.endsWith("overrides.json")) return "Tool corrections and new capabilities (risk labels, enable/disable, descriptions, compounds)";
   if (path.endsWith("brief.md")) return "Product brief update";
   return `Update ${path}`;
 }

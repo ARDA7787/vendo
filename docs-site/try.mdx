@@ -51,7 +51,10 @@ so there is always something to click.
 With a model resolved, in a repo where extraction found tools, the surface
 takes corrections in conversation: "call these workspaces, not projects",
 "the accent is wrong". Proposals arrive as
-reviewable diffs and apply to the temp profile only, never to your repo.
+reviewable diffs and apply to the temp profile only, never to your repo. To
+make corrections permanent, install with `vendo init` — from then on
+[`vendo sync`](/reference/cli#vendo-sync-dir) owns `.vendo/` curation, and
+your own edits to `.vendo/overrides.json` are respected forever.
 
 ### Flags
 

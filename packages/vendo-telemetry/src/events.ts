@@ -113,7 +113,7 @@ export const EVENT_ALLOWLIST: Record<EventName, ReadonlySet<string>> = {
   // except cloud-init, which fires from the cloud step inside `vendo init`
   // (the standalone run of the same claim ceremony is `login`).
   // `command` is a closed enum: login | try | extract | theme | eject
-  // | refine | sync | cloud-init | mcp. (Retired values — playground —
+  // | sync | cloud-init | mcp. (Retired values — playground, refine —
   // survive only in historical rows.)
   // failedStep/errorClass are short enums/class names, never message text.
   command_run: new Set([

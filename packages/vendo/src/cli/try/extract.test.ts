@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { toolsFileSchema } from "@vendoai/actions";
+import { toolsFileV3Schema } from "@vendoai/actions";
 import { vendoThemeSchema } from "@vendoai/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { runDeterministicPass } from "./extract.js";
@@ -91,7 +91,7 @@ describe("runDeterministicPass zero-commit contract", () => {
 });
 
 describe("runDeterministicPass artifacts", () => {
-  it("writes theme.json (frozen shape) and tools.json (vendo/tools@1) into profileRoot", async () => {
+  it("writes theme.json (frozen shape) and tools.json (vendo/tools@3) into profileRoot", async () => {
     const repoRoot = await nextFixture();
     const profileRoot = await tempDir("vendo-try-profile-");
 
@@ -103,7 +103,7 @@ describe("runDeterministicPass artifacts", () => {
     expect(theme.colors.background).toBe("#fffdf8");
     expect(theme.radius.medium).toBe("10px");
 
-    const tools = toolsFileSchema.parse(JSON.parse(await readFile(join(profileRoot, ".vendo", "tools.json"), "utf8")));
+    const tools = toolsFileV3Schema.parse(JSON.parse(await readFile(join(profileRoot, ".vendo", "tools.json"), "utf8")));
     expect(tools.tools.map((tool) => tool.name)).toContain("host_invoices_list");
 
     expect(result.theme.status).toBe("written");

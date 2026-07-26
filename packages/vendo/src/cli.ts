@@ -3,12 +3,12 @@ import { pathToFileURL } from "node:url";
 import { isVendoKey } from "./cli/cloud/client.js";
 import { runLoginCommand } from "./cli/cloud/device-login.js";
 import { runCloud } from "./cli/cloud/index.js";
+import { runConfig } from "./cli/config.js";
 import { runDoctor } from "./cli/doctor.js";
 import { runEject } from "./cli/eject.js";
 import { runExtractApply } from "./cli/extract/apply.js";
 import { runInit, type InitOptions } from "./cli/init.js";
 import { runMcp } from "./cli/mcp/index.js";
-import { runRefineCommand } from "./cli/refine.js";
 import { CLI_VERSION } from "./cli/shared.js";
 import { runSync } from "./cli/sync.js";
 import { runTry } from "./cli/try.js";
@@ -24,17 +24,17 @@ Commands:
   doctor [dir]    Verify the install: wiring, live probes, and one real model turn (--json for agents)
 
 Advanced:
-  sync [dir]      Re-extract tools and baselines (init hooks this into predev/prebuild; --strict is the CI gate)
+  sync [dir]      Re-extract tools and baselines, then AI-enrich entries the code diff affected (keyless: structural only; --strict is the CI gate)
   eject <surface> [dir]  Copy a shipped chrome surface's presentation source into your repo (--list to see surfaces)
   extract [dir]   Apply a coding agent's extraction draft through the deterministic guards (--apply <draft.json>)
-  refine [dir]    Propose compound capabilities, risk corrections, and brief updates as reviewable diffs
   mcp <command>   Generate MCP registry discovery and domain-verification files
   cloud <command> Use the public Vendo Cloud API
+  config <command> Push/pull a .vendo surface to/from hosted config, or show surface owners
 
 Options:
   --agent                    Init only: print a read-only JSON plan — code changes, extracted tools, risk recommendations, the aiPolish delegation contract
   --apply <draft.json>       Extract only: draft file an external agent produced from the plan's aiPolish contract
-  --yes                      Init: skip the cloud-login offer; refine: approve displayed diffs; doctor: auto-start the dev server
+  --yes                      Init: skip the cloud-login offer; doctor: auto-start the dev server
   --force                    Init/server-json: overwrite owned or generated files; eject: overwrite an ejected dir
   --auth <preset>            Init only: wire this auth preset without asking (authJs, clerk, supabase, auth0, jwt, none)
   --framework <name>         Init only: override framework detection (next, express) — required non-interactively when detection fails
@@ -42,13 +42,14 @@ Options:
   --wait <seconds>           Login only: bound this call's polling to N seconds (agents loop re-runs; each resumes the same request), then exit resumably
   --byo                      Init only: decline the Vendo Cloud offer (bring your own model key)
   --ai-polish                Init only: consent to the AI extraction pass without a prompt (works non-interactively)
-  --engine <name>            Init/try: pin the AI engine (claude, codex, npx) instead of first-available
+  --engine <name>            Init/try/sync: pin the AI engine (claude, codex, npx) instead of first-available
   --theme <slot=value>       Init only: override a theme slot value directly (repeatable)
   --list                     Eject only: show the ejectable surfaces
-  --model-import <specifier> Refine only: module exporting the host's ai-SDK model
-  --ask <text>               Refine only: interview answer (repeatable) for non-interactive runs
-  --url <url>                Doctor/refine/server-json: mounted wire base or public MCP URL
+  --url <url>                Doctor/server-json: mounted wire base or public MCP URL
   --strict                   Sync only: exit 2 on breaking changes, 3 when saved references are impacted
+  --review                   Sync only: show the AI enrichment narrative and confirm before writing
+  --full                     Sync only: force full re-enrichment instead of the watermark diff
+  --no-watermark             Sync only: workspace-internal sync — no watermark bookkeeping, no AI enrichment
   --port <port>              Try only: listen on a fixed port (default: any free port)
   --no-open                  Try only: print the URL without opening the browser
   --no-ai                    Try only: skip the background AI deepening (the demo stays on the deterministic profile)
@@ -87,10 +88,8 @@ const EXTRACT_FLAGS = new Set(["--force"]);
 const EXTRACT_VALUE_OPTIONS = ["--apply"];
 const DOCTOR_FLAGS = new Set(["--json", "--yes"]);
 const DOCTOR_VALUE_OPTIONS = ["--url"];
-const REFINE_FLAGS = new Set(["--yes"]);
-const REFINE_VALUE_OPTIONS = ["--url", "--model-import", "--ask"];
-const SYNC_FLAGS = new Set(["--strict", "--json", "--report"]);
-const SYNC_VALUE_OPTIONS = ["--url", "--key", "--api-url"];
+const SYNC_FLAGS = new Set(["--strict", "--json", "--report", "--review", "--full", "--no-watermark"]);
+const SYNC_VALUE_OPTIONS = ["--url", "--key", "--api-url", "--engine"];
 const LOGIN_VALUE_OPTIONS = ["--api-url", "--wait"];
 
 /** ENG-335: options the CLI does not recognize — or value options missing
@@ -160,8 +159,8 @@ function tryOptionErrors(args: string[]): { errors: string[]; port?: number; eng
 
 function target(args: string[]): string {
   const optionValues = new Set<string>();
-  for (const name of ["--model-import", "--url", "--key", "--api-url", "--ask", "--apply",
-    "--auth", "--framework", "--cloud-key", "--theme"]) {
+  for (const name of ["--url", "--key", "--api-url", "--apply",
+    "--auth", "--framework", "--cloud-key", "--theme", "--engine"]) {
     for (let index = 0; index < args.length; index += 1) {
       if (args[index] === name && args[index + 1] !== undefined) optionValues.add(args[index + 1]!);
     }
@@ -192,6 +191,7 @@ export async function main(argv: string[]): Promise<number> {
     return runLoginCommand(args);
   }
   if (command === "cloud") return runCloud(args);
+  if (command === "config") return runConfig(args);
   if (command === "mcp") return runMcp(args);
   if (command === "init") {
     const problems = optionErrors(args, INIT_FLAGS, INIT_VALUE_OPTIONS);
@@ -286,18 +286,12 @@ export async function main(argv: string[]): Promise<number> {
     });
   }
   if (command === "refine") {
-    const problems = optionErrors(args, REFINE_FLAGS, REFINE_VALUE_OPTIONS);
-    if (problems.length > 0) {
-      console.error(`vendo refine: ${problems.join("; ")}\n\n${HELP}`);
-      return 1;
-    }
-    return runRefineCommand({
-      targetDir: target(args),
-      url: option(args, "--url"),
-      modelImport: option(args, "--model-import"),
-      asks: options(args, "--ask"),
-      yes: args.includes("--yes"),
-    });
+    // Retired in #568 (format v3): `vendo sync` now owns AI enrichment of
+    // .vendo (compounds/briefs live in .vendo/overrides.json), and the try
+    // surface's refine panel carries the conversational-correction loop —
+    // the refine ENGINE lives on there (src/refine.ts).
+    console.error("vendo refine was retired — `vendo sync` AI-enriches .vendo now (compounds and briefs live in .vendo/overrides.json), and `vendo try` offers conversational corrections in its refine panel. Run: vendo sync");
+    return 1;
   }
   if (command === "try") {
     const { errors, port, engine } = tryOptionErrors(args);
@@ -321,6 +315,13 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (command === "sync") {
     const problems = optionErrors(args, SYNC_FLAGS, SYNC_VALUE_OPTIONS);
+    const engine = option(args, "--engine");
+    if (engine !== undefined && !ENGINE_VALUES.includes(engine)) {
+      problems.push(`--engine must be one of ${ENGINE_VALUES.join(", ")} (example: vendo sync --engine codex)`);
+    }
+    if (args.includes("--review") && args.includes("--json")) {
+      problems.push("--review is interactive and cannot combine with --json");
+    }
     if (problems.length > 0) {
       console.error(`vendo sync: ${problems.join("; ")}\n\n${HELP}`);
       return 1;
@@ -333,6 +334,10 @@ export async function main(argv: string[]): Promise<number> {
       report: args.includes("--report"),
       apiKey: option(args, "--key"),
       apiUrl: option(args, "--api-url"),
+      review: args.includes("--review"),
+      full: args.includes("--full"),
+      noWatermark: args.includes("--no-watermark"),
+      ...(engine === undefined ? {} : { engine }),
     });
   }
   console.error(`Unknown command: ${command}\n\n${HELP}`);

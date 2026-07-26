@@ -402,7 +402,10 @@ export async function runStagedExtraction(input: StagedExtractionInput): Promise
       "survey",
       composeSurveyInstructions(tools, appName),
       surveySchema,
-      surveyModel === undefined ? env : { ...env, VENDO_EXTRACTION_MODEL: surveyModel },
+      // Override BOTH pin names so the harnesses' new-var-first precedence
+      // (VENDO_MODEL_EXTRACT ?? VENDO_EXTRACTION_MODEL) lands on the survey
+      // model even when the caller pinned the new var.
+      surveyModel === undefined ? env : { ...env, VENDO_MODEL_EXTRACT: surveyModel, VENDO_EXTRACTION_MODEL: surveyModel },
     );
     onStage?.("survey", "done");
   } catch (error) {

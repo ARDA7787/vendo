@@ -591,13 +591,15 @@ describe("startTryServer refine endpoints", () => {
       dropped: unknown[];
       probes: Array<{ tool: string; status: string }>;
     };
+    // v3 profile (post-#568): the compound AND the correction fold into the
+    // ONE authored file, overrides.json — a single reviewable change.
     expect(result.changes.map((change) => ({ id: change.id, file: change.file }))).toEqual([
-      { id: 0, file: ".vendo/capabilities.json" },
-      { id: 1, file: ".vendo/overrides.json" },
+      { id: 0, file: ".vendo/overrides.json" },
     ]);
     expect(result.changes[0]!.summary).not.toBe("");
-    expect(result.changes[1]!.diff).toContain("+++ b/.vendo/overrides.json");
-    expect(result.changes[1]!.diff).toContain('"disabled": true');
+    expect(result.changes[0]!.diff).toContain("+++ b/.vendo/overrides.json");
+    expect(result.changes[0]!.diff).toContain('"disabled": true');
+    expect(result.changes[0]!.diff).toContain("host_invoice_digest");
     // The panel message rode into the engine as the interview leg.
     expect(model.prompts[0]).toContain("riskier than it looks");
     // No url → the probe NEVER fabricates a live check: static-only, with
@@ -610,18 +612,21 @@ describe("startTryServer refine endpoints", () => {
       expect(check.detail).toContain("validated statically");
     }
 
-    // Approve ONLY the overrides change; the dismissed compound never lands.
-    const apply = await postJson(`${server.url}/api/refine/apply`, { runId: result.runId, changeIds: [1] });
+    // Approve the folded overrides change; it lands in the TEMP profile only.
+    const apply = await postJson(`${server.url}/api/refine/apply`, { runId: result.runId, changeIds: [0] });
     expect(apply.status).toBe(200);
-    expect(apply.body).toEqual({ applied: [{ id: 1, file: ".vendo/overrides.json" }] });
+    expect(apply.body).toEqual({ applied: [{ id: 0, file: ".vendo/overrides.json" }] });
 
     const profile = await fetchProfile(server);
     expect(profile.tools.list.find((tool) => tool.name === "host_invoices_list")?.disabled).toBe(true);
     expect(profile.tools.counts.enabled).toBe(profile.tools.counts.total - 1);
     const written = JSON.parse(await readFile(join(profileRoot, ".vendo", "overrides.json"), "utf8")) as {
       tools: Record<string, { disabled?: boolean }>;
+      compounds?: Array<{ name: string }>;
     };
     expect(written.tools["host_invoices_list"]?.disabled).toBe(true);
+    // The compound rode the same v3 file — capabilities.json is never written.
+    expect(written.compounds?.map((compound) => compound.name)).toEqual(["host_invoice_digest"]);
     await expect(readFile(join(profileRoot, ".vendo", "capabilities.json"), "utf8")).rejects.toThrow();
 
     // The zero-commit guarantee holds across the whole refine round trip.

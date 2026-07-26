@@ -15,8 +15,9 @@ Codex) can help at *init* time, but it never serves product turns.
 
 ## Ladder
 
-`devModel()` walks these rungs in order and stops at the first one that
-resolves. Explicit keys always beat implicit ones.
+`vendoModel()` (formerly `devModel()`, which remains as a deprecated alias)
+walks these rungs in order and stops at the first one that resolves. Explicit
+keys always beat implicit ones.
 
 <Steps>
   <Step title="Env key">
@@ -31,11 +32,10 @@ resolves. Explicit keys always beat implicit ones.
     `VENDO_API_KEY` delegates to the Vendo Cloud model gateway (Anthropic
     Messages wire, served through the stock `@ai-sdk/anthropic` provider,
     which Vendo ships — the key alone suffices, and your app's own install
-    wins when present). The gateway serves curated model aliases:
-    `vendo-default` (the default), `vendo-fast`, and `vendo-strong`. Pick
-    one with `VENDO_CLOUD_MODEL`; anything else is remapped to
-    `vendo-default` server-side. No key on hand? `npx vendo login` mints a
-    free metered dev key.
+    wins when present). On this rung the default model is `vendo`
+    (the console maps it to a concrete model server-side); pin a different
+    id with `VENDO_MODEL`. No key on hand? `npx vendo login` mints a free
+    metered dev key.
   </Step>
   <Step title="None">
     No credential resolves. The wire returns a generic error and the server
@@ -65,13 +65,13 @@ pin a provider, add `model` to the composition with any AI SDK `LanguageModel`:
 
 ```ts
 import { createVendo } from "@vendoai/vendo/server";
-import { devModel } from "@vendoai/vendo/server";
+import { vendoModel } from "@vendoai/vendo/server";
 
 // Omit `model` to keep the dev-mode ladder, or set it to pin a provider.
 // In production, set ANTHROPIC_API_KEY (works alone — Vendo ships
 // @ai-sdk/anthropic), or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY
 // with the matching @ai-sdk/* provider installed.
-const vendo = createVendo({ model: devModel(), catalog: registry });
+const vendo = createVendo({ model: vendoModel(), catalog: registry });
 ```
 
 The [handler](/reference/handler-options) contract does not change either way.
