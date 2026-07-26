@@ -39,15 +39,32 @@ describe("host config files, node entry", () => {
     expect(parsed).toBeUndefined();
   });
 
-  it("degrades to undefined on a non-ENOENT read failure (workerd unenv error class), never throws", async () => {
-    // Any read failure — not just ENOENT — must degrade to "file absent";
-    // only content-shape failures (malformed JSON / schema) still throw. See
-    // the module-level mock comment above for why this isn't reproduced on a
-    // real disk.
+  it("degrades to undefined on a CODE-LESS read failure (workerd unenv error class), never throws", async () => {
+    // Only ENOENT and a code-less failure degrade — see the module comment
+    // in host-files.ts for why code-less specifically means "this is
+    // workerd's unenv shim", not a real filesystem. See the module-level
+    // mock comment above for why this isn't reproduced on a real disk.
     const notImplemented = Object.assign(new Error("not implemented"), { code: undefined });
     readFileMock.mockRejectedValueOnce(notImplemented);
     const root = await mkdtemp(join(tmpdir(), "vendo-host-files-unenv-"));
     await expect(readOptionalVendoJson(root, "tools.json", (value) => value)).resolves.toBeUndefined();
+  });
+
+  it("still THROWS on a real fs error code (EACCES/EISDIR/EMFILE) — a present-but-unreadable file must fail closed, not silently drop it", async () => {
+    // overrides.json is the case that matters: absent is MORE permissive
+    // (a disabled tool or audience exclusion vanishes, going live), so a
+    // present file this host cannot read for a real reason must surface
+    // loudly rather than silently compose as if it were never there.
+    for (const code of ["EACCES", "EISDIR", "EMFILE"]) {
+      const classedFailure = Object.assign(new Error(`simulated ${code}`), { code });
+      readFileMock.mockRejectedValueOnce(classedFailure);
+      const root = await mkdtemp(join(tmpdir(), `vendo-host-files-${code}-`));
+      await expect(readOptionalVendoJson(root, "overrides.json", (value) => value)).rejects.toMatchObject({
+        name: "VendoError",
+        code: "validation",
+        detail: { cause: `simulated ${code}` },
+      });
+    }
   });
 
   it("still throws loudly on malformed JSON — only read failures degrade, not content-shape failures", async () => {

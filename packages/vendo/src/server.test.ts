@@ -3110,11 +3110,9 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
     expect(content).toContain("Product\nDisk brief for the profile seam.");
   });
 
-  it("workerd portability regression: profile.tools skips the tools.json disk read entirely, and a residual non-ENOENT read (overrides.json) degrades instead of killing composition", async () => {
-    // Reproduces the real-workerd failure class: a disk read that survives
-    // (or doesn't run at all) when the in-memory profile piece substitutes
-    // for it, and a RESIDUAL read (a piece left unset) that must degrade on
-    // ANY read failure, not just ENOENT — see registry.ts/host-files.ts.
+  it("workerd portability regression: profile.tools skips the tools.json disk read entirely (a malformed file there is never opened)", async () => {
+    // Reproduces the real-workerd failure class's PRIMARY fix: a supplied
+    // in-memory profile piece must make the disk leg never run at all.
     const root = await mkdtemp(join(tmpdir(), "vendo-profile-workerd-"));
     cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
     await mkdir(join(root, ".vendo"), { recursive: true });
@@ -3123,12 +3121,6 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
     // below, so the primary fix (skip-when-supplied) means it is never
     // opened — proven by composing successfully despite the garbage bytes.
     await writeFile(join(root, ".vendo", "tools.json"), "{ not valid json, must never be read");
-    // overrides.json is a DIRECTORY, not a file. profile.overrides is left
-    // UNSET below, so this IS a residual read — reading a directory throws
-    // Node's real EISDIR, a non-ENOENT error class exactly like workerd's
-    // unenv "not implemented" failure. It must degrade to "absent" (empty
-    // overrides), not propagate and kill the composition.
-    await mkdir(join(root, ".vendo", "overrides.json"));
 
     const store = await tempStore("vendo-profile-workerd-store-");
     const vendo = createVendo({
@@ -3141,6 +3133,36 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
 
     const names = (await vendo.actions.descriptors()).map((descriptor) => descriptor.name);
     expect(names).toContain("host_in_memory");
+  });
+
+  it("a residual overrides.json read that hits a REAL fs error (EISDIR) fails CLOSED instead of silently going live", async () => {
+    // The other half of the fix is narrower than a blanket degrade:
+    // overrides.json absent is MORE permissive than present (a disabled
+    // tool or audience exclusion vanishes), so a present-but-unreadable file
+    // on a real filesystem must still throw, exactly like before the
+    // workerd fix — only ENOENT and workerd's code-less unenv failure
+    // degrade (registry.ts/host-files.ts). overrides.json here is a
+    // DIRECTORY, not a file — profile.overrides is left UNSET, so this is a
+    // residual read, and reading a directory throws Node's real EISDIR, a
+    // genuine fail-closed fs error class (not workerd's code-less shim).
+    const root = await mkdtemp(join(tmpdir(), "vendo-profile-eisdir-"));
+    cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
+    await mkdir(join(root, ".vendo"), { recursive: true });
+    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
+      format: "vendo/tools@1",
+      tools: [profileTool("host_from_disk")],
+    }));
+    await mkdir(join(root, ".vendo", "overrides.json"));
+
+    const store = await tempStore("vendo-profile-eisdir-store-");
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      profileDir: root,
+    });
+
+    await expect(vendo.actions.descriptors()).rejects.toMatchObject({ name: "VendoError", code: "validation" });
   });
 
   it("unset equivalence: `profile` unset and `profile: {}` compose identical observable state", async () => {

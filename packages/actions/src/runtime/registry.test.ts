@@ -1078,13 +1078,14 @@ describe("in-memory overrides (unified try surface Task 15a, rebased on the v3 i
 });
 
 describe("in-memory profile pieces skip the disk leg entirely (workerd portability)", () => {
-  // On workerd, an fs read that unenv doesn't implement throws a DIFFERENT
-  // error class than Node's ENOENT (see registry.test.ts's host-files.test.ts
-  // sibling and host-files.ts's broadened catch). The primary fix is that a
-  // supplied in-memory piece must make loadHost skip its disk leg entirely —
-  // proven here by a zero-call assertion, not just by the composed result
-  // (the composed result alone can't tell "skipped" from "read and
-  // discarded").
+  // On workerd, an fs read that unenv doesn't implement throws a CODE-LESS
+  // error, unlike Node's ENOENT (see host-files.test.ts and host-files.ts's
+  // narrowed catch: ENOENT + code-less degrade, every other real fs error
+  // code still throws — fail-closed for overrides.json in particular). The
+  // primary fix here is that a supplied in-memory piece must make loadHost
+  // skip its disk leg entirely — proven by a zero-call assertion, not just
+  // by the composed result (the composed result alone can't tell "skipped"
+  // from "read and discarded").
   beforeEach(() => {
     // The shared mock records every read across the whole file (every other
     // describe block's tests hit real disk); clear its call log before each
@@ -1132,11 +1133,11 @@ describe("in-memory profile pieces skip the disk leg entirely (workerd portabili
     expect(readFileMock.mock.calls.some(([path]) => String(path).endsWith("capabilities.json"))).toBe(false);
   });
 
-  it("a residual overrides.json read that fails with a non-ENOENT error (workerd unenv class) degrades to absent instead of killing the composition", async () => {
+  it("a residual overrides.json read that fails with a CODE-LESS error (workerd unenv class) degrades to absent instead of killing the composition", async () => {
     // config.tools IS supplied (its own disk leg is skipped above), but
     // config.overrides is NOT — this is the residual read that still has to
-    // run, and it must survive a non-ENOENT failure the way ENOENT already
-    // does (host-files.ts's broadened catch — the other half of the fix).
+    // run, and it must survive a code-less failure the way ENOENT already
+    // does (host-files.ts's narrowed catch — the other half of the fix).
     const root = await tempVendo({ format: VENDO_TOOLS_FORMAT_V3, tools: [] });
     await writeFile(join(root, ".vendo", "overrides.json"), JSON.stringify({ format: VENDO_OVERRIDES_FORMAT_V3, tools: {} }));
     const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -1151,6 +1152,27 @@ describe("in-memory profile pieces skip the disk leg entirely (workerd portabili
     await expect(actions.descriptors()).resolves.toEqual([
       { name: "host_in_memory", description: "host_in_memory", inputSchema: { type: "object" }, risk: "read" },
     ]);
+  });
+
+  it("a residual overrides.json read that fails with a REAL fs error code (EACCES) still THROWS — fail closed, not open", async () => {
+    // Same shape as the test above, but the failure carries a real fs error
+    // code (a present-but-unreadable file on a real filesystem — e.g. a
+    // volume-mount permission mismatch). overrides.json absent is MORE
+    // permissive than present (a disabled tool / audience exclusion
+    // vanishes), so this must NOT silently degrade to "no overrides" — that
+    // would fail OPEN. Only ENOENT and a code-less failure (workerd) degrade.
+    const root = await tempVendo({ format: VENDO_TOOLS_FORMAT_V3, tools: [] });
+    await writeFile(join(root, ".vendo", "overrides.json"), JSON.stringify({ format: VENDO_OVERRIDES_FORMAT_V3, tools: {} }));
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    readFileMock.mockImplementation(async (path: unknown, ...rest: unknown[]) => {
+      if (String(path).endsWith("overrides.json")) {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      }
+      return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(path, ...rest);
+    });
+
+    const actions = createActions({ dir: root, tools: [routeTool("host_in_memory")] });
+    await expect(actions.descriptors()).rejects.toMatchObject({ name: "VendoError", code: "validation" });
   });
 });
 
