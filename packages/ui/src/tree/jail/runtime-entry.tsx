@@ -38,6 +38,25 @@ mount.id = "vendo-jail-root";
 mount.style.display = "flow-root";
 document.body.appendChild(mount);
 
+// Document-level submit capture (unified-try-surface Defect 2, 2026-07-26):
+// the jail sandbox carries no `allow-forms` — no <form> submission may ever
+// navigate or POST out of this frame, by design (JailedComponent's iframe
+// sandbox is exactly "allow-scripts"). The Kit's own <Form> already calls
+// preventDefault (packages/ui/src/kit/forms/form.tsx), but a generated
+// ISLAND frequently writes a raw HTML <form onSubmit={handler}> instead —
+// pretraining habit, and the Kit <Form>'s own taught example (a WIRE-tree
+// string action name) never demonstrates the island's function-handler
+// form. When that handler is itself async and takes no event argument (a
+// hydrated `$action` callback shape), it can never call preventDefault()
+// itself, so the native submission still fires and the sandbox blocks it
+// with a console error — the tool call may have gone out, but the form
+// never visibly resolves. A capture-phase listener on the document catches
+// EVERY submit — Kit or raw, present or future — before the browser's
+// native default action runs; preventDefault() here only suppresses that
+// native action — it does not stop propagation, so React's synthetic
+// onSubmit (and the Kit Form's own handler above it) still fire normally.
+document.addEventListener("submit", (event) => event.preventDefault(), { capture: true });
+
 let root: Root | undefined;
 let loadedKey: string | undefined;
 let loadedComponent: React.ComponentType<Record<string, unknown>> | undefined;
