@@ -133,6 +133,63 @@ describe("runDeterministicPass artifacts", () => {
   });
 });
 
+// genqa defect 1 (venue self-strangulation): route-scanned GETs extract at
+// risk "write" (common.ts's fail-closed default — correct against a real
+// host, wrong against try's own synthetic fixtures). The try pass must
+// correct it via overrides.json, never by touching the extractor's default.
+describe("runDeterministicPass try-venue read downgrade", () => {
+  it("downgrades a route-scanned GET from write to read via overrides.json, without touching tools.json", async () => {
+    const repoRoot = await nextFixture();
+    const profileRoot = await tempDir("vendo-try-profile-");
+
+    const result = await runDeterministicPass({ repoRoot, profileRoot });
+
+    const tools = toolsFileV3Schema.parse(JSON.parse(await readFile(join(profileRoot, ".vendo", "tools.json"), "utf8")));
+    const listTool = tools.tools.find((tool) => tool.name === "host_invoices_list");
+    expect(listTool?.binding.kind).toBe("route");
+    // tools.json stays the extractor's own fail-closed call — untouched.
+    expect(listTool?.risk).toBe("write");
+
+    const overrides = JSON.parse(await readFile(join(profileRoot, ".vendo", "overrides.json"), "utf8")) as {
+      format: string;
+      tools: Record<string, { risk?: string }>;
+    };
+    expect(overrides.format).toBe("vendo/overrides@3");
+    expect(overrides.tools["host_invoices_list"]?.risk).toBe("read");
+
+    expect(result.tools.status).toBe("written");
+  });
+
+  it("never downgrades a destructive-shaped route GET (a real signal, not the extractor's plain fallback)", async () => {
+    const repoRoot = await nextFixture();
+    await write(repoRoot, "app/api/invoices/[id]/delete/route.ts",
+      "export async function GET() { return Response.json({ ok: true }); }\n");
+    const profileRoot = await tempDir("vendo-try-profile-");
+
+    await runDeterministicPass({ repoRoot, profileRoot });
+
+    const tools = toolsFileV3Schema.parse(JSON.parse(await readFile(join(profileRoot, ".vendo", "tools.json"), "utf8")));
+    const destructiveTool = tools.tools.find((tool) => tool.risk === "destructive");
+    expect(destructiveTool).toBeDefined();
+
+    const overridesRaw = await readFile(join(profileRoot, ".vendo", "overrides.json"), "utf8").catch(() => null);
+    if (overridesRaw !== null) {
+      const overrides = JSON.parse(overridesRaw) as { tools: Record<string, { risk?: string }> };
+      expect(overrides.tools[destructiveTool!.name]).toBeUndefined();
+    }
+  });
+
+  it("writes no overrides.json when extraction finds nothing to downgrade", async () => {
+    const repoRoot = await tempDir("vendo-try-fixture-empty-");
+    await write(repoRoot, "package.json", `${JSON.stringify({ name: "empty-host" }, null, 2)}\n`);
+    const profileRoot = await tempDir("vendo-try-profile-");
+
+    await runDeterministicPass({ repoRoot, profileRoot });
+
+    await expect(readFile(join(profileRoot, ".vendo", "overrides.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
 describe("runDeterministicPass host .vendo carry-over", () => {
   it("carries the host's OWN policy.json, brief.md, design-rules.md, and theme.json — the host's explicit choice wins over fresh extraction", async () => {
     const repoRoot = await nextFixture();

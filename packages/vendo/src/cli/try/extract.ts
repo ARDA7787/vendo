@@ -1,7 +1,12 @@
 import { mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { toolsFileV3Schema } from "@vendoai/actions";
+import {
+  toolsFileV3Schema,
+  VENDO_OVERRIDES_FORMAT_V3,
+  type ExtractedToolV3,
+  type ToolOverride,
+} from "@vendoai/actions";
 import { vendoSync } from "@vendoai/actions/sync";
 import { VENDO_POLICY_FORMAT, vendoThemeSchema } from "@vendoai/core";
 import { resolvePolicyConfig } from "@vendoai/guard";
@@ -95,6 +100,41 @@ const DEMO_POLICY = {
   ],
   rules: resolvePolicyConfig("autopilot")!.rules!,
 };
+
+/**
+ * genqa defect 1 (venue self-strangulation): `extractedRisk` (packages/actions
+ * sync/common.ts) fail-closes every route-scanned GET to `write` — a route
+ * scan can't prove a real host's handler is side-effect-free, so core is
+ * right to be cautious there. But `npx vendo try` never talks to a real
+ * host: every tool call runs against the synthetic fixtures THIS
+ * deterministic pass just wrote, so a route GET's honesty is no longer in
+ * question the way it is for production traffic. Left uncorrected, the
+ * demo policy's read-auto-run rules never match these tools, and the
+ * guard's per-session write budget (packages/guard maxWritesPerRun) parks
+ * every one of them alongside real writes — a demo run dies after ~10 calls
+ * regardless of how many were genuine mutations.
+ *
+ * Fixed at THIS seam, never common.ts: an override is a correction, not a
+ * reclassification of the extractor's own fail-closed default, and it rides
+ * the SAME `.vendo/overrides.json` mechanism doctor/the running server
+ * already treat as authoritative over tools.json (mergeOverride,
+ * packages/actions runtime/registry.ts). Scoped tight — only
+ * `binding.kind === "route"` GETs the extractor left at `write`; a
+ * `destructive` GET (a delete-shaped name) is a real signal and stays as is.
+ */
+async function writeTryReadDowngrades(vendoDir: string, tools: readonly ExtractedToolV3[]): Promise<void> {
+  const corrections: Record<string, ToolOverride> = {};
+  for (const tool of tools) {
+    if (tool.binding.kind === "route" && tool.binding.method === "GET" && tool.risk === "write") {
+      corrections[tool.name] = { risk: "read" };
+    }
+  }
+  if (Object.keys(corrections).length === 0) return;
+  await writeText(
+    join(vendoDir, "overrides.json"),
+    `${JSON.stringify({ format: VENDO_OVERRIDES_FORMAT_V3, tools: corrections }, null, 2)}\n`,
+  );
+}
 
 /** Resolve symlinks through the nearest EXISTING ancestor, re-joining any
  *  not-yet-created tail; falls back to the lexical path when nothing on the
@@ -212,6 +252,12 @@ export async function runDeterministicPass(
     // vendoSync writes the v3 format (post-#568); parse what it just wrote.
     const written = toolsFileV3Schema.parse(JSON.parse(await readFile(join(vendoDir, "tools.json"), "utf8")));
     tools = { status: "written", count: written.tools.length, warnings: report.warnings };
+    // Try-venue-only downgrade (genqa defect 1): every call here executes
+    // against fixtures THIS pass just extracted, never a real host, so write
+    // it as a normal overrides.json correction — never touch common.ts's
+    // fail-closed extractedRisk default, which stays exactly as cautious for
+    // every OTHER caller (init/sync against a real host).
+    await writeTryReadDowngrades(vendoDir, written.tools);
   } catch (error) {
     tools = { status: "failed", count: 0, warnings: [String(error)] };
   }
