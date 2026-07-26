@@ -47,7 +47,7 @@ import {
   type ToolRegistry,
   type VendoTheme,
 } from "@vendoai/core";
-import { createGuard, type Judge, type PolicyConfig, type VendoGuard } from "@vendoai/guard";
+import { createGuard, type Judge, type PolicyConfig, type PolicyFile, type VendoGuard } from "@vendoai/guard";
 import { createMcpDoor, type AppsPort, type HostOAuthAdapter, type McpDoor } from "@vendoai/mcp";
 import {
   adoptEphemeralSubject,
@@ -220,6 +220,7 @@ export interface Vendo {
 // without adding a direct @vendoai/actions or @vendoai/core dependency.
 export type { CapabilitiesFile, CatalogFile, ExtractedTool, OverridesFileV3 } from "@vendoai/actions";
 export type { SemanticsFile, VendoTheme } from "@vendoai/core";
+export type { PolicyFile } from "@vendoai/guard";
 
 export interface CreateVendoConfig {
   /** @deprecated Superseded by `models.agent` (models spec 2026-07-22);
@@ -315,7 +316,13 @@ export interface CreateVendoConfig {
       that loads tools), not at `createVendo` itself — wrap that call);
       `theme`/`brief`/`catalog`/`semantics` are trusted typed config, the same
       posture as the existing `catalog` key (zod parsing exists for untyped
-      file bytes, not typed config). `designRules` is a convenience alias for
+      file bytes, not typed config). `policy` is the parsed `policy.json`
+      document (the guard's `PolicyFile` shape — what the file read parses
+      into today), for the venue that holds its demo policy in memory where
+      the local `vendo try` writes the file; the longer-standing explicit
+      `policy` knob wins over it (the `apps.designRules` discipline), and
+      when the piece applies it feeds the guard inline, replacing the
+      file/cloud legs entirely. `designRules` is a convenience alias for
       `apps.designRules` — one seam, so a host composing everything from one
       profile object doesn't have to split it; when both are set the
       longer-standing `apps.designRules` knob wins, and either fixes the rules
@@ -329,6 +336,7 @@ export interface CreateVendoConfig {
     brief?: string;
     catalog?: CatalogFile;
     semantics?: SemanticsFile;
+    policy?: PolicyFile;
     designRules?: string;
   };
   /** 10-mcp §1 — the one flag: open the MCP door so outside agents (Claude,
@@ -1163,12 +1171,27 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     return readyState;
   };
   let resolveAppToolRisk: AppsRuntime["agentToolRisk"] | undefined;
+  // Task 15a: profile.policy is the parsed policy.json document held in
+  // memory — the hosted try venue's demo policy, where the local venue
+  // writes the file instead (cli/try/extract.ts). Precedence keeps the
+  // sibling pieces' discipline: the longer-standing explicit `policy` knob
+  // wins outright; otherwise the piece feeds the guard as inline rules +
+  // directions (defaulted like an absent file key), which replace the
+  // file/cloud legs entirely (inline wins with no merge — 00-overview
+  // decision 19); an unset piece leaves the guard's own file/cloud reads
+  // unchanged.
+  const configPolicy: PolicyConfig | undefined = config.policy ?? (
+    config.profile?.policy === undefined ? undefined : {
+      rules: config.profile.policy.rules ?? [],
+      directions: config.profile.policy.directions ?? [],
+    }
+  );
   const guard = createGuard({
     store,
     // The resolver is installed immediately after createApps below. Keeping the
     // hook in guard means chat/SSE and the MCP door reach the same decision.
     resolveRisk: (call, _descriptor, ctx) => resolveAppToolRisk?.(call, ctx),
-    ...(config.policy === undefined ? {} : { policy: config.policy }),
+    ...(configPolicy === undefined ? {} : { policy: configPolicy }),
     // cse lane 3 — a cloud policy.json body, consulted by the resolver STRICTLY
     // AFTER the local file and only within its existing opt-in path (decision
     // 3: no change for hosts that don't configure policy). Returns the cloud

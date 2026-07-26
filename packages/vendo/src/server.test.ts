@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { capturedPinBaselineSchema } from "@vendoai/actions";
 import {
   VENDO_APP_FORMAT,
+  VENDO_POLICY_FORMAT,
   VENDO_TREE_FORMAT_V2,
   VendoError,
   type AppDocument,
@@ -3140,6 +3141,72 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
     expect(unset.names).toContain("host_from_disk");
     expect(unset.system).toContain("Product\nDisk brief for the profile seam.");
     expect(unset.system).toContain("Disk Grotesk");
+  });
+
+  it("profile.policy configures the guard in-memory: posture leaves \"unconfigured\" and a blocking rule actually enforces through guardedTools", async () => {
+    await emptyCwd();
+    const store = await tempStore("vendo-profile-policy-store-");
+
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      profile: {
+        tools: [profileTool("host_invoices_list")],
+        policy: {
+          format: VENDO_POLICY_FORMAT,
+          directions: ["Hosted try venue demo policy, held in memory."],
+          rules: [{ match: { tool: "host_invoices_list" }, action: "block", note: "in-memory lockdown" }],
+        },
+      },
+    });
+    await vendo.store.ensureSchema();
+
+    // The posture the "running without a policy" banner reads: configured.
+    expect(vendo.guard.status().posture).toBe("rules");
+
+    // And it is a REAL policy, not a cosmetic posture flip — the rule blocks
+    // through guardedTools, the guard-bound path chat/apps/automations ride
+    // (mirrors the local venue's carried-policy enforcement test in
+    // cli/try/server.test.ts).
+    const outcome = await vendo.guardedTools.execute(
+      { id: "call_profile_policy", tool: "host_invoices_list", args: {} },
+      { principal, venue: "chat", presence: "present", sessionId: "session_profile_policy" },
+    );
+    expect(outcome).toMatchObject({ status: "blocked", reason: "in-memory lockdown" });
+  });
+
+  it("explicit config.policy wins over profile.policy, and an unset piece keeps the \"unconfigured\" posture", async () => {
+    await emptyCwd();
+
+    // Explicit wins: the in-memory piece runs everything, the explicit knob
+    // blocks — the block decides, so config.policy took precedence.
+    const explicit = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store: await tempStore("vendo-profile-policy-prec-"),
+      policy: { rules: [{ match: {}, action: "block", note: "explicit config wins" }] },
+      profile: {
+        tools: [profileTool("host_invoices_list")],
+        policy: { format: VENDO_POLICY_FORMAT, rules: [{ match: {}, action: "run" }] },
+      },
+    });
+    await explicit.store.ensureSchema();
+    const outcome = await explicit.guardedTools.execute(
+      { id: "call_profile_policy_prec", tool: "host_invoices_list", args: {} },
+      { principal, venue: "chat", presence: "present", sessionId: "session_profile_policy_prec" },
+    );
+    expect(outcome).toMatchObject({ status: "blocked", reason: "explicit config wins" });
+
+    // Unset piece → unchanged: no policy anywhere still reports the honest
+    // "unconfigured" posture.
+    const unset = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store: await tempStore("vendo-profile-policy-unset-"),
+      profile: { tools: [profileTool("host_invoices_list")] },
+    });
+    expect(unset.guard.status().posture).toBe("unconfigured");
   });
 });
 
