@@ -8,6 +8,7 @@ import { runDoctor } from "./cli/doctor.js";
 import { runEject } from "./cli/eject.js";
 import { runExtractApply } from "./cli/extract/apply.js";
 import { runInit, type InitOptions } from "./cli/init.js";
+import { runKnowledge } from "./cli/knowledge/index.js";
 import { runMcp } from "./cli/mcp/index.js";
 import { CLI_VERSION } from "./cli/shared.js";
 import { runSync } from "./cli/sync.js";
@@ -27,6 +28,7 @@ Advanced:
   sync [dir]      Re-extract tools and baselines, then AI-enrich entries the code diff affected (keyless: structural only; --strict is the CI gate)
   eject <surface> [dir]  Copy a shipped chrome surface's presentation source into your repo (--list to see surfaces)
   extract [dir]   Apply a coding agent's extraction draft through the deterministic guards (--apply <draft.json>)
+  knowledge <verb> Sync local docs/glossary/API sources into the product knowledge base (add, list, remove, sync)
   mcp <command>   Generate MCP registry discovery and domain-verification files
   cloud <command> Use the public Vendo Cloud API
   config <command> Push/pull a .vendo surface to/from hosted config, or show surface owners
@@ -192,6 +194,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (command === "cloud") return runCloud(args);
   if (command === "config") return runConfig(args);
+  if (command === "knowledge") return runKnowledge(args);
   if (command === "mcp") return runMcp(args);
   if (command === "init") {
     const problems = optionErrors(args, INIT_FLAGS, INIT_VALUE_OPTIONS);

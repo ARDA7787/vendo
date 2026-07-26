@@ -186,6 +186,9 @@ describe("generation engine through createApps", () => {
 
     expect(prompts[0]).toContain(`CURRENT DATE: ${today}`);
     expect(prompts.at(-1)).toContain(`CURRENT DATE: ${today}`);
+    // Design guidance (2026-07 demo feedback): the EDIT dialect also forbids
+    // emojis in any text an op introduces.
+    expect(prompts.at(-1)).toContain("No emojis, ever");
   });
 
   describe("data-sighted verification pass (pipeline.endPass at the runtime seam)", () => {
@@ -254,6 +257,58 @@ describe("generation engine through createApps", () => {
         .find(({ component }) => component === "Stat");
       expect(stat?.props?.label).toBe("Total clients");
     });
+
+    // Re-gate 2026-07-26 finding 4 — wrong-data-binding is the top model-error
+    // class in every arm and the copy-only verify caught none of them. The
+    // rebind arm (pipeline.rebind, default OFF) points the binding at the
+    // right field through a strict enum of real paths.
+    it("rebinds a lying binding at the runtime seam under pipeline.rebind and persists the corrected app", async () => {
+      const accountsWire = '<App name="Balances"><Query id="accounts" tool="host_accounts"/><Stack><Stat label="Total balance" value={accounts.data.0.balanceCents}/></Stack></App>';
+      const accountsOutput = {
+        data: [
+          { id: "acct_1", name: "Checking", balanceCents: 120000 },
+          { id: "acct_2", name: "Savings", balanceCents: 230000 },
+        ],
+        totalBalanceCents: 350000,
+      };
+      const accountTools: ToolRegistry = {
+        async descriptors() {
+          return [{ name: "host_accounts", description: "List accounts", risk: "read", inputSchema: { type: "object", properties: {} } }];
+        },
+        async execute(call) {
+          if (call.tool === "host_accounts") return { status: "ok", output: structuredClone(accountsOutput) };
+          return { status: "error", error: { code: "not-found", message: "missing" } };
+        },
+      };
+      let calls = 0;
+      const model = scriptedLanguageModel((call) => {
+        calls += 1;
+        if (call.tools?.[0]?.name === "rebind_bindings") {
+          return { tool: "rebind_bindings", input: { fix_0: "/accounts/totalBalanceCents" } };
+        }
+        if (promptText(call).includes("ACTUAL data")) return "<Edit></Edit>";
+        return accountsWire;
+      });
+      const runtime = createApps({
+        store: memoryStore(),
+        guard: guardFixture(),
+        tools: accountTools,
+        catalog: [],
+        model,
+        pipeline: { endPass: true, rebind: true },
+      });
+
+      const app = await runtime.create({ prompt: "total balance across my accounts" }, ctx);
+
+      // create + rebind strict call + copy pass — nothing else.
+      expect(calls).toBe(3);
+      const stat = (app.tree as { nodes: Array<{ component: string; props?: Record<string, unknown> }> }).nodes
+        .find(({ component }) => component === "Stat");
+      expect(stat?.props?.value).toEqual({ $path: "/accounts/totalBalanceCents" });
+      expect(stat?.props?.label).toBe("Total balance");
+      // The corrected app is what persists.
+      expect(await runtime.get(app.id, ctx)).toEqual(app);
+    });
   });
 
   describe("exemplar create contract (pipeline.exemplarContract)", () => {
@@ -277,6 +332,9 @@ describe("generation engine through createApps", () => {
       expect(prompts[0]).toContain("<building_great_apps>");
       expect(prompts[0]).toContain("<examples>");
       expect(prompts[0]).toContain("Claims tell the truth");
+      // Design guidance (2026-07 demo feedback): generated UI text never
+      // carries emojis.
+      expect(prompts[0]).toContain("No emojis, ever");
       expect(prompts[0]).toContain("a semantically wrong tool is worse than a disclaimer");
       expect(prompts[0]).toContain("rows lacking the named series draws nothing");
       expect(prompts[0]).toContain(`CURRENT DATE: ${new Date().toISOString().slice(0, 10)}`);
@@ -1613,8 +1671,10 @@ describe("v2 create integration guards (verify-v2 findings)", () => {
     const document = await modelEngine.create({ prompt: "Build it" }, guardDeps(model));
     expect(document.components?.Note).toContain("export default");
     expect(prompts).toHaveLength(2);
-    expect(prompts[1]).toContain("REPAIR_THESE_ISSUES");
-    expect(prompts[1]).toContain("Note");
+    // demo-latency lane — an island-only failure rides the island-scoped
+    // repair (one small call rewriting just the island), not a full re-gen.
+    expect(prompts[1]).toContain("ISLANDS_TO_FIX: Note");
+    expect(prompts[1]).toContain("export default");
   });
 
   it("repairs a syntactically-broken island instead of persisting it", async () => {
@@ -1904,7 +1964,8 @@ describe("v2 create integration guards (verify-v2 findings)", () => {
     // The nested `body` wrapper is visible — flat args against this tool were
     // the live P3 failure (the host route read an empty JSON body and ran
     // with defaults).
-    expect(captured).toContain("host_createOrder [write] (input: {body: {merchant, amountCents}})");
+    // amountCents carries its unit annotation (re-gate 2026-07-26 I5-C).
+    expect(captured).toContain("host_createOrder [write] (input: {body: {merchant, amountCents (integer cents)}})");
     expect(captured).toContain("host_transfer [destructive] (input: {amount, recipient_name})");
   });
 

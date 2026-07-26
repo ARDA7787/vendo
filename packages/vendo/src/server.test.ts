@@ -1728,7 +1728,7 @@ describe("app design rules (spec 2026-07-20)", () => {
     },
   }) as unknown as LanguageModel;
 
-  const APP_WIRE = '<App name="Design check"><Text text="ok"/></App>';
+  const APP_WIRE = '<App name="Design check"><Text text="ok"/><Disclaimer reason="Fixture app."/></App>';
   const flatPrompt = (prompt: Array<{ content: string | Array<{ text?: string }> }>): string =>
     prompt.map((message) => typeof message.content === "string"
       ? message.content
@@ -1822,11 +1822,14 @@ describe("app design rules (spec 2026-07-20)", () => {
     expect(sections.every((section) => section.startsWith("File rules: airy layouts."))).toBe(true);
   });
 
-  it("re-resolves cloud overrides semantics/domains per generation — a cold snapshot that warms is NOT locked (cse lane 3, #557 review)", async () => {
-    // The trap: a local tools.json contributes a DEFINED merge (domains here),
-    // so a boot-once memoize would lock the local-only result on the first
-    // (cold-snapshot) generation and drop cloud-owned overrides for the process
-    // lifetime. Live per-generation resolution picks up cloud on the next gen.
+  it("re-resolves cloud overrides semantics/domains per generation — merged live, not locked (cse lane 3, #557)", async () => {
+    // The trap: memoizing the semantics provider would lock its first result for
+    // the process lifetime. It must re-resolve per generation so both a local
+    // tools.json edit AND the cloud-owned overrides keep applying. NOTE (#557):
+    // enablement now resolves the overrides surface AUTHORITATIVELY on the first
+    // request (the generation's own descriptors() read awaits it), which also
+    // warms the shared config snapshot — so the cloud-owned domains are picked
+    // up as soon as the first generation, no longer only after a cold window.
     const root = await mkdtemp(join(tmpdir(), "vendo-cloud-overrides-"));
     await mkdir(join(root, ".vendo"), { recursive: true });
     await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
@@ -1843,15 +1846,9 @@ describe("app design rules (spec 2026-07-20)", () => {
     vi.stubEnv("VENDO_API_KEY", "vnd_cloud_key");
     vi.stubEnv("VENDO_CLOUD_URL", "https://cloud-overrides.test");
     const cloudOverrides = { format: "vendo/overrides@3", tools: {}, domains: { has: ["cloud_ledger"], hasNot: [] } };
-    // Gate the config fetch so the snapshot stays COLD through the first
-    // generation and warms only before the second — a deterministic cold start
-    // (an instant mock would race the generation's own awaits).
-    let releaseFetch = (): void => undefined;
-    const fetchGate = new Promise<void>((resolve) => { releaseFetch = resolve; });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/api/v1/config")) {
-        await fetchGate;
         return Response.json(
           { version: "rel_1", config: { "overrides.json": JSON.stringify(cloudOverrides) } },
           { headers: { etag: '"rel_1"' } },
@@ -1871,21 +1868,146 @@ describe("app design rules (spec 2026-07-20)", () => {
     const domainsLine = (all: string[]): string =>
       all.filter((p) => p.includes("DATA DOMAINS")).join("\n");
 
-    // First generation: cold snapshot (fetch gated) → local-only domains.
+    // First generation: local domains always apply; this generation's own
+    // descriptors() read also resolves the cloud-owned overrides (enablement,
+    // #557) and warms the shared config snapshot for what follows.
     await vendo.apps.create({ prompt: "Build a dashboard" }, ctx);
     expect(domainsLine(prompts)).toContain("local_ledger");
-    expect(domainsLine(prompts)).not.toContain("cloud_ledger");
 
-    // Release the config fetch and let it settle, then generate again.
-    releaseFetch();
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // Edit the LOCAL tools.json and generate again: the change is reflected,
+    // proving the semantics provider is re-resolved live per generation (not
+    // memoized), and the cloud-owned overrides still merge in.
+    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
+      format: "vendo/tools@3",
+      tools: [],
+      domains: { has: ["local_ledger_v2"], hasNot: [] },
+    }));
     prompts.length = 0;
     await vendo.apps.create({ prompt: "Build another dashboard" }, ctx);
 
-    // The SECOND generation reflects the cloud-owned overrides — proving the
-    // provider is re-resolved live, not locked on the cold first read.
+    expect(domainsLine(prompts)).toContain("local_ledger_v2");
     expect(domainsLine(prompts)).toContain("cloud_ledger");
-    expect(domainsLine(prompts)).toContain("local_ledger");
+  });
+});
+
+describe("#557 cloud overrides tool ENABLEMENT (disabled/audience)", () => {
+  const toolsFileV3 = (names: string[]) => ({
+    format: "vendo/tools@3",
+    tools: names.map((name) => ({
+      name,
+      description: name,
+      inputSchema: { type: "object" },
+      risk: "read",
+      binding: { kind: "route", method: "GET", path: `/${name}`, argsIn: "query" },
+    })),
+  });
+  const overridesDoc = (tools: Record<string, unknown>) =>
+    JSON.stringify({ format: "vendo/overrides@3", tools });
+
+  async function composeWithCloud(options: {
+    tools: string[];
+    localOverrides?: unknown;
+    cloudConfigDoc?: Record<string, string> | null;
+    gate?: boolean;
+  }): Promise<{ vendo: Vendo; fetchMock: ReturnType<typeof vi.fn>; releaseFetch: () => void }> {
+    const root = await mkdtemp(join(tmpdir(), "vendo-557-"));
+    await mkdir(join(root, ".vendo"), { recursive: true });
+    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify(toolsFileV3(options.tools)));
+    if (options.localOverrides !== undefined) {
+      await writeFile(join(root, ".vendo", "overrides.json"), JSON.stringify(options.localOverrides));
+    }
+    const originalCwd = process.cwd();
+    process.chdir(root);
+    cleanups.push(async () => { process.chdir(originalCwd); await rm(root, { recursive: true, force: true }); });
+
+    vi.stubEnv("E2B_API_KEY", "");
+    vi.stubEnv("VENDO_API_KEY", "vnd_557_key");
+    vi.stubEnv("VENDO_CLOUD_URL", "https://cloud-557.test");
+
+    let releaseFetch = (): void => undefined;
+    const gate = new Promise<void>((resolve) => { releaseFetch = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/config")) {
+        if (options.gate) await gate;
+        return Response.json(
+          { version: "rel_1", config: options.cloudConfigDoc ?? null },
+          { headers: { etag: '"rel_1"' } },
+        );
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = await tempStore("vendo-557-store-");
+    await store.ensureSchema();
+    // connectors:[] avoids the cloud tools connector's descriptor fetch — the
+    // only config fetch under test is /api/v1/config (the overrides read).
+    const vendo = createVendo({ model: {} as LanguageModel, principal: async () => principal, store, connectors: [] });
+    cleanups.push(async () => { await vendo.store.close(); });
+    return { vendo, fetchMock, releaseFetch };
+  }
+
+  it("constructs with a key WITHOUT any config fetch at compose (deferred missSurface — portability)", async () => {
+    const { fetchMock } = await composeWithCloud({
+      tools: ["host_a", "host_b"],
+      cloudConfigDoc: { "overrides.json": overridesDoc({ host_b: { disabled: true } }) },
+    });
+    // Nothing has served a tool yet, so no compose-time console I/O happened.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a cloud-published overrides.json disabling a tool removes it from the served surface", async () => {
+    const { vendo, fetchMock } = await composeWithCloud({
+      tools: ["host_a", "host_b"],
+      cloudConfigDoc: { "overrides.json": overridesDoc({ host_b: { disabled: true } }) },
+    });
+    const names = (await vendo.actions.descriptors()).map((d) => d.name).filter((n) => n.startsWith("host_")).sort();
+    expect(names).toEqual(["host_a"]);
+    expect(fetchMock).toHaveBeenCalled();
+    const outcome = await vendo.actions.execute({ id: "c1", tool: "host_b", args: {} }, ctx);
+    expect(outcome).toMatchObject({ status: "error", error: { code: "not-found" } });
+  });
+
+  it("NEVER serves a cloud-disabled tool on a cold first load — the first serve AWAITS the overrides fetch", async () => {
+    const { vendo, releaseFetch } = await composeWithCloud({
+      tools: ["host_a", "host_b"],
+      gate: true,
+      cloudConfigDoc: { "overrides.json": overridesDoc({ host_b: { disabled: true } }) },
+    });
+    // The very first serve must not resolve before the cloud overrides fetch
+    // does — no tool is exposed on a cold boot ahead of the override.
+    const pending = vendo.actions.descriptors();
+    const raced = await Promise.race([
+      pending.then(() => "resolved" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    expect(raced).toBe("pending");
+    releaseFetch();
+    const names = (await pending).map((d) => d.name).filter((n) => n.startsWith("host_")).sort();
+    expect(names).toEqual(["host_a"]); // host_b never became live
+  });
+
+  it("narrows a tool's audience via cloud overrides (default MCP door drops non-end-user tools)", async () => {
+    const { vendo } = await composeWithCloud({
+      tools: ["host_a", "host_b"],
+      cloudConfigDoc: { "overrides.json": overridesDoc({ host_b: { audience: "internal" } }) },
+    });
+    const menu = await vendo.actions.surfaceMenu("mcp");
+    expect(menu).toContain("host_a");
+    expect(menu).not.toContain("host_b");
+  });
+
+  it("a local .vendo/overrides.json wins — enablement is decided from the file, not a cloud fetch", async () => {
+    const { vendo, fetchMock } = await composeWithCloud({
+      tools: ["host_a", "host_b"],
+      localOverrides: { format: "vendo/overrides@3", tools: { host_a: { disabled: true } } },
+      cloudConfigDoc: { "overrides.json": overridesDoc({ host_b: { disabled: true } }) },
+    });
+    const names = (await vendo.actions.descriptors()).map((d) => d.name).filter((n) => n.startsWith("host_")).sort();
+    // The LOCAL file decides (host_a disabled); the cloud doc is not consulted.
+    expect(names).toEqual(["host_b"]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -2048,7 +2170,7 @@ describe("09 §3 conversational turn against the real composed store", () => {
               {
                 type: "text-delta",
                 id: "generation",
-                delta: '<Text text="Ready"/></Stack></App>',
+                delta: '<Text text="Ready"/><Disclaimer reason="Fixture app."/></Stack></App>',
               },
               { type: "text-end", id: "generation" },
               { type: "finish", usage, finishReason: { unified: "stop", raw: undefined } },
@@ -2110,7 +2232,7 @@ describe("09 §3 conversational turn against the real composed store", () => {
     expect(views.length).toBeGreaterThanOrEqual(3);
     expect(views[0]?.data.payload).toMatchObject({ streaming: true, nodes: [{ id: "root" }, { id: "stack-1" }] });
     expect(new Set(views.map((view) => view.id))).toEqual(new Set([`vendo-view:${views[0]?.data.appId}`]));
-    expect(views.at(-1)?.data.payload.nodes).toHaveLength(3);
+    expect(views.at(-1)?.data.payload.nodes).toHaveLength(4);
     expect(views.at(-1)?.data.payload.streaming).toBeUndefined();
   });
 });
@@ -2171,6 +2293,169 @@ describe("ENG-252 agent.loadout through createVendo", () => {
     expect(toolNamesPerCall[0]).toContain("host_beta");
     expect(toolNamesPerCall[0]).not.toContain("host_alpha");
     expect(toolNamesPerCall[0]).toContain("vendo_tools_search");
+  });
+});
+
+describe("surfaces.agent through createVendo", () => {
+  /** A .vendo pair whose overrides curate the AGENT surface. */
+  async function curatedRoot(surfaces: unknown): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "vendo-surfaces-agent-"));
+    const previousCwd = process.cwd();
+    cleanups.push(async () => {
+      process.chdir(previousCwd);
+      await rm(root, { recursive: true, force: true });
+    });
+    await mkdir(join(root, ".vendo"));
+    const tool = (name: string, description: string) => ({
+      name,
+      description,
+      inputSchema: { type: "object" },
+      risk: "read",
+      binding: { kind: "route", method: "GET", path: `/api/${name}`, argsIn: "query" },
+    });
+    await writeFile(join(root, ".vendo", "tools.json"), JSON.stringify({
+      format: "vendo/tools@3",
+      tools: [tool("host_listAccounts", "List accounts"), tool("host_exportLedger", "Export the raw ledger to CSV")],
+    }));
+    await writeFile(join(root, ".vendo", "overrides.json"), JSON.stringify({
+      format: "vendo/overrides@3",
+      tools: {},
+      ...(surfaces === undefined ? {} : { surfaces }),
+    }));
+    process.chdir(root);
+    return root;
+  }
+
+  function recordingModel(scripted: Array<"search" | "text">) {
+    const toolNamesPerCall: string[][] = [];
+    let call = 0;
+    return { toolNamesPerCall, model: async () => {
+      const { MockLanguageModelV3, simulateReadableStream } = await import("ai/test");
+      return new MockLanguageModelV3({
+        doStream: async (req) => {
+          toolNamesPerCall.push(((req as { tools?: Array<{ name: string }> }).tools ?? []).map((tool) => tool.name));
+          const step = scripted[Math.min(call, scripted.length - 1)] ?? "text";
+          call += 1;
+          const finish = {
+            type: "finish" as const,
+            usage: {
+              inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 0, text: 0, reasoning: 0 },
+            },
+            finishReason: { unified: step === "search" ? "tool-calls" as const : "stop" as const, raw: undefined },
+          };
+          return {
+            stream: simulateReadableStream({
+              chunks: step === "search"
+                ? [
+                  {
+                    type: "tool-call" as const,
+                    toolCallId: "call_search",
+                    toolName: "vendo_tools_search",
+                    input: JSON.stringify({ query: "export the raw ledger" }),
+                  },
+                  finish,
+                ]
+                : [
+                  { type: "text-start" as const, id: "t1" },
+                  { type: "text-delta" as const, id: "t1", delta: "Done." },
+                  { type: "text-end" as const, id: "t1" },
+                  finish,
+                ],
+            }),
+          };
+        },
+      });
+    } };
+  }
+
+  it("offers the agent only its curated menu — and never gates Vendo's own vendo_* tools", async () => {
+    await curatedRoot({ agent: { tools: ["host_listAccounts"] } });
+    const store = await tempStore("vendo-surfaces-agent-store-");
+    const recorder = recordingModel(["text"]);
+    const vendo = createVendo({
+      model: await recorder.model() as unknown as LanguageModel,
+      principal: async () => principal,
+      store,
+    });
+    const turn = await vendo.handler(request("POST", "/threads", {
+      threadId: "thr_surface_agent",
+      message: { id: "m1", role: "user", parts: [{ type: "text", text: "hello" }] },
+    }));
+    expect(turn.status).toBe(200);
+    await turn.text();
+
+    expect(recorder.toolNamesPerCall[0]).toContain("host_listAccounts");
+    expect(recorder.toolNamesPerCall[0]).not.toContain("host_exportLedger");
+    expect(recorder.toolNamesPerCall[0]).toContain("vendo_tools_search");
+    // The registry itself is untouched — the door and the host's own code still
+    // see the whole surface; only what the AGENT is offered is curated.
+    expect((await vendo.actions.descriptors()).map((entry) => entry.name)).toContain("host_exportLedger");
+  });
+
+  it("never materializes an off-menu tool-search hit into a callable tool", async () => {
+    await curatedRoot({ agent: { tools: ["host_listAccounts"] } });
+    const store = await tempStore("vendo-surfaces-agent-search-store-");
+    const recorder = recordingModel(["search", "text"]);
+    const vendo = createVendo({
+      model: await recorder.model() as unknown as LanguageModel,
+      principal: async () => principal,
+      store,
+    });
+    const turn = await vendo.handler(request("POST", "/threads", {
+      threadId: "thr_surface_search",
+      message: { id: "m1", role: "user", parts: [{ type: "text", text: "export the raw ledger" }] },
+    }));
+    expect(turn.status).toBe(200);
+    await turn.text();
+
+    // The model searched for the excluded tool by its exact description and the
+    // step AFTER the search still does not offer it.
+    expect(recorder.toolNamesPerCall.length).toBeGreaterThanOrEqual(2);
+    expect(recorder.toolNamesPerCall.at(-1)).not.toContain("host_exportLedger");
+  });
+
+  it("binds an explicit agent.loadout to the menu — host config chooses within it, never around it", async () => {
+    await curatedRoot({ agent: { tools: ["host_listAccounts"] } });
+    const store = await tempStore("vendo-surfaces-agent-loadout-store-");
+    const recorder = recordingModel(["text"]);
+    const vendo = createVendo({
+      model: await recorder.model() as unknown as LanguageModel,
+      principal: async () => principal,
+      store,
+      // The host names BOTH tools in its explicit loadout; the menu still wins.
+      agent: { loadout: ["host_listAccounts", "host_exportLedger"] },
+    });
+    const turn = await vendo.handler(request("POST", "/threads", {
+      threadId: "thr_surface_loadout",
+      message: { id: "m1", role: "user", parts: [{ type: "text", text: "hello" }] },
+    }));
+    expect(turn.status).toBe(200);
+    await turn.text();
+
+    expect(recorder.toolNamesPerCall[0]).toContain("host_listAccounts");
+    expect(recorder.toolNamesPerCall[0]).not.toContain("host_exportLedger");
+    expect(recorder.toolNamesPerCall[0]).toContain("vendo_tools_search");
+  });
+
+  it("without a surfaces block the agent surface is unchanged", async () => {
+    await curatedRoot(undefined);
+    const store = await tempStore("vendo-surfaces-agent-none-store-");
+    const recorder = recordingModel(["text"]);
+    const vendo = createVendo({
+      model: await recorder.model() as unknown as LanguageModel,
+      principal: async () => principal,
+      store,
+    });
+    const turn = await vendo.handler(request("POST", "/threads", {
+      threadId: "thr_surface_none",
+      message: { id: "m1", role: "user", parts: [{ type: "text", text: "hello" }] },
+    }));
+    expect(turn.status).toBe(200);
+    await turn.text();
+
+    expect(recorder.toolNamesPerCall[0]).toContain("host_listAccounts");
+    expect(recorder.toolNamesPerCall[0]).toContain("host_exportLedger");
   });
 });
 

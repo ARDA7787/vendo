@@ -1,6 +1,7 @@
 import {
   createActions,
   mergedSemanticsAndDomains,
+  overridesFileV3Schema,
   type ActionsRegistry,
   type ActionsRunContext,
   type CapabilitiesFile,
@@ -10,7 +11,8 @@ import {
   type OverridesFileV3,
   type ServerActionHandler,
 } from "@vendoai/actions";
-import { createAgent, type VendoAgent } from "@vendoai/agent";
+import { createAgent, VENDO_TOOL_PACK_PREFIX, type VendoAgent } from "@vendoai/agent";
+import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
   createApps,
@@ -36,6 +38,7 @@ import {
   type ComponentCatalog,
   type ComponentRegistry,
   type Json,
+  type KnowledgeAdapter,
   type PermissionGrant,
   type Principal,
   type RunContext,
@@ -48,6 +51,7 @@ import {
   type VendoTheme,
 } from "@vendoai/core";
 import { createGuard, type Judge, type PolicyConfig, type PolicyFile, type VendoGuard } from "@vendoai/guard";
+import { createKnowledgeTools } from "@vendoai/knowledge";
 import { createMcpDoor, type AppsPort, type HostOAuthAdapter, type McpDoor } from "@vendoai/mcp";
 import {
   adoptEphemeralSubject,
@@ -90,9 +94,10 @@ import type { LanguageModel } from "ai";
 import {
   capabilitySurfaceSnapshot,
   createCapabilityMissCapture,
+  type CapabilitySurfaceSnapshot,
 } from "./capability-misses.js";
 import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson } from "./catalog.js";
-import { configureVendoModelSlots } from "#dev-creds/model";
+import { bindVendoModelSlots } from "#dev-creds/model";
 // Models spec 2026-07-22 — `vendoModel(name?)` is the vendo model family
 // entry: the lazily-resolving env ladder createVendo composes when the host
 // passes none, exported for host code too (judge wiring, host features). No
@@ -135,7 +140,7 @@ import { cloudTools } from "./cloud-tools.js";
 // rides the server surface the same way: pass it explicitly via
 // createVendo({ connectors: [cloudTools({...})] }) to scope with `apps`.
 export { cloudTools, type CloudToolsOptions } from "./cloud-tools.js";
-import { cloudConfig, type CloudConfig } from "./cloud-config.js";
+import { cloudConfig, type CloudConfig, type CloudConfigResult } from "./cloud-config.js";
 // The Cloud hosted-config adapter (the read half of the config-resolution seam)
 // rides the server surface too: the composition seam (selectConfigSurface)
 // consults it for a `.vendo` surface the host neither set nor keeps on disk.
@@ -268,6 +273,10 @@ export interface CreateVendoConfig {
   brief?: string;
   store?: VendoStore;
   sandbox?: SandboxAdapter;
+  /** Knowledge K1 — the product knowledge base seam (core's KnowledgeAdapter).
+      Configured, it composes the `vendo_knowledge_search` agent tool; unset,
+      the tool does not exist (precedence: selectKnowledge). */
+  knowledge?: KnowledgeAdapter;
   connectors?: Connector[];
   /** 04-actions §3 — an explicit connections adapter; always wins over the
       defaults (precedence: selectConnections). */
@@ -364,6 +373,10 @@ export interface CreateVendoConfig {
       DEFAULT_TOOL_OUTPUT_CAP so one huge host-tool response can't blow the context;
       pass 0 to disable. `historyWindow` bounds messages re-sent per turn (default: full). */
   agent?: {
+    /** Host voice and standing guidance, appended to the agent's system
+        prompt every turn (03 §3 `instructions`) — tone, formatting, what to
+        emphasize. Policy belongs in guard directions, not here. */
+    instructions?: string;
     toolOutputCap?: number;
     maxOutputTokens?: number;
     historyWindow?: number;
@@ -418,6 +431,10 @@ export interface CreateVendoConfig {
   apps?: {
     experimentalServedApps?: boolean;
     experimentalMachines?: boolean;
+    /** Generation-pipeline flags (exemplarContract, structuredRepair,
+        regionParallel, endPass) — opt-in while the A/B is measured; threaded
+        verbatim to the apps engine. */
+    pipeline?: AppsConfig["pipeline"];
     /** Host design rules for app generation (spec 2026-07-20): the same prose
         `.vendo/design-rules.md` carries, for hosts that prefer programmatic
         config. A non-blank string wins over the file and is fixed for the
@@ -560,6 +577,15 @@ function selectConnectors(configured: Connector[] | undefined): Connector[] {
     return [cloudTools({ apiKey, ...(baseUrl === undefined ? {} : { baseUrl }) })];
   }
   return [];
+}
+
+/** ADAPTER RULE, knowledge seam: which KnowledgeAdapter (if any) backs the
+    `vendo_knowledge_search` tool. v1 precedence: an explicitly passed adapter
+    or nothing — no VENDO_API_KEY cloud default yet (that arrives with the
+    hosted knowledge engine, K3); unconfigured means the tool simply does not
+    compose, so the agent never advertises a knowledge base the host lacks. */
+function selectKnowledge(configured: KnowledgeAdapter | undefined): KnowledgeAdapter | undefined {
+  return configured;
 }
 
 /** ADAPTER RULE (docs/superpowers/specs/2026-07-17-vendo-cloud-definition-design.md):
@@ -1111,9 +1137,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // blocks consume, plus the composed paint knob (family fast pick when the
   // agent slot rides the ladder; the deprecated paint.model otherwise).
   const inference = resolveModels(config);
-  // models.judge feeds host-wired vendoModel("vendo-judge") instances (v1
-  // plumbing, see configureVendoModelSlots) — there is NO judge default.
-  configureVendoModelSlots(config.models);
+  // models.judge feeds the judge the host wired from vendoModel("vendo-judge"):
+  // the model rides Judge.model, and composition binds THIS instance's config
+  // onto exactly that model (bindVendoModelSlots — per createVendo instance,
+  // no process-level registry). A custom judge without a model, or a judge
+  // built on a BYO model object, is untouched — and there is NO judge default.
+  bindVendoModelSlots(config.judge?.model, config.models);
   // cse lane 3 — the Cloud hosted-config adapter, selected at THIS composition
   // seam from VENDO_API_KEY (adapter rule: the surfaces themselves never read
   // the key; cloudKeyOptions lives only here). Constructing it is PURE (closures
@@ -1272,21 +1301,60 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // Connectors seam (adapter rule): explicit array wins, VENDO_API_KEY
   // defaults the Cloud tools connector for a wholly unset slot.
   const resolvedConnectors = selectConnectors(config.connectors);
-  // cse lane 3 NOTE — cloud overrides do NOT feed the actions registry's tool
-  // ENABLEMENT here. The actions block accepts an `overrides` injection
-  // (additive, tested), but wiring it from cloud requires the resolution to run
-  // on first REQUEST; the registry's first `loadHost` is driven at COMPOSE by
-  // the eager capability-miss surface (`missSurface = actions.descriptors()`
-  // below) and memoized, so injecting a cloud read there would fetch at module
-  // init (Workers global-scope violation) or lock an empty result before the
-  // snapshot warms. Making it correct means deferring that eager compose-time
-  // descriptors() call — an existing-behavior change beyond this seam. Reported
-  // to the coordinator. Cloud overrides DO feed app-generation semantics/domains
-  // (hostSemanticsProvider, resolved lazily per generation) below.
+  // #557 — cloud overrides.json feeds the actions registry's tool ENABLEMENT
+  // (disabled/audience), not only app-generation semantics/domains. The registry
+  // resolves `config.overrides` ONCE through its memoized `loadHost`, and every
+  // tool-serving path (descriptors/execute/search/surfaceMenu) awaits loadHost
+  // before it exposes anything — so a cloud-disabled tool is NEVER live before
+  // the override resolves. The provider below reads AUTHORITATIVELY via
+  // configCloud.fetch() (awaited), NOT the cold stale-while-revalidate
+  // snapshot: the whole point of the async design is that enablement resolves
+  // before the first serve, so a cloud disable can never leak on a cold boot.
+  // Precedence mirrors selectConfigSurface (file → cloud): a local
+  // .vendo/overrides.json wins and is read by the registry itself (provider
+  // returns undefined); only a cloud-OWNED surface triggers the fetch. This is
+  // now safe at compose because `missSurface` below is deferred — nothing calls
+  // actions.descriptors()/loadHost at module init, so no console fetch happens
+  // in Workers global scope (portability-gate).
+  const overridesEnablementProvider = async (): Promise<OverridesFileV3 | undefined> => {
+    // File-owned: let the registry read the local .vendo/overrides.json (which
+    // also handles v1/legacy migration). No cloud fetch decides enablement.
+    if (readSurfaceFile("overrides.json") !== undefined) return undefined;
+    // Cloud-owned: AWAIT the authoritative read so enablement is resolved before
+    // any tool is served (boot-once on the first request).
+    let result: CloudConfigResult;
+    try {
+      result = await configCloud!.fetch();
+    } catch (error) {
+      // A flaky/unreachable console must not permanently brick the registry
+      // (loadHost memoizes its result). Degrade to no cloud overrides this boot,
+      // the same fail-open posture as the guard policy fallback; key/meter
+      // problems still surface on the first real service call.
+      console.warn(
+        "[vendo] hosted overrides.json fetch failed; tool enablement falls back to the local file / none "
+        + `this boot: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return undefined;
+    }
+    const body = result.config?.["overrides.json"];
+    if (body === undefined) return undefined;
+    try {
+      return overridesFileV3Schema.parse(JSON.parse(body));
+    } catch (error) {
+      console.error(
+        "[vendo] hosted overrides.json is malformed; ignoring it for tool enablement this boot: "
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return undefined;
+    }
+  };
   const actionsConfig: {
     dir: string;
     tools?: ExtractedTool[];
-    overrides?: OverridesFileV3;
+    // The in-memory try-surface doc (profile.overrides) OR the cloud
+    // enablement provider (#557) ride the same registry seam — both resolve
+    // through loadHost to the same disabled/audience enablement path.
+    overrides?: OverridesFileV3 | (() => Promise<OverridesFileV3 | undefined>);
     capabilities?: CapabilitiesFile;
     connectors?: Connector[];
     actAs?: ActAs;
@@ -1304,7 +1372,15 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // added with this seam). Inside the registry each wins over its dir-read
     // file, so per-piece precedence needs no second path here.
     ...(config.profile?.tools === undefined ? {} : { tools: config.profile.tools }),
-    ...(config.profile?.overrides === undefined ? {} : { overrides: config.profile.overrides }),
+    // Overrides seam (#557 + Task 15a): an explicitly-passed in-memory
+    // profile.overrides wins (adapter rule); otherwise a cloud-configured host
+    // gets the enablement provider. Both flow through the registry's single
+    // `overrides` seam to the same disabled/audience enablement resolution.
+    ...(config.profile?.overrides !== undefined
+      ? { overrides: config.profile.overrides }
+      : configCloud === undefined
+        ? {}
+        : { overrides: overridesEnablementProvider }),
     ...(config.profile?.capabilities === undefined ? {} : { capabilities: config.profile.capabilities }),
     ...(resolvedConnectors.length === 0 ? {} : { connectors: resolvedConnectors }),
     ...(actAsSeam === undefined ? {} : { actAs: actAsSeam }),
@@ -1559,6 +1635,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // family fast pick when the agent slot rides the ladder, the deprecated
     // paint.model otherwise; paint.disabled survives as the one-lane switch.
     ...(inference.paint === undefined ? {} : { paint: inference.paint }),
+    ...(config.apps?.pipeline === undefined ? {} : { pipeline: config.apps.pipeline }),
     // cse lane 3 — theme/semantics/domains flow as PROVIDER thunks so a
     // cloud-owned surface applies without a compose-time fetch. semantics/domains
     // resolve live per generation (pick up cloud overrides as the snapshot warms);
@@ -1569,6 +1646,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     ...(appsCloud === undefined ? {} : { cloud: cloudApps(appsCloud) }),
     semantics: () => hostSemanticsProvider()?.semantics,
     domains: () => hostSemanticsProvider()?.domains,
+    // Re-gate 2026-07-26 finding 2 — the create-time shape sampler skips
+    // connector tools whose toolkit is not connected for the caller. Backed by
+    // the same connections lookup (and per-subject cache) the agent's
+    // connected-toolkit loadout seed rides; `connectedToolkitsFor` is a
+    // hoisted function declaration defined next to that seed below.
+    connectedToolkits: (toolkitCtx) => connectedToolkitsFor(toolkitCtx),
     secrets,
     // execution-v2 — the machine lifecycle's seams: the selected v2 adapter
     // (every provider speaks the canonical seam since the Wave 5 Cloud port)
@@ -1588,9 +1671,23 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   });
   resolveAppToolRisk = apps.agentToolRisk;
   actions.add(apps.agentTools());
-  const missSurface = actions.descriptors()
-    .then(capabilitySurfaceSnapshot)
-    .catch(() => capabilitySurfaceSnapshot([]));
+  // Knowledge K1 — the tool exists exactly when an adapter is configured;
+  // no adapter, no `vendo_knowledge_search` in any descriptor surface.
+  const knowledge = selectKnowledge(config.knowledge);
+  if (knowledge !== undefined) actions.add(createKnowledgeTools(knowledge));
+  // #557 — the capability-miss surface is DEFERRED to first use behind a
+  // memoized promise. Building it eagerly at compose would call
+  // actions.descriptors() → loadHost → the cloud overrides fetch at module
+  // init, which Workers forbids in global scope (portability-gate). It resolves
+  // ONCE, on the first capability-miss upload or detector report — the same
+  // boot-once posture as the enablement provider it now shares loadHost with.
+  // (The zero-live-tools warning, emitted inside loadHost, therefore fires on
+  // that first request rather than at compose.)
+  let missSurfacePromise: Promise<CapabilitySurfaceSnapshot> | undefined;
+  const missSurface = (): Promise<CapabilitySurfaceSnapshot> =>
+    (missSurfacePromise ??= actions.descriptors()
+      .then(capabilitySurfaceSnapshot)
+      .catch(() => capabilitySurfaceSnapshot([])));
   // ADAPTER RULE, miss-upload seam: capability-misses.ts never reads the
   // environment for its Cloud uploader — VENDO_API_KEY fills the slot HERE,
   // like the share/publish seam above; unfilled, misses stay local-only.
@@ -1623,10 +1720,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     ? resolveBrief()
     : () => resolveBrief(configCloud);
   const promptCatalog = catalogThemeSummary(catalog, theme);
-  const system = product !== undefined || promptCatalog !== undefined
+  const hostInstructions = config.agent?.instructions?.trim();
+  const system = product !== undefined || hostInstructions || promptCatalog !== undefined
     ? {
         ...(product === undefined ? {} : { product }),
         ...(promptCatalog === undefined ? {} : { catalog: promptCatalog }),
+        ...(hostInstructions ? { instructions: hostInstructions } : {}),
       }
     : undefined;
   const agent = createAgent({
@@ -1643,20 +1742,30 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     },
     capabilityMiss: {
       hostId: missCapture.hostId,
-      surface: missSurface.then(({ hash }) => ({ format: "vendo/tools@1" as const, hash })),
+      surface: () => missSurface().then(({ hash }) => ({ format: "vendo/tools@1" as const, hash })),
       emit: (event) => missCapture.record(event),
     },
     // ENG-252: the agent starts with a bounded loadout and discovers the rest via
     // `vendo_tools_search`. The search seam is the SAME guard-bound registry the
     // agent executes through — a searched-in tool has no unguarded path.
     toolSearch: {
-      search: (query, options) => actions.search(query, options),
+      // A curated agent menu has to hold at BOTH doors into the toolset: the
+      // per-turn seed below and search, which materializes hits into the live
+      // toolset mid-turn. Filtering only the seed would let the model search
+      // its way back to an off-menu tool.
+      search: async (query, options) => onAgentMenu(await actions.search(query, options), (match) => match.name),
       // Connection-scoped loadout seed (spec 2026-07-20): each turn starts
       // with host tools + the principal's connected toolkits — never an
       // alphabetical slice of a lazy catalog. `connections` is declared below
       // this composition; turns only run after createVendo returns, so the
       // closure reference is safe.
       seed: (ctx) => loadoutSeedFor(ctx),
+      // The curated agent menu also binds an explicit `agent.loadout`: host
+      // config chooses WITHIN the menu, it does not escape it.
+      menu: async () => {
+        const menu = await agentMenu();
+        return menu === undefined ? undefined : [...menu];
+      },
       ...(config.agent?.maxInitialTools === undefined ? {} : { maxInitialTools: config.agent.maxInitialTools }),
       ...(config.agent?.loadout === undefined ? {} : { loadout: config.agent.loadout }),
     },
@@ -1666,27 +1775,52 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // only (warn, never the turn). Bounded so long-lived deployments don't grow.
   const CONNECTED_TOOLKITS_TTL_MS = 60_000;
   const connectedToolkitsCache = new Map<string, { at: number; toolkits: string[] }>();
-  async function loadoutSeedFor(ctx: RunContext): Promise<string[]> {
+  // `surfaces.agent` (.vendo/overrides.json): the host's curated agent menu.
+  // Enforced HERE, at the composition seam, and not inside the registry —
+  // `actions.descriptors()` is also what the MCP door and the host's own code
+  // read, and those surfaces have their own menus. Successes are cached for the
+  // process (a menu is boot config); failures are warned and never cached (see
+  // memoizedSurfaceMenu).
+  const agentMenu = memoizedSurfaceMenu(() => actions.surfaceMenu("agent"));
+  /** Keep only entries the agent menu offers. Vendo's OWN `vendo_*` runtime
+   *  tools are never curated away: surfaces curate a product's API surface, not
+   *  the runtime's plumbing (gating `vendo_apps_*` or `vendo_tools_search` out
+   *  would break the product, not trim it). */
+  async function onAgentMenu<T>(entries: T[], nameOf: (entry: T) => string): Promise<T[]> {
+    const menu = await agentMenu();
+    if (menu === undefined) return entries;
+    return entries.filter((entry) => {
+      const name = nameOf(entry);
+      return name.startsWith(VENDO_TOOL_PACK_PREFIX) || menu.has(name);
+    });
+  }
+  // Hoisted (function declaration): the apps composition above references it
+  // as the AppsConfig.connectedToolkits seam; `connections` is declared below
+  // and only read at request time (same pattern as loadoutSeedFor).
+  async function connectedToolkitsFor(ctx: RunContext): Promise<string[]> {
     const subject = ctx.principal.subject;
     const cached = connectedToolkitsCache.get(subject);
-    let toolkits: string[];
     if (cached !== undefined && Date.now() - cached.at < CONNECTED_TOOLKITS_TTL_MS) {
-      toolkits = cached.toolkits;
-    } else {
-      try {
-        const accounts = await connections.list(ctx.principal);
-        toolkits = [...new Set(accounts.filter((account) => account.status === "active").map((account) => account.toolkit))];
-      } catch (error) {
-        console.warn(
-          "[vendo] connected-toolkits lookup failed; seeding host tools only:",
-          error instanceof Error ? error.message : error,
-        );
-        toolkits = [];
-      }
-      if (connectedToolkitsCache.size > 1_000) connectedToolkitsCache.clear();
-      connectedToolkitsCache.set(subject, { at: Date.now(), toolkits });
+      return cached.toolkits;
     }
-    return actions.loadoutSeed(toolkits);
+    let toolkits: string[];
+    try {
+      const accounts = await connections.list(ctx.principal);
+      toolkits = [...new Set(accounts.filter((account) => account.status === "active").map((account) => account.toolkit))];
+    } catch (error) {
+      console.warn(
+        "[vendo] connected-toolkits lookup failed; treating every toolkit as unconnected:",
+        error instanceof Error ? error.message : error,
+      );
+      toolkits = [];
+    }
+    if (connectedToolkitsCache.size > 1_000) connectedToolkitsCache.clear();
+    connectedToolkitsCache.set(subject, { at: Date.now(), toolkits });
+    return toolkits;
+  }
+  async function loadoutSeedFor(ctx: RunContext): Promise<string[]> {
+    const toolkits = await connectedToolkitsFor(ctx);
+    return onAgentMenu(await actions.loadoutSeed(toolkits), (name) => name);
   }
   // 02-store §4 (kill-list B3) TTL sweep: erase every idle ephemeral session's
   // disk rows, then cascade each swept subject into the agent's in-memory
@@ -1820,6 +1954,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       store,
       oauth: oauthSeam,
       apps: appsPort,
+      // The host's curated door menu (`surfaces.mcp`). Passed as a provider
+      // because composition is sync and resolving the authored file is not; the
+      // door resolves it once. The DOOR never reads `.vendo` itself — block
+      // layering keeps mcp off actions, so the file stays the umbrella's to
+      // read and the wire stays the door's to shape.
+      menuTools: () => actions.surfaceMenu("mcp"),
       mount: MCP_MOUNT,
       ...(doorBaseUrl === undefined ? {} : { baseUrl: doorBaseUrl }),
       // 10-mcp §3.1/§3.2 — broker-fronted compositions: trust the external
