@@ -27,6 +27,9 @@ export interface VendoThreadProps {
   threadId?: string;
   /** Landing headline shown above the composer while the thread is empty. */
   greeting?: string;
+  /** One quiet capability line under the landing headline (muted, centered).
+   * Purely additive: absent means today's headline-only landing. */
+  intro?: string;
   /** Starter prompts on the empty landing; clicking sends one. Lane pick 4B —
    * a plain string keeps today's pill chip; the object form renders a two-line
    * starter card (title + concrete outcome, optional icon) with more scent. */
@@ -54,6 +57,7 @@ export interface VendoThreadProps {
 export function VendoThread({
   threadId,
   greeting = "What can I help you build?",
+  intro,
   suggestions = [],
   onVoice,
   onThreadId,
@@ -346,7 +350,10 @@ export function VendoThread({
                 </div>
               </div>
             ) : (
-              <h1 className="fl-greet">{greeting}</h1>
+              <>
+                <h1 className="fl-greet">{greeting}</h1>
+                {intro ? <p className="fl-intro">{intro}</p> : null}
+              </>
             )}
             {errorBanner}
             {composerAccessory}

@@ -18,8 +18,8 @@
  * message (refineErrorMessage), a malformed response is rejected whole, and
  * nothing ever renders as applied without a 2xx from the apply endpoint.
  *
- * Styling rides the same inline `var(--vendo-color-*)` idiom as try-chips —
- * the panel carries its own themeCssVariables scope. The diff tints alone are
+ * Styling rides the house inline `var(--vendo-color-*)` idiom — the panel
+ * carries its own themeCssVariables scope. The diff tints alone are
  * fixed red/green: diff semantics must read the same on every profile theme.
  */
 import type { VendoTheme } from "@vendoai/core";

@@ -251,6 +251,177 @@ export function liveToolMeta(profile: TryProfile | null): ToolMetaMap {
   return meta;
 }
 
+// ---------------------------------------------------------------------------
+// The stage archetype picker (product-stage shell): which deterministic
+// CSS-skeleton "fake app" backdrop the try page paints behind the open
+// overlay. Pure string work over the profile — instant, no AI, no wire.
+// ---------------------------------------------------------------------------
+
+/** The five stage archetypes the backdrop can wear (design canvas, A×). */
+export type StageArchetype = "dashboard" | "finance" | "commerce" | "content" | "docs";
+
+/** Keyword families, in tie-break priority order (dashboard is the fallback,
+ *  so it never needs to win a tie). Matched as substrings of the lowercased
+ *  tool names + descriptions — extracted descriptions carry the route path
+ *  ("GET /api/invoices/{id}"), so paths are covered by the same scan. */
+const ARCHETYPE_KEYWORDS: ReadonlyArray<readonly [StageArchetype, readonly string[]]> = [
+  ["finance", ["invoice", "payment", "account", "transaction", "transfer", "balance", "spending", "budget", "payee"]],
+  ["commerce", ["order", "product", "cart", "checkout", "inventory", "catalog/products", "sku"]],
+  ["content", ["post", "comment", "feed", "article", "publish"]],
+  ["docs", ["docs", "document", "page", "block", "wiki", "note"]],
+  ["dashboard", ["issue", "project", "cycle", "sprint", "ticket", "task"]],
+];
+
+/** `brand.industry` hints (an optional string a venue may attach; the tolerant
+ *  profile parse passes unknown fields through, so read it defensively). */
+const INDUSTRY_KEYWORDS: ReadonlyArray<readonly [StageArchetype, readonly string[]]> = [
+  ["finance", ["finance", "fintech", "bank", "accounting", "insurance", "payments"]],
+  ["commerce", ["commerce", "retail", "shop", "store", "marketplace"]],
+  ["content", ["content", "social", "media", "publishing", "community"]],
+  ["docs", ["docs", "documentation", "knowledge", "wiki", "notes"]],
+  ["dashboard", ["saas", "devtool", "developer", "project management"]],
+];
+
+/** The extracted tool text the keyword scan runs over: every tool's name and
+ *  description (descriptions carry the bound route paths), lowercased. HTTP
+ *  method tokens before a path ("POST /api/…") are stripped so the verb
+ *  "post" never reads as content-domain signal. */
+function toolText(profile: TryProfile | null): string {
+  const list = (profile?.tools as { list?: unknown } | undefined)?.list;
+  const parts: string[] = [];
+  for (const entry of Array.isArray(list) ? list : []) {
+    const tool = entry as { name?: unknown; description?: unknown } | null;
+    if (typeof tool?.name === "string") parts.push(tool.name);
+    if (typeof tool?.description === "string") parts.push(tool.description);
+  }
+  return parts.join("\n").toLowerCase().replace(/\b(?:get|post|put|patch|delete|head|options)\s+\//g, "/");
+}
+
+/**
+ * Pick the stage archetype. Deterministic and instant: (1) an explicit
+ * `brand.industry` hint wins when it maps to a family; (2) otherwise the
+ * keyword families above are counted across the extracted tool names +
+ * descriptions and the highest count wins, ties resolving in the declared
+ * order; (3) no signal at all — empty repo, zero-key run, junk profile —
+ * falls back to `dashboard`, which reads intentional under any theme.
+ */
+export function pickStageArchetype(profile: TryProfile | null): StageArchetype {
+  const industry = (profile?.brand as { industry?: unknown } | undefined)?.industry;
+  if (typeof industry === "string" && industry.trim() !== "") {
+    const hint = industry.toLowerCase();
+    for (const [archetype, keywords] of INDUSTRY_KEYWORDS) {
+      if (keywords.some((keyword) => hint.includes(keyword))) return archetype;
+    }
+  }
+  const text = toolText(profile);
+  if (text === "") return "dashboard";
+  let best: StageArchetype = "dashboard";
+  let bestCount = 0;
+  for (const [archetype, keywords] of ARCHETYPE_KEYWORDS) {
+    let count = 0;
+    for (const keyword of keywords) {
+      let index = text.indexOf(keyword);
+      while (index !== -1) {
+        count += 1;
+        index = text.indexOf(keyword, index + keyword.length);
+      }
+    }
+    if (count > bestCount) {
+      best = archetype;
+      bestCount = count;
+    }
+  }
+  return bestCount > 0 ? best : "dashboard";
+}
+
+/** `Maple` → `Maple's`, `Allbirds` → `Allbirds'` (the canvas treatment). */
+function possessive(name: string): string {
+  return name.endsWith("s") ? `${name}'` : `${name}'s`;
+}
+
+/** The profile's brand name shaped for mid-sentence use — lowercase neutral
+ *  stand-in, so a missing brand never prints "Your product" mid-line. */
+function brandNoun(profile: TryProfile | null): string {
+  const name = profile?.brand?.name;
+  return typeof name === "string" && name.trim() !== "" ? name.trim() : "this product";
+}
+
+/** The open overlay's landing headline: product-named per the canvas. */
+export function stageGreeting(profile: TryProfile | null): string {
+  return `Hi, I'm ${possessive(brandNoun(profile))} agent.`;
+}
+
+/** The one capability line under the greeting, adapted per archetype the way
+ *  the canvas does (A×1/2/3/4 copy; `content` follows the same cadence). */
+export function capabilityLine(archetype: StageArchetype, profile: TryProfile | null): string {
+  const owner = possessive(brandNoun(profile));
+  switch (archetype) {
+    case "finance":
+      return `I can check accounts, explain your spending, and move money through ${owner} own banking tools, acting as you.`;
+    case "commerce":
+      return `I can track orders, find products, and handle returns through ${owner} own tools, acting as you.`;
+    case "content":
+      return `I can draft, publish, and tidy posts across this workspace using ${owner} own tools, acting as you.`;
+    case "docs":
+      return `I can search, draft, and reorganize pages through ${owner} own tools, acting as you.`;
+    case "dashboard":
+      return `I can plan, triage, and report across this workspace using ${owner} own tools, acting as you.`;
+  }
+}
+
+/** Per-archetype nav vocabulary: candidate labels keyed by the tool-domain
+ *  keyword that earns them, plus the defaults that fill remaining slots. The
+ *  first default is always the active "home" link. */
+const NAV_VOCABULARY: Record<StageArchetype, { candidates: ReadonlyArray<readonly [string, string]>; defaults: readonly string[]; count: number }> = {
+  dashboard: {
+    candidates: [["issue", "Issues"], ["project", "Projects"], ["cycle", "Cycles"], ["report", "Reports"], ["team", "Team"]],
+    defaults: ["Overview", "Projects", "Reports", "Settings"],
+    count: 4,
+  },
+  finance: {
+    candidates: [["account", "Accounts"], ["payment", "Payments"], ["card", "Cards"], ["insight", "Insights"], ["transfer", "Transfers"], ["goal", "Goals"]],
+    defaults: ["Overview", "Accounts", "Payments", "Insights"],
+    count: 5,
+  },
+  commerce: {
+    candidates: [["product", "Shop"], ["order", "Orders"], ["collection", "Collections"], ["return", "Returns"]],
+    defaults: ["Shop", "New", "Bestsellers", "Sale"],
+    count: 4,
+  },
+  content: {
+    candidates: [["post", "Posts"], ["feed", "Feed"], ["comment", "Replies"], ["notification", "Activity"]],
+    defaults: ["Home", "Explore", "Activity"],
+    count: 4,
+  },
+  docs: {
+    candidates: [["page", "Pages"], ["document", "Documents"], ["template", "Templates"], ["share", "Shared"]],
+    defaults: ["Pages", "Shared", "Templates"],
+    count: 3,
+  },
+};
+
+/**
+ * Plausible nav labels for the stage backdrop — the ONLY text the fake app
+ * invents beyond fixed section labels. Derived from the extracted tool
+ * domains where they exist (a repo with payment tools gets a Payments link),
+ * topped up from the archetype defaults; never data, only navigation.
+ * The lead default always anchors the list as the active link.
+ */
+export function stageNavLabels(archetype: StageArchetype, profile: TryProfile | null): string[] {
+  const { candidates, defaults, count } = NAV_VOCABULARY[archetype];
+  const text = toolText(profile);
+  const labels: string[] = [defaults[0]!];
+  for (const [keyword, label] of candidates) {
+    if (labels.length >= count) break;
+    if (text.includes(keyword) && !labels.includes(label)) labels.push(label);
+  }
+  for (const label of defaults) {
+    if (labels.length >= count) break;
+    if (!labels.includes(label)) labels.push(label);
+  }
+  return labels;
+}
+
 /** One pressable suggestion chip (the profile's usecase shape, minus whatever
  *  extra fields the passthrough schema let ride along). */
 export interface UsecaseChip {

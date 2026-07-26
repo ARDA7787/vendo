@@ -3,12 +3,17 @@ import type { TryProfile } from "../../try/profile.js";
 import {
   FALLBACK_CHIPS,
   brandTitle,
+  capabilityLine,
   createTryBoot,
   depthLabel,
   liveToolMeta,
+  pickStageArchetype,
   readTryConfig,
   selectSurfaceMode,
+  stageGreeting,
+  stageNavLabels,
   usecaseChips,
+  type StageArchetype,
   type TryBootConfig,
   type TryEventSourceLike,
 } from "./try-boot.js";
@@ -361,6 +366,167 @@ describe("usecaseChips", () => {
       expect(chip.label.trim()).not.toBe("");
       expect(chip.prompt.trim()).not.toBe("");
     }
+  });
+});
+
+/** A profile whose tools carry the given names + descriptions (the archetype
+ *  picker's scan surface — descriptions hold the bound route paths). */
+function profileWithTools(entries: Array<[string, string]>, overrides: Partial<TryProfile> = {}): TryProfile {
+  return profileFixture({
+    tools: {
+      list: entries.map(([name, description]) => ({ name, description, risk: "read", disabled: false })),
+      counts: { total: entries.length, enabled: entries.length },
+    },
+    ...overrides,
+  });
+}
+
+describe("pickStageArchetype", () => {
+  it("finance on invoices/payments/accounts tool domains (demo-bank shape)", () => {
+    const profile = profileWithTools([
+      ["host_listAccounts", "GET /api/accounts"],
+      ["host_listScheduledPayments", "GET /api/payments/scheduled"],
+      ["host_transferMoney", "POST /api/transfers"],
+      ["host_getSpendingInsights", "GET /api/insights/spending"],
+    ]);
+    expect(pickStageArchetype(profile)).toBe("finance");
+  });
+
+  it("commerce on orders/products/cart keywords", () => {
+    const profile = profileWithTools([
+      ["host_listProducts", "GET /api/products"],
+      ["host_createOrder", "POST /api/orders"],
+      ["host_getCart", "GET /api/cart"],
+    ]);
+    expect(pickStageArchetype(profile)).toBe("commerce");
+  });
+
+  it("content on posts/comments/feed keywords — the HTTP verb POST never counts", () => {
+    const profile = profileWithTools([
+      ["host_listPosts", "GET /api/posts"],
+      ["host_createComment", "POST /api/posts/{id}/comments"],
+      ["host_getFeed", "GET /api/feed"],
+    ]);
+    expect(pickStageArchetype(profile)).toBe("content");
+    // Write tools alone ("POST /api/…" descriptions) are not content signal.
+    const writes = profileWithTools([
+      ["host_updateWidget", "POST /api/widgets/{id}"],
+      ["host_removeWidget", "DELETE /api/widgets/{id}"],
+    ]);
+    expect(pickStageArchetype(writes)).toBe("dashboard");
+  });
+
+  it("docs on docs/pages/blocks keywords", () => {
+    const profile = profileWithTools([
+      ["host_listPages", "GET /api/pages"],
+      ["host_getBlock", "GET /api/pages/{id}/blocks/{blockId}"],
+      ["host_searchDocs", "GET /api/docs/search"],
+    ]);
+    expect(pickStageArchetype(profile)).toBe("docs");
+  });
+
+  it("dashboard on issues/projects keywords AND as the no-match fallback", () => {
+    const issues = profileWithTools([
+      ["host_listIssues", "GET /api/issues"],
+      ["host_listProjects", "GET /api/projects"],
+    ]);
+    expect(pickStageArchetype(issues)).toBe("dashboard");
+    expect(pickStageArchetype(profileWithTools([["host_ping", "GET /api/ping"]]))).toBe("dashboard");
+    expect(pickStageArchetype(profileFixture())).toBe("dashboard");
+    expect(pickStageArchetype(null)).toBe("dashboard");
+  });
+
+  it("the strongest keyword family wins a mixed toolset", () => {
+    const profile = profileWithTools([
+      ["host_listProjects", "GET /api/projects"],
+      ["host_listInvoices", "GET /api/invoices"],
+      ["host_payInvoice", "POST /api/invoices/{id}/payments"],
+      ["host_listTransactions", "GET /api/transactions"],
+    ]);
+    expect(pickStageArchetype(profile)).toBe("finance");
+  });
+
+  it("brand.industry (a passthrough field, read defensively) overrides keywords", () => {
+    const profile = profileWithTools([["host_listIssues", "GET /api/issues"]]);
+    (profile.brand as Record<string, unknown>)["industry"] = "Retail & e-commerce";
+    expect(pickStageArchetype(profile)).toBe("commerce");
+  });
+
+  it("junk industry values fall through to the keyword scan", () => {
+    const profile = profileWithTools([["host_listOrders", "GET /api/orders"]]);
+    for (const junk of [7, "", "   ", "interpretive dance", { sector: "finance" }]) {
+      (profile.brand as Record<string, unknown>)["industry"] = junk;
+      expect(pickStageArchetype(profile)).toBe("commerce");
+    }
+  });
+
+  it("junk tool lists never crash the picker (tolerant profile parse lets anything in)", () => {
+    const profile = profileFixture();
+    (profile as Record<string, unknown>)["tools"] = { list: [null, "nope", { name: 7 }, { description: ["x"] }] };
+    expect(pickStageArchetype(profile)).toBe("dashboard");
+  });
+});
+
+describe("stageGreeting", () => {
+  it("greets by product name, with the canvas possessive treatment", () => {
+    expect(stageGreeting(profileFixture())).toBe("Hi, I'm Acme's agent.");
+    const sName = profileFixture({ brand: { name: "Allbirds", domain: null, logoUrl: null } });
+    expect(stageGreeting(sName)).toBe("Hi, I'm Allbirds' agent.");
+  });
+
+  it("stays grammatical with no brand name (zero-key / empty repo)", () => {
+    expect(stageGreeting(null)).toBe("Hi, I'm this product's agent.");
+    expect(stageGreeting(profileFixture({ brand: { name: "  ", domain: null, logoUrl: null } }))).toBe(
+      "Hi, I'm this product's agent.",
+    );
+  });
+});
+
+describe("capabilityLine", () => {
+  const archetypes: StageArchetype[] = ["dashboard", "finance", "commerce", "content", "docs"];
+
+  it("one line per archetype, product-named, always ending in the acting-as-you clause", () => {
+    const lines = archetypes.map((archetype) => capabilityLine(archetype, profileFixture()));
+    expect(new Set(lines).size).toBe(archetypes.length);
+    for (const line of lines) {
+      expect(line).toMatch(/Acme's own (banking )?tools/);
+      expect(line.endsWith("acting as you.")).toBe(true);
+    }
+  });
+
+  it("keeps the canvas copy for the flagship archetypes", () => {
+    expect(capabilityLine("dashboard", profileFixture())).toBe(
+      "I can plan, triage, and report across this workspace using Acme's own tools, acting as you.",
+    );
+    expect(capabilityLine("finance", profileFixture())).toBe(
+      "I can check accounts, explain your spending, and move money through Acme's own banking tools, acting as you.",
+    );
+  });
+
+  it("neutral possessive without a brand name", () => {
+    expect(capabilityLine("docs", null)).toContain("this product's own tools");
+  });
+});
+
+describe("stageNavLabels", () => {
+  it("derives labels from the extracted tool domains, topped up from defaults", () => {
+    const profile = profileWithTools([
+      ["host_listAccounts", "GET /api/accounts"],
+      ["host_listCards", "GET /api/cards"],
+    ]);
+    expect(stageNavLabels("finance", profile)).toEqual(["Overview", "Accounts", "Cards", "Payments", "Insights"]);
+  });
+
+  it("pure defaults when there is no tool signal (empty repo still looks intentional)", () => {
+    expect(stageNavLabels("finance", null)).toEqual(["Overview", "Accounts", "Payments", "Insights"]);
+    expect(stageNavLabels("dashboard", profileFixture())).toEqual(["Overview", "Projects", "Reports", "Settings"]);
+  });
+
+  it("never duplicates a label and always leads with the archetype home link", () => {
+    const profile = profileWithTools([["host_listProducts", "GET /api/products"]]);
+    const labels = stageNavLabels("commerce", profile);
+    expect(labels[0]).toBe("Shop");
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });
 

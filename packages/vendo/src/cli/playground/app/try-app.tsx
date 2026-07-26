@@ -1,35 +1,47 @@
 /**
- * Try-mode chrome (unified try surface, Task 8): the layout the surface wears
- * when the page carries a `window.__VENDO_TRY__` boot object — brand header,
- * the surface slot, the live depth indicator — all rendered from the try-boot
- * store. The slot's data source is decided per render by selectSurfaceMode
- * (Task 10): when the profile reports liveChat, the surface talks to the real
- * wire at the boot config's apiBase; otherwise the playground's scripted
- * scenario machinery, exactly as before.
+ * Try-mode chrome (product-stage shell, per the approved design canvas
+ * variant A + A×): the page paints a deterministic brand-tinted "fake app"
+ * backdrop — one of five archetypes picked from the profile's tool domains
+ * (try-stage.tsx / pickStageArchetype) — and the agent overlay floats over it
+ * ALREADY OPEN, greeting the visitor by product name with the use-case chips
+ * inside the panel's empty state (try-panel.tsx). Depth indicator + Refine
+ * stay as a quiet top-right cluster over the stage.
+ *
+ * The slot's data source is decided per render by selectSurfaceMode: when the
+ * profile reports liveChat, the surface talks to the real wire at the boot
+ * config's apiBase; otherwise the playground's scripted scenario machinery.
+ * Both modes mount the SAME open overlay with the same panel landing; a chip
+ * press delivers its prompt to the panel's real composer and sends
+ * (openVendoConversation), riding whichever transport the mode wired.
  */
 import type { VendoTheme } from "@vendoai/core";
 import { defaultVendoTheme, type ToolMetaMap } from "@vendoai/ui";
-import { StrictMode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { VendoOverlay } from "@vendoai/ui/chrome";
+import { StrictMode, useEffect, useMemo, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { TryProfile } from "../../try/profile.js";
 import { ScenarioMount } from "./scenario-mount.js";
-import { scenarios } from "./scenarios.js";
+import { scenarios, type PlaygroundScenario } from "./scenarios.js";
 import { useGoogleFont } from "./theme-editor.js";
 import { decodeThemeParam } from "./theme-state.js";
 import {
   brandTitle,
+  capabilityLine,
   createTryBoot,
   depthLabel,
   liveToolMeta,
+  pickStageArchetype,
   selectSurfaceMode,
+  stageGreeting,
+  stageNavLabels,
   usecaseChips,
   type TryBoot,
   type TryBootConfig,
   type TrySurfaceMode,
-  type UsecaseChip,
 } from "./try-boot.js";
-import { TryChips, pressChip, type PressedChip } from "./try-chips.js";
+import { TryPanelProvider, TryPanelThread } from "./try-panel.js";
 import { TryRefine, refineEnabled } from "./try-refine.js";
+import { TryStage } from "./try-stage.js";
 import { LiveSurfaceMount } from "./try-surface-live.js";
 
 /** The profile's theme through the SAME gate as the playground's `?theme=`
@@ -39,29 +51,39 @@ function profileTheme(profile: TryProfile | null): VendoTheme {
   return (raw ? decodeThemeParam(JSON.stringify(raw)) : undefined) ?? defaultVendoTheme;
 }
 
+/** Page-level styling the shell owns: the panel chips render through the
+ *  thread's composerAccessory seam, which mounts in BOTH layouts — this keeps
+ *  them to the landing (the canvas only puts chips in the empty state). */
+const TRY_SHELL_CSS = `
+.fl-chips[data-vendo-try-chips] { display: none; }
+.fl-landing .fl-chips[data-vendo-try-chips] { display: flex; }
+`;
+
+/** The scripted stance: the overlay-open scenario's script and fixtures, but
+ *  rendered as the try panel — open at boot, greet + chips inside, NO
+ *  auto-sent turn (the visitor starts the conversation, usually via a chip).
+ *  Module-scoped so the surface never remounts on store updates. */
+const stageScenario: PlaygroundScenario = {
+  ...(scenarios.find((entry) => entry.id === "overlay-open") ?? scenarios[0]!),
+  id: "try-stage",
+  autoSend: undefined,
+  render: () => <VendoOverlay defaultOpen discoverability="quiet" thread={TryPanelThread} />,
+};
+
 /** The ONE swappable surface slot. Live mode (profile reports liveChat) is
  *  the same overlay chrome on the REAL wire at `apiBase`; scripted mode is
- *  the scenario-mount machinery, unchanged. Both stances match: with no send
- *  it's the default closed launcher; a pressed chip needs a live composer, so
- *  the overlay opens with the chip's prompt as the auto-sent opening turn
- *  (the shared useAutoSend seam types it into the REAL composer and submits —
- *  one mount, one send, over whichever transport the mode wired). */
-function TrySurface({ mode, apiBase, theme, tools, autoSend }: {
+ *  the scenario-mount machinery. Both stances match: the overlay opens at
+ *  boot on the panel landing; there is NO runtime fallback between them. */
+function TrySurface({ mode, apiBase, theme, tools }: {
   mode: TrySurfaceMode;
   apiBase: string;
   theme: VendoTheme;
   tools: ToolMetaMap;
-  autoSend?: string;
 }) {
-  const scenario = useMemo(() => {
-    if (!autoSend) return scenarios[0]!;
-    const open = scenarios.find((entry) => entry.id === "overlay-open") ?? scenarios[0]!;
-    return { ...open, autoSend };
-  }, [autoSend]);
   if (mode === "live") {
-    return <LiveSurfaceMount apiBase={apiBase} theme={theme} tools={tools} autoSend={autoSend} />;
+    return <LiveSurfaceMount apiBase={apiBase} theme={theme} tools={tools} />;
   }
-  return <ScenarioMount scenario={scenario} theme={theme} />;
+  return <ScenarioMount scenario={stageScenario} theme={theme} />;
 }
 
 function TryApp({ boot }: { boot: TryBoot }) {
@@ -69,10 +91,22 @@ function TryApp({ boot }: { boot: TryBoot }) {
   const theme = profileTheme(state.profile);
   useGoogleFont(theme.typography.fontFamily);
   const label = depthLabel(state.profile, state.stages);
+  // The stage + panel content, re-derived on every store update: a deepening
+  // run landing the seeds artifact swaps the chips live (context, so the
+  // panel's thread — and any conversation on it — never remounts), and a
+  // theme/brief refetch re-tints the stage in place.
+  const archetype = pickStageArchetype(state.profile);
+  const brandName = brandTitle(state.profile);
   const logoUrl = state.profile?.brand?.logoUrl ?? null;
-  const chips = usecaseChips(state.profile);
-  // Re-derived on every store update (liveChat happens to be fixed at server
-  // startup today, but nothing here assumes that).
+  const navLabels = stageNavLabels(archetype, state.profile);
+  const panelContent = useMemo(
+    () => ({
+      greeting: stageGreeting(state.profile),
+      intro: capabilityLine(archetype, state.profile),
+      chips: usecaseChips(state.profile),
+    }),
+    [state.profile, archetype],
+  );
   const mode = selectSurfaceMode(state.profile);
   const tools = useMemo(() => liveToolMeta(state.profile), [state.profile]);
 
@@ -82,19 +116,9 @@ function TryApp({ boot }: { boot: TryBoot }) {
   // dev-only effect double-invoke never fires this early.
   useEffect(() => () => boot.close(), [boot]);
 
-  // The pressed chip drives the surface: each press remounts TrySurface (the
-  // seq key) with the chip's prompt as its opening send — each press discards
-  // the prior conversation (inherited contract; live mode too, where the
-  // remount means a fresh thread over the real wire). The
-  // double-send guard is pressChip's idempotence: re-pressing the active chip
-  // returns the same reference, so no state change, no remount, no re-send.
-  const [pressed, setPressed] = useState<PressedChip | null>(null);
-  const onPick = (chip: UsecaseChip): void => {
-    setPressed((current) => pressChip(current, chip));
-  };
-
-  // The page wears the profile theme edge to edge (the playground's stage
-  // rule): the surface's own canvas never prints an abrupt rectangle.
+  // The page IS the stage: the archetype backdrop wears the profile theme
+  // edge to edge; the overlay (open at boot) floats over it with the chrome's
+  // own scrim + blur — the canvas treatment, no extra chrome here.
   return (
     <div
       style={{
@@ -102,54 +126,45 @@ function TryApp({ boot }: { boot: TryBoot }) {
         background: theme.colors.background,
         color: theme.colors.text,
         fontFamily: theme.typography.fontFamily,
-        display: "flex",
-        flexDirection: "column",
       }}
     >
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "14px 22px",
-          borderBottom: `1px solid ${theme.colors.border}`,
-        }}
-      >
-        {logoUrl ? (
-          <img src={logoUrl} alt="" style={{ height: 22, width: "auto", display: "block" }} />
+      <style>{TRY_SHELL_CSS}</style>
+      <TryStage
+        archetype={archetype}
+        theme={theme}
+        brandName={brandName}
+        logoUrl={logoUrl}
+        navLabels={navLabels}
+      />
+      {/* The shell's own controls, quiet in the header region per the canvas:
+          the live depth indicator and (server capability permitting) Refine.
+          Fixed above the stage; while the overlay is open they sit under its
+          scrim like the rest of the page, and come back on close. */}
+      <div style={{ position: "fixed", top: 12, right: 16, zIndex: 20, display: "flex", alignItems: "center", gap: 10 }}>
+        {label ? (
+          <span
+            aria-live="polite"
+            style={{
+              fontSize: 12,
+              color: theme.colors.muted,
+              background: theme.colors.surface,
+              border: `1px solid ${theme.colors.border}`,
+              borderRadius: 999,
+              padding: "6px 12px",
+            }}
+          >
+            {label}
+          </span>
         ) : null}
-        <span style={{ fontSize: 14, fontWeight: 650, letterSpacing: "-0.01em" }}>
-          {brandTitle(state.profile)}
-        </span>
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          {label ? (
-            <span style={{ fontSize: 12, color: theme.colors.muted }} aria-live="polite">
-              {label}
-            </span>
-          ) : null}
-          {/* Only rendered when the server reports the capability: a keyless
-              run never shows a Refine affordance it couldn't honor. */}
-          {refineEnabled(state.profile) ? <TryRefine theme={theme} /> : null}
-        </div>
-      </header>
-      <main style={{ flex: 1, maxWidth: 900, width: "100%", margin: "0 auto", padding: "26px 22px 60px" }}>
-        <TryChips
-          chips={chips}
-          activePrompt={pressed?.chip.prompt ?? null}
-          onPick={onPick}
-          theme={theme}
-        />
-        {/* Keyed by mode too: a mode flip (server-reported, never a client-
-            side fallback) must remount onto the other data source cleanly. */}
-        <TrySurface
-          key={`${mode}:${pressed ? `chip-${pressed.seq}` : "default"}`}
-          mode={mode}
-          apiBase={boot.config.apiBase}
-          theme={theme}
-          tools={tools}
-          autoSend={pressed?.chip.prompt}
-        />
-      </main>
+        {/* Only rendered when the server reports the capability: a keyless
+            run never shows a Refine affordance it couldn't honor. */}
+        {refineEnabled(state.profile) ? <TryRefine theme={theme} /> : null}
+      </div>
+      {/* Keyed by mode: a mode flip (server-reported, never a client-side
+          fallback) must remount onto the other data source cleanly. */}
+      <TryPanelProvider content={panelContent}>
+        <TrySurface key={mode} mode={mode} apiBase={boot.config.apiBase} theme={theme} tools={tools} />
+      </TryPanelProvider>
     </div>
   );
 }
