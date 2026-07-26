@@ -1,21 +1,32 @@
 // @vitest-environment jsdom
 // Defect 2 regression (unified-try-surface try-venue generation E2E,
-// 2026-07-26 — local v2 run: "generated island forms are raw <form>, not
-// Kit Form, so the preventDefault fix (form.tsx) never runs -> dead submit
-// persists"). Root cause: the jail sandbox carries no allow-forms
-// (JailedComponent.tsx `sandbox="allow-scripts"`), so a native <form> submit
-// must never be allowed to reach the browser's default action — but a
-// generated ISLAND frequently writes a raw HTML <form onSubmit={handler}>
-// (pretraining habit) whose handler is an async function taking no event
-// argument, so it can never call event.preventDefault() itself. Only the
-// Kit's own <Form> wrapper (packages/ui/src/kit/forms/form.tsx) called
-// preventDefault, so a raw <form> island's submit fell through to the
-// sandboxed default action and never visibly resolved.
+// 2026-07-26). Root cause, revised after real-browser verification: the jail
+// sandbox carries no allow-forms (JailedComponent.tsx `sandbox="allow-
+// scripts"`), and a generated ISLAND frequently writes a raw HTML
+// <form onSubmit={handler}> (pretraining habit) whose handler is an async
+// function taking no event argument, so it can never call
+// event.preventDefault() itself.
 //
-// Fix: runtime-entry.tsx registers ONE document-level capture-phase `submit`
-// listener that unconditionally calls preventDefault() — it protects every
-// <form> an island can emit, Kit-wrapped or raw, without depending on the
-// model writing the call itself.
+// A first fix (a document-level capture-phase `submit` listener calling
+// preventDefault()) looked right in jsdom and in code review, but browser-
+// verified DEAD in the real double-nested jail: Chromium never dispatches a
+// cancelable `submit` DOM event at all for an IMPLICIT submission (a click on
+// a submit button, or Enter in a field) inside a sandboxed, non-allow-forms
+// frame — it logs "Blocked form submission..." and aborts before any JS ever
+// sees the event, so no `submit` listener (this module's, React's synthetic
+// onSubmit, or the Kit Form's own wrapper) ever runs. jsdom does not model
+// this Chromium-specific short-circuit, which is exactly why the old fix's
+// jsdom test below passed while the real browser still failed.
+//
+// Fix: runtime-entry.tsx now intercepts the trigger ONE STEP UPSTREAM of
+// `submit` — capture-phase `click` (submit buttons) and `keydown` (Enter in
+// a field) — preventDefault()s THAT event, then re-dispatches a plain,
+// untrusted `submit` Event at the form. An untrusted event carries no
+// browser-native default action, so it safely reaches every ordinary
+// `submit` listener (Kit's own, a raw island's, or this module's remaining
+// defense-in-depth `submit` capture) exactly as if the browser's own
+// submission had fired. These jsdom tests (which dispatch a real click, not
+// a synthetic submit) exercise that SAME click-interception path end to end.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 class FakeResizeObserver implements ResizeObserver {
@@ -49,7 +60,7 @@ const renderSource = (source: string, props: Record<string, unknown> = {}) => {
   }));
 };
 
-describe("jail runtime — document-level submit capture", () => {
+describe("jail runtime — click/keydown-intercepted implicit submission", () => {
   it("prevents the native default action for a RAW <form> whose handler takes no event argument, while still running the handler", async () => {
     renderSource(`
       export default function RawForm() {
