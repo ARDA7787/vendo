@@ -19,11 +19,19 @@ export async function readOptionalVendoJson<T>(
   let source: string;
   try {
     source = await readFile(path, "utf8");
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new VendoError("validation", `Could not read ${path}`, {
-      cause: cause instanceof Error ? cause.message : String(cause),
-    });
+  } catch {
+    // Any read failure degrades to "file absent", not just ENOENT. On a real
+    // filesystem a missing file is the only failure mode worth naming, but
+    // this same module also runs on hosts whose "workerd" build condition
+    // didn't resolve to host-files-edge.ts (a bundler that doesn't add the
+    // custom condition) — there, node:fs/promises is unenv's shim, and
+    // reading an arbitrary path throws a "not implemented" Error with no
+    // ENOENT code at all. Propagating that as a validation error would kill
+    // every turn on a filesystem-less venue that never had a chance to write
+    // this file to begin with, so a read failure of ANY class is treated
+    // exactly like ENOENT. Only the JSON.parse/schema legs below — real
+    // content-shape problems, not read failures — still throw loudly.
+    return undefined;
   }
 
   let value: unknown;

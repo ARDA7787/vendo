@@ -3110,6 +3110,39 @@ describe("unified try surface (Task 15a) — in-memory profile", () => {
     expect(content).toContain("Product\nDisk brief for the profile seam.");
   });
 
+  it("workerd portability regression: profile.tools skips the tools.json disk read entirely, and a residual non-ENOENT read (overrides.json) degrades instead of killing composition", async () => {
+    // Reproduces the real-workerd failure class: a disk read that survives
+    // (or doesn't run at all) when the in-memory profile piece substitutes
+    // for it, and a RESIDUAL read (a piece left unset) that must degrade on
+    // ANY read failure, not just ENOENT — see registry.ts/host-files.ts.
+    const root = await mkdtemp(join(tmpdir(), "vendo-profile-workerd-"));
+    cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
+    await mkdir(join(root, ".vendo"), { recursive: true });
+    // Malformed tools.json: if the actions registry ever opened this file,
+    // JSON.parse would throw and kill every turn. profile.tools IS supplied
+    // below, so the primary fix (skip-when-supplied) means it is never
+    // opened — proven by composing successfully despite the garbage bytes.
+    await writeFile(join(root, ".vendo", "tools.json"), "{ not valid json, must never be read");
+    // overrides.json is a DIRECTORY, not a file. profile.overrides is left
+    // UNSET below, so this IS a residual read — reading a directory throws
+    // Node's real EISDIR, a non-ENOENT error class exactly like workerd's
+    // unenv "not implemented" failure. It must degrade to "absent" (empty
+    // overrides), not propagate and kill the composition.
+    await mkdir(join(root, ".vendo", "overrides.json"));
+
+    const store = await tempStore("vendo-profile-workerd-store-");
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      profileDir: root,
+      profile: { tools: [profileTool("host_in_memory")] },
+    });
+
+    const names = (await vendo.actions.descriptors()).map((descriptor) => descriptor.name);
+    expect(names).toContain("host_in_memory");
+  });
+
   it("unset equivalence: `profile` unset and `profile: {}` compose identical observable state", async () => {
     const root = await diskProfile();
 

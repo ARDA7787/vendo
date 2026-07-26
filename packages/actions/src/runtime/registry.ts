@@ -784,11 +784,19 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
       }
       // Format v3 (cse lane 1): each file parses per its own format tag — v1
       // keeps its exact v1 errors, everything else must be v3 and fails loud.
-      // An injected overrides doc (cse lane 3 hosted config) wins over the
-      // overrides.json read; tools.json still comes from the dir.
+      // An injected overrides doc (cse lane 3 hosted config, or the unified
+      // try surface's in-memory profile.overrides) wins over the
+      // overrides.json read — AND config.tools (profile.tools) skips the
+      // tools.json read the same way. This isn't just precedence: on a
+      // filesystem-less venue (a Worker on workerd) the disk leg must never
+      // run at all when the in-memory piece already fully substitutes for it
+      // — see readOptionalVendoJson's non-ENOENT handling for the residual
+      // reads that DO still run.
       const [toolsFile, overridesFileRead] = await Promise.all([
-        readOptionalVendoJson(config.dir, "tools.json", (value) =>
-          vendoFileVersion(value) === 1 ? toolsFileSchema.parse(value) : toolsFileV3Schema.parse(value)),
+        configuredTools !== undefined
+          ? Promise.resolve(undefined)
+          : readOptionalVendoJson(config.dir, "tools.json", (value) =>
+            vendoFileVersion(value) === 1 ? toolsFileSchema.parse(value) : toolsFileV3Schema.parse(value)),
         injectedOverrides !== undefined
           ? Promise.resolve(undefined)
           : readOptionalVendoJson(config.dir, "overrides.json", (value) =>
@@ -805,8 +813,13 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
       // ingest through the legacy fold rather than silently dropping authored
       // work; overrides.json-carried entries win by name (the sync path's
       // conflicted-state posture), the file's unique entries are added.
+      // config.capabilities (profile.capabilities) wins outright over the
+      // whole file below, so — same as tools.json above — the disk leg is
+      // skipped entirely rather than read-then-discarded.
       const fullyV3 = toolsV3 !== undefined && overridesV3 !== undefined;
-      const capabilitiesFile = await readOptionalVendoJson(config.dir, "capabilities.json", (value) => capabilitiesFileSchema.parse(value));
+      const capabilitiesFile = configuredCapabilities !== undefined
+        ? undefined
+        : await readOptionalVendoJson(config.dir, "capabilities.json", (value) => capabilitiesFileSchema.parse(value));
       const legacy: LegacyVendoFiles = {
         ...(toolsV1 === undefined ? {} : { tools: toolsV1 }),
         ...(overridesV1 === undefined ? {} : { overrides: overridesV1 }),

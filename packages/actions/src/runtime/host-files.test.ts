@@ -2,7 +2,23 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// A real workerd run reports a "not implemented" Error with NO .code at all
+// when a build's "workerd" custom condition didn't resolve to
+// host-files-edge.ts and node:fs/promises falls through to unenv's shim
+// instead of a real filesystem. Mocked here (module-level, so
+// readOptionalVendoJson's own `import { readFile }` resolves to the mock)
+// rather than reproduced on a real disk — unenv's exact failure mode isn't
+// reproducible on a real filesystem. Defaults to the real implementation so
+// every other test in this file still hits a real temp dir; only the one
+// test below overrides it.
+const { readFileMock } = vi.hoisted(() => ({ readFileMock: vi.fn() }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  readFileMock.mockImplementation(actual.readFile);
+  return { ...actual, readFile: readFileMock };
+});
 
 import { readOptionalVendoJson } from "./host-files.js";
 import { readOptionalVendoJson as readOnEdge } from "./host-files-edge.js";
@@ -21,6 +37,28 @@ describe("host config files, node entry", () => {
     const root = await mkdtemp(join(tmpdir(), "vendo-host-files-"));
     const parsed = await readOptionalVendoJson(root, "tools.json", (value) => value);
     expect(parsed).toBeUndefined();
+  });
+
+  it("degrades to undefined on a non-ENOENT read failure (workerd unenv error class), never throws", async () => {
+    // Any read failure — not just ENOENT — must degrade to "file absent";
+    // only content-shape failures (malformed JSON / schema) still throw. See
+    // the module-level mock comment above for why this isn't reproduced on a
+    // real disk.
+    const notImplemented = Object.assign(new Error("not implemented"), { code: undefined });
+    readFileMock.mockRejectedValueOnce(notImplemented);
+    const root = await mkdtemp(join(tmpdir(), "vendo-host-files-unenv-"));
+    await expect(readOptionalVendoJson(root, "tools.json", (value) => value)).resolves.toBeUndefined();
+  });
+
+  it("still throws loudly on malformed JSON — only read failures degrade, not content-shape failures", async () => {
+    const root = await mkdtemp(join(tmpdir(), "vendo-host-files-"));
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(root, ".vendo"));
+    await writeFile(join(root, ".vendo", "tools.json"), "{ not valid json");
+    await expect(readOptionalVendoJson(root, "tools.json", (value) => value)).rejects.toMatchObject({
+      name: "VendoError",
+      code: "validation",
+    });
   });
 });
 
