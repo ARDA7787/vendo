@@ -8,11 +8,11 @@
  * otherwise the original document ships.
  */
 import {
-  compileWirePatchV2,
-  printWireV2,
+  compileWirePatch,
+  printWire,
   isPathBinding,
   isStateBinding,
-  type TreeV2,
+  type Tree,
 } from "@vendoai/core";
 import type { GeneratedAppDocument, PipelineContext } from "../engine.js";
 import {
@@ -22,6 +22,7 @@ import {
   rebindChoices,
   strictToolCall,
 } from "./repair.js";
+import { modelCallParams } from "../../model-params.js";
 import { recompile } from "../wire-options.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -66,8 +67,8 @@ const sameJson = (a: unknown, b: unknown): boolean =>
   JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 export const endPassViolations = (
-  base: TreeV2,
-  patched: TreeV2,
+  base: Tree,
+  patched: Tree,
   baseComponents: Record<string, string>,
   patchedComponents: Record<string, string>,
 ): string[] => {
@@ -139,11 +140,11 @@ export const endPass = async (
   };
   try {
     const base = {
-      tree: structuredClone(document.tree) as unknown as TreeV2,
+      tree: structuredClone(document.tree) as unknown as Tree,
       components: { ...(document.components ?? {}) },
       name: document.name,
     };
-    const wire = printWireV2(base, { includeIds: true });
+    const wire = printWire(base, { includeIds: true });
     // The no-think switch: the paint model is the configured thinking-disabled
     // instance; the read-through never needs reasoning depth.
     const model = deps.paint?.model ?? deps.model;
@@ -152,11 +153,11 @@ export const endPass = async (
       model,
       system: END_PASS_CONTRACT,
       prompt: `USER_ASK: ${userRequest}\nCURRENT_APP (wire markup; id attributes are your anchors):\n${wire}`,
-      temperature: 0,
+      ...modelCallParams(model),
       maxRetries: 0,
     });
     deps.onTiming?.({ lane: "end-pass", phase: "complete", atMs: Date.now() - context.startedAt, thinking: false });
-    const patched = compileWirePatchV2(extractEdit(result.text), base, {
+    const patched = compileWirePatch(extractEdit(result.text), base, {
       hostComponents: [...context.hostComponents],
       ...(deps.toolShapes === undefined ? {} : { toolShapes: deps.toolShapes }),
     });
@@ -238,13 +239,13 @@ const rebindPass = async (
 ): Promise<{ document: GeneratedAppDocument; rebinds: number } | undefined> => {
   const { deps } = context;
   const base = {
-    tree: structuredClone(document.tree) as unknown as TreeV2,
+    tree: structuredClone(document.tree) as unknown as Tree,
     components: { ...(document.components ?? {}) },
     name: document.name,
   };
   const slots = deriveRebindSlots(base.tree, deps, resolvedData);
   if (slots.length === 0) return undefined;
-  const wire = printWireV2(base, { includeIds: true });
+  const wire = printWire(base, { includeIds: true });
   const chosen = await strictToolCall(
     deps,
     "rebind_bindings",
@@ -300,21 +301,21 @@ export const dataSightedVerify = async (
       }
     }
     const base = {
-      tree: structuredClone(working.tree) as unknown as TreeV2,
+      tree: structuredClone(working.tree) as unknown as Tree,
       components: { ...(working.components ?? {}) },
       name: working.name,
     };
-    const wire = printWireV2(base, { includeIds: true });
+    const wire = printWire(base, { includeIds: true });
     const model = deps.paint?.model ?? deps.model;
     const { generateText } = await import("ai");
     const result = await generateText({
       model,
       system: DATA_VERIFY_CONTRACT,
       prompt: `USER_ASK: ${userRequest}\nCURRENT_APP (wire markup; id attributes are your anchors):\n${wire}\nACTUAL data the queries returned (trimmed sample):\n${dataDigest(resolvedData)}`,
-      temperature: 0,
+      ...modelCallParams(model),
       maxRetries: 0,
     });
-    const patched = compileWirePatchV2(extractEdit(result.text), base, {
+    const patched = compileWirePatch(extractEdit(result.text), base, {
       hostComponents: [...context.hostComponents],
       ...(deps.toolShapes === undefined ? {} : { toolShapes: deps.toolShapes }),
     });
