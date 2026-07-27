@@ -17,6 +17,7 @@ export type { KnowledgeAdapter } from "@vendoai/core";
     policy, structured refusal, read-more) over any adapter. */
 export {
   createKnowledgeTools,
+  KNOWLEDGE_VERIFY_TURN_BUDGET_MS,
   toCitation,
   VENDO_KNOWLEDGE_RESULT_KIND,
   VENDO_KNOWLEDGE_SEARCH_TOOL,
@@ -38,3 +39,14 @@ export {
   type KnowledgeSourceConfig,
 } from "./ingest/index.js";
 export { bindKnowledgeStore, lexicalKnowledge } from "./local/lexical.js";
+/** Knowledge K14 — the verifier pass itself (cheap model, capped, fail-open). */
+export {
+  entailmentVerifier,
+  KNOWLEDGE_VERIFY_TIMEOUT_MS,
+  type EntailmentVerifierOptions,
+  type KnowledgeVerdict,
+  type KnowledgeVerifier,
+  type KnowledgeVerifierInput,
+  type KnowledgeVerifierPassage,
+  type KnowledgeVerifyOptions,
+} from "./verifier.js";

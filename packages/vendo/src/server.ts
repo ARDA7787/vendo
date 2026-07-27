@@ -53,7 +53,13 @@ import {
   type VendoTheme,
 } from "@vendoai/core";
 import { createGuard, type Judge, type PolicyConfig, type PolicyFile, type VendoGuard } from "@vendoai/guard";
-import { bindKnowledgeStore, cloudKnowledge, createKnowledgeTools } from "@vendoai/knowledge";
+import {
+  bindKnowledgeStore,
+  cloudKnowledge,
+  createKnowledgeTools,
+  entailmentVerifier,
+  type KnowledgeToolsOptions,
+} from "@vendoai/knowledge";
 import { createMcpDoor, type AppsPort, type HostOAuthAdapter, type McpDoor } from "@vendoai/mcp";
 import {
   adoptEphemeralSubject,
@@ -100,7 +106,7 @@ import {
 } from "./capability-misses.js";
 import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson } from "./catalog.js";
 import { knowledgeIndexResolver } from "./knowledge-prompt.js";
-import { bindVendoModelSlots } from "#dev-creds/model";
+import { bindVendoModelSlots, vendoModel } from "#dev-creds/model";
 // Models spec 2026-07-22 — `vendoModel(name?)` is the vendo model family
 // entry: the lazily-resolving env ladder createVendo composes when the host
 // passes none, exported for host code too (judge wiring, host features). No
@@ -627,6 +633,58 @@ function selectKnowledge(
   const cloud = cloudKeyOptions();
   if (cloud === undefined) return undefined;
   return cloudKnowledge(cloud);
+}
+
+/** The verifier is OFF by default (conductor ruling, checker round 1).
+    `VENDO_KNOWLEDGE_VERIFY=on` turns it on for the Cloud engine.
+
+    It ships off because the live measurement says it does not clear the bar it
+    exists for: on the 94-question corpus it still answered 9-19 of 34
+    unanswerable questions per pass (docs/eval/KNOWLEDGE.md), while adding a
+    model call per search and seconds of latency to a call the user waits
+    through. Shipping that on by default would be a product decision nobody
+    made. Hosts who want the trade — fewer confident wrong answers, at that
+    cost — opt in with one variable.
+
+    A value that is neither on nor off is a TYPO, and a typo that silently
+    means "off" is how a host thinks it has a trust feature it does not. Loud,
+    like every other env knob here (positiveIntegerEnv). */
+function knowledgeVerifyEnabled(): boolean {
+  const raw = environment("VENDO_KNOWLEDGE_VERIFY")?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return false;
+  if (["on", "true", "1"].includes(raw)) return true;
+  if (["off", "false", "0"].includes(raw)) return false;
+  throw new VendoError(
+    "validation",
+    `VENDO_KNOWLEDGE_VERIFY must be on or off, got ${JSON.stringify(raw)}`,
+  );
+}
+
+/** The tool options for the composed engine: the verifier, and nothing else.
+
+    It is NOT score-gated. K14 ran it only inside a calibrated band, and the
+    live run showed what that costs — four unanswerable questions per pass
+    scored outside the band, were never checked, and were answered by the
+    threshold. A check gated on the number it exists to replace inherits that
+    number's blind spots (spec §The verifier pass: "not threshold-gated ... it
+    runs on every search that would return hits").
+
+    The verifier model is the family's cheap pick on its own
+    `knowledgeVerifier` slot — pinnable with VENDO_MODEL_KNOWLEDGE_VERIFIER or
+    `models.knowledgeVerifier`, beside `judge` rather than borrowing it. A rung
+    that resolves to nothing simply yields no verdict: the tool answers as it
+    would have without a verifier and marks the result unverified, which is why
+    this can never make knowledge unavailable.
+
+    NOTE the one thing this function must never do: change a threshold. */
+function knowledgeToolOptions(
+  hostConfigured: boolean,
+  models: ModelsConfig | undefined,
+): KnowledgeToolsOptions {
+  if (hostConfigured || !knowledgeVerifyEnabled()) return {};
+  const model = vendoModel(undefined, { slot: "knowledgeVerifier" });
+  bindVendoModelSlots(model, models);
+  return { verifier: entailmentVerifier({ model }) };
 }
 
 /** ADAPTER RULE (docs/superpowers/specs/2026-07-17-vendo-cloud-definition-design.md):
@@ -1759,7 +1817,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // Knowledge K1 — the tool exists exactly when an adapter is configured;
   // no adapter, no `vendo_knowledge_search` in any descriptor surface.
   const knowledge = selectKnowledge(config.knowledge, store);
-  if (knowledge !== undefined) actions.add(createKnowledgeTools(knowledge));
+  // K14 — the calibrated band + verifier ride exactly the engine they were
+  // calibrated against (the Cloud default); a host-passed adapter keeps the
+  // uncalibrated defaults it has today.
+  if (knowledge !== undefined) {
+    actions.add(createKnowledgeTools(knowledge, knowledgeToolOptions(config.knowledge !== undefined, config.models)));
+  }
   // Knowledge k8 (ENG-368) — the prompt index rides exactly when the tool
   // composes. Byte-stable at a fixed sync state, refreshed when the sync
   // manifest changes (never rebuilt per-turn); knowledge.json is an
