@@ -1,16 +1,17 @@
 import type { AppDocument, RunContext, ToolRegistry } from "@vendoai/core";
 import { VENDO_APP_FORMAT, VendoError } from "@vendoai/core";
+import type { LanguageModel } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { createApps, type SandboxAdapter } from "./index.js";
 import { createAppHistory } from "./history.js";
 import { enabledAfterDocumentEdit } from "./persistence.js";
 import {
-  basicLanguageModel,
   fakeSandbox,
   guardFixture,
   memoryStore,
   seedAppRow,
   scriptedLanguageModel,
+  type ScriptedModelCall,
 } from "./testing/index.js";
 
 const tools: ToolRegistry = {
@@ -29,6 +30,27 @@ const context = (subject: string): RunContext => ({
   sessionId: `session_${subject}`,
 });
 
+const promptText = (call: ScriptedModelCall): string => call.prompt.map((message) => (
+  typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join("")
+)).join("\n");
+
+/** What the person just said, as the brain hears it. Capped at the create
+ *  validator's display-title length, so the derived app name is legal. */
+const lastSaid = (prompt: string): string => {
+  const at = prompt.lastIndexOf("THEY SAID: ");
+  if (at === -1) return "Untitled app";
+  const said = prompt.slice(at + "THEY SAID: ".length).split("\n")[0]?.trim() ?? "";
+  return said.slice(0, 40) || "Untitled app";
+};
+
+/** The brain, scripted: every ask is tiny, so it writes the whole app on the
+ *  spot and names it after what was said — a create and an edit alike (an edit
+ *  answered whole is the same pipeline, just the `direct` branch of it). */
+const brainModel = (): LanguageModel => scriptedLanguageModel((call) => {
+  const said = lastSaid(promptText(call)).replaceAll('"', "'");
+  return `<App name="${said}"><Text text="${said}"/><Disclaimer reason="Scripted fixture app."/></App>`;
+});
+
 const setup = (withModel = true) => {
   const store = memoryStore();
   const guard = guardFixture();
@@ -37,7 +59,7 @@ const setup = (withModel = true) => {
     guard,
     tools,
     catalog: [],
-    model: withModel ? basicLanguageModel() : undefined,
+    model: withModel ? brainModel() : undefined,
   });
   return { store, guard, runtime };
 };
@@ -258,7 +280,7 @@ describe("apps lifecycle", () => {
       guard: guardFixture(),
       tools,
       catalog: [],
-      model: basicLanguageModel(),
+      model: brainModel(),
     });
     const app: AppDocument = {
       format: VENDO_APP_FORMAT,

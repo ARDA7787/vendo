@@ -221,20 +221,32 @@ const askBrain = async (
 ): Promise<{ text?: string; issues: string[] }> => {
   try {
     const { streamText } = await import("ai");
+    // streamText does NOT throw provider errors: its default onError logs the
+    // raw error and the text stream simply ends. Capture it, or a missing key /
+    // quota exhaustion reaches the runtime as an unclassifiable empty answer.
+    let streamError: unknown;
     const result = streamText({
       model: deps.model,
       messages: cacheableGenerationMessages(system, prompt),
       ...modelCallParams(deps.model),
       maxRetries: 0,
+      onError: ({ error }) => { streamError = error; },
     });
     let text = "";
     for await (const delta of result.textStream) text += delta;
+    if (streamError !== undefined) {
+      return { issues: [`model generation failed: ${streamError instanceof Error ? streamError.message : "unknown error"}`] };
+    }
     if (text.trim().length === 0) {
       return { issues: ["the brain answered with no text at all (an empty or reasoning-only response from the provider)."] };
     }
     return { text, issues: [] };
   } catch (error) {
-    return { issues: [`the brain call failed: ${error instanceof Error ? error.message : "unknown error"}`] };
+    // The "model generation failed: " prefix is load-bearing, not decoration:
+    // runtime.buildFailureReason strips exactly it before matching the
+    // no-usable-credential lines, so a 402 classifies as non-retryable quota and
+    // the actionable `npm install @ai-sdk/...` line reaches the person.
+    return { issues: [`model generation failed: ${error instanceof Error ? error.message : "unknown error"}`] };
   }
 };
 

@@ -1205,7 +1205,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       : enabledAfterDocumentEdit(previous, app, wasEnabled);
     const appRow = appRecordInput(app, subject, enabled, session ?? sessionOf(previous));
     await apps.put(appRow);
-    return structuredClone(appRow.data.doc);
+    // The stored row keeps the conversation; the document handed BACK never
+    // carries it. One rule, every path out of the runtime (get/list/fork/undo
+    // strip it too), so what an edit returns is exactly what a list returns.
+    return withoutSession(structuredClone(appRow.data.doc));
   };
 
   /** A document without its id, the shape every generation module speaks. */
@@ -1676,7 +1679,16 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         return failBuild(conducted.reasons.join(" "), false, conducted.reasons);
       }
       if (conducted.kind === "failure") {
-        return failBuild("generation failed", true, conducted.issues);
+        // The conductor never throws a provider error — it folds the reason into
+        // `issues` — so classification has to happen HERE or a quota exhaustion
+        // ships as a retryable "generation failed" and the person retries into
+        // the same wall.
+        const { reason, retryable } = buildFailureReason(new VendoError(
+          "validation",
+          conducted.issues[0] ?? "generation failed",
+          conducted.issues,
+        ));
+        return failBuild(reason, retryable, conducted.issues);
       }
 
       let app: AppDocument = { ...conducted.document, id: appId };
@@ -1763,7 +1775,11 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
 
 
     async get(appId, ctx) {
-      return owned(appId, ctx.principal.subject);
+      // The brain's conversation is server-authoritative, on the same footing as
+      // pinDrift and buildFailed: it is read server-side through sessionOf and
+      // never rides a document out to a caller.
+      const app = await owned(appId, ctx.principal.subject);
+      return app === null ? null : withoutSession(app);
     },
 
     async list(ctx) {
@@ -1776,7 +1792,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           // A terminally failed build is a tombstone open() reads to resolve
           // the embed — not a real app; it never joins the listable surface.
           if (document.buildFailed !== undefined) continue;
-          documents.push(document);
+          documents.push(withoutSession(document));
         } catch {
           // Corrupt rows cannot be surfaced, but must not hide valid owned apps.
         }
@@ -1828,9 +1844,12 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // fork re-approves its declaration.
       delete fork.egressApproved;
       delete fork.server;
+      // The conversation belongs to the owner who had it, not to the copy: the
+      // persist already drops it (appRecordInput takes no session here), and the
+      // RETURNED document must not hand it back either.
       await apps.put(appRecordInput(fork, ctx.principal.subject));
       await reportLifecycle("fork", fork.id, ctx, { sourceAppId: source.id });
-      return structuredClone(fork);
+      return withoutSession(structuredClone(fork));
     },
 
     async agentToolRisk(call, ctx) {
@@ -1935,7 +1954,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       const surface = history.surface(appId);
       return Object.freeze({
         list: () => surface.list(),
-        undo: () => surface.undo(),
+        undo: async () => withoutSession(await surface.undo()),
       });
     },
 

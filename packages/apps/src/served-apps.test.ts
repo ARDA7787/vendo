@@ -84,19 +84,11 @@ const expectServedAppsRefusal = async (run: () => Promise<unknown>): Promise<voi
 };
 
 describe("experimental flag OFF (the default)", () => {
-  it("refuses layer-3 generation on create with a typed error naming the flag", async () => {
-    const { runtime } = setup();
-    await expectServedAppsRefusal(() => runtime.create({ prompt: LAYER3_INSTRUCTION }, ctx()));
-  });
-
-  it("refuses a layer-3 edit instruction the same way (no box work happens)", async () => {
-    const { store, sandbox, runtime } = setup();
-    await seedAppRow(store, treeApp(), "user_ada");
-    await expectServedAppsRefusal(() => runtime.edit("app_served", LAYER3_INSTRUCTION, ctx()));
-    expect(sandbox.machines).toHaveLength(0);
-    // The app is untouched: still the tree.
-    expect((await runtime.get("app_served", ctx()))?.ui).toBe("tree");
-  });
+  // The pre-emptive typed refusal on create and edit is GONE with the regex
+  // judge that guessed a layer-3 ask from the instruction text
+  // (`instructionRequiresServedApp`). A lane this host does not have is now
+  // stated to the brain as fact before it plans, and the ask comes back as an
+  // honest <Cannot> the person reads — covered by build-failure.test.ts.
 
   it("refuses open() on a served app that exists from elsewhere", async () => {
     const { store, runtime } = setup();

@@ -125,15 +125,22 @@ export const generateWireText = async (
 ): Promise<{ text?: string; issues: string[] }> => {
   try {
     const { streamText } = await import("ai");
+    // See brain.ts: streamText swallows provider errors, so capture them or the
+    // reason never reaches the caller.
+    let streamError: unknown;
     const result = streamText({
       model: deps.model,
       messages: cacheableGenerationMessages(system, prompt),
       ...modelCallParams(deps.model),
       maxRetries: 0,
+      onError: ({ error }) => { streamError = error; },
     });
     let text = "";
     for await (const delta of result.textStream) {
       text += delta;
+    }
+    if (streamError !== undefined) {
+      return { issues: [`model generation failed: ${streamError instanceof Error ? streamError.message : "unknown error"}`] };
     }
     return { text, issues: [] };
   } catch (error) {

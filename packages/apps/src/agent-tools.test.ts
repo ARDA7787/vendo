@@ -67,68 +67,6 @@ describe("apps agent tools", () => {
     expect(descriptors.find(({ name }) => name === "vendo_apps_edit")?.description).toMatch(/retry.*same app/i);
   });
 
-  it("classifies only provable tree edits as read-class", async () => {
-    const store = memoryStore();
-    const runtime = createApps({
-      store,
-      guard: guardFixture(),
-      tools: hostTools,
-      catalog: [],
-      model: scriptedLanguageModel(generated),
-    });
-    const created = await runtime.create({ prompt: "Build a dashboard" }, ctx);
-    await seedAppRow(store, {
-      ...created,
-      id: "app_http",
-      ui: "http",
-      server: "fake:snap_http",
-    }, ctx.principal.subject);
-
-    await expect(runtime.agentToolRisk({
-      id: "call_tree_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: created.id, instruction: "Make the heading blue" },
-    }, ctx)).resolves.toBe("read");
-    await expect(runtime.agentToolRisk({
-      id: "call_server_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: created.id, instruction: "Persist this to the database" },
-    }, ctx)).resolves.toBe("write");
-    // ENG-349: a server keyword used as a visible-element label is still a tree edit,
-    // while the same word in an action context stays write-class.
-    await expect(runtime.agentToolRisk({
-      id: "call_labeled_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: created.id, instruction: "Make the API status card blue" },
-    }, ctx)).resolves.toBe("read");
-    await expect(runtime.agentToolRisk({
-      id: "call_api_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: created.id, instruction: "Call the api and store the results" },
-    }, ctx)).resolves.toBe("write");
-
-    await expect(runtime.agentToolRisk({
-      id: "call_missing_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: "app_missing", instruction: "Make the heading blue" },
-    }, ctx)).resolves.toBe("write");
-    await expect(runtime.agentToolRisk({
-      id: "call_http_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: "app_http", instruction: "Make the heading blue" },
-    }, ctx)).resolves.toBe("write");
-    await expect(runtime.agentToolRisk({
-      id: "call_bad_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: created.id },
-    }, ctx)).resolves.toBe("write");
-    await expect(runtime.agentToolRisk({
-      id: "call_host",
-      tool: "host_accounts_update",
-      args: {},
-    }, ctx)).resolves.toBeUndefined();
-  });
-
   it("keeps malformed and foreign edit calls write-class", async () => {
     const store = memoryStore();
     const runtime = createApps({
@@ -163,7 +101,9 @@ describe("apps agent tools", () => {
   });
 
   it("surfaces a structured retryable edit failure instead of implying the app changed", async () => {
-    const broken = '<Edit><Set id="missing" value={1}/></Edit>';
+    // An <Old> the printed app does not hold: the brain quoted text that is
+    // missing, which is an error and never a guess.
+    const broken = '<Edit><Old><Text text="missing card"/></Old><New><Text text="Renamed"/></New></Edit>';
     const runtime = createApps({
       store: memoryStore(),
       guard: guardFixture(),

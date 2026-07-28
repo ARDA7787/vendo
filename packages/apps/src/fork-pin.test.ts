@@ -69,6 +69,15 @@ const promptText = (call: ScriptedModelCall): string => call.prompt.map((message
   return message.content.map((part) => part.text ?? "").join("");
 }).join("\n");
 
+/** A brain turn, as opposed to the AI reviewer's strict tool call that rides
+ *  the same model afterwards: only the brain is handed what the person said. */
+const isBrainTurn = (call: ScriptedModelCall): boolean => promptText(call).includes("THEY SAID:");
+
+/** The brain's edit for a pinned component: its island source is printed into
+ *  the app as one `<Island>` element, so swapping it is one old/new text edit. */
+const islandEdit = (from: string, to: string): string =>
+  `<Edit><Old><Island name="${COMPONENT}">${from}</Island></Old><New><Island name="${COMPONENT}">${to}</Island></New></Edit>`;
+
 describe("06-apps §8 — gesture-owned deterministic fork (pins.fork)", () => {
   it("forks into an existing app with NO model call and records the pin trail", async () => {
     const store = memoryStore();
@@ -118,8 +127,8 @@ describe("06-apps §8 — gesture-owned deterministic fork (pins.fork)", () => {
     const calls: ScriptedModelCall[] = [];
     const runtime = runtimeWith(store, {
       model: scriptedLanguageModel((call) => {
-        calls.push(call);
-        return `<Edit><Island name="${COMPONENT}">${SOURCE.replace("$1.2M", "$1.2M in blue")}</Island></Edit>`;
+        if (isBrainTurn(call)) calls.push(call);
+        return islandEdit(SOURCE, SOURCE.replace("$1.2M", "$1.2M in blue"));
       }),
     });
 
@@ -210,9 +219,7 @@ describe("06-apps §8 — gesture-owned deterministic fork (pins.fork)", () => {
     const app = seedDoc();
     await seedAppRow(store, app, ctx.principal.subject);
     const forkRuntime = runtimeWith(store, {
-      model: scriptedLanguageModel(
-        `<Edit><Island name="${COMPONENT}">${SOURCE.replace("$1.2M", "$1.2M in blue")}</Island></Edit>`,
-      ),
+      model: scriptedLanguageModel(islandEdit(SOURCE, SOURCE.replace("$1.2M", "$1.2M in blue"))),
     });
     const forked = await forkRuntime.pins.fork(
       { appId: app.id, slot: SLOT, instruction: "make the number blue" },
@@ -226,8 +233,8 @@ describe("06-apps §8 — gesture-owned deterministic fork (pins.fork)", () => {
     const rebaseRuntime = runtimeWith(store, {
       pinBaselines: [{ ...baseline, source: NEW_SOURCE, hash: "sha256:maple-new" }],
       model: scriptedLanguageModel((call) => {
-        replayed.push(promptText(call));
-        return `<Edit><Island name="${COMPONENT}">${NEW_SOURCE.replace("$1.2M", "$1.2M in blue")}</Island></Edit>`;
+        if (isBrainTurn(call)) replayed.push(promptText(call));
+        return islandEdit(NEW_SOURCE, NEW_SOURCE.replace("$1.2M", "$1.2M in blue"));
       }),
     });
     await expect(rebaseRuntime.pins.drift(app.id, ctx)).resolves.toEqual([
