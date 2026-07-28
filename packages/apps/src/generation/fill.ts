@@ -74,6 +74,30 @@ export interface FillOptions {
    * means workers fill without example rows — slower to get right, never wrong.
    */
   runQuery?: (query: PlanQuery) => Promise<unknown>;
+  /**
+   * Which of `plan.groups` to write, by index. Absent = all of them. The
+   * conductor holds back the groups the plan marked `waitsForServer`: they bind
+   * to code nobody has written yet, so they fill in a second pass once the box
+   * reports what it actually serves.
+   */
+  groups?: readonly number[];
+  /**
+   * Generated component sources the app already carries (the island the plan
+   * asked for, written by the island lane before this fill). A fragment
+   * compiles ALONE, with no `<Island>` declaration in scope, so without these
+   * the island's own leaf reads to the checks as an invented component.
+   */
+  components?: Readonly<Record<string, string>>;
+  /**
+   * The interface a box reported, shown to every group in THIS pass. Unlike the
+   * plan's own queries these are not referenced by leaf — nothing could have
+   * referenced them, because no function name existed when the plan was
+   * written — so each waiting group sees all of them and binds to what fits.
+   */
+  serverInterface?: {
+    queries: readonly PlanQuery[];
+    samples: Readonly<Record<string, unknown>>;
+  };
 }
 
 export interface FillResult {
@@ -192,7 +216,7 @@ const askWorker = async (
   system: string,
   prompt: string,
 ): Promise<string | undefined> => {
-  const model = deps.paint?.model ?? deps.model;
+  const model = deps.fill?.model ?? deps.model;
   try {
     const { streamText } = await import("ai");
     const result = streamText({
@@ -242,12 +266,20 @@ export const fillPlan = async (
   // The slot map is in plan order (skeleton.ts's Skeleton contract), so the
   // worker for plan.groups[i] splices into the i-th slot.
   const slots = Object.values(skeleton.slots);
+  const filling = options.groups ?? plan.groups.map((_, index) => index);
+  const islands = options.components ?? {};
 
   let tree = skeleton.tree;
   // The document's `tree` is the open UIPayload the store speaks; a v2 Tree is
   // one, structurally (the same cast the brain makes when it prints an app).
-  const document = (of: Tree): GeneratedAppDocument =>
-    ({ format: VENDO_APP_FORMAT, name: plan.name, tree: of as unknown as GeneratedAppDocument["tree"] });
+  // The app's generated components ride along so a leaf showing the island the
+  // plan asked for resolves during the per-fragment checks.
+  const document = (of: Tree): GeneratedAppDocument => ({
+    format: VENDO_APP_FORMAT,
+    name: plan.name,
+    tree: of as unknown as GeneratedAppDocument["tree"],
+    ...(Object.keys(islands).length === 0 ? {} : { components: { ...islands } }),
+  });
   const emitted: Array<Promise<void>> = [];
   /** Commit a splice and show it: the app grows a section at a time. */
   const commit = (next: Tree): void => {
@@ -281,11 +313,20 @@ export const fillPlan = async (
     if (slot === undefined) return;
     const system = workerSystemPrompt(deps, group);
     const reads = new Set(group.leaves.flatMap((leaf) => leaf.query === undefined ? [] : [leaf.query]));
+    // A box's functions were not in the plan, so no leaf could reference one:
+    // the waiting group sees the whole reported interface and binds to what fits.
+    const server = options.serverInterface;
     const fillMessage = (problems: readonly string[]): string => workerFillMessage({
       appName: plan.name,
       group,
-      queries: plan.queries.filter((query) => reads.has(query.id)),
-      samples: Object.fromEntries(Object.entries(queryResults).filter(([id]) => reads.has(id))),
+      queries: [
+        ...plan.queries.filter((query) => reads.has(query.id)),
+        ...(server?.queries ?? []),
+      ],
+      samples: {
+        ...Object.fromEntries(Object.entries(queryResults).filter(([id]) => reads.has(id))),
+        ...(server?.samples ?? {}),
+      },
       problems,
     }, deps);
 
@@ -346,7 +387,7 @@ export const fillPlan = async (
 
   await withLimit(
     options.concurrency ?? DEFAULT_FILL_CONCURRENCY,
-    plan.groups.map((_, index) => () => fillGroup(index)),
+    filling.map((index) => () => fillGroup(index)),
   );
   await Promise.all(emitted);
   return { document: document(tree), findings, queryResults };

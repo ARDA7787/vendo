@@ -113,7 +113,7 @@ import { bindVendoModelSlots, vendoModel } from "#dev-creds/model";
 export { devModel, vendoModel, type DevModelOptions, type VendoModelOptions, type VendoModelSlot } from "#dev-creds/model";
 import { resolveModels } from "./models-config.js";
 export { type ModelsConfig } from "./models-config.js";
-import type { ModelsConfig } from "./models-config.js";
+import type { ModelsConfig, ResolveModelsInput } from "./models-config.js";
 import {
   byoConnections,
   cloudConnections,
@@ -243,10 +243,11 @@ export interface CreateVendoConfig {
       then VENDO_API_KEY → Vendo Cloud managed inference — and fails honestly
       with instructions when none exists (precedence: resolveModels). */
   model?: LanguageModel;
-  /** @deprecated The `model` half is superseded by `models.paint`;
-      `disabled` remains the single-lane switch. v2 spec §4 — tier-0 paint
-      lane knob for app generation. */
-  paint?: AppsConfig["paint"];
+  /** @deprecated The `model` half is superseded by `models.paint`. There is ONE
+      generation pipeline now, so `disabled` no longer disables a lane — it means
+      "compose no separate fast tier", and the group fill workers then run on the
+      agent model instead of a cheaper one. */
+  paint?: ResolveModelsInput["paint"];
   /** Models spec 2026-07-22 (DX surface 3) — the models block, keyed by slot,
       valued by a model-name string (resolved through vendoModel's credential
       ladder: VERBATIM passthrough, per-rung defaults, env pins) or an
@@ -451,10 +452,11 @@ export interface CreateVendoConfig {
   apps?: {
     experimentalServedApps?: boolean;
     experimentalMachines?: boolean;
-    /** Generation-pipeline flags (exemplarContract, structuredRepair,
-        regionParallel, endPass) — opt-in while the A/B is measured; threaded
-        verbatim to the apps engine. */
+    /** The island smoke-render gate: every generated island renders once in a
+        headless DOM before it can reach a screen. ON unless explicitly false. */
     pipeline?: AppsConfig["pipeline"];
+    /** Groups filled at the same time during app generation (default 2). */
+    fillConcurrency?: AppsConfig["fillConcurrency"];
     /** The host's own checks over a generated app: each one reports findings
         (`block` stops the app shipping as-is, `warn` rides along) the same way
         the built-in fact checks and the AI reviewer do. APPENDED to the
@@ -1771,11 +1773,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       }
       return automationsForArming.enable(appId, armCtx);
     },
-    // Paint invisibility (models spec 2026-07-22): the composed knob — the
-    // family fast pick when the agent slot rides the ladder, the deprecated
-    // paint.model otherwise; paint.disabled survives as the one-lane switch.
-    ...(inference.paint === undefined ? {} : { paint: inference.paint }),
+    // The fast fill tier (models spec 2026-07-22, `models.paint` on the public
+    // surface): the family fast pick when the agent slot rides the ladder, the
+    // deprecated paint.model otherwise. There is ONE pipeline now, so the old
+    // single-lane `disabled` switch has nothing left to disable.
+    ...(inference.paint?.model === undefined ? {} : { fill: { model: inference.paint.model } }),
     ...(config.apps?.pipeline === undefined ? {} : { pipeline: config.apps.pipeline }),
+    ...(config.apps?.fillConcurrency === undefined ? {} : { fillConcurrency: config.apps.fillConcurrency }),
     ...(config.apps?.checks === undefined ? {} : { checks: config.apps.checks }),
     // cse lane 3 — theme/semantics/domains flow as PROVIDER thunks so a
     // cloud-owned surface applies without a compose-time fetch. semantics/domains

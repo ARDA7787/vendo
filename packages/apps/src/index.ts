@@ -76,10 +76,6 @@ export {
   type ShipDiffGenerated,
   type ShipDiffPin,
 } from "./ship-diff.js";
-// The opt-in per-stage diagnostics event already surfaced through
-// GenerationDependencies.onPipeline — exported as a type so onPipeline
-// consumers (apps/genui-bench runner tap) can name what they accumulate.
-export type { PipelineEvent } from "./pipeline.js";
 // The bench host surface (apps/genui-bench): the demo-bank catalog/tool/shape
 // loaders the live harnesses already share, exported because the exports map
 // closes deep imports. Data-only helpers — no engine behavior rides on them.
@@ -91,9 +87,6 @@ export {
   loadDemoBankCatalog,
   loadDemoBankTools,
 } from "./bench/demo-bank-surface.js";
-// The generation seam for the genui-bench vendo lane: the SAME modelEngine
-// createApps() rides, driven directly with production PipelineConfig defaults
-// (no forked engine config). Additive export — engine behavior is unchanged.
 // The checking layer's contract: the shape a host writes an AppsConfig.checks
 // entry in, and the finding shape every check reports (checking/types.ts).
 export type {
@@ -107,10 +100,17 @@ export type {
 // function of the public AppPlan, so demo/harness surfaces can render a plan's
 // skeleton without booting the engine.
 export { skeletonFromPlan, type Skeleton } from "./generation/skeleton.js";
-export {
-  modelEngine,
-  type GeneratedAppDocument,
-  type GenerationCreateInput,
-  type GenerationDependencies,
-  type GenerationEngine,
+export type {
+  GeneratedAppDocument,
+  GenerationDependencies,
 } from "./generation/engine.js";
+// The generation seam for the genui-bench vendo lane: the SAME conductor
+// createApps() rides, driven directly against a host fixture with no store
+// behind it. Additive export — generation behavior is identical.
+export {
+  conductCreate,
+  conductEdit,
+  type ConductedApp,
+  type ConductedResult,
+  type ConductorOptions,
+} from "./generation/conductor.js";

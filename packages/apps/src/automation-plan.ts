@@ -22,7 +22,8 @@ export interface AutomationPlanInput {
   appId: string;
   appName: string;
   instruction: string;
-  /** The judge's rung: (a) steps or (b) agentic (see engine.serverWorkRung). */
+  /** How the automation runs: deterministic `steps`, or `agentic` when each
+   *  firing needs a model's judgment. The PLAN declares which (`<Server kind>`). */
   mode: "steps" | "agentic";
   /** The tools steps may name / the agentic prompt may reference — the SAME
    *  guard-bound surface the automations engine executes through. */

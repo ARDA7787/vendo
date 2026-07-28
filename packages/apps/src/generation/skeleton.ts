@@ -37,13 +37,17 @@ const TAB_CHROME_ID = "tabs";
 const groupId = (index: number): string => `group-${index}`;
 const tabPanelId = (index: number): string => `tab-${index}`;
 
-/** The plan's layout as a tree, with every leaf still pending. */
-export const skeletonFromPlan = (plan: AppPlan): Skeleton => {
+/** The plan's layout as a tree, with every leaf still pending.
+ *
+ *  `from` shifts the group ordinals so an AMENDMENT's groups cannot claim an id
+ *  the live app already mounted (see {@link growSkeleton}). It defaults to 0,
+ *  which is the only value a fresh create ever uses. */
+export const skeletonFromPlan = (plan: AppPlan, from = 0): Skeleton => {
   const tabs = planTabs(plan);
   const nodes: TreeNode[] = [];
   const slots: Record<string, string> = {};
   const groupIdsWithTab = (tab: string | undefined): string[] =>
-    plan.groups.flatMap((group, index) => (group.tab === tab ? [groupId(index)] : []));
+    plan.groups.flatMap((group, index) => (group.tab === tab ? [groupId(from + index)] : []));
 
   // Groups the plan never labelled stand above the tab bar as one shared
   // surface — a label-less group belongs to no tab, and hiding it inside the
@@ -79,7 +83,8 @@ export const skeletonFromPlan = (plan: AppPlan): Skeleton => {
     }
   }
 
-  for (const [index, group] of plan.groups.entries()) {
+  for (const [position, group] of plan.groups.entries()) {
+    const index = from + position;
     const id = groupId(index);
     const slot = `${id}-body`;
     const title = group.title === undefined ? undefined : `${id}-title`;
@@ -131,6 +136,98 @@ export const skeletonFromPlan = (plan: AppPlan): Skeleton => {
       ...(queries.length === 0 ? {} : { queries }),
     },
     slots,
+  };
+};
+
+/** The ordinal after the highest `group-N` the tree already carries — where an
+ *  amendment's own groups start, so nothing already on the screen is renamed. */
+const nextGroupOrdinal = (tree: Tree): number => {
+  let highest = -1;
+  for (const { id } of tree.nodes) {
+    const match = /^group-(\d+)$/.exec(id);
+    if (match !== null) highest = Math.max(highest, Number(match[1]));
+  }
+  return highest + 1;
+};
+
+/**
+ * Grow a live app's layout by the groups an AMENDMENT planned. The existing
+ * tree is untouched — ids, props, filled contents and all — so the screen keeps
+ * what it has and only the new containers appear, shimmering, ready for their
+ * workers. Ids are prefix-stable by construction: new groups start past the
+ * highest ordinal in use, so no node the user is looking at is ever renamed.
+ *
+ * Where a group lands follows the app's own shape, and never invents a label:
+ * a tab the app already has adopts the group; a NEW tab label becomes a new tab
+ * beside the others (only when the app already has tab chrome to put it in);
+ * and an app with no tabs at all takes the groups at its root, because giving
+ * the existing content a tab name nobody wrote would be a guess.
+ */
+export const growSkeleton = (tree: Tree, plan: AppPlan): Skeleton => {
+  const added = skeletonFromPlan(plan, nextGroupOrdinal(tree));
+  const groupIds = Object.keys(added.slots);
+  // The group subtrees only: the amendment's own app/tab chrome is scaffolding
+  // for a tree that already exists.
+  const chrome = new Set<string>([APP_ID, TAB_CHROME_ID]);
+  for (const node of added.tree.nodes) {
+    if (/^tab-\d+$/.test(node.id)) chrome.add(node.id);
+  }
+  const nodes: TreeNode[] = [
+    ...tree.nodes.map((node) => ({ ...node })),
+    ...added.tree.nodes.filter((node) => !chrome.has(node.id)),
+  ];
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const attach = (parentId: string, children: readonly string[]): void => {
+    const parent = byId.get(parentId);
+    if (parent === undefined || children.length === 0) return;
+    parent.children = [...(parent.children ?? []), ...children];
+  };
+
+  const bar = byId.get(TAB_CHROME_ID);
+  const existingTabs = bar === undefined
+    ? []
+    : ((bar.props?.tabs as ReadonlyArray<{ value?: unknown; label?: unknown }> | undefined) ?? [])
+      .map(({ value }) => typeof value === "string" ? value : "");
+  const panelOf = new Map(existingTabs.map((label, index) => [label, (bar?.children ?? [])[index] as string | undefined]));
+  let nextPanel = (bar?.children ?? []).length;
+  const nextTabs = [...existingTabs];
+
+  for (const [position, group] of plan.groups.entries()) {
+    const id = groupIds[position] as string;
+    const label = group.tab;
+    // A group the plan never labelled belongs to no tab — it stands at the
+    // root, exactly where a fresh skeleton puts one.
+    if (label === undefined || bar === undefined) {
+      attach(tree.root, [id]);
+      continue;
+    }
+    const panel = panelOf.get(label);
+    if (panel !== undefined) {
+      attach(panel, [id]);
+      continue;
+    }
+    const panelId = `tab-${nextPanel}`;
+    nextPanel += 1;
+    nodes.push({ id: panelId, component: "Stack", source: "prewired", children: [id] });
+    byId.set(panelId, nodes[nodes.length - 1] as TreeNode);
+    panelOf.set(label, panelId);
+    nextTabs.push(label);
+    attach(TAB_CHROME_ID, [panelId]);
+  }
+  if (bar !== undefined && nextTabs.length > existingTabs.length) {
+    bar.props = { ...bar.props, tabs: nextTabs.map((label) => ({ value: label, label })) };
+  }
+
+  const queries: TreeQuery[] = [...(tree.queries ?? [])];
+  const declared = new Set(queries.map(({ name }) => name));
+  for (const query of added.tree.queries ?? []) {
+    if (declared.has(query.name)) continue;
+    declared.add(query.name);
+    queries.push(query);
+  }
+  return {
+    tree: { ...tree, nodes, ...(queries.length === 0 ? {} : { queries }) },
+    slots: added.slots,
   };
 };
 

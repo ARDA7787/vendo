@@ -12,7 +12,7 @@ import { printWire } from "@vendoai/core";
 import { treeOf } from "./facts.js";
 import type { Check, Finding } from "./types.js";
 import { REPORT_FINDINGS_DESCRIPTION, REVIEWER_SYSTEM } from "../generation/prompts/reviewer.js";
-import { strictToolCall } from "../generation/stages/repair.js";
+import { strictToolCall } from "../generation/strict-tool-call.js";
 import type { GeneratedAppDocument, GenerationDependencies } from "../generation/engine.js";
 
 export const REVIEWER_CHECK_NAME = "reviewer";

@@ -45,8 +45,7 @@ export { compileWire, type WireCompileOptions, type WireCompileResult } from "./
 export { expandInlineRefs, type InlineRefsResult } from "./genui/wire/inline-refs.js";
 export { WIRE_ISSUE_CODES, type WireIssue, type WireIssueCode } from "./genui/wire/expression.js";
 // v2 spec §5 — the one-dialect edit surface: print the app as id-anchored
-// wire (the model's edit context), apply the model's <Edit> patch.
-export { compileWirePatch, type PatchExtensionOp, type WirePatchBase, type WirePatchOptions, type WirePatchResult } from "./genui/wire/patch.js";
+// wire (the model's edit context).
 export { printWire, type WirePrintInput, type WirePrintOptions } from "./genui/wire/print.js";
 // The brain's edit surface: exact old/new text edits over the id-free print,
 // and the recompile that carries node ids across them.
@@ -74,8 +73,6 @@ export {
 // Deprecated aliases from the pre-de-versioning naming (0.4.x). Remove next minor.
 /** @deprecated Use compileWire. */
 export { compileWire as compileWireV2 } from "./genui/wire/compile.js";
-/** @deprecated Use compileWirePatch. */
-export { compileWirePatch as compileWirePatchV2 } from "./genui/wire/patch.js";
 /** @deprecated Use printWire. */
 export { printWire as printWireV2 } from "./genui/wire/print.js";
 /** @deprecated Use validateTree. */
