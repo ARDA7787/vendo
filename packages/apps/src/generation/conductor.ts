@@ -241,14 +241,16 @@ const checkAndFix = async (
   },
   deps: GenerationDependencies,
   checking: CheckingLayer,
+  options: ConductorOptions,
 ): Promise<{ document: AppDocument; findings: Finding[]; session: BrainTurn[] }> => {
   let document = input.document;
   let session = input.session;
+  let plan = input.plan;
   for (let round = 0; ; round += 1) {
     const findings = await checking.run({
       app: withoutId(document),
       request: input.request,
-      ...(input.plan === undefined ? {} : { plan: input.plan }),
+      ...(plan === undefined ? {} : { plan }),
     });
     const blocking = findings.filter(({ severity }) => severity === "block");
     if (blocking.length === 0 || round >= FIX_ROUNDS) return { document, findings, session };
@@ -258,12 +260,35 @@ const checkAndFix = async (
       session,
     }, deps);
     session = turn.session;
-    // Anything but edits means the brain would not or could not fix it in
-    // place. Stop and report: another round would ask the same question.
-    if (turn.outcome?.kind !== "edits") return { document, findings, session };
-    const revised = await applyBrainEdits(document, turn.outcome.edits, deps, input.request);
-    if (revised.document === undefined) return { document, findings, session };
-    document = revised.document;
+    const outcome = turn.outcome;
+    if (outcome?.kind === "edits") {
+      const revised = await applyBrainEdits(document, outcome.edits, deps, input.request);
+      if (revised.document === undefined) return { document, findings, session };
+      document = revised.document;
+      continue;
+    }
+    // A finding the app's TEXT cannot answer: "you never built the Friday
+    // reminder" is fixed by planning the reminder, not by editing a label. The
+    // brain answers with an amendment and the app grows a part it was missing —
+    // which is why reviewer findings come here, to the brain, and not to a group
+    // worker who can only rewrite its own section.
+    if (outcome?.kind === "amend") {
+      const tree = document.tree as unknown as Tree | undefined;
+      if (tree === undefined) return { document, findings, session };
+      const grown = await growAndFill({
+        plan: outcome.plan,
+        skeleton: growSkeleton(tree, outcome.plan),
+        request: input.request,
+      }, deps, options);
+      document = { ...document, ...grown.document, id: document.id } as AppDocument;
+      // The amendment's own server declaration is what the runtime reads to arm
+      // an automation, so it has to replace the plan the checks are measuring.
+      plan = outcome.plan;
+      continue;
+    }
+    // Anything else means the brain would not or could not fix it. Stop and
+    // report: another round would ask the same question.
+    return { document, findings, session };
   }
 };
 
@@ -284,14 +309,17 @@ const treeOfDocument = (document: GeneratedAppDocument): Tree => document.tree a
 const readyGroups = (plan: AppPlan): number[] =>
   plan.groups.flatMap((group, index) => group.waitsForServer === true ? [] : [index]);
 
-/** Build a plan's groups into a skeleton, then write their contents. Shared by
- *  a fresh create and an amendment — the only difference is whose tree the
- *  groups land in. */
-const buildPlan = async (
-  input: { plan: AppPlan; skeleton: Skeleton; request: string; session: BrainTurn[] },
+/**
+ * Turn a plan's groups into real contents: the island the plan asked for, then
+ * one fast worker per group. Mechanical — it runs no checks and takes no brain
+ * turn, so the fix loop can reuse it when the brain answers a finding with an
+ * amendment rather than an edit.
+ */
+const growAndFill = async (
+  input: { plan: AppPlan; skeleton: Skeleton; request: string },
   deps: GenerationDependencies,
   options: ConductorOptions,
-): Promise<ConductedApp> => {
+): Promise<{ document: GeneratedAppDocument; findings: Finding[]; queryResults: Record<string, unknown> }> => {
   const { plan, skeleton } = input;
   // The plan IS the layout: it reaches the screen before a single group has
   // been written, so the person sees the app's real geometry filling in.
@@ -334,20 +362,33 @@ const buildPlan = async (
     }),
   };
 
-  const checked = await checkAndFix({
-    document: withId(document),
-    request: input.request,
-    plan,
-    session: input.session,
-  }, deps, checkingFor(deps, filled.queryResults, options.checks));
+  return {
+    document,
+    findings: [...islandLane.findings, ...filled.findings],
+    queryResults: filled.queryResults,
+  };
+};
 
+/** Build a plan's groups, then put the finished app through the checks. */
+const buildPlan = async (
+  input: { plan: AppPlan; skeleton: Skeleton; request: string; session: BrainTurn[] },
+  deps: GenerationDependencies,
+  options: ConductorOptions,
+): Promise<ConductedApp> => {
+  const built = await growAndFill(input, deps, options);
+  const checked = await checkAndFix({
+    document: withId(built.document),
+    request: input.request,
+    plan: input.plan,
+    session: input.session,
+  }, deps, checkingFor(deps, built.queryResults, options.checks), options);
   return {
     kind: "app",
     document: withoutId(checked.document),
-    plan,
-    skeleton: { tree: treeOfDocument(withoutId(checked.document)), slots: skeleton.slots },
-    queryResults: filled.queryResults,
-    findings: [...islandLane.findings, ...filled.findings, ...checked.findings],
+    plan: input.plan,
+    skeleton: { tree: treeOfDocument(withoutId(checked.document)), slots: input.skeleton.slots },
+    queryResults: built.queryResults,
+    findings: [...built.findings, ...checked.findings],
     session: checked.session,
   };
 };
@@ -376,7 +417,7 @@ export const conductCreate = async (
       document: withId(built.document),
       request: input.prompt,
       session: turn.session,
-    }, deps, checkingFor(deps, {}, options.checks));
+    }, deps, checkingFor(deps, {}, options.checks), options);
     return {
       kind: "app",
       document: withoutId(checked.document),
@@ -432,7 +473,7 @@ export const conductEdit = async (
       document,
       request: input.instruction,
       session,
-    }, deps, checkingFor(deps, {}, options.checks));
+    }, deps, checkingFor(deps, {}, options.checks), options);
     return {
       kind: "app",
       document: withoutId(checked.document),
