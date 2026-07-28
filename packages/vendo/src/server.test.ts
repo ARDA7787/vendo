@@ -1926,18 +1926,77 @@ describe("app design rules (spec 2026-07-20)", () => {
     const store = await tempStore("vendo-cloud-overrides-store-");
     await store.ensureSchema();
     const prompts: string[] = [];
+    // The semantics annotations live in the FILL WORKER's query brief now (the
+    // brain plans off tool names; shape cards travel with the query to the
+    // worker that binds against them), so the fake model must walk the whole
+    // conduction: a plan with a query on host_ledger, a worker fill, and an
+    // empty reviewer pass.
+    const planModel = ((): LanguageModel => {
+      const reply = (flat: string): string => {
+        if (flat.includes("THEY ARE ASKING NOW:")) {
+          return `<Plan name="Ledger">
+  <Query id="ledger" tool="host_ledger"/>
+  <Group>
+    <Leaf component="Text" query="ledger" purpose="Ledger rows at a glance"/>
+  </Group>
+</Plan>`;
+        }
+        if (flat.includes("YOUR SECTION")) return '<Text text="ok"/>';
+        return "";
+      };
+      const capture = (call: { prompt: Array<{ content: string | Array<{ text?: string }> }> }): string => {
+        const flat = flatPrompt(call.prompt);
+        prompts.push(flat);
+        return reply(flat);
+      };
+      return {
+        specificationVersion: "v2" as const,
+        provider: "vendo-test",
+        modelId: "vendo-test-plan",
+        supportedUrls: {},
+        async doGenerate(call: { prompt: Array<{ content: string | Array<{ text?: string }> }> }) {
+          return {
+            content: [{ type: "text" as const, text: capture(call) }],
+            finishReason: "stop" as const,
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          };
+        },
+        async doStream(call: { prompt: Array<{ content: string | Array<{ text?: string }> }> }) {
+          const text = capture(call);
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: "stream-start", warnings: [] });
+                controller.enqueue({ type: "text-start", id: "text_1" });
+                controller.enqueue({ type: "text-delta", id: "text_1", delta: text });
+                controller.enqueue({ type: "text-end", id: "text_1" });
+                controller.enqueue({
+                  type: "finish",
+                  finishReason: "stop",
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                });
+                controller.close();
+              },
+            }),
+          };
+        },
+      } as unknown as LanguageModel;
+    })();
     // Explicit store wins over the key (BYO); connectors:[] avoids the cloud
     // tools connector's descriptor fetch — the ONLY config fetch is /api/v1/config.
     const vendo = createVendo({
-      model: appGenModel(prompts),
+      model: planModel,
       principal: async () => principal,
       store,
       connectors: [],
     });
     cleanups.push(async () => { await vendo.store.close(); });
 
+    // The worker's query brief carries the shape card ("shape: { amount:
+    // number:money.cents, … }") — that line is where a generation actually
+    // reads the merged semantics.
     const shapeCard = (all: string[]): string =>
-      all.filter((p) => p.includes("TOOL RESPONSE SHAPES")).join("\n");
+      all.filter((p) => p.includes("shape: ")).join("\n");
 
     // First generation: local semantics always apply; this generation's own
     // descriptors() read also resolves the cloud-owned overrides (enablement,
