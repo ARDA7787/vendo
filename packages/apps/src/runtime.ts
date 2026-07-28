@@ -1908,20 +1908,21 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       return withoutSession(structuredClone(fork));
     },
 
-    async agentToolRisk(call, ctx) {
-      if (call.tool !== "vendo_apps_edit") return undefined;
-      if (typeof call.args !== "object" || call.args === null || Array.isArray(call.args)) {
-        return "write";
-      }
-      const args = call.args as Record<string, Json>;
-      if (typeof args.appId !== "string" || typeof args.instruction !== "string") {
-        return "write";
-      }
-      // An edit can author an automation or provision a machine, and nothing
-      // short of running the brain can tell in advance which. The old regex
-      // judge guessed; guessing DOWN would under-gate a real write, so every
-      // edit is write-class now.
-      return "write";
+    /**
+     * No contextual projection for app self-mutation.
+     *
+     * Yousef's ruling (2026-07-28): an app edit does not need approval. Changing
+     * your own view is not an act on the world — the static descriptors say
+     * `read` for create and edit, and there is nothing per-call that should
+     * raise them. What an app DOES still carries full ceremony: every host tool
+     * an app calls goes through the guard on its own risk, an away run's first
+     * ungranted mutating step parks the normal card, and egress needs the
+     * owner's approval before a machine is provisioned.
+     *
+     * `undefined` means the static descriptor stands.
+     */
+    async agentToolRisk() {
+      return undefined;
     },
 
     async edit(appId, instruction, ctx) {

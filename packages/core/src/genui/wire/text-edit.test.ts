@@ -164,4 +164,45 @@ describe("recompileWithIdentity", () => {
     expect(idOf(next.tree, "one")).toBe("card-1");
     expect(idOf(next.tree, "second")).toBe("card-2");
   });
+
+/**
+ * An error that only repeats the string that failed tells the model nothing it
+ * did not already believe, so it retries the same edit. The present text is what
+ * makes the second attempt different from the first.
+ */
+describe("applyTextEdits — a miss reports what the document says NOW", () => {
+  const app = [
+    '<App name="Invoices">',
+    '  <Stat label="Total outstanding" value={sum(invoices.amount_cents)}/>',
+    '  <Table rows={invoices.data}/>',
+    "</App>",
+  ].join("\n");
+
+  it("quotes the closest current line when a stale old string finds no match", () => {
+    const result = applyTextEdits(app, [
+      { old: '<Stat label="Total" value={invoices.total}/>', new: "<Stat/>" },
+    ]);
+    expect(result.text).toBeUndefined();
+    const issue = result.issue ?? "";
+    expect(issue).toContain("found no match");
+    // The whole point: the CURRENT text of that region travels with the error.
+    expect(issue).toContain('label="Total outstanding"');
+    expect(issue).toContain("sum(invoices.amount_cents)");
+    expect(issue).toContain("Quote from THAT");
+  });
+
+  it("quotes the present text on an ambiguous match too", () => {
+    const twice = '<Text text="Total"/>\n<Text text="Total"/>';
+    const result = applyTextEdits(twice, [{ old: '<Text text="Total"/>', new: "<Text/>" }]);
+    expect(result.text).toBeUndefined();
+    expect(result.issue ?? "").toContain("2 matches");
+    expect(result.issue ?? "").toContain("the app right now");
+  });
+
+  it("falls back to the document itself when nothing resembles the old string", () => {
+    const result = applyTextEdits(app, [{ old: "zzzz qqqq wwww", new: "x" }]);
+    expect(result.issue ?? "").toContain("The app right now is:");
+    expect(result.issue ?? "").toContain('<App name="Invoices">');
+  });
+});
 });

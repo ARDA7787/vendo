@@ -51,7 +51,13 @@ const descriptors: ToolDescriptor[] = [
       required: ["appId", "instruction"],
       additionalProperties: false,
     },
-    risk: "write",
+    // Yousef's ruling (2026-07-28): an app edit does not need approval. Editing
+    // an app is structurally the same act as creating one — a jailed document
+    // render with no server, no host-tool execution, no egress — and the only
+    // write is to Vendo's own app store. The ceremony belongs on what an app
+    // DOES (money, messages, deletion), never on the person rearranging their
+    // own view. History and undo are the safety net here, not a consent gate.
+    risk: "read",
   },
   {
     name: "vendo_apps_rebase_pin",

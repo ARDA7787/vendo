@@ -61,12 +61,12 @@ const promptText = (call: ScriptedModelCall): string => call.prompt.map((message
 
 /** A brain turn, as opposed to the AI reviewer's strict tool call that rides
  *  the same model after a document lands: only the brain hears what was said. */
-const isBrainTurn = (call: ScriptedModelCall): boolean => promptText(call).includes("THEY SAID:");
+const isBrainTurn = (call: ScriptedModelCall): boolean => promptText(call).includes("THEY ARE ASKING NOW:");
 
-/** What this turn was ASKED to do. The carried conversation quotes earlier
- *  turns the same way, so the instruction is the LAST thing said. */
+/** What this turn was ASKED to do. The live ask carries its own marker, so it is
+ *  unambiguous even though the carried conversation quotes earlier turns. */
 const instructionOf = (prompt: string): string => {
-  const marker = "THEY SAID: ";
+  const marker = "THEY ARE ASKING NOW: ";
   return prompt.slice(prompt.lastIndexOf(marker) + marker.length).split("\n")[0] ?? "";
 };
 

@@ -71,7 +71,7 @@ const promptText = (call: ScriptedModelCall): string => call.prompt.map((message
 
 /** A brain turn, as opposed to the AI reviewer's strict tool call that rides
  *  the same model afterwards: only the brain is handed what the person said. */
-const isBrainTurn = (call: ScriptedModelCall): boolean => promptText(call).includes("THEY SAID:");
+const isBrainTurn = (call: ScriptedModelCall): boolean => promptText(call).includes("THEY ARE ASKING NOW:");
 
 /** The brain's edit for a pinned component: its island source is printed into
  *  the app as one `<Island>` element, so swapping it is one old/new text edit. */

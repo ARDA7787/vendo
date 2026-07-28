@@ -1368,25 +1368,36 @@ describe("09 §2 composition", () => {
     });
     const byName = new Map((await vendo.actions.descriptors()).map((descriptor) => [descriptor.name, descriptor]));
     expect(byName.get("vendo_apps_create")?.risk).toBe("read");
-    expect(byName.get("vendo_apps_edit")?.risk).toBe("write");
+    // Yousef's ruling (2026-07-28): an app edit does not need approval. Editing
+    // your own view is the same act as creating it, so it runs — in EVERY venue,
+    // which is what this test is really about: one answer per act, not per door.
+    expect(byName.get("vendo_apps_edit")?.risk).toBe("read");
     const edit = byName.get("vendo_apps_edit")!;
     const chat = { ...ctx, venue: "chat" as const };
     const mcp = { ...ctx, venue: "mcp" as const };
-    await expect(vendo.guard.check({
-      id: "call_server_chat",
-      tool: edit.name,
-      args: { appId: "app_wire", instruction: "Persist this to the database" },
-    }, edit, chat)).resolves.toMatchObject({ action: "ask" });
-    await expect(vendo.guard.check({
-      id: "call_server_mcp",
-      tool: edit.name,
-      args: { appId: "app_wire", instruction: "Persist this to the database" },
-    }, edit, mcp)).resolves.toMatchObject({ action: "ask" });
+    for (const [id, venue] of [["call_chat", chat], ["call_mcp", mcp]] as const) {
+      await expect(vendo.guard.check({
+        id,
+        tool: edit.name,
+        args: { appId: "app_wire", instruction: "Persist this to the database" },
+      }, edit, venue)).resolves.toMatchObject({ action: "run" });
+    }
+    // Including an edit of an already-served app: the instruction rides the box,
+    // and what the BOX then does is gated on its own terms (egress approval,
+    // per-tool risk), never by a prompt about rearranging a view.
     await expect(vendo.guard.check({
       id: "call_http",
       tool: edit.name,
       args: { appId: "app_http", instruction: "Make the heading blue" },
-    }, edit, chat)).resolves.toMatchObject({ action: "ask" });
+    }, edit, chat)).resolves.toMatchObject({ action: "run" });
+    // The ceremony stays where it belongs: writing the app's stored rows asks.
+    const dataPut = byName.get("vendo_apps_data_put")!;
+    expect(dataPut.risk).toBe("write");
+    await expect(vendo.guard.check({
+      id: "call_data_put",
+      tool: dataPut.name,
+      args: { appId: "app_wire", collection: "notes", id: "n1", data: {} },
+    }, dataPut, chat)).resolves.toMatchObject({ action: "ask" });
   });
 
   it("uses per-client session-scoped ephemeral principals when the resolver returns null", async () => {
@@ -2208,7 +2219,7 @@ describe("09 §3 conversational turn against the real composed store", () => {
     const model = new MockLanguageModelV3({
       doStream: async ({ prompt }) => {
         const serialized = JSON.stringify(prompt);
-        if (serialized.includes("THEY SAID:")) {
+        if (serialized.includes("THEY ARE ASKING NOW:")) {
           return generation(`<Plan name="SSE app">
   <Group>
     <Leaf component="Text" purpose="A one-line status for the first section"/>

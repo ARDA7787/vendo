@@ -59,15 +59,23 @@ describe("apps agent tools", () => {
       });
       expect(() => JSON.stringify(descriptor.inputSchema)).not.toThrow();
     }
-    // Creating a document is a rung-1-only, jailed UI operation: it cannot
-    // reach host tools, a server machine, or the network.
+    // Creating OR editing a document is a rung-1-only, jailed UI operation: it
+    // cannot reach host tools, a server machine, or the network. Yousef's ruling
+    // (2026-07-28): an app edit does not need approval — rearranging your own
+    // view is not an act on the world, and history/undo are the safety net.
     expect(descriptors.map((descriptor) => descriptor.risk)).toEqual([
-      "read", "write", "write", "read", "read", "write", "write",
+      "read", "read", "write", "read", "read", "write", "write",
     ]);
     expect(descriptors.find(({ name }) => name === "vendo_apps_edit")?.description).toMatch(/retry.*same app/i);
   });
 
-  it("keeps malformed and foreign edit calls write-class", async () => {
+  /**
+   * Yousef's ruling (2026-07-28), verbatim: "no an app edit does not need
+   * approval." So there is no contextual projection to make — the static
+   * descriptor stands for every app call, malformed args and foreign ids alike
+   * (ownership is enforced by the runtime, not by a consent prompt).
+   */
+  it("asks no approval for app self-mutation: no risk projection, on any shape of call", async () => {
     const store = memoryStore();
     const runtime = createApps({
       store,
@@ -77,27 +85,30 @@ describe("apps agent tools", () => {
       model: scriptedLanguageModel(generated),
     });
     const created = await runtime.create({ prompt: "Build a dashboard" }, ctx);
-    await seedAppRow(store, {
-      ...created,
-      id: "app_foreign",
-    }, "user_other");
+    await seedAppRow(store, { ...created, id: "app_foreign" }, "user_other");
 
     for (const [id, args] of [
       ["call_null_edit", null],
       ["call_array_edit", []],
       ["call_primitive_edit", "invalid"],
+      ["call_real_edit", { appId: created.id, instruction: "Make the heading blue" }],
+      ["call_foreign_edit", { appId: "app_foreign", instruction: "Make the heading blue" }],
     ] as const) {
-      await expect(runtime.agentToolRisk({
-        id,
-        tool: "vendo_apps_edit",
-        args,
-      }, ctx)).resolves.toBe("write");
+      await expect(runtime.agentToolRisk({ id, tool: "vendo_apps_edit", args }, ctx))
+        .resolves.toBeUndefined();
     }
+    // Creating one is the same act, and equally unprompted.
     await expect(runtime.agentToolRisk({
-      id: "call_foreign_edit",
-      tool: "vendo_apps_edit",
-      args: { appId: "app_foreign", instruction: "Make the heading blue" },
-    }, ctx)).resolves.toBe("write");
+      id: "call_create",
+      tool: "vendo_apps_create",
+      args: { prompt: "Build a dashboard" },
+    }, ctx)).resolves.toBeUndefined();
+
+    // The ceremony still belongs on what an app DOES: writing and deleting the
+    // app's own stored rows stay write-class on their own descriptors, untouched.
+    const descriptors = await runtime.agentTools().descriptors();
+    expect(descriptors.find(({ name }) => name === "vendo_apps_data_put")?.risk).toBe("write");
+    expect(descriptors.find(({ name }) => name === "vendo_apps_data_delete")?.risk).toBe("write");
   });
 
   it("surfaces a structured retryable edit failure instead of implying the app changed", async () => {

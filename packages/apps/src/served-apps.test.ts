@@ -67,7 +67,7 @@ const servedAppsBrain = (call: { prompt: Array<{ content: string | Array<{ text?
     .join("\n");
   // A fill worker writes one group's markup; it never sees an instruction.
   if (text.includes("YOUR SECTION")) return '<Text text="Board"/>';
-  const said = text.split("THEY SAID:").pop() ?? "";
+  const said = text.split("THEY ARE ASKING NOW:").pop() ?? "";
   const server = /kanban|drag-and-drop/i.test(said)
     ? '<Server kind="box" served why="Dragging cards between columns is an interaction no component can express."/>'
     : '<Server kind="box" why="Custom matching logic no tool composition can express."/>';

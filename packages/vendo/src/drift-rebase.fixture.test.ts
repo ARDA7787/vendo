@@ -19,18 +19,18 @@ const promptText = (call: ModelCall): string => call.prompt
     : message.content.map((part) => part.text ?? "").join(""))
   .join("\n");
 
-const APP_AS_IT_STANDS = "THE APP AS IT STANDS (this exact text is what an <Old> must quote):\n";
+const APP_AS_IT_STANDS = "THE APP AS IT STANDS — the only true copy of it, and what an <Old> must quote:\n";
 
 /** The app exactly as the brain was shown it — the text every answer is built
  *  from. */
 const printedApp = (prompt: string): string => {
   const at = prompt.indexOf(APP_AS_IT_STANDS);
   if (at === -1) return "";
-  return prompt.slice(at + APP_AS_IT_STANDS.length).split("\n\nTHEY SAID:")[0] ?? "";
+  return prompt.slice(at + APP_AS_IT_STANDS.length).split("\n\nTHEY ARE ASKING NOW:")[0] ?? "";
 };
 
 /**
- * The brain, scripted. Only BRAIN turns are answered ("THEY SAID:" is its
+ * The brain, scripted. Only BRAIN turns are answered ("THEY ARE ASKING NOW:" is its
  * marker) — the AI reviewer rides the same model and a reviewer that answers
  * nothing reports no findings, which is what a fixture with nothing to say
  * should do.
@@ -40,7 +40,7 @@ const printedApp = (prompt: string): string => {
  * answer) rather than as an old/new pair — so the same script is still correct
  * on the rebase replay, where the island source is the host's NEW baseline.
  */
-const remixNote = (prompt: string): string => prompt.includes("THEY SAID:")
+const remixNote = (prompt: string): string => prompt.includes("THEY ARE ASKING NOW:")
   ? printedApp(prompt).replace("$1.2M", "$1.2M — remixed")
   : "";
 

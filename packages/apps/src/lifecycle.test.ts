@@ -37,9 +37,10 @@ const promptText = (call: ScriptedModelCall): string => call.prompt.map((message
 /** What the person just said, as the brain hears it. Capped at the create
  *  validator's display-title length, so the derived app name is legal. */
 const lastSaid = (prompt: string): string => {
-  const at = prompt.lastIndexOf("THEY SAID: ");
+  const marker = "THEY ARE ASKING NOW: ";
+  const at = prompt.lastIndexOf(marker);
   if (at === -1) return "Untitled app";
-  const said = prompt.slice(at + "THEY SAID: ".length).split("\n")[0]?.trim() ?? "";
+  const said = prompt.slice(at + marker.length).split("\n")[0]?.trim() ?? "";
   return said.slice(0, 40) || "Untitled app";
 };
 

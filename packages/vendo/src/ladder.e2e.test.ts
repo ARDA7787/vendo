@@ -107,13 +107,13 @@ const AMENDMENT = `<Plan name="Invoice board">
 /** The fill worker's section: static text, because this group reads no query. */
 const FILL = '<Text text="Refreshed every morning by the digest automation."/>';
 
-const APP_AS_IT_STANDS = "THE APP AS IT STANDS (this exact text is what an <Old> must quote):\n";
+const APP_AS_IT_STANDS = "THE APP AS IT STANDS — the only true copy of it, and what an <Old> must quote:\n";
 
 /** The app exactly as the brain was shown it. */
 const printedApp = (prompt: string): string => {
   const at = prompt.indexOf(APP_AS_IT_STANDS);
   if (at === -1) return "";
-  return prompt.slice(at + APP_AS_IT_STANDS.length).split("\n\nTHEY SAID:")[0] ?? "";
+  return prompt.slice(at + APP_AS_IT_STANDS.length).split("\n\nTHEY ARE ASKING NOW:")[0] ?? "";
 };
 
 /** The rewire the automation lane asks for once its trigger is authored: the app
@@ -151,8 +151,8 @@ const PLAN = JSON.stringify({
 const respond = (prompt: string): string => {
   if (prompt.includes("You are the Vendo automation planner")) return PLAN;
   if (prompt.includes("YOUR SECTION")) return FILL;
-  if (!prompt.includes("THEY SAID:")) return "";
-  return prompt.includes("THEY SAID: The app now has a steps automation") ? REBIND(prompt) : AMENDMENT;
+  if (!prompt.includes("THEY ARE ASKING NOW:")) return "";
+  return prompt.includes("THEY ARE ASKING NOW: The app now has a steps automation") ? REBIND(prompt) : AMENDMENT;
 };
 
 const seedDoc: AppDocument = {

@@ -176,6 +176,34 @@ const readAnswer = (
   };
 };
 
+/**
+ * One line describing what the brain did, for the conversation to remember.
+ *
+ * Deliberately carries no markup: an app's text belongs in exactly one place in
+ * a prompt — the fresh print — and a transcript quoting yesterday's elements is
+ * how a model comes to edit text that no longer exists.
+ */
+const summarize = (outcome: BrainOutcome): string => {
+  switch (outcome.kind) {
+    case "direct":
+      return "built the app directly.";
+    case "plan":
+    case "amend": {
+      const { plan } = outcome;
+      const parts = [`${outcome.kind === "plan" ? "planned" : "amended"}: ${plan.groups.length} group${plan.groups.length === 1 ? "" : "s"}`];
+      const tabs = [...new Set(plan.groups.flatMap(({ tab }) => tab === undefined ? [] : [tab]))];
+      if (tabs.length > 0) parts.push(`tabs ${tabs.join(", ")}`);
+      if (plan.island !== undefined) parts.push(`island ${plan.island.name}`);
+      if (plan.server !== undefined) parts.push(`server ${plan.server.kind}${plan.server.schedule === undefined ? "" : ` (${plan.server.schedule})`}`);
+      return `${parts.join("; ")}.`;
+    }
+    case "edits":
+      return `edited the app in ${outcome.edits.length} place${outcome.edits.length === 1 ? "" : "s"}.`;
+    case "cannot":
+      return `said this host cannot: ${outcome.reasons.join(" ")}`;
+  }
+};
+
 /** The app as the brain sees it: its own markup, printed WITHOUT ids (the
  *  edit surface is text, and ids are the machine's bookkeeping). */
 const appText = (app: BrainApp | undefined): string | undefined => {
@@ -199,14 +227,21 @@ const brainMessage = (
 ): string => {
   const session = input.session ?? [];
   const printed = appText(input.app);
+  // ORDER IS DELIBERATE. The app's CURRENT text is the last thing before the
+  // instruction, because the last thing read is the thing attended to — and the
+  // one mistake that matters here is quoting an <Old> from something stale.
+  // Retry feedback goes ABOVE the print for the same reason: the fresh text
+  // must stay the nearest thing to the ask.
   return [
-    ...(session.length === 0 ? [] : [`THE CONVERSATION SO FAR\n${transcript(session)}`]),
-    ...(printed === undefined ? [] : [`THE APP AS IT STANDS (this exact text is what an <Old> must quote):\n${printed}`]),
-    `THEY SAID: ${input.instruction}`,
+    ...(session.length === 0 ? [] : [`THE CONVERSATION SO FAR (what was said, not what the app says):\n${transcript(session)}`]),
     ...(previous === undefined ? [] : [
       `YOUR LAST ANSWER DID NOT WORK:\n${previous.answer}`,
       `WHAT WAS WRONG WITH IT:\n${previous.issues.map((issue) => `- ${issue}`).join("\n")}\nWrite the whole answer again, fixed.`,
     ]),
+    ...(printed === undefined ? [] : [`THE APP AS IT STANDS — the only true copy of it, and what an <Old> must quote:\n${printed}`]),
+    // Its OWN marker. The transcript above renders past turns as "THEY SAID",
+    // so reusing it here would bury the live ask among everything ever asked.
+    `THEY ARE ASKING NOW: ${input.instruction}`,
   ].join("\n\n");
 };
 
@@ -277,7 +312,12 @@ export const runBrainTurn = async (
         issues: read.issues,
         session: appendSessionTurns(session, [
           { role: "user", text: input.instruction, at },
-          { role: "brain", text: answer.text, at },
+          // A SUMMARY, never the markup. Replaying an old <Edit> body would put a
+          // second, stale copy of the app's text in the next prompt, and the
+          // brain would quote an <Old> from the version that no longer exists.
+          // The conversation carries what was SAID; the fresh print is the only
+          // app text in any prompt.
+          { role: "brain", text: summarize(read.outcome), at },
         ]),
       };
     }

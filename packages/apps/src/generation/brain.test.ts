@@ -217,7 +217,9 @@ describe("the brain", () => {
     expect(result.session.slice(0, 2).map(({ text }) => text)).toEqual(["older 2", "older 3"]);
     expect(result.session.slice(-2)).toStrictEqual([
       { role: "user", text: "show my outstanding total", at: expect.any(String) },
-      { role: "brain", text: TINY_APP, at: expect.any(String) },
+      // A SUMMARY, not the markup: the app's text lives in exactly one place in
+      // any prompt — the fresh print.
+      { role: "brain", text: "built the app directly.", at: expect.any(String) },
     ]);
   });
 
@@ -257,4 +259,81 @@ describe("the brain", () => {
     const mine = [turn("user", "an invoices workspace"), turn("brain", PLAN)];
     expect(sessionOf(appRecordInput(forged, "user_brain", false, mine).data.doc)).toStrictEqual(mine);
   });
+
+/**
+ * The conversation remembers what was SAID. It must never carry a second copy of
+ * the app's markup: a transcript quoting yesterday's elements is how a model
+ * comes to edit text that no longer exists.
+ */
+describe("the session never impersonates the present", () => {
+  const APP_ONE = '<App name="Board"><Text text="One"/></App>';
+  const EDIT = "<Edit><Old><Text text=\"One\"/></Old><New><Text text=\"Two\"/></New></Edit>";
+
+  const appDoc = (text: string) => {
+    const compiled = compileWire(`<App name="Board"><Text text="${text}"/></App>`);
+    return { name: "Board", tree: compiled.tree as never, components: {} };
+  };
+
+  it("stores a one-line summary of an edit turn, never the <Edit> body", async () => {
+    const result = await runBrainTurn(
+      { instruction: "call it Two", app: appDoc("One") },
+      depsWith(EDIT),
+    );
+
+    expect(result.outcome?.kind).toBe("edits");
+    const brainTurn = result.session.at(-1);
+    expect(brainTurn?.text).toBe("edited the app in 1 place.");
+    expect(brainTurn?.text).not.toContain("<Old>");
+    expect(brainTurn?.text).not.toContain("<Edit>");
+  });
+
+  it("summarises a plan by its shape, not its markup", async () => {
+    const result = await runBrainTurn({ instruction: "an invoices workspace" }, depsWith(PLAN));
+    const brainTurn = result.session.at(-1);
+    expect(brainTurn?.text).toContain("planned:");
+    expect(brainTurn?.text).not.toContain("<Plan");
+    expect(brainTurn?.text).not.toContain("<Leaf");
+  });
+
+  it("puts exactly ONE copy of the app text in a third turn's prompt, and no stale fragments", async () => {
+    let prompt = "";
+    // Two edit turns, then a third that captures what it was shown.
+    const first = await runBrainTurn({ instruction: "call it Two", app: appDoc("One") }, depsWith(EDIT));
+    const second = await runBrainTurn(
+      { instruction: "now call it Three", app: appDoc("Two"), session: first.session },
+      depsWith("<Edit><Old><Text text=\"Two\"/></Old><New><Text text=\"Three\"/></New></Edit>"),
+    );
+    await runBrainTurn(
+      { instruction: "and again", app: appDoc("Three"), session: second.session },
+      depsWith((call) => { prompt = promptText(call); return EDIT; }),
+    );
+
+    // Exactly one copy of THIS app: the fresh print.
+    expect(prompt.split('<App name="Board"').length - 1).toBe(1);
+    expect(prompt).toContain("Three");
+    // The transcript is where a stale copy would hide. It must be prose only —
+    // the system prompt's own <Edit> teaching is legitimate and lives above it.
+    const transcript = prompt.slice(
+      prompt.indexOf("THE CONVERSATION SO FAR"),
+      prompt.indexOf("THE APP AS IT STANDS"),
+    );
+    expect(transcript).not.toContain("<Old>");
+    expect(transcript).not.toContain("<Edit>");
+    expect(transcript).not.toContain("text=");
+    // The turns are still remembered — as sentences.
+    expect(transcript).toContain("edited the app in 1 place.");
+  });
+
+  it("keeps the fresh print as the LAST block before the instruction", async () => {
+    let prompt = "";
+    await runBrainTurn(
+      { instruction: "call it Two", app: appDoc("One"), session: [turn("user", "make a board"), turn("brain", "built the app directly.")] },
+      depsWith((call) => { prompt = promptText(call); return EDIT; }),
+    );
+    expect(prompt.indexOf("THE APP AS IT STANDS")).toBeGreaterThan(prompt.indexOf("THE CONVERSATION SO FAR"));
+    // The live ask carries its own marker so it is never mistaken for history,
+    // and it comes last of all.
+    expect(prompt.indexOf("THEY ARE ASKING NOW:")).toBeGreaterThan(prompt.indexOf("THE APP AS IT STANDS"));
+  });
+});
 });
