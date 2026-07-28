@@ -568,8 +568,45 @@ const parseComputed = (source: string, context: ExpressionContext): ExpressionRe
   return { value: binding as unknown as Json, dropped: false, issues: [] };
 };
 
+/**
+ * The one mistake worth its own sentence: an expression with a reshape pipe
+ * bolted onto it (`{sum(txns.cents) | format("money")}`). Two grammars answer
+ * "compute a value" and mixing them silently falls through to the REFERENCE
+ * parser, which then reports the call name as an unknown `<Query>` — a message
+ * about the wrong thing entirely, and the model duly renames its query instead
+ * of dropping the pipe.
+ *
+ * Detected as: a call name at the HEAD, before the first pipe. A pipe whose
+ * STAGES are calls is the legitimate reshape form (`{accounts.rows | count()}`)
+ * and must keep parsing exactly as it does today.
+ */
+const pipedExpressionHead = (source: string): string | undefined => {
+  const pipe = source.indexOf("|");
+  if (pipe === -1) return undefined;
+  const head = source.slice(0, pipe);
+  for (let index = 0; index < head.length; index += 1) {
+    if (!IDENTIFIER_START.test(head[index] as string)) continue;
+    let end = index + 1;
+    while (end < head.length && IDENTIFIER_CHAR.test(head[end] as string)) end += 1;
+    const name = head.slice(index, end);
+    if (EXPR_CALL_NAMES.has(name) && head[end] === "(") return name;
+    index = end - 1;
+  }
+  return undefined;
+};
+
 const parseExpressionUnsafe = (source: string, context: ExpressionContext): ExpressionResult => {
   if (looksComputed(source)) return parseComputed(source, context);
+  const piped = pipedExpressionHead(source);
+  if (piped !== undefined) {
+    return {
+      dropped: true,
+      issues: [{
+        code: "malformed-expression",
+        message: `this mixes the pipe grammar into a computed expression: "${piped}(...)" already computes the value, so drop the "|" and everything after it — write ${piped}(query.field) with no pipe.`,
+      }],
+    };
+  }
   const state: ParserState = { source, index: 0, issues: [], queryNames: context.queryNames };
   const value = parseValue(state);
   if (value === FAILED) {

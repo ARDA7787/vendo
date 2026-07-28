@@ -403,3 +403,32 @@ describe("computed values ($expr)", () => {
     expectDropped("sum(ghost.total) / count(payments)", "unknown-reference");
   });
 });
+
+/**
+ * Two grammars answer "compute a value" — a computed expression and a reshape
+ * pipe — and a model that mixes them used to be told its CALL was an unknown
+ * `<Query>`, which sent it renaming queries instead of dropping the pipe.
+ */
+describe("parseExpression — an expression with a pipe bolted on", () => {
+  it("says which grammar was mixed, naming the call that already computes", () => {
+    const result = parse('sum(revenue.total) | format("money")');
+    expect(result.dropped).toBe(true);
+    expect(result.issues.map((issue) => issue.code)).toEqual(["malformed-expression"]);
+    const message = result.issues[0]?.message ?? "";
+    expect(message).toContain("mixes the pipe grammar into a computed expression");
+    expect(message).toContain("sum(...)");
+    // The old message blamed the wrong thing entirely.
+    expect(message).not.toContain("does not name a declared");
+  });
+
+  it("still accepts the legitimate reshape pipe, whose stages ARE calls", () => {
+    expectValue("revenue.rows | count()", {
+      $path: "/revenue/rows",
+      $reshape: [{ op: "count", args: [] }],
+    });
+  });
+
+  it("leaves a plain computed expression alone", () => {
+    expectValue("sum(revenue.total)", { $expr: "sum(revenue.total)" });
+  });
+});

@@ -7,6 +7,7 @@
 import {
   VENDO_APP_FORMAT,
   compileWire,
+  type AppPlan,
   type NormalizedCatalog,
   type ShapeType,
 } from "@vendoai/core";
@@ -74,6 +75,16 @@ const samples = {
 
 const reported = (findings: unknown): { tool: string; input: unknown } =>
   ({ tool: "report_findings", input: { findings } });
+
+/** A plan that commits to a Friday automation. The runtime's server lane arms it
+ *  AFTER the review runs, so the tree legitimately carries no reminder. */
+const scheduledPlan = (): AppPlan => ({
+  name: "Invoices",
+  queries: [{ id: "invoices", tool: "host_listInvoices", input: {} }],
+  groups: [{ tab: "Overview", leaves: [{ component: "Table", query: "invoices", purpose: "open invoices" }] }],
+  server: { kind: "steps", schedule: "every Friday", why: "Chasing overdue invoices happens when nobody has the app open." },
+  cannot: [],
+});
 
 describe("the AI reviewer", () => {
   it("parses the reported findings and returns them as Finding[]", async () => {
@@ -185,5 +196,37 @@ describe("the AI reviewer", () => {
     });
     expect(findings.some(({ where, message }) =>
       where === 'query "invoices"' && message.includes('unknown tool "host_getInvoices"'))).toBe(true);
+  });
+
+  /**
+   * The false-accusation guard. Away work is armed by the runtime AFTER this
+   * review, so a reviewer that only reads the tree would report every scheduled
+   * app as having silently dropped its reminder.
+   */
+  it("is told what the plan already committed to, so away work never reads as dropped", async () => {
+    const calls: ScriptedModelCall[] = [];
+    const model = scriptedLanguageModel((call) => { calls.push(call); return reported([]); });
+
+    const findings = await reviewerCheck(deps(model), samples).run({
+      ...inputFor(invoicesApp, "show my invoices and remind me every Friday"),
+      plan: scheduledPlan(),
+    });
+
+    expect(findings).toEqual([]);
+    const prompt = JSON.stringify(calls[0]?.prompt ?? "");
+    expect(prompt).toContain("ALREADY PLANNED");
+    expect(prompt).toContain('kind=\\"steps\\"');
+    expect(prompt).toContain("every Friday");
+    // And it is told WHY it cannot see it yet.
+    expect(prompt).toContain("after this review");
+  });
+
+  it("says nothing about a plan when there is no plan to speak of", async () => {
+    const calls: ScriptedModelCall[] = [];
+    const model = scriptedLanguageModel((call) => { calls.push(call); return reported([]); });
+
+    await reviewerCheck(deps(model), samples).run(inputFor(invoicesApp));
+
+    expect(JSON.stringify(calls[0]?.prompt ?? "")).not.toContain("ALREADY PLANNED");
   });
 });

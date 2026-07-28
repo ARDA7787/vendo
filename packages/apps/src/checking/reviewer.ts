@@ -8,7 +8,7 @@
  * be the reason a generated app dies (the layer guards a throw too, but this
  * one does not throw in the first place).
  */
-import { printWire } from "@vendoai/core";
+import { printWire, type AppPlan } from "@vendoai/core";
 import { treeOf } from "./facts.js";
 import type { Check, Finding } from "./types.js";
 import { REPORT_FINDINGS_DESCRIPTION, REVIEWER_SYSTEM } from "../generation/prompts/reviewer.js";
@@ -88,6 +88,33 @@ const printedApp = (app: GeneratedAppDocument): string | undefined => {
   );
 };
 
+/**
+ * What the PLAN committed to that the app's markup cannot show.
+ *
+ * Away-from-the-browser work is the load-bearing case: an automation is armed by
+ * the runtime's server lane AFTER this review runs, so a reviewer reading only
+ * the tree sees no reminder and concludes the ask was dropped. It was not — it
+ * simply does not live in the markup. Telling it what was planned is the
+ * difference between a true finding and a false accusation on every scheduled app.
+ */
+const planLines = (plan: AppPlan | undefined): string => {
+  if (plan === undefined) return "";
+  const lines: string[] = [];
+  if (plan.server !== undefined) {
+    const { kind, schedule, why, served } = plan.server;
+    lines.push(`- server work IS planned and the runtime arms it after this review: kind="${kind}"${schedule === undefined ? "" : ` schedule="${schedule}"`}${served === true ? " (it serves the whole app surface)" : ""} — ${why}`);
+  }
+  if (plan.island !== undefined) {
+    lines.push(`- a generated component "${plan.island.name}" is planned: ${plan.island.purpose}`);
+  }
+  for (const cannot of plan.cannot) {
+    lines.push(`- the host cannot do this, and the person was told so verbatim: ${cannot}`);
+  }
+  return lines.length === 0
+    ? ""
+    : `\nALREADY PLANNED (do NOT report these as missing — they are committed, and some of them land after you read this):\n${lines.join("\n")}`;
+};
+
 const sampleLines = (samples: Readonly<Record<string, unknown>>): string => {
   const lines = Object.entries(samples).map(([query, value]) => {
     const text = JSON.stringify(value) ?? "null";
@@ -105,7 +132,7 @@ export const reviewerCheck = (
   samples?: Readonly<Record<string, unknown>>,
 ): Check => ({
   name: REVIEWER_CHECK_NAME,
-  run: async ({ app, request }): Promise<Finding[]> => {
+  run: async ({ app, request, plan }): Promise<Finding[]> => {
     const printed = printedApp(app);
     if (printed === undefined) return [];
     const reported = await strictToolCall(
@@ -114,7 +141,7 @@ export const reviewerCheck = (
       REPORT_FINDINGS_DESCRIPTION,
       REPORT_FINDINGS_SCHEMA,
       REVIEWER_SYSTEM,
-      `USER_REQUEST: ${request}\nAPP (wire markup):\n${printed}${samples === undefined ? "" : sampleLines(samples)}`,
+      `USER_REQUEST: ${request}\nAPP (wire markup):\n${printed}${planLines(plan)}${samples === undefined ? "" : sampleLines(samples)}`,
     );
     return reported === undefined ? [] : findingsFrom(reported.findings);
   },
