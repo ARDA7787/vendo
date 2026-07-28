@@ -8,7 +8,6 @@
 import { KIT_SPECS, type NormalizedCatalog } from "@vendoai/core";
 import {
   composePromptSections,
-  dataDomainsSection,
   hostDesignRulesSection,
   hostThemeSection,
 } from "../contracts/sections.js";
@@ -90,7 +89,7 @@ export const brainPrompt = (deps: GenerationDependencies): string => composeProm
   content: deps.tools === undefined || deps.tools.length === 0
     ? "TOOLS: this host has no tools, so nothing here can read real data — say that in a <Cannot> line."
     : `TOOLS a query may read (these are all of them; a query naming anything else is a mistake):\n${toolMenu(deps.tools)}`,
-}, ...dataDomainsSection(deps), ...hostThemeSection(deps), ...hostDesignRulesSection(deps),
+}, ...hostThemeSection(deps), ...hostDesignRulesSection(deps),
 ...(deps.hostCannot === undefined || deps.hostCannot.length === 0 ? [] : [{
   // The lanes this host does not have, stated BEFORE the plan exists (runtime
   // laneGates). Hearing it now turns a dead end into a <Cannot> line the person

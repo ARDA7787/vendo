@@ -11,7 +11,6 @@
  */
 import {
   type AppDocument,
-  type DomainManifest,
   type NormalizedCatalog,
   type ShapeType,
   type ToolSemantics,
@@ -59,8 +58,6 @@ export interface GenerationDependencies {
   /** Per-tool field semantics from `.vendo/semantics.json`: annotated shape
    *  cards and Kit format defaults. Keyed by tool name. */
   semantics?: Readonly<Record<string, ToolSemantics>>;
-  /** The host's domain manifest (has / has-NOT), stated to the model as fact. */
-  domains?: DomainManifest;
   /** 06-apps §5 — additive, optional partial-tree streaming seam. */
   onPartial?: (partial: GeneratedPartial) => void | Promise<void>;
   /**

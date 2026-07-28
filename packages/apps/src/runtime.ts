@@ -10,7 +10,6 @@ import {
   type AppDocument,
   type AppId,
   type AppPlan,
-  type DomainManifest,
   type Guard,
   type IsoDateTime,
   type Json,
@@ -191,7 +190,7 @@ export interface AppsConfig {
    *  never remove or replace a built-in one. */
   checks?: readonly Check[];
   /** The composition-normalized catalog (01 §14): derived schemas included.
-   *  The provider (function) form of theme/semantics/domains below mirrors
+   *  The provider (function) form of theme/semantics below mirrors
    *  designRules: it is resolved lazily per create/edit (in
    *  generationDependencies), never eagerly, so the umbrella can back it with a
    *  first-request cloud read without doing I/O at compose time. */
@@ -211,9 +210,6 @@ export interface AppsConfig {
    *  the generation engine (annotated shape cards, law checks, Kit format
    *  defaults). Provider form resolved per generation (see catalog note). */
   semantics?: Readonly<Record<string, ToolSemantics>> | (() => Readonly<Record<string, ToolSemantics>> | undefined);
-  /** W3 — the host's domain manifest (has / has-NOT), generation fact.
-   *  Provider form resolved per generation (see catalog note). */
-  domains?: DomainManifest | (() => DomainManifest | undefined);
   /** Re-gate 2026-07-26 finding 2 — the caller's CONNECTED toolkits, resolved
    *  per create/edit. The create-time shape sampler probes every no-arg read
    *  tool once; a connector tool (descriptor.toolkit set, 01-core §4) whose
@@ -666,7 +662,7 @@ const rungFor = (
 
 /** Resolve a value-or-provider config slot. The provider (function) form is
  *  called ONCE here — generationDependencies runs once per create/edit — so
- *  theme/semantics/domains match designRules' "re-read per generation" contract
+ *  theme/semantics match designRules' "re-read per generation" contract
  *  and a first-request cloud-backed provider never does I/O at compose time. */
 const resolveProvider = <T>(slot: T | (() => T | undefined) | undefined): T | undefined =>
   typeof slot === "function" ? (slot as () => T | undefined)() : slot;
@@ -679,7 +675,6 @@ const generationDependencies = (
 ): GenerationDependencies => {
   const theme = resolveProvider(config.theme);
   const semantics = resolveProvider(config.semantics);
-  const domains = resolveProvider(config.domains);
   // The lanes this host does NOT have, stated to the brain as fact before it
   // plans: a box ask on a machineless host becomes an honest <Cannot> the person
   // reads in seconds, never a build that escalates into a disabled flag.
@@ -691,7 +686,6 @@ const generationDependencies = (
     designRules: config.designRules,
     pinBaselines: config.pinBaselines,
     ...(semantics === undefined ? {} : { semantics }),
-    ...(domains === undefined ? {} : { domains }),
     ...toolContext,
     ...(config.fill === undefined ? {} : { fill: config.fill }),
     ...(config.pipeline === undefined ? {} : { pipeline: config.pipeline }),

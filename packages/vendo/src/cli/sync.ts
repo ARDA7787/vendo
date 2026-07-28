@@ -3,9 +3,8 @@ import { vendoSync, type SyncReportWithWarnings } from "@vendoai/actions/sync";
 import type { ToolImpact } from "../sync-impact.js";
 import { pushSyncReport } from "./cloud/services.js";
 import { mergeEnvOverDotEnv, readDotEnvFallback } from "./doctor.js";
-import { askYesNo } from "./extract/extraction.js";
 import { readPreviousToolsState, runSyncEnrichment, type SyncEnrichmentOptions } from "./enrich/pass.js";
-import { consoleOutput, withCommandRun, type Output, type TelemetryOptions } from "./shared.js";
+import { askYesNo, consoleOutput, withCommandRun, type Output, type TelemetryOptions } from "./shared.js";
 
 export interface SyncReportPayload {
   report: SyncReportWithWarnings;
@@ -121,7 +120,10 @@ async function sync(options: SyncOptions): Promise<number> {
       out: vendoDir,
       // The CLI needs the report to compute exit 2 vs 3; it applies strictness below.
       strict: false,
-      ...(options.noWatermark === true ? { watermark: false } : {}),
+      // TEMP: deleted by judgment-layer lane C2 — `--no-watermark` no longer has
+      // a `watermark` option to forward (vendoSync writes no watermark at all
+      // now); it still skips the AI pass below, which is what the demo apps'
+      // predev/prebuild hooks actually need.
     });
     if (!json) {
       for (const warning of report.warnings) output.error(`warning: ${warning}`);
