@@ -363,6 +363,20 @@ const compileServer = (plan: PlanState, appPlan: AppPlan): void => {
     return;
   }
   const server: PlanServer = { kind, why };
+  const served = attrs.props?.served;
+  if (served === true) {
+    if (kind === "box") {
+      server.served = true;
+    } else {
+      plan.issues.push(
+        `only kind="box" can serve the app's whole surface (a machine serves it), and this <Server> is kind="${kind}". The served flag was ignored.`,
+      );
+    }
+  } else if (served !== undefined) {
+    plan.issues.push(
+      "served is a bare flag — write <Server kind=\"box\" served ...> when the machine must serve the whole app surface. It was ignored.",
+    );
+  }
   const schedule = stringAttr(attrs.props, "schedule");
   if (schedule !== undefined) {
     server.schedule = schedule;

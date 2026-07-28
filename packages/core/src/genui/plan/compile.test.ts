@@ -232,4 +232,47 @@ describe("compilePlan", () => {
       expect(message.split(" ").length).toBeGreaterThan(4);
     }
   });
+
+  /**
+   * Layer 3 — the machine serves the whole app surface. Declared in the PLAN
+   * because flipping deletes the app's tree: a box that decides on its own that
+   * it serves UI must never replace a tree the person did not ask to lose.
+   */
+  describe("<Server served> — the layer-3 declaration", () => {
+    const planWith = (server: string) => compilePlan(
+      `<Plan name="Board">
+         <Group tab="Board"><Leaf component="StatTile" purpose="Something"/></Group>
+         ${server}
+       </Plan>`,
+      FACTS,
+    );
+
+    it("reads the bare served flag on a box, and says nothing about it otherwise", () => {
+      const result = planWith('<Server kind="box" served why="Drag-and-drop between columns is an interaction no component can express."/>');
+      expect(result.issues).toEqual([]);
+      expect(result.plan?.server).toEqual({
+        kind: "box",
+        served: true,
+        why: "Drag-and-drop between columns is an interaction no component can express.",
+      });
+    });
+
+    it("leaves served absent when it was never declared", () => {
+      const result = planWith('<Server kind="box" why="Custom matching logic no tool composition can express."/>');
+      expect(result.issues).toEqual([]);
+      expect(result.plan?.server?.served).toBeUndefined();
+    });
+
+    it("refuses served on an automation — only a machine can serve a surface", () => {
+      const result = planWith('<Server kind="steps" served schedule="fridays" why="Nobody has the app open on a Friday."/>');
+      expect(result.plan?.server?.served).toBeUndefined();
+      expect(result.issues.join(" ")).toContain('only kind="box"');
+    });
+
+    it("teaches the bare-flag form when served carries a value", () => {
+      const result = planWith('<Server kind="box" served="yes" why="Drag-and-drop between columns."/>');
+      expect(result.plan?.server?.served).toBeUndefined();
+      expect(result.issues.join(" ")).toContain("bare flag");
+    });
+  });
 });

@@ -50,6 +50,7 @@ THE RULES
 - Never invent data. Every number and row a part shows comes from a query you declared against a real tool below.
 - When something is out of reach, say so in a <Cannot> line, in the person's own words. An honest refusal always beats a plausible fake.
 - Don't reach for <Island> or <Server> when a component and a query do the job — both are escapes, and the "why" has to be earned.
+- Last resort of all: <Server kind="box" served why="..."/> hands the WHOLE app surface to the sandbox, which deletes the app's own layout. Earn it only with an interaction no component and no island can express — dragging between columns, a rich-text editor. Never for a look, and never just to be safe.
 - Every group needs a distinct purpose. Two groups showing the same thing is a worse app than one group.`;
 
 /** A one-liner is the first sentence: the menu says what a thing is FOR, and a

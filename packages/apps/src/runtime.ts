@@ -1454,7 +1454,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
    * these functions up front. That is the same call the graduation path made,
    * and the same call a query-bound fn makes the moment the app opens.
    */
-  const boxSeamFor = (appId: AppId, ctx: RunContext): BoxSeam => ({
+  const boxSeamFor = (appId: AppId, ctx: RunContext, wantsServed: boolean): BoxSeam => ({
     available: () => lifecycle.available() && config.experimentalMachines === true,
     provision: async () => {
       const app = await requireOwned(appId, ctx.principal.subject);
@@ -1465,11 +1465,14 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     },
     instruct: async (instruction) => {
       const app = await requireOwned(appId, ctx.principal.subject);
-      const box = await editServerViaBox(app, instruction, ctx);
+      const box = await editServerViaBox(app, instruction, ctx, { served: wantsServed });
       if (!box.ok) return { ok: false, summary: box.result.summary };
       const current = await requireOwned(appId, ctx.principal.subject);
       const functions: ServerFunction[] = [];
-      for (const name of box.result.fns ?? []) {
+      // A served app's PAGES are its interface: there is no tree left to bind a
+      // function into, and sampling would wake the box straight back up after
+      // the snapshot. Graduation ends asleep.
+      for (const name of wantsServed ? [] : box.result.fns ?? []) {
         const outcome = await fnCaller.callFn(current, name, {}, ctx).catch(() => undefined);
         functions.push({
           name,
@@ -1478,7 +1481,13 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             : {}),
         });
       }
-      return { ok: true, summary: box.result.summary, functions };
+      return {
+        ok: true,
+        summary: box.result.summary,
+        functions,
+        ...(box.result.servesUi === undefined ? {} : { servesUi: box.result.servesUi }),
+        servedOk: box.servedOk,
+      };
     },
   });
 
@@ -1500,8 +1509,21 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     },
     ctx: RunContext,
     deps: GenerationDependencies,
-  ): Promise<{ document: AppDocument; findings: Finding[]; automation?: EditResult["automation"] }> => {
+  ): Promise<{
+    document: AppDocument;
+    findings: Finding[];
+    automation?: EditResult["automation"];
+    /** The box wrote real server code for this app (layer 2 or 3). */
+    graduated?: boolean;
+    /** Sentences for the caller's `issues` — a refused flip is never silent. */
+    issues?: string[];
+    /** The server work the plan REQUIRED could not be built, so the edit did not
+     *  happen at all: a served app that never got its surface has nothing to
+     *  stand on, unlike a layer-2 box whose tree still works. */
+    failed?: string[];
+  }> => {
     const appId = input.document.id;
+    const wantsServed = input.plan.server?.served === true;
     const landVersion = (document: AppDocument): VersionEntry => ({
       at: new Date().toISOString(),
       intent: input.request,
@@ -1511,7 +1533,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       ...deps,
       appId,
       ctx,
-      box: boxSeamFor(appId, ctx),
+      box: boxSeamFor(appId, ctx, wantsServed),
       ...(config.armAutomation === undefined ? {} : { armAutomation: config.armAutomation }),
       land: async (document, options) => {
         const previous = await requireOwned(appId, ctx.principal.subject);
@@ -1535,7 +1557,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     const findings = [...lane.findings];
     // The groups that waited on the box fill NOW, against the samples it
     // reported — never against a signature nobody has implemented.
-    if (lane.server !== undefined && lane.server.functions.length > 0) {
+    if (!wantsServed && lane.server !== undefined && lane.server.functions.length > 0) {
       const filled = await fillAfterServer({
         plan: input.plan,
         skeleton: input.skeleton,
@@ -1543,20 +1565,54 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         functions: lane.server.functions,
         request: input.request,
       }, deps, conductorOptions(config, undefined));
-      document = { ...filled.document, id: appId };
       findings.push(...filled.findings);
-      if (document.tree !== undefined) stripServerAuthoritativeFields(document.tree);
+      // Only the TREE comes from the fill. Everything else must come from the
+      // row as it stands NOW, because provisioning the box wrote `machine` to it
+      // — building this persist on the pre-box copy would silently un-provision
+      // the machine that was just created.
       const previous = await requireOwned(appId, ctx.principal.subject);
-      document = await persistEdit(previous, document, landVersion(document), ctx.principal.subject, undefined, {}, input.session);
+      const next: AppDocument = { ...previous, ...(filled.document.tree === undefined ? {} : { tree: filled.document.tree }) };
+      if (next.tree !== undefined) stripServerAuthoritativeFields(next.tree);
+      document = await persistEdit(previous, next, landVersion(next), ctx.principal.subject, undefined, {}, input.session);
     } else if (lane.automation !== undefined) {
       // The automation lane landed its own write; re-read so the caller holds
       // the stored row rather than the pre-persist copy.
       document = await requireOwned(appId, ctx.principal.subject);
     }
+    // ── The 2→3 surface flip ────────────────────────────────────────────────
+    // The tree kept serving through the whole box build. Only NOW, with the box
+    // green, does the surface change — and only on TWO independent signals: the
+    // PLAN asked to be served, and the host itself fetched `GET /` and got a real
+    // page. A box that self-declares a served surface on a layer-2 plan is
+    // refused loudly: it must never replace a tree the person did not ask to lose.
+    const issues: string[] = [];
+    if (wantsServed && lane.server === undefined) {
+      return { document, findings, failed: findings.map(({ message }) => message) };
+    }
+    if (lane.server !== undefined && (wantsServed || lane.server.servesUi === true)) {
+      if (config.experimentalServedApps !== true) {
+        issues.push("the box declared a served web app, but experimentalServedApps is disabled — the surface flip was refused and the tree keeps serving (enable createVendo({ apps: { experimentalServedApps: true } }))");
+      } else if (!wantsServed) {
+        issues.push("the box declared a served web app, but this app's plan never asked for one — the surface flip was refused and the tree keeps serving");
+      } else if (lane.server.servesUi === true && lane.server.servedOk === true) {
+        const base = await requireOwned(appId, ctx.principal.subject);
+        const flipped = structuredClone(base);
+        delete flipped.tree;
+        delete flipped.components;
+        delete flipped.componentTools;
+        delete flipped.pins;
+        flipped.ui = "http";
+        document = await persistEdit(base, flipped, landVersion(flipped), ctx.principal.subject, undefined, {}, input.session);
+      } else {
+        issues.push("the box did not produce a verified served web app (GET / must answer 200 text/html) — the surface was not flipped; retry the edit");
+      }
+    }
     return {
       document,
       findings,
       ...(lane.automation === undefined ? {} : { automation: lane.automation }),
+      ...(lane.server === undefined ? {} : { graduated: true }),
+      ...(issues.length === 0 ? {} : { issues }),
     };
   };
 
@@ -1873,6 +1929,37 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         throw new VendoError("not-implemented", "generation requires a model");
       }
       const previous = await requireOwned(appId, ctx.principal.subject);
+      // A SERVED app has no tree — its whole surface is the code in its machine —
+      // so there is nothing for the brain to edit as text. Every instruction goes
+      // to the in-box agent instead, through the same conversation the person is
+      // already having with the app.
+      if (previous.ui === "http" && previous.machine !== undefined) {
+        if (config.experimentalServedApps !== true) throw servedAppsDisabledError();
+        const box = await editServerViaBox(previous, instruction, ctx, { served: true });
+        if (!box.ok) {
+          return failedEdit(previous, instruction, [
+            `the in-box agent could not change the served app: ${box.result.summary}`,
+          ]);
+        }
+        const landed = await requireOwned(appId, ctx.principal.subject);
+        const boxVersion: VersionEntry = {
+          at: new Date().toISOString(),
+          intent: instruction,
+          rung: rungFor(landed),
+        };
+        await history.append(landed.id, previous, boxVersion, []);
+        return withPinDrift({
+          app: landed,
+          version: { ...boxVersion },
+          graduated: true,
+          box: {
+            ok: box.result.ok,
+            summary: box.result.summary,
+            ...(box.result.fns === undefined ? {} : { fns: box.result.fns }),
+            filesChanged: box.result.filesChanged,
+          },
+        });
+      }
       const deps = generationDependencies(config, config.model, await generationToolContext(ctx));
       // The SAME conversation, carried: the brain remembers the plan and every
       // turn, so "no, the other chart" resolves. The old commit path rebuilt the
@@ -1910,6 +1997,8 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // Server work the amendment declared lands additively on the stored app,
       // exactly as it does on create.
       let automation: EditResult["automation"] | undefined;
+      let graduated: boolean | undefined;
+      const serverIssues: string[] = [];
       if (conducted.plan?.server !== undefined && conducted.skeleton !== undefined) {
         try {
           const served = await runServerWork({
@@ -1919,8 +2008,15 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             request: instruction,
             session: conducted.session,
           }, ctx, deps);
+          if (served.failed !== undefined) {
+            // The plan REQUIRED this server work and it could not be built, so
+            // no edit happened: the stored app is untouched and says why.
+            return failedEdit(previous, instruction, served.failed);
+          }
           app = served.document;
           automation = served.automation;
+          graduated = served.graduated;
+          serverIssues.push(...(served.issues ?? []));
           for (const finding of served.findings) {
             console.info(`[vendo] gen ${finding.severity} ${finding.where}: ${finding.message}`);
           }
@@ -1929,13 +2025,19 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         }
       }
       const blocking = conducted.findings.filter(({ severity }) => severity === "block");
+      const issues = [
+        ...blocking.map(({ where, message }) => `${where} ${message}`),
+        ...serverIssues,
+      ];
+      // The version records the surface the edit LANDED on, so a flip to a
+      // served app reports rung 3 rather than the tree rung it started from.
+      const landedVersion: VersionEntry = { ...version, rung: rungFor(app) };
       return withPinDrift({
         app,
-        version: { ...version },
-        ...(blocking.length === 0 ? {} : {
-          issues: blocking.map(({ where, message }) => `${where} ${message}`),
-        }),
+        version: landedVersion,
+        ...(issues.length === 0 ? {} : { issues }),
         ...(automation === undefined ? {} : { automation }),
+        ...(graduated === undefined ? {} : { graduated }),
       });
     },
 

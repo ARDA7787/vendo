@@ -39,6 +39,8 @@ SHOW WHAT IS IN THE DATA. Every number, name, date, and status on the screen is 
 
 Write a reference in braces, starting with the query's name: rows={invoices}, value={invoices | sum(amount_cents)}, cents={invoice.total_cents}. Text you write yourself is fine for LABELS and headings ("Outstanding", "Worst first") — never for data.
 
+NUMBERS YOU WORK OUT — never do the arithmetic yourself, write the sum and let the runtime compute it fresh on every render, so a total can never go stale: value={sum(transactions.amount_cents)}. Inside those braces you have the query's field paths, numbers, + - * / ( ), and the calls sum, count, average, min, max, difference, days_until, group_by — nothing else.
+
 You can only see your own section. Do not write anything belonging elsewhere in the app, and do not repeat the section's own heading — it is already on the screen above you.`;
 
 /** The docs for exactly the components this group's leaves name: the host's own

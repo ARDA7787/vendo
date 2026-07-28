@@ -246,6 +246,23 @@ const subtree = (byId: ReadonlyMap<string, TreeNode>, roots: readonly string[]):
 };
 
 /**
+ * `query` and `purpose` are the PLAN's vocabulary for describing a leaf, not
+ * props any component takes — and a worker reading its own group's leaf list
+ * routinely copies them onto the element it writes. The renderer drops them and
+ * the checks report them, which is just noise about something no one can act on,
+ * so they come off here.
+ *
+ * Only on nodes the worker itself invented: a `source: "host"` node names a real
+ * host component, and a host is entitled to declare a prop called whatever it
+ * likes — silently deleting one would be the worse bug.
+ */
+const withoutPlanVocabulary = (node: TreeNode): TreeNode["props"] => {
+  if (node.source === "host" || node.props === undefined) return node.props;
+  const { query: _query, purpose: _purpose, ...props } = node.props as Record<string, unknown>;
+  return props as TreeNode["props"];
+};
+
+/**
  * One fill worker's fragment, spliced into one group's slot: the slot container
  * survives (the plan decided its layout), its pending placeholders are gone,
  * and the fragment's own nodes become its children. Pure — the tree handed in
@@ -274,6 +291,7 @@ export const spliceFragment = (tree: Tree, slotNodeId: string, fragment: Tree): 
         ...child,
         id: namespaced(child.id),
         ...(child.children === undefined ? {} : { children: child.children.map(namespaced) }),
+        ...(child.props === undefined ? {} : { props: withoutPlanVocabulary(child) }),
       })),
     ];
   });

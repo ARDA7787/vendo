@@ -348,6 +348,12 @@ export interface BoxOutcome {
   /** The box's own words about what it did; user- and model-facing on failure. */
   summary: string;
   functions?: readonly ServerFunction[];
+  /** The box's own claim that it serves the app's whole surface. DATA, never a
+   *  decision: it is one of the two signals a layer-3 flip needs. */
+  servesUi?: boolean;
+  /** The HOST's verification of that claim — it fetched `GET /` itself and got a
+   *  real HTML page. The claim alone never flips a surface. */
+  servedOk?: boolean;
 }
 
 /**
@@ -403,8 +409,15 @@ export interface ServerLaneResult extends LaneResult {
     pendingGrants?: ApprovalRequest[];
   };
   /** box: the interface the box reported after building. The plan's
-   *  `waitsForServer` groups fill against these samples. */
-  server?: { summary: string; functions: ServerFunction[] };
+   *  `waitsForServer` groups fill against these samples. `servesUi`/`servedOk`
+   *  ride along for the layer-3 flip the runtime owns (it is the only place that
+   *  can rewrite the stored surface). */
+  server?: {
+    summary: string;
+    functions: ServerFunction[];
+    servesUi?: boolean;
+    servedOk?: boolean;
+  };
 }
 
 /** The plan's `why` IS the instruction: the brain wrote that sentence to
@@ -531,12 +544,21 @@ const runBoxArm = async (
     };
   }
   const functions = (outcome.functions ?? []).map((fn) => structuredClone(fn) as ServerFunction);
+  const servesUi = outcome.servesUi === true;
+  // A served app is allowed to name no functions — its pages ARE the interface —
+  // so the missing-functions warning only applies to a plain layer-2 box.
+  const bare = functions.length === 0 && !servesUi;
   return {
     document,
-    findings: functions.length > 0 ? [] : [
+    findings: bare ? [
       warn(where, `the box reported building the server work (${outcome.summary}) but named no functions, so the sections that waited on it have nothing to bind to.`),
-    ],
-    server: { summary: outcome.summary, functions },
+    ] : [],
+    server: {
+      summary: outcome.summary,
+      functions,
+      ...(outcome.servesUi === undefined ? {} : { servesUi: outcome.servesUi }),
+      ...(outcome.servedOk === undefined ? {} : { servedOk: outcome.servedOk }),
+    },
   };
 };
 

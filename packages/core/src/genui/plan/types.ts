@@ -56,6 +56,18 @@ export interface PlanServer {
   kind: "steps" | "agentic" | "box";
   schedule?: string;
   why: string;
+  /**
+   * Layer 3: the machine serves the whole app surface, not just functions.
+   * The LAST resort — earned only by an interaction model no composite or island
+   * can express (drag-and-drop between columns, a rich-text editor).
+   *
+   * It is declared in the PLAN on purpose. Flipping means the app's tree is
+   * deleted, so it takes TWO independent signals: this declaration, and the
+   * host's own verification that the box really serves a page. A box that
+   * decides on its own that it serves UI must never replace a tree the person
+   * did not ask to lose.
+   */
+  served?: boolean;
 }
 
 export interface AppPlan {
