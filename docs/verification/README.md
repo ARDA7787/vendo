@@ -24,3 +24,22 @@ image directory — those are curated and reviewed, not per-run evidence.
 Historical note: the media removed in the cleanup is still reachable in git
 history if an old campaign's screenshots are ever needed; nothing was
 rewritten.
+
+## Proof runbook notes — generation pipeline (2026-07-28)
+
+Two things cost a proof attempt each; both are environmental, not code.
+
+- **Drive the CHAT surface at `/vendo`, not the Apps page.** `POST /api/vendo/apps`
+  from `/vendo/apps` is request/response: no `data-vendo-view` parts arrive, so
+  "skeleton on screen fast" and "groups lighting up progressively" are
+  unobservable there. `onView` streaming renders on the chat surface, which is
+  where those beats have to be filmed.
+- **Reap dev servers with `pgrep -fl`, not just `lsof` on the port.** A detached
+  `next-server` child survived a `pkill` and kept serving for eleven minutes
+  while `lsof` on :3000 reported the port free — a whole proof ran against a
+  server whose environment could not be verified.
+
+Fresh worktrees also need `node packages/ui/scripts/build-jail-runtime.mjs`
+before tests: turbo's shared cache replays `@vendoai/ui`'s build without
+regenerating `src/tree/jail/runtime-bundle.gen.ts`, and the resulting failure
+aborts ~20 unrelated packages, which reads as catastrophic breakage.
