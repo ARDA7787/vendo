@@ -60,6 +60,44 @@ export const composePromptSections = (sections: readonly GenerationPromptSection
  *  fine (the edit path never re-validates the name). */
 export const APP_NAME_MAX_CHARS = 40;
 
+/**
+ * The host's own facts, as prompt sections — shared by every actor that needs
+ * them (the brain planning, the workers writing markup).
+ *
+ * These are the HOST'S configuration, not prompt polish: `apps.designRules` and
+ * the theme tokens are documented seams a host sets and expects to be obeyed,
+ * and the domain manifest is the fact the honest-refusal rule stands on — a
+ * model that is not told which domains exist cannot know when to say <Cannot>
+ * instead of repurposing an unrelated tool. A prompt that omits them makes those
+ * config keys silently do nothing.
+ */
+export const hostDesignRulesSection = (deps: GenerationDependencies): GenerationPromptSection[] => {
+  const rules = (typeof deps.designRules === "function" ? deps.designRules() : deps.designRules)?.trim();
+  // The section is emitted even when the host set no rules: "(none provided)" is
+  // the difference between a model that knows there are no house rules and one
+  // that was never told either way.
+  return [{
+    id: "design-rules" as const,
+    content: `HOST DESIGN RULES:\n${rules === undefined || rules === "" ? "(none provided)" : rules}`,
+  }];
+};
+
+export const hostThemeSection = (deps: GenerationDependencies): GenerationPromptSection[] =>
+  deps.theme === undefined ? [] : [{
+    id: "theme" as const,
+    content: `THEME TOKENS:\n${JSON.stringify(deps.theme, null, 2)}`,
+  }];
+
+/** The domain manifest is FACT derived at sync, not guidance: it says what data
+ *  exists AT ALL, so an out-of-domain ask becomes an honest refusal instead of a
+ *  repurposed tool or an invented figure. */
+export const dataDomainsSection = (deps: GenerationDependencies): GenerationPromptSection[] =>
+  deps.domains === undefined || (deps.domains.has.length === 0 && deps.domains.hasNot.length === 0) ? [] : [{
+    id: "limits" as const,
+    content: `DATA DOMAINS (fact, derived from this host's tools — not guidance):${deps.domains.has.length === 0 ? "" : `\n- This host HAS data for: ${deps.domains.has.join(", ")}.`}${deps.domains.hasNot.length === 0 ? "" : `\n- This host has NO data for: ${deps.domains.hasNot.join(", ")}.`}
+- An ask about a domain not covered above cannot be answered with real data: never repurpose an unrelated tool and never invent figures — say so in a <Cannot> line instead.`,
+  }];
+
 export const generationPromptSections = (deps: GenerationDependencies): GenerationPromptSection[] => [{
   id: "role",
   content: "You are the Vendo app generation engine. Return JSON only, with no markdown.",

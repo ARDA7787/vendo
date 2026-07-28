@@ -138,12 +138,10 @@ export const hostCatalog = [{
     expect(baseline.styles).toEqual([{ path: "src/app/globals.css", css: rootCss }]);
     await writeFile(join(root, ".vendo", "remixable", "invalid.json"), "{not json\n");
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    let prompt = "";
-    const model = scriptedModel((call) => {
-      prompt = call.prompt.map((message) => typeof message.content === "string"
-        ? message.content
-        : message.content.map((part) => part.text ?? "").join("")).join("\n");
-      return '<Edit><ForkPin slot="net-worth-card" into="root"/></Edit>';
+    let modelCalls = 0;
+    const model = scriptedModel(() => {
+      modelCalls += 1;
+      return "";
     });
     const dataDir = join(root, ".data");
     const store = createStore({ dataDir });
@@ -168,15 +166,12 @@ export const hostCatalog = [{
     };
     const imported = await vendo.apps.importApp(seed, ctx);
 
-    const edited = await vendo.apps.edit(imported.id, "Remix the net worth card", ctx);
+    // Gesture-owned forking: the user's Remix gesture, executed deterministically
+    // by the engine — the captured source is copied and the pin recorded with NO
+    // model call at all.
+    const edited = await vendo.apps.pins.fork({ appId: imported.id, slot: "net-worth-card" }, ctx);
 
-    expect(prompt).toContain("net-worth-card");
-    expect(prompt).toContain("PinnedNetWorthCard");
-    // Gesture-owned forking (2026-07-21): the edit prompt teaches only the
-    // slot -> pinned-component mapping — the captured source and the <ForkPin>
-    // grammar no longer ride it (the op still compiles, as this model shows).
-    expect(prompt).not.toContain("$1.2M");
-    expect(prompt).not.toContain("<ForkPin");
+    expect(modelCalls).toBe(0);
     expect(edited.app.pins).toEqual([{
       slot: "net-worth-card",
       base: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -230,7 +225,8 @@ export const hostCatalog = [{
 
     const synced = await vendoSync({ root, out: join(root, ".vendo") });
     expect(synced.pins).toEqual({ captured: ["net-worth-card"], drifted: [] });
-    const model = scriptedModel(() => '<Edit><ForkPin slot="net-worth-card" into="root"/></Edit>');
+    // The fork gesture never reaches the model; the composition still wants one.
+    const model = scriptedModel(() => "");
     const store = createStore({ dataDir: join(root, ".data") });
     cleanups.push(async () => store.close());
     await store.ensureSchema();
@@ -252,7 +248,7 @@ export const hostCatalog = [{
       },
     }, ctx);
 
-    const edited = await vendo.apps.edit(imported.id, "Remix the net worth card", ctx);
+    const edited = await vendo.apps.pins.fork({ appId: imported.id, slot: "net-worth-card" }, ctx);
     const archive = await vendo.apps.exportApp(edited.app.id, ctx);
     const exported = await vendo.apps.importApp(archive, ctx);
 

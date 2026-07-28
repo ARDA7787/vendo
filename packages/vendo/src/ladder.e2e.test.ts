@@ -36,28 +36,35 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** Minimal deterministic LanguageModelV2 double (streamed text responses in
- *  order; the last response repeats). Local copy — the apps package's test
- *  double is internal to that package. */
-const scriptedModel = (...responses: string[]): LanguageModel => {
-  let calls = 0;
+interface ModelCall {
+  prompt: Array<{ role: string; content: string | Array<{ type?: string; text?: string }> }>;
+}
+
+const promptText = (call: ModelCall): string => call.prompt
+  .map((message) => typeof message.content === "string"
+    ? message.content
+    : message.content.map((part) => part.text ?? "").join(""))
+  .join("\n");
+
+/** Minimal deterministic LanguageModelV2 double, answering by WHICH turn it is
+ *  being asked (the brain, a fill worker, the automation planner) rather than by
+ *  call order — the rebuilt pipeline interleaves all three. Local copy — the
+ *  apps package's test double is internal to that package. */
+const scriptedModel = (respond: (prompt: string) => string): LanguageModel => {
   const model = {
     specificationVersion: "v2" as const,
     provider: "vendo-scripted",
     modelId: "vendo-scripted-e2e",
     supportedUrls: {},
-    async doGenerate() {
-      const text = responses[Math.min(calls, responses.length - 1)] ?? "";
-      calls += 1;
+    async doGenerate(call: ModelCall) {
       return {
-        content: [{ type: "text" as const, text }],
+        content: [{ type: "text" as const, text: respond(promptText(call)) }],
         finishReason: "stop" as const,
         usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
       };
     },
-    async doStream() {
-      const text = responses[Math.min(calls, responses.length - 1)] ?? "";
-      calls += 1;
+    async doStream(call: ModelCall) {
+      const text = respond(promptText(call));
       return {
         stream: new ReadableStream({
           start(controller) {
@@ -87,6 +94,42 @@ const APP_ID = "app_digest";
 const ARMED_AT = new Date("2026-07-21T12:00:00.000Z");
 const FIRES_AT = new Date("2026-07-22T08:00:05.000Z");
 
+/** The brain's answer to the server-shaped instruction: the app already exists,
+ *  so this is an AMENDMENT — one small group, plus the away work it cannot do in
+ *  the browser, declared as `<Server kind="steps">`. */
+const AMENDMENT = `<Plan name="Invoice board">
+  <Group title="Unpaid invoice digest">
+    <Leaf component="Text" purpose="One line saying the 8am digest below is written by the automation"/>
+  </Group>
+  <Server kind="steps" schedule="every day at 8am" why="The digest has to go out at 8am, when nobody has the app open."/>
+</Plan>`;
+
+/** The fill worker's section: static text, because this group reads no query. */
+const FILL = '<Text text="Refreshed every morning by the digest automation."/>';
+
+const APP_AS_IT_STANDS = "THE APP AS IT STANDS (this exact text is what an <Old> must quote):\n";
+
+/** The app exactly as the brain was shown it. */
+const printedApp = (prompt: string): string => {
+  const at = prompt.indexOf(APP_AS_IT_STANDS);
+  if (at === -1) return "";
+  return prompt.slice(at + APP_AS_IT_STANDS.length).split("\n\nTHEY SAID:")[0] ?? "";
+};
+
+/** The rewire the automation lane asks for once its trigger is authored: the app
+ *  as it stands, plus a query over the results rows and a node that shows them.
+ *  Written whole (the `direct` answer) so it never depends on quoting text the
+ *  fill happened to produce. */
+const REBIND = (prompt: string): string => {
+  const printed = printedApp(prompt);
+  const firstLine = printed.indexOf("\n");
+  return [
+    printed.slice(0, firstLine),
+    `  <Query id="results" tool="vendo_apps_data_list" input={{appId:"${APP_ID}", collection:"digest"}}/>`,
+    "  <Text text={results.records.0.data.summary}/>",
+  ].join("\n") + printed.slice(firstLine);
+};
+
 const PLAN = JSON.stringify({
   name: "Unpaid invoice digest",
   resultsCollection: "digest",
@@ -103,7 +146,14 @@ const PLAN = JSON.stringify({
   },
 });
 
-const REBIND = `<Edit><Query id="results" tool="vendo_apps_data_list" input={{appId:"${APP_ID}", collection:"digest"}}/><Insert into="root"><Text text={results.records.0.data.summary}/></Insert></Edit>`;
+/** Which turn this is, and what it answers. The AI reviewer rides the same model
+ *  and gets nothing, which is how a fixture with no findings says so. */
+const respond = (prompt: string): string => {
+  if (prompt.includes("You are the Vendo automation planner")) return PLAN;
+  if (prompt.includes("YOUR SECTION")) return FILL;
+  if (!prompt.includes("THEY SAID:")) return "";
+  return prompt.includes("THEY SAID: The app now has a steps automation") ? REBIND(prompt) : AMENDMENT;
+};
 
 const seedDoc: AppDocument = {
   format: VENDO_APP_FORMAT,
@@ -185,7 +235,7 @@ async function harness(): Promise<{
     guard,
     tools: boundTools,
     catalog: [],
-    model: scriptedModel(PLAN, REBIND),
+    model: scriptedModel(respond),
     armAutomation: async (appId, armCtx) => {
       if (automationsRef === undefined) throw new Error("automations not composed");
       return automationsRef.enable(appId, armCtx);

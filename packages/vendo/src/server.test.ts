@@ -1342,7 +1342,7 @@ describe("09 §2 composition", () => {
     expect(events.events.some((event) => event.kind === "tool-call" && event.tool === "vendo_apps_open")).toBe(true);
   });
 
-  it("projects rung-1 app risk consistently across chat and MCP venues", async () => {
+  it("projects app-edit risk consistently across chat and MCP venues", async () => {
     const { vendo } = await setup(vi.fn(async () => principal), {
       policy: {
         rules: [
@@ -1372,15 +1372,6 @@ describe("09 §2 composition", () => {
     const edit = byName.get("vendo_apps_edit")!;
     const chat = { ...ctx, venue: "chat" as const };
     const mcp = { ...ctx, venue: "mcp" as const };
-    const treeCall = {
-      id: "call_tree_chat",
-      tool: edit.name,
-      args: { appId: "app_wire", instruction: "Make the heading blue" },
-    };
-
-    await expect(vendo.guard.check(treeCall, edit, chat)).resolves.toMatchObject({ action: "run" });
-    await expect(vendo.guard.check({ ...treeCall, id: "call_tree_mcp" }, edit, mcp))
-      .resolves.toMatchObject({ action: "run" });
     await expect(vendo.guard.check({
       id: "call_server_chat",
       tool: edit.name,
@@ -2202,28 +2193,34 @@ describe("09 §3 conversational turn against the real composed store", () => {
       outputTokens: { total: 0, text: 0, reasoning: 0 },
     } as const;
     let agentCalls = 0;
+    // A plan — the ask is normal, so the brain plans it and fast workers write
+    // the groups. That is what makes the create arrive in pieces: the plan IS
+    // the layout, on screen before a single group has been written, and each
+    // group lands as its own view.
+    const generation = (delta: string) => ({
+      stream: simulateReadableStream({ chunks: [
+        { type: "text-start" as const, id: "generation" },
+        { type: "text-delta" as const, id: "generation", delta },
+        { type: "text-end" as const, id: "generation" },
+        { type: "finish" as const, usage, finishReason: { unified: "stop" as const, raw: undefined } },
+      ] }),
+    });
     const model = new MockLanguageModelV3({
       doStream: async ({ prompt }) => {
         const serialized = JSON.stringify(prompt);
-        if (serialized.includes("TASK: CREATE_APP")) {
-          return {
-            stream: simulateReadableStream({ chunks: [
-              { type: "text-start", id: "generation" },
-              {
-                type: "text-delta",
-                id: "generation",
-                delta: '<App name="SSE app"><Stack>',
-              },
-              {
-                type: "text-delta",
-                id: "generation",
-                delta: '<Text text="Ready"/><Disclaimer reason="Fixture app."/></Stack></App>',
-              },
-              { type: "text-end", id: "generation" },
-              { type: "finish", usage, finishReason: { unified: "stop", raw: undefined } },
-            ] }),
-          };
+        if (serialized.includes("THEY SAID:")) {
+          return generation(`<Plan name="SSE app">
+  <Group>
+    <Leaf component="Text" purpose="A one-line status for the first section"/>
+  </Group>
+  <Group>
+    <Leaf component="Text" purpose="A one-line status for the second section"/>
+  </Group>
+</Plan>`);
         }
+        // One fill worker per group, and the AI reviewer, all ride this model.
+        if (serialized.includes("YOUR SECTION")) return generation('<Text text="Ready"/>');
+        if (serialized.includes("You are the last reader")) return generation("");
 
         agentCalls += 1;
         if (agentCalls === 1) {
@@ -2277,9 +2274,22 @@ describe("09 §3 conversational turn against the real composed store", () => {
 
     expect(response.status).toBe(200);
     expect(views.length).toBeGreaterThanOrEqual(3);
-    expect(views[0]?.data.payload).toMatchObject({ streaming: true, nodes: [{ id: "root" }, { id: "stack-1" }] });
+    // The first view IS the plan's geometry, every leaf still pending.
+    expect(views[0]?.data.payload).toMatchObject({
+      streaming: true,
+      nodes: [
+        { id: "app" },
+        { id: "group-0" },
+        { id: "group-0-body" },
+        { id: "group-0-leaf-0" },
+        { id: "group-1" },
+        { id: "group-1-body" },
+        { id: "group-1-leaf-0" },
+      ],
+    });
     expect(new Set(views.map((view) => view.id))).toEqual(new Set([`vendo-view:${views[0]?.data.appId}`]));
-    expect(views.at(-1)?.data.payload.nodes).toHaveLength(4);
+    // Both placeholders are gone, replaced by what their workers wrote.
+    expect(views.at(-1)?.data.payload.nodes).toHaveLength(7);
     expect(views.at(-1)?.data.payload.streaming).toBeUndefined();
   });
 });

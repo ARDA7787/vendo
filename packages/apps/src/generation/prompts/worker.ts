@@ -17,6 +17,11 @@ import {
   type PlanGroup,
   type PlanQuery,
 } from "@vendoai/core";
+import {
+  composePromptSections,
+  hostDesignRulesSection,
+  hostThemeSection,
+} from "../contracts/sections.js";
 import { PREWIRED_SCHEMAS } from "../../prewired-schema.js";
 import type { GenerationDependencies } from "../engine.js";
 
@@ -64,7 +69,14 @@ const componentDocs = (group: PlanGroup, catalog: NormalizedCatalog): string => 
  *  Per-group by design — a shared prefix would mean showing every worker the
  *  whole catalog, which is the blinkering this lane exists to remove. */
 export const workerSystemPrompt = (deps: GenerationDependencies, group: PlanGroup): string =>
-  [ROLE, componentDocs(group, deps.catalog)].filter((section) => section !== "").join("\n\n");
+  [
+    ROLE,
+    componentDocs(group, deps.catalog),
+    // The worker writes the markup, so the host's stated design rules and brand
+    // tokens have to reach IT — they are host configuration, not prompt polish,
+    // and a section written without them ignores what the host asked for.
+    composePromptSections([...hostThemeSection(deps), ...hostDesignRulesSection(deps)]),
+  ].filter((section) => section !== "").join("\n\n");
 
 export interface WorkerFillInput {
   /** The app's display name — the only thing about the wider app a worker sees. */
