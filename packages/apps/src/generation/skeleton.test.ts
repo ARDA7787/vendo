@@ -10,7 +10,7 @@
  */
 import { validateTree, type AppPlan } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
-import { skeletonFromPlan } from "./skeleton.js";
+import { growSkeleton, skeletonFromPlan } from "./skeleton.js";
 
 const plan = (groups: AppPlan["groups"], extra: Partial<AppPlan> = {}): AppPlan => ({
   name: "Invoices",
@@ -132,5 +132,83 @@ describe("skeletonFromPlan", () => {
         expect(full.slots[group]).toBe(slot);
       }
     }
+  });
+});
+
+/**
+ * An AMENDMENT grows a live app: the brain planned only the NEW parts, and the
+ * tree they land in is already filled and already on somebody's screen. The
+ * load-bearing property is that NOTHING already there moves — same ids, same
+ * props, same children order — because a renamed node re-mounts under the user.
+ */
+describe("growSkeleton", () => {
+  const live = () => skeletonFromPlan(tabbed).tree;
+
+  const added = plan([
+    { tab: "Payments", title: "Payment history", leaves: [{ component: "DataTable", purpose: "payments, newest first" }] },
+  ]);
+
+  it("starts the new groups past the highest ordinal in use and leaves every existing node byte-identical", () => {
+    const before = live();
+    const grown = growSkeleton(before, added);
+    // tabbed ends at group-2, so an amendment starts at group-3 — never group-0.
+    expect(Object.keys(grown.slots)).toEqual(["group-3"]);
+    expect(grown.slots["group-3"]).toBe("group-3-body");
+    for (const original of before.nodes) {
+      const carried = grown.tree.nodes.find((candidate) => candidate.id === original.id);
+      // The tab bar legitimately gains a tab; everything else is untouched.
+      if (original.component === "Tabs") continue;
+      expect(carried, `growSkeleton dropped "${original.id}"`).toEqual(original);
+    }
+    expect(validateTree(grown.tree).ok).toBe(true);
+  });
+
+  it("gives a NEW tab label its own tab and panel beside the existing ones", () => {
+    const grown = growSkeleton(live(), added);
+    const chrome = grown.tree.nodes.find((candidate) => candidate.component === "Tabs");
+    expect(chrome?.props?.tabs).toEqual([
+      { value: "Overview", label: "Overview" },
+      { value: "Overdue", label: "Overdue" },
+      { value: "Payments", label: "Payments" },
+    ]);
+    // Appended, never inserted: the existing panels keep their positions.
+    expect(chrome?.children).toEqual(["tab-0", "tab-1", "tab-2"]);
+    expect(grown.tree.nodes.find((candidate) => candidate.id === "tab-2")?.children).toEqual(["group-3"]);
+  });
+
+  it("adopts a group into a tab the app already has instead of minting a second one", () => {
+    const grown = growSkeleton(live(), plan([
+      { tab: "Overdue", title: "Aging buckets", leaves: [{ component: "BarChart", purpose: "aging" }] },
+    ]));
+    const chrome = grown.tree.nodes.find((candidate) => candidate.component === "Tabs");
+    expect(chrome?.props?.tabs).toHaveLength(2);
+    // The existing Overdue panel gains the group, in last position.
+    expect(grown.tree.nodes.find((candidate) => candidate.id === "tab-1")?.children)
+      .toEqual(["group-1", "group-3"]);
+  });
+
+  it("attaches at the root when the app has no tab chrome, rather than inventing a label for what is already there", () => {
+    const flat = skeletonFromPlan(plan([
+      { title: "Balances", leaves: [{ component: "Stat", purpose: "balance" }] },
+    ])).tree;
+    const grown = growSkeleton(flat, added);
+    expect(grown.tree.nodes.some((candidate) => candidate.component === "Tabs")).toBe(false);
+    expect(grown.tree.nodes.find((candidate) => candidate.id === grown.tree.root)?.children)
+      .toEqual(["group-0", "group-1"]);
+  });
+
+  it("carries the amendment's own queries onto the tree without disturbing the app's", () => {
+    const before = skeletonFromPlan(plan(
+      [{ leaves: [{ component: "DataTable", query: "invoices", purpose: "invoices" }] }],
+      { queries: [{ id: "invoices", tool: "host_listInvoices", input: {} }] },
+    )).tree;
+    const grown = growSkeleton(before, plan(
+      [{ leaves: [{ component: "DataTable", query: "payments", purpose: "payments" }] }],
+      { queries: [{ id: "payments", tool: "host_listPayments", input: {} }] },
+    ));
+    expect(grown.tree.queries).toEqual([
+      { name: "invoices", tool: "host_listInvoices", input: {} },
+      { name: "payments", tool: "host_listPayments", input: {} },
+    ]);
   });
 });

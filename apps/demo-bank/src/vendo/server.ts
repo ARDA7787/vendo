@@ -59,16 +59,10 @@ export const vendo = createVendo({
     experimentalServedApps: process.env.VENDO_EXPERIMENTAL_SERVED_APPS === "1",
     experimentalMachines: process.env.VENDO_EXPERIMENTAL_MACHINES === "1"
       || process.env.VENDO_EXPERIMENTAL_SERVED_APPS === "1",
-    // speed-core ruling (2026-07-26, supersedes demo-refresh Part 5):
-    // regionParallel is OFF for the demos — live evidence
-    // (docs/verification/demo-live-readiness/speed-core/after.md) showed its
-    // serial outline + assembly-invalid fallback made creates SLOWER on this
-    // surface (p50 55s vs 31.4s without it). endPass stays on: the runtime
-    // rides it as the data-sighted verify. structuredRepair and smokeRender
-    // are default-on and island repair is the engine's first resort.
-    pipeline: {
-      endPass: true,
-    },
+    // There is ONE generation pipeline now (the 2026-07-28 rebuild), so the
+    // speed-core knobs this demo used to amend — regionParallel off, endPass on
+    // — no longer exist: the lanes they chose between are deleted. The island
+    // smoke-render gate is the only flag left and it is on by default.
   },
   // Knowledge posture — the same shape as the store slot below. With
   // VENDO_API_KEY set, the slot stays UNSET so the env ladder composes the
