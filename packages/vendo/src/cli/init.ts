@@ -9,11 +9,11 @@ import { stdin, stdout } from "node:process";
 import type { VendoTheme } from "@vendoai/core";
 import { scrubErrorDetail, type Telemetry } from "@vendoai/telemetry";
 import { detectDepVersions, installedAiVersion } from "./dep-versions.js";
-import { AUTH_MD_URL, runCloudStep, upsertEnvLocal, type CloudStepOptions } from "./cloud-init.js";
+import { AUTH_MD_URL, runCloudStep, upsertEnvLocal, warnEnvLocalNotIgnored, type CloudStepOptions } from "./cloud-init.js";
 import { runInitJudgment, type InitJudgmentOptions } from "./init-judgment.js";
 import { BRIEF_TEMPLATE } from "./extract/stages.js";
 import { ENV_KEY_VARS, resolveDevCredential, describeDevCredential, type DevCredential } from "../dev-creds/resolve.js";
-import { detectFramework, detectVendoWiring, type HostFramework } from "./framework.js";
+import { detectFramework, detectVendoWiring, workspaceHostCandidates, type HostFramework } from "./framework.js";
 import { resolveScaffoldAuth, type AuthMatch, type AuthPresetName, type ConfirmAuth, type SelectAuth } from "./init-auth.js";
 import { ensureProviderDeps, ensureZodFloor, type InstallRunner } from "./provider-deps.js";
 import {
@@ -271,6 +271,37 @@ async function detectRouter(root: string, framework: Exclude<HostFramework, "unk
   return "none";
 }
 
+/** A path for a command the caller will paste into their OWN shell: relative
+    to their cwd while it stays inside it, "." when it IS their cwd, else
+    absolute. A path relative to init's target root resolves somewhere else
+    entirely when the two differ (`vendo init monorepo` from /work must not
+    suggest `vendo init apps/web`). Quoted with POSIX single quotes when it
+    needs it: nothing expands inside them, while double quotes would still let
+    a directory named `$(…)` be substituted by the pasting shell. */
+function pastePath(target: string): string {
+  const rel = relative(process.cwd(), target);
+  if (rel === "") return ".";
+  const path = rel.startsWith("..") ? target : rel;
+  return /^[\w./@+-]+$/.test(path) ? path : `'${path.replace(/'/g, "'\\''")}'`;
+}
+
+/** The file whose client root the <VendoRoot> paste belongs in, and the child
+    expression it wraps there. A pages-only host has NO app/layout.tsx to wrap
+    — its client root is pages/_app.tsx, and the generated vendo-root.tsx is a
+    client component that mounts there unchanged. (Where the API route segment
+    gets scaffolded is a separate, deliberate choice — see appDirectory.)
+    Keyed on the layout FILE, not on detectRouter: the scaffold creates app/
+    mid-run, and the answer must be the same before and after it. */
+async function clientRoot(root: string): Promise<{ file: string; children: string }> {
+  const layout = join(await appDirectory(root), "layout.tsx");
+  if (!(await exists(layout))) {
+    for (const pages of [join(root, "src", "pages"), join(root, "pages")]) {
+      if (await exists(pages)) return { file: join(pages, "_app.tsx"), children: "<Component {...pageProps} />" };
+    }
+  }
+  return { file: layout, children: "{children}" };
+}
+
 /** Relative, posix-style import specifier from the layout's directory to the
     project-root `.vendo/theme.json` — printed for the user's paste, never
     written by init. Returns null when the project EXPLICITLY disables
@@ -474,20 +505,22 @@ async function manualWiringLines(root: string, layout: LayoutWiring, withRegistr
     ];
   }
   const app = await appDirectory(root);
-  const layoutRel = relative(root, join(app, "layout.tsx"));
+  const { file: entry, children } = await clientRoot(root);
+  const entryDir = dirname(entry);
+  const entryRel = relative(root, entry);
   if (withRegistry) {
-    const wrapperSpecifier = relative(app, join(dirname(app), "vendo", "vendo-root")).split(sep).join("/");
+    const wrapperSpecifier = relative(entryDir, join(dirname(app), "vendo", "vendo-root")).split(sep).join("/");
     return [
-      `In ${layoutRel}:`,
+      `In ${entryRel}:`,
       `  import { VendoRoot } from ${JSON.stringify(wrapperSpecifier)};`,
-      `  … then wrap: <VendoRoot>{children}</VendoRoot>`,
+      `  … then wrap: <VendoRoot>${children}</VendoRoot>`,
       `  (${join("vendo", "vendo-root.tsx")} mounts <VendoOverlay />, the visible launcher + panel)`,
     ];
   }
   // No registry consumer (a hand-wired route that ignores it): the direct
   // provider + overlay paste — theme.json is serializable, so it may cross
   // the Server Component boundary; the registry may not.
-  const specifier = await themeImportSpecifier(root, app);
+  const specifier = await themeImportSpecifier(root, entryDir);
   const importLines = [
     `import { VendoOverlay, VendoRoot } from "@vendoai/vendo/react";`,
     ...(specifier === null
@@ -497,8 +530,8 @@ async function manualWiringLines(root: string, layout: LayoutWiring, withRegistr
           `import type { VendoTheme } from "@vendoai/vendo";`,
         ]),
   ];
-  const wrap = `<VendoRoot${specifier === null ? "" : " theme={theme as VendoTheme}"}>{children}<VendoOverlay /></VendoRoot>`;
-  return [`In ${layoutRel}:`, ...importLines.map((line) => `  ${line}`), `  … then wrap: ${wrap}`];
+  const wrap = `<VendoRoot${specifier === null ? "" : " theme={theme as VendoTheme}"}>${children}<VendoOverlay /></VendoRoot>`;
+  return [`In ${entryRel}:`, ...importLines.map((line) => `  ${line}`), `  … then wrap: ${wrap}`];
 }
 
 /** The repo-specific agent tail (agent-install-dx): a non-interactive
@@ -546,8 +579,8 @@ async function agentTailLines(args: {
   } else if (args.layout.kind === "overlay-missing") {
     lines.push(`edit ${args.layout.layoutPath} — add <VendoOverlay /> inside your <VendoRoot> (see the lines above; <VendoRoot> alone renders NOTHING visible)`);
   } else if (args.layout.kind === "manual") {
-    const layout = relative(args.root, join(await appDirectory(args.root), "layout.tsx"));
-    lines.push(`edit ${layout} — wrap the app in the <VendoRoot> lines above (it mounts <VendoOverlay />, the visible surface; without it users see nothing)`);
+    const entry = relative(args.root, (await clientRoot(args.root)).file);
+    lines.push(`edit ${entry} — wrap the app in the <VendoRoot> lines above (it mounts <VendoOverlay />, the visible surface; without it users see nothing)`);
   }
   if (await readOptional(join(args.root, ".vendo", "brief.md")) === BRIEF_PLACEHOLDER) {
     lines.push(`edit ${join(".vendo", "brief.md")} — replace the placeholder with what this product does and for whom`);
@@ -835,7 +868,9 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
       // the wrapper renders <VendoOverlay /> (the re-run after an auto-wire).
       layout = mounts.surface || wrapperBefore !== null
         ? { kind: "already" }
-        : { kind: "overlay-missing", layoutPath: relative(root, layoutFile) };
+        // A pages-only host mounted <VendoRoot> in pages/_app.tsx, not in an
+        // app/layout.tsx it doesn't have — name the file it really wraps in.
+        : { kind: "overlay-missing", layoutPath: relative(root, (await clientRoot(root)).file) };
     } else if (withRegistry) {
       // The wrapper consumes ./registry, so it exists only alongside one —
       // a hand-wired host that ignores the registry keeps the manual paste.
@@ -977,14 +1012,25 @@ export async function runInit(options: InitOptions): Promise<number> {
   const interactive = options.interactive ?? (Boolean(stdin.isTTY) && Boolean(stdout.isTTY));
   // An undetectable framework has NO safe default: a non-interactive run
   // (agents) errors with the exact flag instead of guessing the Next layout
-  // into an unknown host. Interactive runs keep today's fall-through.
-  if (options.framework === undefined && (options.yes === true || !interactive)
-    && await detectFramework(root) === "unknown") {
-    output.error(
-      "Framework not detected (no next or express dependency in package.json) and this run cannot ask. " +
-      "Pass --framework. Examples: vendo init --yes --framework next · --framework custom (any Web-standard runtime: Cloudflare Workers, Bun, Hono, ...)",
-    );
-    return 1;
+  // into an unknown host. An interactive run keeps today's fall-through to the
+  // custom scaffold — silently wrong when the host is a workspace package one
+  // level down, so name the candidates instead of guessing for them.
+  if (options.framework === undefined && await detectFramework(root) === "unknown") {
+    if (options.yes === true || !interactive) {
+      output.error(
+        "Framework not detected (no next or express dependency in package.json) and this run cannot ask. " +
+        "Pass --framework. Examples: vendo init --yes --framework next · --framework custom (any Web-standard runtime: Cloudflare Workers, Bun, Hono, ...)",
+      );
+      return 1;
+    }
+    const candidates = await workspaceHostCandidates(root);
+    if (candidates.length > 0) {
+      output.error(
+        `warning: no next or express dependency in this directory, but ${candidates.join(", ")} ` +
+        `${candidates.length === 1 ? "looks" : "look"} like the host — did you mean ${candidates[0]}? ` +
+        `Re-run there (vendo init ${pastePath(join(root, candidates[0]!))}) or pass --framework to scaffold this directory anyway.`,
+      );
+    }
   }
   // (No stdin-TTY guard on these defaults, unlike the star ask's: an unshown
   // auth confirm resolving its default just wires the detected preset — the
@@ -1008,6 +1054,7 @@ export async function runInit(options: InitOptions): Promise<number> {
     if (options.cloudKey !== undefined) {
       await upsertEnvLocal(root, "VENDO_API_KEY", options.cloudKey);
       output.log("Wrote VENDO_API_KEY to .env.local (--cloud-key).");
+      await warnEnvLocalNotIgnored(root, output);
     }
     // Key first (product order fix): the model-credential story — env keys,
     // else the Vendo Cloud offer — runs BEFORE the AI-assisted passes, so a
@@ -1328,7 +1375,23 @@ export async function runInit(options: InitOptions): Promise<number> {
       output.log("\nLast steps are yours:");
       for (const line of manualSteps) output.log(`  ${line}`);
     }
-    output.log("\nThen start your dev server — the agent is live in your app.");
+    // A run without a USABLE model credential is wired but not answering, so
+    // the closing line must not claim otherwise. The rung alone is not that
+    // answer: resolveDevCredential only checks that VENDO_API_KEY is non-blank
+    // (and VENDO_DEV_CREDENTIAL=vendo-cloud pins the rung with no key at all),
+    // so a malformed key resolves "vendo-cloud" while the cloud step — the one
+    // thing that inspected the key — already said it is not usable. Keyless,
+    // the composition decides: one written THIS run passes no model, so "no
+    // key" is the whole story, while one init did not write may pass its own
+    // `model` to createVendo — nothing here can see that, so state the
+    // condition rather than guess either way.
+    const modelReady = credential.rung === "env-key"
+      || (credential.rung === "vendo-cloud" && cloud.keyValid);
+    output.log(`\nThen start your dev server — ${modelReady
+      ? "the agent is live in your app."
+      : compositionPath !== null
+        ? "the agent is live once you add a model key."
+        : "no model key resolved here, so the agent is live only if your composition passes its own model."}`);
     output.log("Verify everything: `npx vendo doctor` (it can start the server and run a live turn).");
 
     // Agent tail (agent-install-dx): the --yes-or-non-TTY path is agent-driven
