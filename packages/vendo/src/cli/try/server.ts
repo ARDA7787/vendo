@@ -225,7 +225,10 @@ async function resolveTryModel(options: StartTryServerOptions): Promise<Language
     });
     const resolution = await controller.resolve();
     if (resolution.mode === "unavailable") return null;
-    return resolution.model as unknown as LanguageModel;
+    // The controller's own model, not the raw provider one the resolution
+    // carries: only that path reaches the surface with the fix for the rung a
+    // rejected key was rejected on (dev-creds/model).
+    return controller.model();
   } catch {
     return null;
   }

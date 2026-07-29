@@ -394,6 +394,12 @@ function wireErrorMessage(error: unknown): string {
   if (refusal !== undefined) {
     return `Vendo: ${formatMeterExhausted(refusal)} (cloud-required)`;
   }
+  // A rejected key (401) is deliberately NOT classified here: this gate sees
+  // every failure a turn can throw — a connector's descriptors() included — and
+  // an ai-SDK error shape proves the SHAPE, never the ORIGIN, so a tool's 401
+  // would get told to re-mint a model key. The credential ladder is the only
+  // place that knows the call was the model's, and it wraps its own 401s with
+  // its rung's fix (vendo's dev-creds/model); those arrive above as VendoErrors.
   return "An error occurred while generating the response.";
 }
 
