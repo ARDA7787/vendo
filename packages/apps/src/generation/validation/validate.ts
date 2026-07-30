@@ -29,10 +29,12 @@ import {
   queryInputIssues,
   unknownToolIssues,
 } from "../../checking/facts.js";
+import { pinComponentName } from "../../pins.js";
 import { APP_NAME_MAX_CHARS } from "../contracts/sections.js";
-import type {
-  GeneratedAppDocument,
-  GenerationDependencies,
+import {
+  asPayload,
+  type GeneratedAppDocument,
+  type GenerationDependencies,
 } from "../engine.js";
 import { prepareIslands } from "./islands.js";
 import { smokeRenderIslands } from "./smoke-render.js";
@@ -90,7 +92,7 @@ export const validateCompiledCreate = async (
     format: VENDO_APP_FORMAT,
     name,
     ui: "tree",
-    tree: structuredClone(compiled.tree) as unknown as NonNullable<AppDocument["tree"]>,
+    tree: asPayload(structuredClone(compiled.tree)),
     ...(components === undefined ? {} : {
       components: structuredClone(components),
       // The compiler-stamped per-island tool manifest (least privilege: an
@@ -130,4 +132,58 @@ export const validateEditedApp = async (
   return (await catalogIssues(treeValidation.tree, app.components, deps.catalog))
     .map(factIssueLine)
     .filter((issue) => !carried.has(issue));
+};
+
+/**
+ * A compiled edit as the NEXT version of a stored app. The tree and its islands
+ * are the model's; everything else on the document — trigger, storage, machine,
+ * pins, description — is the app's own history and survives untouched. Model
+ * islands go through the same ambient contract create screens them with;
+ * PINNED components are captured host source on the furnishing trust path, so
+ * they are neither stripped nor scanned.
+ */
+export const documentFromEdit = async (
+  previous: AppDocument,
+  compiled: WireCompileResult,
+  deps: GenerationDependencies,
+  instruction: string,
+): Promise<{ document?: AppDocument; issues: string[] }> => {
+  const structural = [
+    ...(compiled.complete ? [] : ["the edited app did not parse to a complete <App> document; the change was dropped."]),
+    ...compiled.issues.map(({ code, message }) => `wire ${code}: ${message}`),
+    ...compiled.bindingErrors.map((error) =>
+      `binding ${error.path} on node "${error.nodeId}" prop "${error.prop}": ${error.message}${error.available === undefined ? "" : ` (available: ${error.available.join(", ")})`}`),
+  ];
+  if (structural.length > 0) return { issues: structural };
+  const app: AppDocument = {
+    ...structuredClone(previous),
+    ...(compiled.name === undefined ? {} : { name: compiled.name }),
+    tree: asPayload(structuredClone(compiled.tree)),
+  };
+  const pinned = new Set((previous.pins ?? []).map((pin) => pinComponentName(pin.slot)));
+  const split = (all: Record<string, string>): { pinned: Record<string, string>; model: Record<string, string> } => ({
+    pinned: Object.fromEntries(Object.entries(all).filter(([name]) => pinned.has(name))),
+    model: Object.fromEntries(Object.entries(all).filter(([name]) => !pinned.has(name))),
+  });
+  const hostComponents = deps.catalog.map(({ name }) => name);
+  const parts = split(compiled.components);
+  const prepared = await prepareIslands(parts.model, deps.tools, hostComponents, instruction);
+  // A pre-existing island issue never blocks an unrelated edit: both prepares
+  // see the SAME instruction text, so a carried-over issue stays byte-identical.
+  const before = await prepareIslands(split(previous.components ?? {}).model, deps.tools, hostComponents, instruction);
+  const carried = new Set(before.issues);
+  const islandIssues = prepared.issues.filter((issue) => !carried.has(issue));
+  const components = { ...parts.pinned, ...prepared.components };
+  if (Object.keys(components).length === 0) {
+    delete app.components;
+    delete app.componentTools;
+  } else {
+    app.components = structuredClone(components);
+    // componentTools stays DEFINED whenever components exist, so the renderer's
+    // stamped-era rule (missing key = zero tools) applies instead of its
+    // source-scan fallback.
+    app.componentTools = structuredClone(prepared.componentTools);
+  }
+  const issues = [...islandIssues, ...await validateEditedApp(app, deps, previous, instruction)];
+  return issues.length > 0 ? { issues } : { document: app, issues: [] };
 };

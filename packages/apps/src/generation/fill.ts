@@ -40,12 +40,11 @@ import {
 } from "@vendoai/core";
 import { createCheckingLayer } from "../checking/layer.js";
 import type { Finding } from "../checking/types.js";
-import { modelCallParams } from "../model-params.js";
 import { readEdits } from "./brain.js";
 import { spliceFragment, type Skeleton } from "./skeleton.js";
 import { workerFillMessage, workerFixMessage, workerSystemPrompt } from "./prompts/worker.js";
 import { wireCompileOptionsFor } from "./wire-options.js";
-import { cacheableGenerationMessages, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
+import { asPayload, askModel, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
 
 /** Groups filled at once when the host set no dial. Two, not one, because the
  *  point is parallelism; two, not eight, because every worker is a model call
@@ -208,31 +207,6 @@ const fragmentMarkup = (answer: string): string => {
   return (close === -1 ? text.slice(open + 1) : text.slice(open + 1, close)).trim();
 };
 
-/** One worker call: the fast, thinking-disabled model instance when the host
- *  configured one, otherwise the main model. Text is accumulated off the stream
- *  — a fragment is small and lands atomically. */
-const askWorker = async (
-  deps: GenerationDependencies,
-  system: string,
-  prompt: string,
-): Promise<string | undefined> => {
-  const model = deps.fill?.model ?? deps.model;
-  try {
-    const { streamText } = await import("ai");
-    const result = streamText({
-      model,
-      messages: cacheableGenerationMessages(system, prompt),
-      ...modelCallParams(model),
-      maxRetries: 0,
-    });
-    let text = "";
-    for await (const delta of result.textStream) text += delta;
-    return text.trim().length === 0 ? undefined : text;
-  } catch {
-    return undefined;
-  }
-};
-
 /** The honest stand-in for a section that could not be built. Spliced through
  *  the same seam as a real fragment, so the failed group's placeholders leave
  *  the tree exactly as a successful fill's would. */
@@ -277,7 +251,7 @@ export const fillPlan = async (
   const document = (of: Tree): GeneratedAppDocument => ({
     format: VENDO_APP_FORMAT,
     name: plan.name,
-    tree: of as unknown as GeneratedAppDocument["tree"],
+    tree: asPayload(of),
     ...(Object.keys(islands).length === 0 ? {} : { components: { ...islands } }),
   });
   const emitted: Array<Promise<void>> = [];
@@ -334,12 +308,14 @@ export const fillPlan = async (
     /** The fragment document as it stands, and the tree it compiled to — the
      *  text a fix-it edit quotes, and the identity a fixed fragment carries. */
     let written: { text: string; tree: Tree } | undefined;
+    // The worker call runs on the fast, thinking-disabled model instance when
+    // the host configured one, otherwise the main model.
     for (let round = 0; round <= FIX_ROUNDS; round += 1) {
-      const answer = await askWorker(deps, system, written === undefined
+      const answer = await askModel(deps.fill?.model ?? deps.model, system, written === undefined
         ? fillMessage(problems)
         : workerFixMessage(written.text, problems));
-      if (answer === undefined) {
-        problems = ["the fill worker's model call came back with nothing at all."];
+      if (answer.text === undefined) {
+        problems = answer.issues;
         continue;
       }
       let text: string;
@@ -349,10 +325,10 @@ export const fillPlan = async (
         // group's fragment minted while this one was writing is not this
         // worker's business, and reading the growing tree here would make the
         // fragment text depend on which groups happened to land first.
-        text = fragmentDocument(plan.name, skeleton.tree.queries ?? [], fragmentMarkup(answer));
+        text = fragmentDocument(plan.name, skeleton.tree.queries ?? [], fragmentMarkup(answer.text));
         compiled = compileWire(text, compileOptions);
       } else {
-        const edits = readEdits(answer);
+        const edits = readEdits(answer.text);
         if (edits.edits === undefined) {
           problems = edits.issues;
           continue;

@@ -39,7 +39,7 @@ import {
 import { planAutomation, type AutomationPlan } from "../automation-plan.js";
 import type { Finding } from "../checking/types.js";
 import { composePromptSections, hostToolSections, islandContract } from "./contracts/sections.js";
-import { generateWireText, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
+import { askModel, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
 import { prepareIslands } from "./validation/islands.js";
 import { smokeRenderIslands } from "./validation/smoke-render.js";
 import { wireCompileOptionsFor } from "./wire-options.js";
@@ -218,7 +218,7 @@ export const runIslandLane = async (
   const system = islandLaneContract(deps);
   let previous: { source: string; issues: string[] } | undefined;
   for (let attempt = 0; attempt < ISLAND_ATTEMPTS; attempt += 1) {
-    const answer = await generateWireText(deps, system, islandLaneMessage(plan, island, deps, previous));
+    const answer = await askModel(deps.model, system, islandLaneMessage(plan, island, deps, previous));
     if (answer.text === undefined) {
       // A failed call is not a bad island: there is nothing to show on a
       // retry, so the reason stands as the failure.

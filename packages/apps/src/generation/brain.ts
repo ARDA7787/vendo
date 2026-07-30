@@ -26,11 +26,9 @@ import {
   type PlanCompileResult,
   type PlanFacts,
   type TextEdit,
-  type Tree,
 } from "@vendoai/core";
-import { modelCallParams } from "../model-params.js";
 import { appendSessionTurns } from "../persistence.js";
-import { cacheableGenerationMessages, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
+import { askModel, asTree, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
 import { brainPrompt } from "./prompts/brain.js";
 
 /** One thing said in an app's conversation. Persisted on the app record
@@ -209,7 +207,7 @@ const summarize = (outcome: BrainOutcome): string => {
 const appText = (app: BrainApp | undefined): string | undefined => {
   if (app?.tree?.formatVersion !== VENDO_TREE_FORMAT) return undefined;
   return printWire({
-    tree: app.tree as unknown as Tree,
+    tree: asTree(app.tree),
     components: app.components ?? {},
     name: app.name,
   }, { includeIds: false });
@@ -245,49 +243,11 @@ const brainMessage = (
   ].join("\n\n");
 };
 
-/** One model call, text accumulated off the stream (the engine's edit-dialect
- *  pattern: brain answers are small and land atomically). Thinking is the
- *  model's own configuration — `config.model` is the thinking model, and the
- *  no-think switch is a separate instance the fill workers get. */
-const askBrain = async (
-  deps: GenerationDependencies,
-  system: string,
-  prompt: string,
-): Promise<{ text?: string; issues: string[] }> => {
-  try {
-    const { streamText } = await import("ai");
-    // streamText does NOT throw provider errors: its default onError logs the
-    // raw error and the text stream simply ends. Capture it, or a missing key /
-    // quota exhaustion reaches the runtime as an unclassifiable empty answer.
-    let streamError: unknown;
-    const result = streamText({
-      model: deps.model,
-      messages: cacheableGenerationMessages(system, prompt),
-      ...modelCallParams(deps.model),
-      maxRetries: 0,
-      onError: ({ error }) => { streamError = error; },
-    });
-    let text = "";
-    for await (const delta of result.textStream) text += delta;
-    if (streamError !== undefined) {
-      return { issues: [`model generation failed: ${streamError instanceof Error ? streamError.message : "unknown error"}`] };
-    }
-    if (text.trim().length === 0) {
-      return { issues: ["the brain answered with no text at all (an empty or reasoning-only response from the provider)."] };
-    }
-    return { text, issues: [] };
-  } catch (error) {
-    // The "model generation failed: " prefix is load-bearing, not decoration:
-    // runtime.buildFailureReason strips exactly it before matching the
-    // no-usable-credential lines, so a 402 classifies as non-retryable quota and
-    // the actionable `npm install @ai-sdk/...` line reaches the person.
-    return { issues: [`model generation failed: ${error instanceof Error ? error.message : "unknown error"}`] };
-  }
-};
-
 /**
  * Take one turn of an app's conversation. One model call, up to one retry when
- * the answer could not be read, and the session to persist alongside.
+ * the answer could not be read, and the session to persist alongside. Thinking
+ * is the model's own configuration — `deps.model` is the thinking model, and
+ * the no-think switch is a separate instance the fill workers get.
  */
 export const runBrainTurn = async (
   input: BrainInput,
@@ -298,7 +258,7 @@ export const runBrainTurn = async (
   let issues: string[] = [];
   let previous: { answer: string; issues: string[] } | undefined;
   for (let attempt = 0; attempt < BRAIN_ATTEMPTS; attempt += 1) {
-    const answer = await askBrain(deps, system, brainMessage(input, previous));
+    const answer = await askModel(deps.model, system, brainMessage(input, previous));
     if (answer.text === undefined) {
       // A failed call is not a malformed answer: there is nothing to show the
       // brain on a retry, so the reason stands as the failure.

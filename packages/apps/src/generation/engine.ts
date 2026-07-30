@@ -87,6 +87,18 @@ export interface GenerationDependencies {
 
 export type GeneratedAppDocument = Omit<AppDocument, "id">;
 
+/**
+ * A stored document's `tree` (the open UIPayload the store speaks) and the
+ * genui `Tree` are the same structure under two names. These two casts are the
+ * ONLY bridge between them — an `as unknown as` on a tree anywhere else is a
+ * smell. `asTree` trusts its caller about presence, exactly as the casts it
+ * replaced did: guard `undefined` before converting.
+ */
+export const asTree = (tree: GeneratedAppDocument["tree"]): Tree => tree as unknown as Tree;
+
+export const asPayload = (tree: Tree): NonNullable<GeneratedAppDocument["tree"]> =>
+  tree as unknown as NonNullable<GeneratedAppDocument["tree"]>;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -113,22 +125,32 @@ export const cacheableGenerationMessages = (system: string, prompt: string): Mod
 export const snapshotDesignRules = (deps: GenerationDependencies): GenerationDependencies =>
   typeof deps.designRules === "function" ? { ...deps, designRules: deps.designRules() } : deps;
 
-/** Raw-text model call for a small, atomic piece of markup: the island lane's
- *  one island. No streaming seam — the answer lands whole or not at all. */
-export const generateWireText = async (
-  deps: GenerationDependencies,
+/**
+ * One model call, text accumulated off the stream — the answer lands whole or
+ * not at all. Every generation actor speaks through here (the brain, a fill
+ * worker, the island lane, the automation planner), so the failure handling
+ * exists exactly once: streamText does NOT throw provider errors (its default
+ * onError logs the raw error and the text stream simply ends), so a missing
+ * key or quota exhaustion is captured here or it reaches the caller as an
+ * unclassifiable empty answer.
+ *
+ * The "model generation failed: " prefix is load-bearing, not decoration:
+ * runtime.buildFailureReason strips exactly it before matching the
+ * no-usable-credential lines, so a 402 classifies as non-retryable quota and
+ * the actionable `npm install @ai-sdk/...` line reaches the person.
+ */
+export const askModel = async (
+  model: LanguageModel,
   system: string,
   prompt: string,
 ): Promise<{ text?: string; issues: string[] }> => {
   try {
     const { streamText } = await import("ai");
-    // See brain.ts: streamText swallows provider errors, so capture them or the
-    // reason never reaches the caller.
     let streamError: unknown;
     const result = streamText({
-      model: deps.model,
+      model,
       messages: cacheableGenerationMessages(system, prompt),
-      ...modelCallParams(deps.model),
+      ...modelCallParams(model),
       maxRetries: 0,
       onError: ({ error }) => { streamError = error; },
     });
@@ -138,6 +160,9 @@ export const generateWireText = async (
     }
     if (streamError !== undefined) {
       return { issues: [`model generation failed: ${streamError instanceof Error ? streamError.message : "unknown error"}`] };
+    }
+    if (text.trim().length === 0) {
+      return { issues: ["the model answered with no text at all (an empty or reasoning-only response from the provider)."] };
     }
     return { text, issues: [] };
   } catch (error) {
@@ -181,6 +206,7 @@ export const applyPinFork = (
   pinBaselines: readonly PinBaseline[] | undefined,
 ): string[] => {
   const fail = (message: string): string[] => [`pin fork failed: ${message}`];
+  if (app.tree === undefined) return fail("this app has no tree to fork a pin into");
   const slot = props.slot;
   if (typeof slot !== "string" || slot.length === 0) return fail("requires a non-empty slot attribute");
   const baseline = pinBaselines?.find((candidate) => candidate.slot === slot);
@@ -193,7 +219,7 @@ export const applyPinFork = (
   }
   const componentName = pinComponentName(baseline.slot);
   if (app.components?.[componentName] !== undefined) return fail(`generated component "${componentName}" already exists`);
-  const tree = app.tree as unknown as Tree;
+  const tree = asTree(app.tree);
   const parentId = props.into === undefined ? tree.root : props.into;
   if (typeof parentId !== "string") return fail("into must be a string node id when present");
   const parent = tree.nodes.find(({ id }) => id === parentId);

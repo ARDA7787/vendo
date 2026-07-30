@@ -26,19 +26,16 @@ import {
   type PlanQuery,
   type TextEdit,
   type Tree,
-  type WireCompileResult,
 } from "@vendoai/core";
 import { createCheckingLayer } from "../checking/layer.js";
 import { reviewerCheck } from "../checking/reviewer.js";
 import type { Check, CheckingLayer, Finding } from "../checking/types.js";
-import { pinComponentName } from "../pins.js";
 import { runBrainTurn, type BrainOutcome, type BrainTurn } from "./brain.js";
-import type { GeneratedAppDocument, GenerationDependencies } from "./engine.js";
+import { asPayload, asTree, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
 import { fillPlan, type FillOptions } from "./fill.js";
 import { runIslandLane } from "./lanes.js";
 import { growSkeleton, skeletonFromPlan, type Skeleton } from "./skeleton.js";
-import { prepareIslands } from "./validation/islands.js";
-import { validateCompiledCreate, validateEditedApp } from "./validation/validate.js";
+import { documentFromEdit, validateCompiledCreate } from "./validation/validate.js";
 import { wireCompileOptionsFor } from "./wire-options.js";
 
 /**
@@ -137,59 +134,6 @@ const documentFromWire = async (
   validateCompiledCreate(compileWire(wire, compileOptionsFor(deps)), deps, request);
 
 /**
- * A compiled edit as the NEXT version of a stored app. The tree and its islands
- * are the model's; everything else on the document — trigger, storage, machine,
- * pins, description — is the app's own history and survives untouched. Model
- * islands go through the same ambient contract create screens them with;
- * PINNED components are captured host source on the furnishing trust path, so
- * they are neither stripped nor scanned.
- */
-const documentFromEdit = async (
-  previous: AppDocument,
-  compiled: WireCompileResult,
-  deps: GenerationDependencies,
-  instruction: string,
-): Promise<{ document?: AppDocument; issues: string[] }> => {
-  const structural = [
-    ...(compiled.complete ? [] : ["the edited app did not parse to a complete <App> document; the change was dropped."]),
-    ...compiled.issues.map(({ code, message }) => `wire ${code}: ${message}`),
-    ...compiled.bindingErrors.map((error) =>
-      `binding ${error.path} on node "${error.nodeId}" prop "${error.prop}": ${error.message}${error.available === undefined ? "" : ` (available: ${error.available.join(", ")})`}`),
-  ];
-  if (structural.length > 0) return { issues: structural };
-  const app: AppDocument = {
-    ...structuredClone(previous),
-    ...(compiled.name === undefined ? {} : { name: compiled.name }),
-    tree: structuredClone(compiled.tree) as unknown as NonNullable<AppDocument["tree"]>,
-  };
-  const pinned = new Set((previous.pins ?? []).map((pin) => pinComponentName(pin.slot)));
-  const split = (all: Record<string, string>): { pinned: Record<string, string>; model: Record<string, string> } => ({
-    pinned: Object.fromEntries(Object.entries(all).filter(([name]) => pinned.has(name))),
-    model: Object.fromEntries(Object.entries(all).filter(([name]) => !pinned.has(name))),
-  });
-  const parts = split(compiled.components);
-  const prepared = await prepareIslands(parts.model, deps.tools, hostComponentNames(deps), instruction);
-  // A pre-existing island issue never blocks an unrelated edit: both prepares
-  // see the SAME instruction text, so a carried-over issue stays byte-identical.
-  const before = await prepareIslands(split(previous.components ?? {}).model, deps.tools, hostComponentNames(deps), instruction);
-  const carried = new Set(before.issues);
-  const islandIssues = prepared.issues.filter((issue) => !carried.has(issue));
-  const components = { ...parts.pinned, ...prepared.components };
-  if (Object.keys(components).length === 0) {
-    delete app.components;
-    delete app.componentTools;
-  } else {
-    app.components = structuredClone(components);
-    // componentTools stays DEFINED whenever components exist, so the renderer's
-    // stamped-era rule (missing key = zero tools) applies instead of its
-    // source-scan fallback.
-    app.componentTools = structuredClone(prepared.componentTools);
-  }
-  const issues = [...islandIssues, ...await validateEditedApp(app, deps, previous, instruction)];
-  return issues.length > 0 ? { issues } : { document: app, issues: [] };
-};
-
-/**
  * Apply the brain's old/new edits to an app's printed text. Identity is carried
  * from the previous tree by edit span (text-edit.ts), so every node the change
  * did not touch keeps the id the screen already mounted — a small edit repaints
@@ -201,8 +145,8 @@ export const applyBrainEdits = async (
   deps: GenerationDependencies,
   instruction: string,
 ): Promise<{ document?: AppDocument; issues: string[] }> => {
-  const tree = previous.tree as unknown as Tree | undefined;
-  if (tree === undefined) return { issues: ["this app has no tree to edit."] };
+  if (previous.tree === undefined) return { issues: ["this app has no tree to edit."] };
+  const tree = asTree(previous.tree);
   const printed = printWire({
     tree,
     components: previous.components ?? {},
@@ -273,11 +217,10 @@ const checkAndFix = async (
     // which is why reviewer findings come here, to the brain, and not to a group
     // worker who can only rewrite its own section.
     if (outcome?.kind === "amend") {
-      const tree = document.tree as unknown as Tree | undefined;
-      if (tree === undefined) return { document, findings, session };
+      if (document.tree === undefined) return { document, findings, session };
       const grown = await growAndFill({
         plan: outcome.plan,
-        skeleton: growSkeleton(tree, outcome.plan),
+        skeleton: growSkeleton(asTree(document.tree), outcome.plan),
         request: input.request,
       }, deps, options);
       document = { ...document, ...grown.document, id: document.id } as AppDocument;
@@ -301,7 +244,7 @@ const stampGenerated = (tree: Tree, names: ReadonlySet<string>): Tree => names.s
   nodes: tree.nodes.map((node) => names.has(node.component) ? { ...node, source: "generated" as const } : node),
 };
 
-const treeOfDocument = (document: GeneratedAppDocument): Tree => document.tree as unknown as Tree;
+const treeOfDocument = (document: GeneratedAppDocument): Tree => asTree(document.tree);
 
 /** The groups a worker can write NOW: everything the plan did not mark as
  *  waiting on the box's interface. A waiting group binds to code nobody has
@@ -336,7 +279,7 @@ const growAndFill = async (
         format: "vendo/app@1",
         name: plan.name,
         ui: "tree",
-        tree: skeleton.tree as unknown as NonNullable<AppDocument["tree"]>,
+        tree: asPayload(skeleton.tree),
       }, { ...deps, request: input.request });
       return {
         components: lane.document.components ?? {},
@@ -355,7 +298,7 @@ const growAndFill = async (
   const generatedNames = new Set(Object.keys(islandLane.components));
   const document: GeneratedAppDocument = {
     ...filled.document,
-    tree: stampGenerated(treeOfDocument(filled.document), generatedNames) as unknown as NonNullable<AppDocument["tree"]>,
+    tree: asPayload(stampGenerated(treeOfDocument(filled.document), generatedNames)),
     ...(generatedNames.size === 0 ? {} : {
       components: islandLane.components,
       componentTools: islandLane.componentTools,
@@ -506,11 +449,10 @@ export const conductEdit = async (
   // ids untouched, so nothing on the screen re-mounts) and only the added
   // groups are written.
   const plan = outcome.plan;
-  const previousTree = previous.tree as unknown as Tree | undefined;
-  if (previousTree === undefined) {
+  if (previous.tree === undefined) {
     return { kind: "failure", issues: ["this app has no tree to amend."], session: turn.session };
   }
-  const grown = growSkeleton(previousTree, plan);
+  const grown = growSkeleton(asTree(previous.tree), plan);
   const built = await buildPlan({
     plan,
     skeleton: grown,
