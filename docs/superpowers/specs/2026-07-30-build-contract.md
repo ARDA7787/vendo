@@ -48,7 +48,9 @@ separate factory concept in the contract.
 ```ts
 export interface TurnTools {
   /** Never throws. Guarded, audited, and mirrored before it resolves. */
-  call(name: string, args: Json, opts?: { idempotencyKey?: string }): Promise<ToolResult>;
+  call(name: string, args: Json): Promise<ToolResult>;
+  // amendment 2026-07-30: the idempotencyKey opt was removed — the §7 effect
+  // ledger keys on run/turn id + input hash internally; no caller read it.
   /** Currently-equipped tools (post-curation). */
   list(): Promise<ToolListing[]>;
 }
