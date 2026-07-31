@@ -2,6 +2,7 @@ import type { Principal } from "@vendoai/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backends, type MadeBackend } from "./backends.test-util.js";
 import { eraseStore } from "./erase.js";
+import { storeFiles } from "./files-store.js";
 import { adoptEphemeralSubject } from "./helpers/subjects.js";
 import { registerEphemeralSubject } from "./sessions.js";
 import { WORKSPACE_INLINE_MAX_BYTES, workspaceStore } from "./workspace.js";
@@ -61,7 +62,7 @@ for (const backend of backends()) {
       expect(await count("vendo_workspace_history", "owner = $1", [erased.subject])).toBe(2);
       expect(await count("vendo_blobs", "namespace = 'workspace'", [])).toBeGreaterThan(0);
 
-      const report = await eraseStore(made.store).bySubject(erased.subject);
+      const report = await eraseStore(made.store, { files: storeFiles(made.store) }).bySubject(erased.subject);
       expect(report.vendo_workspace_files).toBe(2);
       expect(report.vendo_workspace_history).toBe(2);
 
@@ -87,7 +88,7 @@ for (const backend of backends()) {
       // A user file that merely reads like an app path must survive.
       await seed(made.store, owner, "/user/files/apps/app_drop/notes.md", ["not a document"]);
 
-      const report = await eraseStore(made.store).byApp("app_drop");
+      const report = await eraseStore(made.store, { files: storeFiles(made.store) }).byApp("app_drop");
       expect(report.vendo_workspace_files).toBe(1);
       expect(report.vendo_workspace_history).toBe(1);
 
@@ -102,7 +103,7 @@ for (const backend of backends()) {
       await registerEphemeralSubject(made.store, anon.subject);
       await seed(made.store, anon, "/user/apps/app_anon/app.vendo", ["made while anonymous", "then edited"]);
 
-      const report = await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject);
+      const report = await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject, { files: storeFiles(made.store) });
       expect(report?.files).toBe(1);
 
       // The signed-in subject opens the workspace and finds their own work.
@@ -115,6 +116,49 @@ for (const backend of backends()) {
         .readFile("/user/apps/app_anon/app.vendo")).toBe("made while anonymous");
 
       expect(await count("vendo_workspace_files", "owner = $1", [anon.subject])).toBe(0);
+    });
+
+    // N3b (verifier): with blob deletion moved behind the adapter, EraseReport
+    // stopped counting workspace content in EITHER configuration — a GDPR erase
+    // has to be auditable, so the report carries its own count.
+    it("counts the workspace content it deleted, wired adapter or not", async () => {
+      const owner: Principal = { kind: "user", subject: "user_ws_audit" };
+      const big = (marker: string): string => marker.repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
+      // Two blob-backed revisions plus one inline file.
+      await seed(made.store, owner, "/user/files/audited.bin", [big("a"), big("b")]);
+      await seed(made.store, owner, "/user/memory/inline.md", ["small enough to inline"]);
+
+      const report = await eraseStore(made.store, { files: storeFiles(made.store) })
+        .bySubject(owner.subject);
+      expect(report.vendo_workspace_files).toBe(2);
+      expect(report.vendo_workspace_history).toBe(1);
+      // The content deleted through the adapter is auditable on its own axis.
+      expect(report.workspace_content).toBe(2);
+    });
+
+    it("counts content deleted through a host-wired adapter too", async () => {
+      const owner: Principal = { kind: "user", subject: "user_ws_audit_wired" };
+      const held = new Map<string, Uint8Array>();
+      const files = {
+        async put(key: string, bytes: Uint8Array) { held.set(key, bytes); },
+        async get(key: string) {
+          const bytes = held.get(key);
+          return bytes === undefined ? undefined : { bytes };
+        },
+        async delete(key: string) { held.delete(key); },
+      };
+      const workspace = workspaceStore(made.store, { files });
+      for (const content of ["x".repeat(WORKSPACE_INLINE_MAX_BYTES + 1), "y".repeat(WORKSPACE_INLINE_MAX_BYTES + 1)]) {
+        const fs = await workspace.open(owner);
+        await fs.writeFile("/user/files/wired.bin", content);
+        await fs.commit();
+      }
+      expect(held.size).toBe(2);
+
+      const report = await eraseStore(made.store, { files }).bySubject(owner.subject);
+      expect(report.workspace_content).toBe(2);
+      // The host's bucket is actually emptied, not just the rows.
+      expect(held.size).toBe(0);
     });
 
     // F1 (verifier): blob keys embedded the owner while adoption flips only the
@@ -130,12 +174,12 @@ for (const backend of backends()) {
       await seed(made.store, anon, path, [big]);
       expect(await workspaceBlobs()).toBe(before + 1);
 
-      expect((await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject))?.files).toBe(1);
+      expect((await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject, { files: storeFiles(made.store) }))?.files).toBe(1);
       // The blob still reads through the new owner's workspace...
       expect(await (await workspaceStore(made.store).open(signedIn)).readFile(path)).toBe(big);
 
       // ...and erasing that owner must take the content with them.
-      await eraseStore(made.store).bySubject(signedIn.subject);
+      await eraseStore(made.store, { files: storeFiles(made.store) }).bySubject(signedIn.subject);
       expect(await workspaceBlobs()).toBe(before);
     });
 
@@ -151,7 +195,7 @@ for (const backend of backends()) {
       await seed(made.store, signedIn, path, ["b".repeat(WORKSPACE_INLINE_MAX_BYTES + 1)]);
       expect(await workspaceBlobs()).toBe(before + 2);
 
-      const report = await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject);
+      const report = await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject, { files: storeFiles(made.store) });
       expect(report?.files).toBe(0);
       // The dropped anonymous copy takes its blob with it; the survivor keeps its own.
       expect(await workspaceBlobs()).toBe(before + 1);
@@ -168,7 +212,7 @@ for (const backend of backends()) {
       // The live revision plus the superseded one.
       expect(await workspaceBlobs()).toBe(before + 2);
 
-      const report = await eraseStore(made.store).byApp("app_blob_drop");
+      const report = await eraseStore(made.store, { files: storeFiles(made.store) }).byApp("app_blob_drop");
       expect(report.vendo_workspace_files).toBe(1);
       expect(await workspaceBlobs()).toBe(before);
     });
@@ -200,7 +244,7 @@ for (const backend of backends()) {
       await seed(made.store, anon, path, ["anonymous notes"]);
       await seed(made.store, signedIn, path, ["my real notes"]);
 
-      const report = await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject);
+      const report = await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject, { files: storeFiles(made.store) });
       expect(report?.files).toBe(0);
       expect(report?.skipped).toBeGreaterThan(0);
 

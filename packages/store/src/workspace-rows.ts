@@ -1,4 +1,4 @@
-import type { FilesAdapter, IsoDateTime } from "@vendoai/core";
+import { VendoError, type FilesAdapter, type IsoDateTime } from "@vendoai/core";
 import type { Db } from "./db.js";
 import { iso, text } from "./helpers/utils.js";
 
@@ -65,6 +65,7 @@ interface StoredContent {
 
 interface Current {
   revision: number;
+  bytes: number;
   updatedAt: IsoDateTime;
   stored: StoredContent;
 }
@@ -78,16 +79,27 @@ interface Current {
  */
 export interface PreparedWrite {
   path: string;
+  /** The content itself, kept so a lost CAS can re-aim at the new head without
+      re-placing the blob (the bytes have not changed — only the base has). */
+  content: Uint8Array;
   bytes: number;
   revision: number;
   stored: StoredContent;
   prior: Current | undefined;
 }
 
-/** What one step of `undo` did. */
+/** What one step of `undo` did.
+ *  - `ok` — the file now holds that revision's content. `skipped` names any
+ *    newer revisions whose content could not be read and were stepped over
+ *    (they are left intact, not destroyed).
+ *  - `content-missing` — nothing left in history could be read. That is one
+ *    adapter fault to surface (a wrong bucket, an expired key), not N content
+ *    losses: every row named is still there, and will restore once the adapter
+ *    can read again.
+ *  - `empty` — there is nothing left to undo. */
 export type UndoOutcome =
-  | { status: "ok"; revision: number }
-  | { status: "content-missing"; revision: number }
+  | { status: "ok"; revision: number; skipped?: number[] }
+  | { status: "content-missing"; revisions: number[] }
   | { status: "empty" };
 
 /** Row-level access to the workspace pair (build contract §3.3). Content lands
@@ -100,9 +112,18 @@ export interface WorkspaceRows {
   /** Place the content and reserve a revision, touching no row. `unchanged`
       means the bytes are already stored: no revision bump, nothing to sync. */
   prepare(owner: string, path: string, bytes: Uint8Array): Promise<PreparedWrite | "unchanged">;
-  /** Land a prepared write: history row for the superseded revision, then the
-      file row. Last write wins for /user (§3.2). */
-  land(owner: string, prepared: PreparedWrite, intent?: string): Promise<{ revision: number; updatedAt: IsoDateTime }>;
+  /** Land a prepared write atomically: one statement compare-and-swaps the file
+      row against the revision `prepare` read AND records the superseded revision,
+      so two overlapping commits can never both claim the same revision number.
+      A lost race re-aims at the new head and retries here — /user stays
+      last-write-wins for the final content, and the loser's edit still lands as
+      a history row. `landed: false` means the head already holds these exact
+      bytes, so this commit wrote nothing. */
+  land(
+    owner: string,
+    prepared: PreparedWrite,
+    intent?: string,
+  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime }>;
   /** Drop a prepared write that will never land, so its blob is not orphaned. */
   discard(prepared: PreparedWrite): Promise<void>;
   /** Deleting records the content it removed (history is append-only, §3.3), so
@@ -114,9 +135,6 @@ export interface WorkspaceRows {
       `content-missing` is a revision whose blob is gone — it is consumed too,
       rather than wedging the walk on a revision that can never come back. */
   undo(owner: string, path: string): Promise<UndoOutcome>;
-  /** Every blob the given rows point at, so a caller deleting rows outside this
-      module (the erase cascade, the adoption merge) can delete the content too. */
-  blobRefsWhere(clause: { table: "vendo_workspace_files" | "vendo_workspace_history"; where: string; params: unknown[] }): Promise<string[]>;
 }
 
 export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
@@ -137,13 +155,15 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
 
   const currentOf = async (owner: string, path: string): Promise<Current | undefined> => {
     const result = await db.query(
-      "SELECT content, blob_ref, revision, updated_at FROM vendo_workspace_files WHERE path = $1 AND owner = $2",
+      `SELECT content, blob_ref, revision, bytes, updated_at FROM vendo_workspace_files
+       WHERE path = $1 AND owner = $2`,
       [path, owner],
     );
     const row = result.rows[0];
     if (row === undefined) return undefined;
     return {
       revision: Number(row["revision"]),
+      bytes: Number(row["bytes"]),
       updatedAt: iso(row["updated_at"]),
       stored: storedOf(row),
     };
@@ -207,39 +227,113 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
     return { content: undefined, blobRef: key };
   };
 
-  /** The write path. /user is last-write-wins (§3.2), and one session owns one
-   *  workspace, so these statements need no transaction; wave 3's /orgs CAS is
-   *  what arms `revision` in the UPDATE's WHERE. */
-  const landRow = async (
+  /**
+   * One statement: compare-and-swap the file row against the revision `prepare`
+   * read, and — only if that swap won — record the revision it superseded.
+   *
+   * Both halves must be atomic together. Appending history first would leave a
+   * bogus row behind whenever the swap loses; swapping first and appending after
+   * would leave a window where a crash loses the superseded revision. A
+   * data-modifying CTE does both or neither.
+   */
+  const swapRow = async (
     owner: string,
     prepared: PreparedWrite,
     options: { intent?: string; recordHistory: boolean },
-  ): Promise<{ revision: number; updatedAt: IsoDateTime }> => {
-    const now = new Date().toISOString();
-    if (prepared.prior !== undefined && options.recordHistory) {
-      await appendHistory(owner, prepared.path, prepared.prior, options.intent, now);
+    now: IsoDateTime,
+  ): Promise<boolean> => {
+    const values = [
+      prepared.path,
+      owner,
+      prepared.stored.content ?? null,
+      prepared.stored.blobRef ?? null,
+      prepared.bytes,
+      prepared.revision,
+      now,
+    ];
+    if (prepared.prior === undefined) {
+      // No row when we looked: we win only if we are the one that creates it.
+      const created = await db.query(
+        `INSERT INTO vendo_workspace_files (path, owner, content, blob_ref, bytes, revision, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+         ON CONFLICT (path, owner) DO NOTHING
+         RETURNING revision`,
+        values,
+      );
+      return created.rows.length > 0;
     }
-    // Without a history row nothing references the revision being replaced, so
-    // its blob goes with it rather than lingering unreachable.
-    if (prepared.prior !== undefined && !options.recordHistory) await dropBlob(prepared.prior.stored);
-    await db.query(
-      `INSERT INTO vendo_workspace_files (path, owner, content, blob_ref, bytes, revision, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-       ON CONFLICT (path, owner) DO UPDATE SET content = EXCLUDED.content,
-         blob_ref = EXCLUDED.blob_ref, bytes = EXCLUDED.bytes,
-         revision = EXCLUDED.revision, updated_at = EXCLUDED.updated_at`,
+    const prior = prepared.prior;
+    const result = await db.query(
+      `WITH swapped AS (
+         UPDATE vendo_workspace_files
+            SET content = $3, blob_ref = $4, bytes = $5, revision = $6, updated_at = $7
+          WHERE path = $1 AND owner = $2 AND revision = $8
+          RETURNING revision
+       ), logged AS (
+         INSERT INTO vendo_workspace_history (id, path, owner, revision, content, blob_ref, intent, at)
+         SELECT $9, $1, $2, $8, $10, $11, $12, $7
+         WHERE $13 AND EXISTS (SELECT 1 FROM swapped)
+       )
+       SELECT COUNT(*)::int AS swapped FROM swapped`,
       [
-        prepared.path,
-        owner,
-        prepared.stored.content ?? null,
-        prepared.stored.blobRef ?? null,
-        prepared.bytes,
-        prepared.revision,
-        now,
+        ...values,
+        prior.revision,
+        `wsh_${globalThis.crypto.randomUUID()}`,
+        prior.stored.content ?? null,
+        prior.stored.blobRef ?? null,
+        options.intent ?? null,
+        options.recordHistory,
       ],
     );
-    await trim(owner, prepared.path);
-    return { revision: prepared.revision, updatedAt: now };
+    return Number(result.rows[0]?.["swapped"] ?? 0) > 0;
+  };
+
+  /** How many times a lost race re-aims before giving up. Overlap is expected
+   *  (§3.5 syncs hot paths mid-turn); a queue this deep is a real conflict. */
+  const SWAP_ATTEMPTS = 5;
+
+  /** The write path. /user is last-write-wins for the FINAL content (§3.2), but
+   *  a loser's edit still lands — at its own revision, above the winner's. */
+  const landRow = async (
+    owner: string,
+    initial: PreparedWrite,
+    options: { intent?: string; recordHistory: boolean },
+  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime }> => {
+    let prepared = initial;
+    for (let attempt = 0; attempt < SWAP_ATTEMPTS; attempt += 1) {
+      const now = new Date().toISOString();
+      // Without a history row nothing references the revision being replaced, so
+      // its blob goes with it rather than lingering unreachable.
+      if (prepared.prior !== undefined && !options.recordHistory) {
+        await dropBlob(prepared.prior.stored);
+      }
+      if (await swapRow(owner, prepared, options, now)) {
+        await trim(owner, prepared.path);
+        return { landed: true, revision: prepared.revision, updatedAt: now };
+      }
+      // Someone else moved the head. Re-aim at it: same bytes, same blob, new
+      // base and a fresh revision above whatever is there now.
+      const head = await currentOf(owner, prepared.path);
+      if (head !== undefined) {
+        const settled = await load(head.stored);
+        if (settled !== undefined && sameBytes(settled, prepared.content)) {
+          // The winner stored exactly these bytes, so there is nothing left to
+          // write — and our blob is now surplus.
+          await dropBlob(prepared.stored);
+          return { landed: false, revision: head.revision, updatedAt: head.updatedAt };
+        }
+      }
+      prepared = {
+        ...prepared,
+        revision: (await highestRevision(owner, prepared.path)) + 1,
+        prior: head,
+      };
+    }
+    throw new VendoError(
+      "conflict",
+      `${prepared.path} is being written faster than it can settle`
+        + ` (${SWAP_ATTEMPTS} attempts); retry the turn`,
+    );
   };
 
   return {
@@ -265,12 +359,15 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
 
     async prepare(owner, path, bytes) {
       const prior = await currentOf(owner, path);
-      if (prior !== undefined) {
+      // A different length cannot be the same content, so the common case (an
+      // edit) never pays for the prior content — which for a blob is a GET.
+      if (prior !== undefined && prior.bytes === bytes.byteLength) {
         const stored = await load(prior.stored);
         if (stored !== undefined && sameBytes(stored, bytes)) return "unchanged";
       }
       return {
         path,
+        content: bytes,
         bytes: bytes.byteLength,
         revision: (await highestRevision(owner, path)) + 1,
         stored: await place(bytes),
@@ -320,45 +417,59 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
     async undo(owner, path) {
       const previous = await db.query(
         `SELECT id, revision, content, blob_ref FROM vendo_workspace_history
-         WHERE path = $1 AND owner = $2 ORDER BY revision DESC LIMIT 1`,
+         WHERE path = $1 AND owner = $2 ORDER BY revision DESC`,
         [path, owner],
       );
-      const row = previous.rows[0];
-      if (row === undefined) return { status: "empty" };
-      const consume = async (): Promise<void> => {
-        await db.query("DELETE FROM vendo_workspace_history WHERE id = $1", [text(row["id"])]);
-      };
-      const stored = storedOf(row);
-      const revision = Number(row["revision"]);
-      const bytes = await load(stored);
-      if (bytes === undefined) {
-        // The content is gone from the files adapter, so this revision can never
-        // be restored. Consume it anyway: leaving it would wedge every older
-        // revision behind a step that can only ever fail.
-        await consume();
-        return { status: "content-missing", revision };
+      if (previous.rows.length === 0) return { status: "empty" };
+
+      // Walk newest-first until a revision's content can actually be read. A
+      // revision whose content is unreachable is STEPPED OVER, never deleted:
+      // the blob may come back (a misconfigured adapter, a transient outage),
+      // and destroying the row would turn one recoverable fault into permanent
+      // data loss across every path the user tries to recover.
+      const skipped: number[] = [];
+      let found: { id: string; revision: number; stored: StoredContent; bytes: Uint8Array } | undefined;
+      for (const row of previous.rows) {
+        const stored = storedOf(row);
+        const revision = Number(row["revision"]);
+        const bytes = await load(stored);
+        if (bytes === undefined) {
+          skipped.push(revision);
+          continue;
+        }
+        found = { id: text(row["id"]), revision, stored, bytes };
+        break;
       }
+      if (found === undefined) return { status: "content-missing", revisions: skipped };
+
+      const { stored, bytes } = found;
+      const consume = async (): Promise<void> => {
+        await db.query("DELETE FROM vendo_workspace_history WHERE id = $1", [found.id]);
+      };
       const prior = await currentOf(owner, path);
       // No history row for the state undo discards: appending one would make it
       // the newest entry and the next undo would restore it, toggling between
       // two revisions instead of walking back. Undo has no redo (wave 1).
       const written = await landRow(
         owner,
-        { path, bytes: bytes.byteLength, revision: (await highestRevision(owner, path)) + 1, stored, prior },
+        {
+          path,
+          content: bytes,
+          bytes: bytes.byteLength,
+          revision: (await highestRevision(owner, path)) + 1,
+          stored,
+          prior,
+        },
         { recordHistory: false },
       );
       // Consumed: the restored revision leaves history, so the next undo walks
       // one step further back. Its blob is now the live row's, so it stays.
       await consume();
-      return { status: "ok", revision: written.revision };
-    },
-
-    async blobRefsWhere({ table, where, params }) {
-      const result = await db.query(
-        `SELECT blob_ref FROM ${table} WHERE ${where} AND blob_ref IS NOT NULL`,
-        params,
-      );
-      return result.rows.map((row) => text(row["blob_ref"]));
+      return {
+        status: "ok",
+        revision: written.revision,
+        ...(skipped.length > 0 ? { skipped } : {}),
+      };
     },
   };
 }

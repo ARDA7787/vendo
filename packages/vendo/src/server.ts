@@ -64,6 +64,7 @@ import {
   createStore,
   envSecrets,
   registerEphemeralSubject,
+  storeFiles,
   sweepEphemeralSubjects,
   type SubjectMergeReport,
   type VendoStore,
@@ -769,10 +770,17 @@ interface SessionOps {
 }
 
 function localSessionOps(store: VendoStore): SessionOps {
+  // Both doors erase workspace content, so both need the files adapter that
+  // holds it (build contract §3.4). The store-backed one is named EXPLICITLY
+  // here rather than defaulted inside the store, because a host that wires
+  // `files:` must have this become their adapter — the erase would otherwise
+  // drop the rows and leave the objects. INTEGRATION: when the `files:` config
+  // slot lands, resolve it once (beside selectStore) and pass it here.
+  const files = storeFiles(store);
   return {
     register: (subject, now) => registerEphemeralSubject(store, subject, now),
-    adopt: (from, to) => adoptEphemeralSubject(store, from, to),
-    sweep: (idleMs, now) => sweepEphemeralSubjects(store, { idleMs, now }),
+    adopt: (from, to) => adoptEphemeralSubject(store, from, to, { files }),
+    sweep: (idleMs, now) => sweepEphemeralSubjects(store, { idleMs, now, files }),
   };
 }
 

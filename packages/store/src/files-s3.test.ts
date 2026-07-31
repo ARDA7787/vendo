@@ -119,11 +119,21 @@ describe("s3() files adapter", () => {
     // The bucket itself is not there.
     await expect(adapterFor(404, "Not Found").put("k", new Uint8Array([1])))
       .rejects.toMatchObject<Partial<VendoError>>({ code: "not-found" });
-    // Upstream is unwell or throttling — neither is the host's fault.
+    // Upstream is unwell or throttling — neither is the host's fault, and
+    // neither is a `conflict`: that word already means a stale-base CAS in this
+    // subsystem (CommitResult.status, putAppRow), so reusing it here would give
+    // one word two meanings. Retryability travels in `detail` instead, since
+    // core's error-code list is frozen.
     for (const status of [429, 500, 503]) {
-      await expect(adapterFor(status).put("k", new Uint8Array([1])))
-        .rejects.toMatchObject<Partial<VendoError>>({ code: "conflict" });
+      const failure = await adapterFor(status).put("k", new Uint8Array([1]))
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject<Partial<VendoError>>({ code: "blocked" });
+      expect((failure as VendoError).detail).toMatchObject({ status, retryable: true });
     }
+    // A refusal is NOT retryable, and says so.
+    const refused = await adapterFor(403, "Forbidden").put("k", new Uint8Array([1]))
+      .catch((error: unknown) => error);
+    expect((refused as VendoError).detail).toMatchObject({ status: 403, retryable: false });
     // A genuinely malformed request stays validation.
     await expect(adapterFor(400, "Bad Request").put("k", new Uint8Array([1])))
       .rejects.toMatchObject<Partial<VendoError>>({ code: "validation" });

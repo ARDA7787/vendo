@@ -1,3 +1,4 @@
+import { storeFiles } from "../files-store.js";
 import { VendoError, type Principal } from "@vendoai/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backends, type MadeBackend } from "../backends.test-util.js";
@@ -44,7 +45,7 @@ for (const backend of backends()) {
         ctx: { principal: ANON, venue: "chat", presence: "present" },
       }));
 
-      const report = await adoptEphemeralSubject(store, ANON.subject, ADA.subject);
+      const report = await adoptEphemeralSubject(store, ANON.subject, ADA.subject, { files: storeFiles(store) });
       expect(report).toEqual({ apps: 1, threads: 1, states: 1, files: 0, skipped: 0 });
 
       // Ada now owns everything the session created…
@@ -66,7 +67,7 @@ for (const backend of backends()) {
       expect(await made.sql("SELECT subject FROM vendo_sessions WHERE subject = $1", [ANON.subject])).toEqual([]);
 
       // Idempotent: the same merge again is a no-op.
-      expect(await adoptEphemeralSubject(store, ANON.subject, ADA.subject)).toBe(null);
+      expect(await adoptEphemeralSubject(store, ANON.subject, ADA.subject, { files: storeFiles(store) })).toBe(null);
       expect((await apps.list(ADA)).filter((row) => row.id === "app_anon_merge")).toHaveLength(1);
     });
 
@@ -96,7 +97,7 @@ for (const backend of backends()) {
 
       // Mallory signs in: her state copy collides with the one user_mallory
       // already owns — skipped, never overwritten — and Bob keeps everything.
-      const report = await adoptEphemeralSubject(store, MALLORY.subject, "user_mallory");
+      const report = await adoptEphemeralSubject(store, MALLORY.subject, "user_mallory", { files: storeFiles(store) });
       expect(report).toEqual({ apps: 0, threads: 0, states: 0, files: 0, skipped: 1 });
       const bobApp = await apps.get("app_bobs_own");
       expect(bobApp?.subject).toBe(BOB.subject);
@@ -110,11 +111,11 @@ for (const backend of backends()) {
       const store = made.store;
       await registerEphemeralSubject(store, "anonymous_feed");
       await registerEphemeralSubject(store, "anonymous_f00d");
-      await expect(adoptEphemeralSubject(store, "anonymous_feed", "vendo:org:org_1"))
+      await expect(adoptEphemeralSubject(store, "anonymous_feed", "vendo:org:org_1", { files: storeFiles(store) }))
         .rejects.toMatchObject({ code: "validation" });
-      await expect(adoptEphemeralSubject(store, "anonymous_feed", "anonymous_f00d"))
+      await expect(adoptEphemeralSubject(store, "anonymous_feed", "anonymous_f00d", { files: storeFiles(store) }))
         .rejects.toMatchObject({ code: "validation" });
-      await expect(adoptEphemeralSubject(store, "anonymous_feed", "anonymous_feed"))
+      await expect(adoptEphemeralSubject(store, "anonymous_feed", "anonymous_feed", { files: storeFiles(store) }))
         .rejects.toMatchObject({ code: "validation" });
     });
   });
@@ -141,8 +142,8 @@ describe("adopt/sweep serialization on the session row (kill-list B3 review)", (
     // Interleaving (FIFO): sweep SELECTs the stale subject; adopt claims the
     // session row; sweep's claim loses and it must skip the erase cascade.
     const [report, swept] = await Promise.all([
-      adoptEphemeralSubject(store, RACER.subject, "user_winner"),
-      sweepEphemeralSubjects(store, { idleMs: 1, now: 10_000 }),
+      adoptEphemeralSubject(store, RACER.subject, "user_winner", { files: storeFiles(store) }),
+      sweepEphemeralSubjects(store, { idleMs: 1, now: 10_000, files: storeFiles(store) }),
     ]);
 
     expect(report).toEqual({ apps: 1, threads: 1, states: 1, files: 0, skipped: 0 });
@@ -154,7 +155,7 @@ describe("adopt/sweep serialization on the session row (kill-list B3 review)", (
     expect((await threadStore(store).list({ kind: "user", subject: "user_winner" })).map((row) => row.id))
       .toContain("thr_race");
     // The session row is gone either way; a replayed adopt is a no-op.
-    expect(await adoptEphemeralSubject(store, RACER.subject, "user_winner")).toBe(null);
+    expect(await adoptEphemeralSubject(store, RACER.subject, "user_winner", { files: storeFiles(store) })).toBe(null);
     await store.close();
   });
 
@@ -165,9 +166,9 @@ describe("adopt/sweep serialization on the session row (kill-list B3 review)", (
     await registerEphemeralSubject(store, LOSER.subject, 0);
     await appStore(store).put(LOSER, appFixture("app_late", "Late app"));
 
-    expect(await sweepEphemeralSubjects(store, { idleMs: 1, now: 10_000 })).toEqual([LOSER.subject]);
+    expect(await sweepEphemeralSubjects(store, { idleMs: 1, now: 10_000, files: storeFiles(store) })).toEqual([LOSER.subject]);
     // The sweep owned the subject: its data is gone and the adopt finds nothing.
-    expect(await adoptEphemeralSubject(store, LOSER.subject, "user_too_late")).toBe(null);
+    expect(await adoptEphemeralSubject(store, LOSER.subject, "user_too_late", { files: storeFiles(store) })).toBe(null);
     expect(await appStore(store).get("app_late")).toBeNull();
     await store.close();
   });

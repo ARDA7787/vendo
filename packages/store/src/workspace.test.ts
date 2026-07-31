@@ -330,6 +330,62 @@ for (const backend of backends()) {
       expect(await blobs()).toBe(before);
     });
 
+    // N10 (verifier): the reject-cleanup loop was unguarded, so on a bucket with
+    // no DeleteObject the FIRST cleanup failure replaced the real diagnosis and
+    // aborted the rest of the cleanup.
+    it("surfaces the real rejection even when releasing content also fails", async () => {
+      const attempted: string[] = [];
+      const files = {
+        async put(key: string, bytes: Uint8Array) {
+          if (bytes.byteLength > WORKSPACE_INLINE_MAX_BYTES * 2) {
+            throw new VendoError("blocked", "bucket policy refused this object");
+          }
+          attempted.push(key);
+        },
+        async get() { return undefined; },
+        async delete() { throw new Error("DeleteObject is not permitted on this bucket"); },
+      };
+      const fs = await workspaceStore(made.store, { files }).open(user);
+      // Two placeable files, then one the bucket refuses.
+      await fs.writeFile("/user/files/one.bin", new Uint8Array(WORKSPACE_INLINE_MAX_BYTES + 1));
+      await fs.writeFile("/user/files/two.bin", new Uint8Array(WORKSPACE_INLINE_MAX_BYTES + 1));
+      await fs.writeFile("/user/files/refused.bin", new Uint8Array(WORKSPACE_INLINE_MAX_BYTES * 2 + 1));
+
+      const rejection = await fs.commit().catch((error: unknown) => error);
+      // The real diagnosis survives — the bucket policy, not the cleanup failure.
+      expect(rejection).toMatchObject<Partial<VendoError>>({ code: "blocked" });
+      expect(String(rejection)).toContain("bucket policy refused");
+      expect(String(rejection)).toContain("refused.bin");
+      // Cleanup was attempted for BOTH placed files, not abandoned after the first.
+      expect(attempted).toHaveLength(2);
+      // And the cleanup trouble is still reported, as secondary detail.
+      expect((rejection as VendoError).detail).toMatchObject({
+        cleanupFailures: expect.arrayContaining([expect.stringContaining("DeleteObject")]),
+      });
+    });
+
+    // N11 (verifier): commit() re-wrapped every placement failure as
+    // "validation", defeating the adapter's own error mapping.
+    it("keeps the adapter's error kind when a commit is rejected", async () => {
+      const refusing = {
+        async put() { throw new VendoError("blocked", "credentials refused"); },
+        async get() { return undefined; },
+        async delete() { /* nothing was ever stored */ },
+      };
+      const fs = await workspaceStore(made.store, { files: refusing }).open(user);
+      await fs.writeFile("/user/files/big.bin", new Uint8Array(WORKSPACE_INLINE_MAX_BYTES + 1));
+      await expect(fs.commit()).rejects.toMatchObject<Partial<VendoError>>({ code: "blocked" });
+
+      const unavailable = {
+        async put() { throw new VendoError("not-found", "no such bucket"); },
+        async get() { return undefined; },
+        async delete() { /* nothing was ever stored */ },
+      };
+      const other = await workspaceStore(made.store, { files: unavailable }).open(user);
+      await other.writeFile("/user/files/big.bin", new Uint8Array(WORKSPACE_INLINE_MAX_BYTES + 1));
+      await expect(other.commit()).rejects.toMatchObject<Partial<VendoError>>({ code: "not-found" });
+    });
+
     // F6 (verifier): an explicitly mkdir'ed directory was reported as a file, so
     // `find -type f` returned directories.
     it("reports an explicitly created directory as a directory", async () => {
@@ -343,6 +399,28 @@ for (const backend of backends()) {
       expect(entries.find((entry) => entry.name === "summary.txt"))
         .toMatchObject({ isDirectory: false, isFile: true });
       expect((await fs.stat("/user/files/reports")).isDirectory).toBe(true);
+    });
+
+    // N5 (verifier): a name that was both a file and a directory prefix came
+    // back TWICE from readdir, so bash globs processed it twice — and nothing
+    // stopped a write from creating that state in the first place.
+    it("refuses to write through an existing file and never lists a name twice", async () => {
+      const fs = await workspaceStore(made.store).open(user);
+      await fs.writeFile("/user/files/report", "I am a file");
+
+      // A file cannot become a directory by writing underneath it.
+      await expect(fs.writeFile("/user/files/report/page.txt", "child"))
+        .rejects.toThrow(/ENOTDIR: not a directory/);
+      await expect(fs.mkdir("/user/files/report/nested", { recursive: true }))
+        .rejects.toThrow(/ENOTDIR: not a directory/);
+
+      const names = (await fs.readdir("/user/files")).filter((name) => name === "report");
+      expect(names).toEqual(["report"]);
+      const entries = (await fs.readdirWithFileTypes("/user/files"))
+        .filter((entry) => entry.name === "report");
+      expect(entries).toEqual([
+        { name: "report", isFile: true, isDirectory: false, isSymbolicLink: false },
+      ]);
     });
 
     // F7 (verifier): rm erased the path's whole history, so a deleted file could
@@ -393,9 +471,39 @@ for (const backend of backends()) {
       expect(await rowsFor("/user/scratch")).toEqual([]);
     });
 
+    // N4 (verifier): the F8 fix CONSUMED the unreadable history row, so a host
+    // that restarts pointed at the wrong bucket destroyed the entire undo
+    // history of every path the user tried to recover — unrecoverably.
+    // Invariant: a history row is only ever deleted once its content was
+    // actually restored, or explicitly discarded.
+    it("destroys no history when every revision's content is unreachable", async () => {
+      const path = "/user/files/wrong-bucket.txt";
+      const workspace = workspaceStore(made.store);
+      const big = (marker: string): string => marker.repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
+      for (const content of [big("a"), big("b"), big("c")]) {
+        const fs = await workspace.open(user);
+        await fs.writeFile(path, content);
+        await fs.commit({ message: "wrote" });
+      }
+      const historyBefore = await workspace.history(user, path);
+      expect(historyBefore).toHaveLength(2);
+
+      // Every workspace blob vanishes — the shape of pointing at the wrong bucket.
+      await made.sql("DELETE FROM vendo_blobs WHERE namespace = 'workspace'");
+
+      // Reported as an adapter fault, naming the revisions it could not read...
+      const first = await workspace.undo(user, path);
+      expect(first).toMatchObject({ status: "content-missing" });
+      expect(first).toMatchObject({ revisions: [2, 1] });
+      // ...and repeating it changes nothing: the history is still all there.
+      expect(await workspace.undo(user, path)).toMatchObject({ status: "content-missing" });
+      expect(await workspace.history(user, path)).toEqual(historyBefore);
+    });
+
     // F8 (verifier): a revision whose blob had vanished reported "empty" — a lie
-    // that also wedged every older revision behind it.
-    it("reports a revision whose content is gone and keeps walking past it", async () => {
+    // that also wedged every older revision behind it. Under N4's invariant the
+    // walk steps over it in ONE undo and leaves the row intact.
+    it("steps over a revision whose content is gone, naming it and keeping it", async () => {
       const path = "/user/files/lost-blob.txt";
       const workspace = workspaceStore(made.store);
       const big = (marker: string): string => marker.repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
@@ -411,12 +519,92 @@ for (const backend of backends()) {
         [path],
       ))[0]?.["blob_ref"]);
       await made.sql("DELETE FROM vendo_blobs WHERE namespace = 'workspace' AND key = $1", [ref]);
+      const missingRevision = Number((await made.sql(
+        `SELECT revision FROM vendo_workspace_history WHERE path = $1
+         ORDER BY revision DESC LIMIT 1`,
+        [path],
+      ))[0]?.["revision"]);
 
-      // Honest about what happened, rather than claiming there is nothing to undo...
-      expect(await workspace.undo(user, path)).toMatchObject({ status: "content-missing" });
-      // ...and the older revision is still reachable.
-      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      // One step: over the unreadable revision and onto the one that works,
+      // saying which it skipped rather than pretending nothing happened.
+      expect(await workspace.undo(user, path))
+        .toMatchObject({ status: "ok", skipped: [missingRevision] });
       expect(await (await workspace.open(user)).readFile(path)).toBe(big("a"));
+      // The unreadable revision was stepped over, not destroyed.
+      expect((await workspace.history(user, path)).map((entry) => entry.revision))
+        .toContain(missingRevision);
+    });
+
+    // N1/N2 (verifier): two commits touching one path both reserved revision
+    // N+1, so the loser's edit was destroyed while it was told `ok`, history
+    // carried duplicate revision numbers (undo degenerated into the toggle the
+    // design forbids), and the loser's blob orphaned. §3.5's mid-turn hot-path
+    // sync makes overlapping commits a designed-for case, not a hypothetical.
+    it("lands overlapping commits on one path as distinct monotonic revisions", async () => {
+      const path = "/user/apps/app_race/app.vendo";
+      const workspace = workspaceStore(made.store);
+      const seed = await workspace.open(user);
+      await seed.writeFile(path, "chart: base");
+      await seed.commit({ message: "the base" });
+
+      const [left, right] = [await workspace.open(user), await workspace.open(user)];
+      await left.writeFile(path, "chart: from left");
+      await right.writeFile(path, "chart: from right");
+
+      const outcomes = await Promise.all([
+        left.commit({ message: "left" }),
+        right.commit({ message: "right" }),
+      ]);
+      expect(outcomes).toEqual([
+        { status: "ok", changed: [path] },
+        { status: "ok", changed: [path] },
+      ]);
+
+      // Last write wins for the FINAL content...
+      const settled = await (await workspace.open(user)).readFile(path);
+      expect(["chart: from left", "chart: from right"]).toContain(settled);
+
+      // ...but neither edit vanished: revisions are unique and monotonic.
+      const revisions = (await made.sql(
+        "SELECT revision FROM vendo_workspace_history WHERE path = $1 ORDER BY revision ASC",
+        [path],
+      )).map((row) => Number(row["revision"]));
+      expect(revisions).toEqual([...new Set(revisions)]);
+      expect(revisions).toEqual([1, 2]);
+      const live = Number((await rowsFor(path))[0]?.["revision"]);
+      expect(live).toBe(3);
+
+      // Undo walks back through the loser's edit to the base, never toggling.
+      const loser = settled === "chart: from left" ? "chart: from right" : "chart: from left";
+      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      expect(await (await workspace.open(user)).readFile(path)).toBe(loser);
+      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      expect(await (await workspace.open(user)).readFile(path)).toBe("chart: base");
+    });
+
+    it("strands no blob when overlapping commits race on one blob-backed path", async () => {
+      const path = "/user/files/raced-big.bin";
+      const workspace = workspaceStore(made.store);
+      const big = (marker: number): Uint8Array =>
+        new Uint8Array(WORKSPACE_INLINE_MAX_BYTES + 1).fill(marker);
+      const reachable = async (): Promise<number> => Number(
+        (await made.sql(
+          `SELECT COUNT(*)::int AS count FROM vendo_blobs WHERE namespace = 'workspace'
+             AND key NOT IN (
+               SELECT blob_ref FROM vendo_workspace_files WHERE blob_ref IS NOT NULL
+               UNION SELECT blob_ref FROM vendo_workspace_history WHERE blob_ref IS NOT NULL
+             )`,
+        ))[0]?.["count"],
+      );
+      const orphansBefore = await reachable();
+
+      const [left, right] = [await workspace.open(user), await workspace.open(user)];
+      await left.writeFile(path, big(1));
+      await right.writeFile(path, big(2));
+      await Promise.all([left.commit({ message: "left" }), right.commit({ message: "right" })]);
+
+      // Every workspace blob is still pointed at by some row.
+      expect(await reachable()).toBe(orphansBefore);
     });
 
     it("names the fix when a file passes the store-backed cap with no files adapter wired", async () => {

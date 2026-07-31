@@ -168,6 +168,11 @@ export class WorkspaceStoreFs implements WorkspaceFs {
   private assertWritable(op: string, path: string): void {
     if (this.readOnly(path)) throw erofs(op, path);
     if (!this.storeBacked(path)) throw eacces(op, path);
+    // A file cannot also be a directory. Allowing it produced a name that
+    // readdir reported twice — once as each — and bash globs processed twice.
+    for (let parent = dirnameOf(path); parent !== "/"; parent = dirnameOf(parent)) {
+      if (this.isFile(parent)) throw enotdir(op, path);
+    }
   }
 
   private persists(path: string): boolean {
@@ -260,6 +265,11 @@ export class WorkspaceStoreFs implements WorkspaceFs {
     // Host files come from the deployment, not the store, so they carry no
     // per-file timestamp — the epoch is the honest answer.
     if (hosted) return statOf("file", hosted.byteLength, new Date(0));
+    // Served from the turn-start index on purpose: the workspace a turn sees is
+    // a SNAPSHOT (§8's "the box is a snapshot"). A file another session changed
+    // mid-turn keeps its opening size and mtime here, exactly like a Docs revoke
+    // that does not un-render what is already on screen — reads age gracefully,
+    // and `commit()` is where staleness actually bites (its compare-and-swap).
     const meta = this.removed.has(normalized) ? undefined : this.index.get(normalized);
     if (meta) return statOf("file", meta.bytes, new Date(meta.updatedAt));
     if (this.isDirectory(normalized)) return statOf("directory", 0, new Date(0));
@@ -313,7 +323,9 @@ export class WorkspaceStoreFs implements WorkspaceFs {
       directories.add("user");
       directories.add("host");
     }
-    return [...directories, ...files]
+    // One entry per name, whatever the two sets say: a name is a directory if
+    // anything lives under it, otherwise a file.
+    return [...new Set([...directories, ...files])]
       .map((name) => ({
         name,
         isFile: !directories.has(name),
@@ -436,12 +448,25 @@ export class WorkspaceStoreFs implements WorkspaceFs {
         prepared = await this.rows.prepare(this.owner, path, staged.bytes);
       } catch (cause) {
         // Nothing has been written yet; release what this commit already placed
-        // so a rejected commit leaves no orphaned content behind.
-        for (const done of landing) await this.rows.discard(done);
+        // so a rejected commit leaves no orphaned content behind. Best-effort:
+        // a bucket that refuses DeleteObject must not replace the diagnosis of
+        // WHY the commit failed, nor stop the remaining releases.
+        const cleanupFailures: string[] = [];
+        for (const done of landing) {
+          try {
+            await this.rows.discard(done);
+          } catch (failure) {
+            cleanupFailures.push(`${done.path}: ${safeErrorMessage(failure)}`);
+          }
+        }
+        // The adapter already said what kind of failure this is (refused, absent,
+        // throttled); re-labelling it all `validation` told callers to go fix an
+        // argument that was already correct.
+        const code = cause instanceof VendoError ? cause.code : "validation";
         throw new VendoError(
-          "validation",
+          code,
           `Cannot commit ${path}: ${safeErrorMessage(cause)}`,
-          { path },
+          { path, ...(cleanupFailures.length > 0 ? { cleanupFailures } : {}) },
         );
       }
       if (prepared !== "unchanged") landing.push(prepared);
@@ -464,7 +489,9 @@ export class WorkspaceStoreFs implements WorkspaceFs {
         revision: written.revision,
         updatedAt: written.updatedAt,
       });
-      changed.push(prepared.path);
+      // A concurrent commit may have already stored these exact bytes, in which
+      // case this commit wrote nothing and must not claim the file changed.
+      if (written.landed) changed.push(prepared.path);
     }
     // Committed files now read through the store like everything else.
     for (const path of changed) this.staged.delete(path);

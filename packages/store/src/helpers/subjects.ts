@@ -1,5 +1,4 @@
 import { isReservedSubject, VendoError, type FilesAdapter } from "@vendoai/core";
-import { storeFiles } from "../files-store.js";
 import { isEphemeralSubject } from "../sessions.js";
 import { dbFor, type VendoStore } from "../store.js";
 
@@ -39,7 +38,7 @@ export async function adoptEphemeralSubject(
   store: VendoStore,
   from: string,
   to: string,
-  options: { files?: FilesAdapter } = {},
+  options: { files: FilesAdapter },
 ): Promise<SubjectMergeReport | null> {
   if (from === to) throw new VendoError("validation", "cannot merge a subject into itself");
   if (isReservedSubject(to)) {
@@ -126,7 +125,7 @@ export async function adoptEphemeralSubject(
   // pointed at. `blob_ref` is the only pointer (random ids), so skipping this
   // orphans a blob on the MOST COMMON sign-in path. Files that MOVED keep their
   // blobs untouched: the row travelled, and the row is the pointer.
-  const files = options.files ?? storeFiles(store);
+  const files = options.files;
   const dropBlobs = async (rows: Record<string, unknown>[]): Promise<void> => {
     for (const row of rows) {
       const ref = row["blob_ref"];

@@ -1,5 +1,4 @@
 import type { FilesAdapter } from "@vendoai/core";
-import { storeFiles } from "./files-store.js";
 import { escapeLike } from "./helpers/utils.js";
 import { dbFor, type VendoStore } from "./store.js";
 import { invalid } from "./validate.js";
@@ -33,11 +32,18 @@ export const ERASE_TABLES = [
 
 export type EraseTable = typeof ERASE_TABLES[number];
 
-/** Rows deleted per table. */
-export type EraseReport = Record<EraseTable, number>;
+/** Rows deleted per table, plus the workspace content deleted behind the files
+ *  adapter. That last count is its own axis because workspace blobs are reached
+ *  through `blob_ref` (the row is the only pointer) and, with a host-wired
+ *  `files:` adapter, are not `vendo_blobs` rows at all — without it a GDPR
+ *  erase would report nothing about the bytes it actually destroyed. */
+export type EraseReport = Record<EraseTable, number> & { workspace_content: number };
 
 function emptyReport(): EraseReport {
-  return Object.fromEntries(ERASE_TABLES.map((table) => [table, 0])) as EraseReport;
+  return {
+    ...Object.fromEntries(ERASE_TABLES.map((table) => [table, 0])) as Record<EraseTable, number>,
+    workspace_content: 0,
+  };
 }
 
 /**
@@ -50,7 +56,7 @@ function emptyReport(): EraseReport {
  * Policy engines and schedulers stay out of scope: hosts call this from their
  * own jobs, and host SQL remains available for everything else.
  */
-export function eraseStore(store: VendoStore, options: { files?: FilesAdapter } = {}): {
+export function eraseStore(store: VendoStore, options: { files: FilesAdapter }): {
   /** Full erasure of one subject: their apps (and each app's records, blobs,
       state, and runs), plus every subject-keyed or subject-ref'd row and the
       subject's session registration (§4). */
@@ -64,9 +70,11 @@ export function eraseStore(store: VendoStore, options: { files?: FilesAdapter } 
   const db = dbFor(store);
   // Workspace content past the inline cap lives behind the files adapter, and
   // `blob_ref` is its ONLY pointer (workspace-rows mints random ids), so the
-  // cascade has to read the refs off the rows it deletes. A host that wired
-  // `files:` must pass the same adapter here, or its objects outlive the rows.
-  const files = options.files ?? storeFiles(store);
+  // cascade has to read the refs off the rows it deletes. The adapter is
+  // REQUIRED, not defaulted: defaulting to the store-backed one let a host with
+  // a wired bucket erase the rows and silently keep the objects. Pass the same
+  // adapter the workspace was opened with (`storeFiles(store)` when none).
+  const files = options.files;
 
   /** Delete workspace rows and the blobs they were the only pointer to. */
   const delWorkspace = async (
@@ -82,7 +90,10 @@ export function eraseStore(store: VendoStore, options: { files?: FilesAdapter } 
     report[table] += result.rows.length;
     for (const row of result.rows) {
       const ref = row["blob_ref"];
-      if (typeof ref === "string") await files.delete(ref);
+      if (typeof ref === "string") {
+        await files.delete(ref);
+        report.workspace_content += 1;
+      }
     }
   };
 

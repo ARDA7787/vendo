@@ -59,20 +59,28 @@ export function s3(options: S3FilesOptions): FilesAdapter {
     return await (fetchImpl === undefined ? fetch(request) : fetchImpl(request));
   };
 
-  /** The bucket's answer, in Vendo's vocabulary. A refused or unwell bucket is
-   *  not the host's input being invalid, and treating every status as
-   *  `validation` told callers to go fix an argument that was already right. */
+  /**
+   * The bucket's answer, in Vendo's vocabulary. A refused or unwell bucket is
+   * not the host's input being invalid, and treating every status as
+   * `validation` told callers to go fix an argument that was already right.
+   *
+   * Retryable upstream trouble (429, 5xx) deliberately does NOT map to
+   * `conflict`: in this subsystem that word already means a stale-base
+   * compare-and-swap (`CommitResult.status`, `putAppRow`), and one word with two
+   * meanings is worse than a coarse one. Core's `VendoErrorCode` list is frozen,
+   * so retryability travels in `detail` where a caller can act on it.
+   */
   const raise = (response: Response, action: string, key: string): never => {
-    const code = response.status === 401 || response.status === 403
-      ? "blocked" // credentials or bucket policy refused this call
-      : response.status === 404
-        ? "not-found" // the bucket (or the whole endpoint) is not there
-        : response.status === 429 || response.status >= 500
-          ? "conflict" // throttled or upstream failure — retryable, not the caller's fault
-          : "validation";
+    const retryable = response.status === 429 || response.status >= 500;
+    const code = response.status === 404
+      ? "not-found" // the bucket (or the whole endpoint) is not there
+      : retryable || response.status === 401 || response.status === 403
+        ? "blocked" // the call did not go through, and not because of its arguments
+        : "validation";
     throw new VendoError(
       code,
       `S3 ${action} of ${key} failed with ${response.status} ${response.statusText}`.trimEnd(),
+      { status: response.status, retryable },
     );
   };
 
