@@ -7,6 +7,10 @@ export interface SubjectMergeReport {
   apps: number;
   threads: number;
   states: number;
+  /** Effect-ledger receipts moved (contract amendment 2026-07-30). Load-bearing:
+      leaving them under the retired anonymous id would strand the proof that a
+      mutation already happened, so a re-run after sign-in could charge twice. */
+  effects: number;
   /** Rows whose slot the signed-in subject already owned — NEVER overwritten
       (a merge cannot replace the target's data); the anonymous copy is dropped. */
   skipped: number;
@@ -58,7 +62,7 @@ export async function adoptEphemeralSubject(
     [from],
   );
   if (claimed.rows[0] === undefined) return null;
-  const report: SubjectMergeReport = { apps: 0, threads: 0, states: 0, skipped: 0 };
+  const report: SubjectMergeReport = { apps: 0, threads: 0, states: 0, effects: 0, skipped: 0 };
 
   // Apps move by flipping the subject column. Ids are the vendo_apps PRIMARY
   // KEY and the write doors refuse cross-subject flips, so `from`'s app ids
@@ -81,6 +85,15 @@ export async function adoptEphemeralSubject(
     [from, to],
   );
   report.threads = movedThreads.rows.length;
+
+  // Effect receipts move by subject, the same flip as apps and threads. They are
+  // keyed by (runId, tool, input) — never by subject — so a flip can never
+  // collide with a receipt the signed-in subject already owns.
+  const movedEffects = await db.query(
+    "UPDATE vendo_effects SET subject = $2 WHERE subject = $1 RETURNING key",
+    [from, to],
+  );
+  report.effects = movedEffects.rows.length;
 
   // State is keyed (app_id, subject), so the signed-in subject may already
   // hold a row for the same app — that existing row wins; the anonymous copy

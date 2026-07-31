@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createGuard } from "../src/index.js";
 import { createMemoryStore } from "./fixtures/memory-store.js";
-import { FixtureTools, call, context, descriptor, seedGrant } from "./fixtures/tools.js";
+import { alice, FixtureTools, call, context, descriptor, seedGrant } from "./fixtures/tools.js";
 
 /**
  * Build contract §7 — the effect ledger is what makes fail-and-re-run correct.
@@ -47,6 +47,21 @@ describe("effect ledger (build contract §7)", () => {
 
     expect(replay).toEqual({ status: "ok", output: { receipt: "rcp_9" } });
     expect(tools.executions).toHaveLength(1);
+  });
+
+  it("stamps the acting subject on the receipt so the erase cascade can reach it", async () => {
+    // Contract amendment 2026-07-30: `outcome` holds real tool output, so a
+    // receipt with no owner is data that survives an erase forever.
+    const store = createMemoryStore();
+    const write = descriptor("write");
+    await seedGrant(store, { descriptor: write });
+    const bound = createGuard({ store }).bind(new FixtureTools());
+
+    await bound.execute(call(write.name, { amount: 100 }), runCtx());
+
+    const { records } = await store.records("vendo_effects").list({});
+    expect(records).toHaveLength(1);
+    expect((records[0]!.data as { subject?: string }).subject).toBe(alice.subject);
   });
 
   it("keys on the exact input: different arguments are a different effect", async () => {

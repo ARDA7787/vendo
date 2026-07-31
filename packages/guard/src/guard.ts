@@ -530,7 +530,7 @@ class GuardImplementation implements VendoGuard {
             // at all, so recording it would turn a transient upstream error into
             // a permanent refusal to retry — the opposite of the goal.
             if (key !== undefined && outcome.status === "ok") {
-              await this.#recordEffect(key, outcome);
+              await this.#recordEffect(key, outcome, ctx.principal.subject);
             }
           }
         }
@@ -922,10 +922,19 @@ class GuardImplementation implements VendoGuard {
 
   /** Write the receipt. `insertIfAbsent` where the adapter offers it, so two
    *  processes racing the same re-run cannot both believe they were first — the
-   *  loser's write is refused instead of overwriting the recorded truth. */
-  async #recordEffect(key: string, outcome: ToolOutcome): Promise<void> {
+   *  loser's write is refused instead of overwriting the recorded truth.
+   *
+   *  `subject` rides the row (contract amendment 2026-07-30): `outcome` holds
+   *  real tool output, so a receipt with no owner is data that would survive an
+   *  erase forever. It goes in `refs` as well as the body, because that is what
+   *  the 02-store §5 cascade matches on for generic collections. */
+  async #recordEffect(key: string, outcome: ToolOutcome, subject: string): Promise<void> {
     const records = this.#store.records(EFFECTS_COLLECTION);
-    const input = { id: key, data: { outcome: cloneJson(outcome) as Json, at: now() } };
+    const input = {
+      id: key,
+      data: { subject, outcome: cloneJson(outcome) as Json, at: now() },
+      refs: { subject },
+    };
     if (records.atomic === undefined) await records.put(input);
     else await records.atomic.insertIfAbsent(input);
   }

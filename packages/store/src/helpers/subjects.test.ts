@@ -45,7 +45,7 @@ for (const backend of backends()) {
       }));
 
       const report = await adoptEphemeralSubject(store, ANON.subject, ADA.subject);
-      expect(report).toEqual({ apps: 1, threads: 1, states: 1, skipped: 0 });
+      expect(report).toEqual({ apps: 1, threads: 1, states: 1, effects: 0, skipped: 0 });
 
       // Ada now owns everything the session created…
       expect((await apps.list(ADA)).map((row) => row.id)).toContain("app_anon_merge");
@@ -97,7 +97,7 @@ for (const backend of backends()) {
       // Mallory signs in: her state copy collides with the one user_mallory
       // already owns — skipped, never overwritten — and Bob keeps everything.
       const report = await adoptEphemeralSubject(store, MALLORY.subject, "user_mallory");
-      expect(report).toEqual({ apps: 0, threads: 0, states: 0, skipped: 1 });
+      expect(report).toEqual({ apps: 0, threads: 0, states: 0, effects: 0, skipped: 1 });
       const bobApp = await apps.get("app_bobs_own");
       expect(bobApp?.subject).toBe(BOB.subject);
       expect(bobApp?.doc.name).toBe("Bob's app");
@@ -145,7 +145,7 @@ describe("adopt/sweep serialization on the session row (kill-list B3 review)", (
       sweepEphemeralSubjects(store, { idleMs: 1, now: 10_000 }),
     ]);
 
-    expect(report).toEqual({ apps: 1, threads: 1, states: 1, skipped: 0 });
+    expect(report).toEqual({ apps: 1, threads: 1, states: 1, effects: 0, skipped: 0 });
     expect(swept).toEqual([]); // the sweep lost the claim and skipped
     // Everything the adopt moved is intact under the signed-in subject.
     expect((await appStore(store).get("app_race"))?.subject).toBe("user_winner");

@@ -9,12 +9,10 @@ import { invalid } from "./validate.js";
  *  never matched by a subject or app selector). Listed so the report provably
  *  covers the whole map.
  *
- *  `vendo_effects` (v6, build contract §7) is in the same never-matched class
- *  for a different and less comfortable reason: the contract freezes its shape
- *  as `(key, outcome, at)` with no subject or app column, so no selector can
- *  reach it even though `outcome` holds tool output. Listed here so the gap is
- *  visible in the report rather than invisible; closing it needs a contract
- *  amendment, not a local divergence. */
+ *  `vendo_effects` used to be in that same never-matched class, because the
+ *  frozen v1 shape had no subject column — its `outcome` holds real tool output
+ *  and survived an erase forever. The 2026-07-30 contract amendment added
+ *  `subject`, so the subject axis now reaches it like any other owned table. */
 export const ERASE_TABLES = [
   "vendo_meta",
   "vendo_apps",
@@ -123,6 +121,9 @@ export function eraseStore(store: VendoStore): {
       );
       await del(report, "vendo_threads", "subject = $1", [subject]);
       await del(report, "vendo_grants", "subject = $1", [subject]);
+      // The effect ledger's receipts carry tool output (contract amendment
+      // 2026-07-30), so they go with the subject's data.
+      await del(report, "vendo_effects", "subject = $1", [subject]);
       await del(report, "vendo_approvals", "subject = $1", [subject]);
       await del(report, "vendo_audit", "subject = $1", [subject]);
       // Generic and door-owned rows carry the subject only as a ref (§2/§3).

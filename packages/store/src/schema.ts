@@ -70,12 +70,16 @@ export const DDL = [
   )`,
   "CREATE INDEX IF NOT EXISTS vendo_thread_messages_thread_seq_idx ON vendo_thread_messages (thread_id, seq)",
   // v6 (build contract §7): the effect ledger. `key` is
-  // sha256(runKey + tool + exactInputHash); a key that already succeeded
+  // sha256(runId + tool + exactInputHash); a key that already succeeded
   // returns its recorded outcome instead of executing a second time.
+  // `subject` arrives with the 2026-07-30 contract amendment: `outcome` holds
+  // real tool output, so the ledger has to be reachable by the erase cascade
+  // and travel with an anon→signed-in adoption.
   `CREATE TABLE IF NOT EXISTS vendo_effects (
-    key text PRIMARY KEY, outcome jsonb NOT NULL,
+    key text PRIMARY KEY, subject text NOT NULL, outcome jsonb NOT NULL,
     at timestamptz NOT NULL DEFAULT now()
   )`,
+  "CREATE INDEX IF NOT EXISTS vendo_effects_subject_idx ON vendo_effects (subject)",
   `CREATE TABLE IF NOT EXISTS vendo_grants (
     id text PRIMARY KEY, subject text NOT NULL, tool text NOT NULL, descriptor_hash text NOT NULL,
     scope jsonb NOT NULL, duration text NOT NULL, context_key text, app_id text, source text NOT NULL,
@@ -198,6 +202,14 @@ const ADDITIVE_DDL = [
   // touched_at (sessions.ts); without this a busy anonymous host seq-scans
   // the registry on every sweep interval.
   "CREATE INDEX IF NOT EXISTS vendo_sessions_touched_idx ON vendo_sessions (touched_at)",
+  // vendo_effects.subject arrived after the table did, both inside the
+  // unreleased v6 train — so a development database created earlier in this
+  // wave already has the table WITHOUT the column, and the version gate above
+  // will never re-run its CREATE. The DEFAULT is what makes NOT NULL addable to
+  // those pre-amendment rows; it is deliberately an empty subject, since a
+  // receipt written before the column existed genuinely has no known owner, and
+  // every write path has supplied one since.
+  "ALTER TABLE vendo_effects ADD COLUMN IF NOT EXISTS subject text NOT NULL DEFAULT ''",
 ] as const;
 
 // v2 backfill (runs once, only when upgrading from a version < 2 — 02 §4 keys
