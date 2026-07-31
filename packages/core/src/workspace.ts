@@ -5,9 +5,10 @@
 import type { IFileSystem } from "just-bash";
 
 /** Build contract §3.2 — the agent's filesystem. just-bash's `IFileSystem`
-    implemented over the store (`@vendoai/store`'s `openWorkspace`), so a
-    machine-less harness gets in-process bash (grep/sed/awk/jq) over the same
-    files a sandboxed harness sees on disk. Path layout is frozen (§3.1):
+    implemented over the store (`workspaceStore(store).open(principal)` in
+    `@vendoai/store`), so a machine-less harness gets in-process bash
+    (grep/sed/awk/jq) over the same files a sandboxed harness sees on disk.
+    Path layout is frozen (§3.1):
 
       /user/apps/<appId>/{app,plan}.vendo · /user/memory/ · /user/files/
       /user/scratch/ (intra-turn; never committed) · /host/** (read-only)
