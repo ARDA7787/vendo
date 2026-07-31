@@ -60,7 +60,12 @@ describe("duplicate tool titles fail the deployment (design §12)", () => {
     await checked.descriptors();
     await checked.descriptors();
 
-    expect(enumerations).toBe(3);
+    // The scan now fetches the full unprojected set itself (it can no longer
+    // reuse the caller's possibly-projected set — that was the memoization hole),
+    // so the count is one one-time SCAN fetch plus one return fetch per call = 4.
+    // The property the test guards is unchanged: the scan is memoized. If it
+    // re-ran on every enumeration this would be 6, not 4.
+    expect(enumerations).toBe(4);
   });
 
   it("keeps failing on every later call — a bad deployment never becomes healthy", async () => {

@@ -19,13 +19,25 @@ import { FIND_TOOLS_TOOL_NAME } from "@vendoai/agent";
  * The check is memoized per registry: every turn enumerates descriptors, and a
  * whole-registry title scan on that hot path would be waste for a fact that
  * cannot change without a redeploy.
+ *
+ * The scan runs over the FULL, UNPROJECTED tool set — `tools.descriptors()` with
+ * NO context — never over a per-run projection. Title uniqueness is a deployment
+ * property: two identically-titled tools collide whether or not a given run is
+ * allowed to see both of them. Memoizing a verdict computed against a projected
+ * set was a real hole: an unattended tick projects away the two DESTRUCTIVE
+ * tools that collide, the collision vanishes from that set, and a "clean" verdict
+ * gets cached — after which an attended execute short-circuits and runs a
+ * mutating call under an ambiguous consent card.
  */
 export function withUniqueToolTitles(tools: ToolRegistry): ToolRegistry {
   let verdict: VendoError | undefined;
   let checked = false;
 
-  const assertUnique = (descriptors: readonly ToolDescriptor[]): void => {
+  const assertUnique = async (): Promise<void> => {
     if (!checked) {
+      // The full deployment surface, deliberately unprojected. Any ctx would
+      // narrow it and reintroduce the hole this replaced.
+      const descriptors = await tools.descriptors();
       checked = true;
       // A host tool that takes a reserved internal name is a DEPLOYMENT fault, so
       // it belongs here with the title check rather than surfacing as a mid-turn
@@ -57,9 +69,8 @@ export function withUniqueToolTitles(tools: ToolRegistry): ToolRegistry {
   return {
     ...tools,
     async descriptors(ctx) {
-      const descriptors = await tools.descriptors(ctx);
-      assertUnique(descriptors);
-      return descriptors;
+      await assertUnique();
+      return tools.descriptors(ctx);
     },
     // EXECUTION is gated too. Gating only enumeration was a hole, not a
     // simplification: a caller holding a tool name from anywhere else — a stored
@@ -68,7 +79,7 @@ export function withUniqueToolTitles(tools: ToolRegistry): ToolRegistry {
     // actions apart. The card is the only thing standing between the user and an
     // irreversible action, so if it is ambiguous nothing may run.
     async execute(call, ctx) {
-      assertUnique(await tools.descriptors());
+      await assertUnique();
       return tools.execute(call, ctx);
     },
   };

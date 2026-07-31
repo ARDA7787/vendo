@@ -74,9 +74,9 @@ const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
   // move money
   "pay", "payout", "charge", "refund", "withdraw", "transfer", "wire", "remit",
   "disburse", "settle", "capture", "chargeback",
-  // reach a human
+  // reach a human / move something out
   "send", "email", "notify", "text", "sms", "message", "dm", "invite", "publish",
-  "post", "share", "broadcast", "announce", "dispatch", "page", "call",
+  "post", "share", "broadcast", "announce", "dispatch", "page", "call", "forward", "move",
   // start something irreversible
   "initiate", "submit", "execute", "launch", "trigger", "fire", "unpause", "release",
   "approve", "confirm", "finalize", "commit", "merge", "deploy",
@@ -100,26 +100,18 @@ function words(value: string): string[] {
 }
 
 /**
- * The tokens that can plausibly be the ACTION, rather than the subject.
+/**
+ * The trailing token — the one that decides whether a name is READ-shaped.
  *
- * This is the part that makes the vote a second opinion instead of a rerun of
- * the same guess: it reads name STRUCTURE, not just membership. Tool names come
- * in two shapes — `subject_verb` (`invoices_list`, `payments_send`) and
- * `verb_subject` (`send_email`, `list_invoices`) — so the action lives at one of
- * the ends. Middle tokens are the subject, which is why a destructive noun there
- * no longer withholds a read.
- *
- * A single-token name is its own verb. A leading vendor/product prefix
- * (`maple_`, `gmail_`) occupies the first slot, so the token after it is also
- * treated as a candidate — otherwise `maple_send_email` would hide its verb.
+ * This is the noun-vs-verb discrimination that makes the vote a second opinion.
+ * In `subject_verb` naming the last token is the action, so `gmail_message_get`
+ * ends in `get` and is a read even though `message` is in the destructive set:
+ * `message` there is the subject being read, not a verb. Checking the trailing
+ * read verb FIRST is what keeps that noun from withholding a legitimate read.
  */
-function actionTokens(name: string): { leading: string[]; trailing: string | undefined } {
+function trailingToken(name: string): string | undefined {
   const parts = words(name);
-  if (parts.length === 0) return { leading: [], trailing: undefined };
-  if (parts.length === 1) return { leading: [parts[0]!], trailing: parts[0] };
-  // First token, and the one after it (a prefix consumes the first slot).
-  const leading = parts.slice(0, 2);
-  return { leading, trailing: parts[parts.length - 1] };
+  return parts.length === 0 ? undefined : parts[parts.length - 1];
 }
 
 /**
@@ -139,23 +131,26 @@ export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
   const method = typeof rawMethod === "string" ? rawMethod.toUpperCase() : undefined;
   if (method === "DELETE") return "destructive";
 
-  const { leading, trailing } = actionTokens(descriptor.name);
+  const trailing = trailingToken(descriptor.name);
   const readMethod = method === undefined || method === "GET" || method === "HEAD" || method === "OPTIONS";
 
-  // A TRAILING read verb settles it, and it is checked first on purpose. In
+  // A TRAILING read verb settles it, and it is checked FIRST on purpose. In
   // `subject_verb` naming the trailing token IS the action, so everything before
   // it is the subject being read — which is exactly why `gmail_message_get` is a
   // read and not a deletion. The method still has to agree: a POST that calls
-  // itself `get` is not a read.
+  // itself `get` is not a read. This short-circuit is the whole noun-vs-verb
+  // discrimination; it must run before the destructive scan below.
   if (trailing !== undefined && READ_VERBS.has(trailing) && readMethod) return "read";
 
-  // Otherwise a destructive verb in either action position decides. `subject_verb`
-  // puts it last (`payments_send`), `verb_subject` puts it first
-  // (`delete_customer`), and a product prefix can push it to the second slot
-  // (`maple_send_email`).
-  const isDestructive = leading.some((token) => DESTRUCTIVE_VERBS.has(token))
-    || (trailing !== undefined && DESTRUCTIVE_VERBS.has(trailing));
-  if (isDestructive) return "destructive";
+  // Not read-shaped, so a destructive verb ANYWHERE in the name decides. Match
+  // anywhere, not just at the ends: `maple_customer_delete_all` and
+  // `maple_money_transfer_out` bury the verb in the middle of a long name with a
+  // qualifier tail (`_all`, `_out`, `_now`), and end-position-only checks let
+  // those slip through as `write` and into unattended runs. The read short-circuit
+  // above already protected the destructive-NOUN reads, so matching anywhere here
+  // costs a false-positive only on a non-read-shaped name that merely mentions a
+  // destructive word — which is the fail-toward-destructive direction §12 wants.
+  if (words(descriptor.name).some((token) => DESTRUCTIVE_VERBS.has(token))) return "destructive";
 
   // Everything else is a write: fail-closed, because an unrecognised verb is not
   // evidence of safety — but not `destructive`, because withholding every

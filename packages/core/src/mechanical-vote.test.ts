@@ -59,6 +59,42 @@ describe("destructive verbs the old vocabulary missed (verifier findings 11/12)"
   });
 });
 
+describe("a destructive verb in the MIDDLE of a long name is still destructive (position-vote hole)", () => {
+  // The end-position-only rule missed a destructive verb at position >=3 of a
+  // 4+-token name with a non-verb tail. These all resolved "write" and were
+  // projected into automations.
+  for (const name of [
+    "maple_customer_delete_all",
+    "maple_money_transfer_out",
+    "gmail_api_delete_thread",
+    "maple_account_close_now",
+    "maple_subscription_cancel_immediately",
+    "maple_records_purge_all",
+    "maple_payout_submit_now",
+  ]) {
+    it(`treats ${name} as destructive`, () => {
+      expect(mechanicalRisk(tool(name))).toBe("destructive");
+    });
+  }
+
+  it("withholds a mid-name destructive verb from an unattended run", () => {
+    const tools = ["maple_customer_delete_all", "maple_money_transfer_out"].map((n) => tool(n));
+    expect(projectableForRun(tools, { venue: "automation", presence: "away" })).toEqual([]);
+  });
+});
+
+describe("mail-forward and money-move are real external shapes", () => {
+  it("treats forward as destructive-external", () => {
+    expect(mechanicalRisk(tool("maple_mail_forward"))).toBe("destructive");
+    expect(mechanicalRisk(tool("gmail_message_forward"))).toBe("destructive");
+  });
+
+  it("treats move as destructive", () => {
+    expect(mechanicalRisk(tool("maple_money_move"))).toBe("destructive");
+    expect(mechanicalRisk(tool("maple_funds_move_out"))).toBe("destructive");
+  });
+});
+
 describe("destructive NOUNS must not withhold a read (verifier finding 12)", () => {
   // The old vote matched any token anywhere, so a noun like "message" or
   // "payment" made an obvious read look destructive. Over-withholding is not a
