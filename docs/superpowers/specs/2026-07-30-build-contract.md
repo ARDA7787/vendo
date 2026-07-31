@@ -33,6 +33,14 @@ export interface Turn<Options = unknown> {
   readonly state: TurnState;            // §2.3
   readonly options: Options;            // parsed by optionsSchema, incl. per-turn overrides
   readonly signal: AbortSignal;
+  /** Amendment 2026-07-31 (ratified after the live proof): the assembled system
+   *  prompt — product brief, catalog, knowledge index — RIDES THE TURN. It was
+   *  a construction dep of `vendo()`, but a host-named `harness: vendo()` is
+   *  constructed at boot where no RunContext exists, so the documented opt-in
+   *  silently thought with a ZERO-character prompt (measured: 2068 on the two
+   *  working paths, 0 on the documented one). Composition assembles it per
+   *  turn; `vendo({system})` stays as an explicit override. */
+  readonly system?: string;
   /** Present iff the caller proved presence (a click/message/submit). */
   readonly interactive: boolean;
 }
