@@ -20,8 +20,14 @@ import type { Db } from "./db-postgres.js";
     Bumping the version is load-bearing, not cosmetic (review fix F1): the DDL
     loop runs only while `version < SCHEMA_VERSION`, so appending the tables
     WITHOUT this bump would leave every existing v4 database on 4 forever and the
-    new tables would never be created. */
-export const SCHEMA_VERSION = 5;
+    new tables would never be created.
+
+    v6 (embedded-agent build contract §6 + §7) adds `vendo_thread_messages` —
+    one row per transcript message, so a turn writes O(messages) instead of
+    rewriting the whole array — and `vendo_effects`, the effect ledger that
+    makes fail-and-re-run correct. `vendo_threads` LOSES `messages`; the v6
+    backfill splits every existing array into rows before dropping the column. */
+export const SCHEMA_VERSION = 6;
 
 /** 02-store §2 */
 export const DDL = [
@@ -45,11 +51,31 @@ export const DDL = [
     app_id text NOT NULL, subject text NOT NULL, data jsonb NOT NULL,
     updated_at timestamptz NOT NULL, PRIMARY KEY (app_id, subject)
   )`,
+  // v6 (build contract §6): the thread row is metadata only — `messages` moved
+  // to vendo_thread_messages, one row per message.
   `CREATE TABLE IF NOT EXISTS vendo_threads (
-    id text PRIMARY KEY, subject text NOT NULL, messages jsonb NOT NULL,
+    id text PRIMARY KEY, subject text NOT NULL,
     created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS vendo_threads_subject_idx ON vendo_threads (subject)",
+  // v6 (build contract §6): one row per UIMessage. `seq` is the ONLY ordering
+  // authority — approval flips rewrite older messages, so timestamps cannot
+  // order a transcript. `revision` is the per-row CAS counter for edits.
+  `CREATE TABLE IF NOT EXISTS vendo_thread_messages (
+    thread_id text NOT NULL, id text NOT NULL, seq integer NOT NULL,
+    message jsonb NOT NULL, revision integer NOT NULL DEFAULT 1,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (thread_id, id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS vendo_thread_messages_thread_seq_idx ON vendo_thread_messages (thread_id, seq)",
+  // v6 (build contract §7): the effect ledger. `key` is
+  // sha256(runKey + tool + exactInputHash); a key that already succeeded
+  // returns its recorded outcome instead of executing a second time.
+  `CREATE TABLE IF NOT EXISTS vendo_effects (
+    key text PRIMARY KEY, outcome jsonb NOT NULL,
+    at timestamptz NOT NULL DEFAULT now()
+  )`,
   `CREATE TABLE IF NOT EXISTS vendo_grants (
     id text PRIMARY KEY, subject text NOT NULL, tool text NOT NULL, descriptor_hash text NOT NULL,
     scope jsonb NOT NULL, duration text NOT NULL, context_key text, app_id text, source text NOT NULL,
@@ -204,6 +230,44 @@ const DATA_BACKFILL = [
   "UPDATE vendo_state SET created_at = updated_at WHERE created_at IS NULL",
 ] as const;
 
+// v6 backfill (build contract §6): split every existing vendo_threads.messages
+// array into one vendo_thread_messages row, then drop the column.
+//
+// Guarded on the COLUMN's existence, not just the version, because the two must
+// agree: a fresh database is created by the v6 DDL above and never had
+// `messages`, so a version gate alone would run this SQL against a column that
+// does not exist. The information_schema check makes the whole step idempotent
+// and safe to re-apply.
+//
+// `seq` comes from WITH ORDINALITY (1-based) shifted to 0-based, so the stored
+// array order — the only order a legacy row carries — becomes the ordering
+// authority. A legacy message with no `id` still gets a row under a derived
+// positional id rather than being dropped: this migration never loses a message.
+const DATA_BACKFILL_V6 = [
+  `DO $$
+   BEGIN
+     IF EXISTS (
+       SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'vendo_threads' AND column_name = 'messages'
+     ) THEN
+       INSERT INTO vendo_thread_messages (thread_id, id, seq, message, created_at, updated_at)
+       SELECT t.id,
+              COALESCE(elem->>'id', 'msg_' || (ordinality - 1)::text),
+              (ordinality - 1)::integer,
+              elem,
+              t.created_at,
+              t.updated_at
+       FROM vendo_threads t
+       CROSS JOIN LATERAL jsonb_array_elements(t.messages) WITH ORDINALITY AS a(elem, ordinality)
+       WHERE jsonb_typeof(t.messages) = 'array'
+       ON CONFLICT (thread_id, id) DO NOTHING;
+
+       ALTER TABLE vendo_threads DROP COLUMN messages;
+     END IF;
+   END
+   $$`,
+] as const;
+
 type Query = Db["query"];
 
 async function migrate(query: Query): Promise<void> {
@@ -236,6 +300,9 @@ async function migrate(query: Query): Promise<void> {
   if (version === undefined || version < 2) {
     for (const statement of DATA_BACKFILL) await query(statement);
   }
+  // The v6 split is guarded on the column itself (see DATA_BACKFILL_V6), so it
+  // is safe on every boot — including a fresh database, where it does nothing.
+  for (const statement of DATA_BACKFILL_V6) await query(statement);
   await query(
     `INSERT INTO vendo_meta (key, value) VALUES ('boot_id', $1::jsonb)
      ON CONFLICT (key) DO NOTHING`,

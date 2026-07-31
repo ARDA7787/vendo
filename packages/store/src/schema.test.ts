@@ -12,7 +12,9 @@ const CONTRACT_COLUMNS: Record<string, string[]> = {
   vendo_records: ["collection", "id", "data", "refs", "created_at", "updated_at", "revision"],
   vendo_blobs: ["namespace", "key", "bytes", "content_type", "created_at"],
   vendo_state: ["app_id", "subject", "data", "updated_at"],
-  vendo_threads: ["id", "subject", "messages", "created_at", "updated_at"],
+  vendo_threads: ["id", "subject", "created_at", "updated_at"],
+  vendo_thread_messages: ["thread_id", "id", "seq", "message", "revision", "created_at", "updated_at"],
+  vendo_effects: ["key", "outcome", "at"],
   vendo_grants: ["id", "subject", "tool", "descriptor_hash", "scope", "duration", "app_id", "source", "granted_at", "revoked_at", "expires_at"],
   vendo_approvals: ["id", "subject", "request", "status", "decided_at", "created_at"],
   vendo_audit: ["id", "at", "kind", "subject", "venue", "presence", "app_id", "tool", "event"],
@@ -43,17 +45,17 @@ for (const backend of backends()) {
     it("stores schema_version and a boot_id in vendo_meta", async () => {
       const rows = await made.sql("SELECT key, value FROM vendo_meta ORDER BY key");
       expect(rows).toEqual(expect.arrayContaining([
-        expect.objectContaining({ key: "schema_version", value: 5 }),
+        expect.objectContaining({ key: "schema_version", value: 6 }),
         expect.objectContaining({ key: "boot_id" }),
       ]));
       expect(rows.find((row) => row.key === "boot_id")?.value).toEqual(expect.any(String));
     });
 
-    it("lands a fresh database directly on schema version 5", async () => {
+    it("lands a fresh database directly on schema version 6", async () => {
       // A brand-new DB never runs the v2 backfill's DELETE against real data; it
       // just records the current version. (beforeAll already ran ensureSchema.)
       const version = (await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value;
-      expect(version).toBe(5);
+      expect(version).toBe(6);
     });
 
     it("keeps boot_id stable across a close and reopen", async () => {
@@ -73,7 +75,7 @@ for (const backend of backends()) {
 
       await made.store.ensureSchema();
 
-      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(5);
+      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(6);
       const rows = await made.sql(
         `SELECT table_name FROM information_schema.tables
          WHERE table_schema = 'public' AND table_name IN ('vendo_mcp_clients', 'vendo_mcp_grants')
@@ -97,7 +99,7 @@ for (const backend of backends()) {
 
       await made.store.ensureSchema();
 
-      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(5);
+      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(6);
       const survivor = await made.sql(
         "SELECT id FROM vendo_records WHERE collection = 'vendo_state' AND id = 'app_live:subject_live'",
       );
@@ -105,7 +107,7 @@ for (const backend of backends()) {
       await made.sql("DELETE FROM vendo_records WHERE collection = 'vendo_state' AND id = 'app_live:subject_live'");
     });
 
-    it("creates all 16 contract tables with every contracted key column", async () => {
+    it("creates all 18 contract tables with every contracted key column", async () => {
       const rows = await made.sql(
         "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name LIKE 'vendo_%'",
       );
@@ -116,7 +118,7 @@ for (const backend of backends()) {
         columns.add(String(row.column_name));
         actual.set(table, columns);
       }
-      expect(actual.size).toBe(16);
+      expect(actual.size).toBe(18);
       for (const [table, columns] of Object.entries(CONTRACT_COLUMNS)) {
         expect(actual.has(table), table).toBe(true);
         for (const column of columns) expect(actual.get(table)?.has(column), `${table}.${column}`).toBe(true);
@@ -131,7 +133,8 @@ for (const backend of backends()) {
         ["vendo_records", "data"],
         ["vendo_records", "refs"],
         ["vendo_state", "data"],
-        ["vendo_threads", "messages"],
+        ["vendo_thread_messages", "message"],
+        ["vendo_effects", "outcome"],
         ["vendo_grants", "scope"],
         ["vendo_approvals", "request"],
         ["vendo_audit", "event"],

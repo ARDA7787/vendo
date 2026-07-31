@@ -53,6 +53,51 @@ export async function putAppRow(
   return appFromRow(row as Record<string, unknown>);
 }
 
+/** Build contract §6 — `vendo_threads` no longer stores `messages`, but the
+ *  reserved-collection door and `threadStore` still hand callers a whole
+ *  thread. This aggregate reassembles the transcript **by seq** (never by
+ *  timestamp: approval flips rewrite older messages) so those read paths keep
+ *  their shape while storage is one row per message.
+ *
+ *  Interpolated, not parameterized, because it names a correlated alias rather
+ *  than carrying a value — there is no user input anywhere in it. */
+export const THREAD_MESSAGES_AGGREGATE = (alias: string): string =>
+  `COALESCE((SELECT jsonb_agg(m.message ORDER BY m.seq)
+             FROM vendo_thread_messages m WHERE m.thread_id = ${alias}.id), '[]'::jsonb)`;
+
+/** Land this thread's transcript as rows: array index becomes `seq`, an unchanged
+ *  message keeps its revision, and a message that left the array loses its row.
+ *  Two statements, each set-based — never one round trip per message. */
+export async function replaceThreadMessages(
+  db: Db,
+  threadId: string,
+  messages: Json[],
+  now = new Date().toISOString(),
+): Promise<void> {
+  // A legacy/hand-written row may hold messages with no `id` (the door accepts
+  // any Json). Derive a positional id for those rather than dropping them —
+  // the same rule the v6 backfill uses, so both doors agree.
+  await db.query(
+    `INSERT INTO vendo_thread_messages (thread_id, id, seq, message, created_at, updated_at)
+     SELECT $1, COALESCE(elem->>'id', 'msg_' || (ordinality - 1)::text),
+            (ordinality - 1)::integer, elem, $3, $3
+     FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS a(elem, ordinality)
+     ON CONFLICT (thread_id, id) DO UPDATE
+       SET seq = EXCLUDED.seq, message = EXCLUDED.message, updated_at = EXCLUDED.updated_at,
+           revision = vendo_thread_messages.revision + 1
+       WHERE vendo_thread_messages.message IS DISTINCT FROM EXCLUDED.message
+          OR vendo_thread_messages.seq IS DISTINCT FROM EXCLUDED.seq`,
+    [threadId, JSON.stringify(messages), now],
+  );
+  await db.query(
+    `DELETE FROM vendo_thread_messages
+     WHERE thread_id = $1 AND id <> ALL (
+       SELECT COALESCE(elem->>'id', 'msg_' || (ordinality - 1)::text)
+       FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS a(elem, ordinality))`,
+    [threadId, JSON.stringify(messages)],
+  );
+}
+
 export function threadFromRow(row: Record<string, unknown>): ThreadRow {
   const title = row["title"];
   const revision = row["revision"];
@@ -81,20 +126,23 @@ export async function putThreadRow(
   // This closes the TOCTOU window that a resolve()-time pre-check alone cannot
   // (a foreign row can appear during a long streaming turn, before persist runs).
   const result = await db.query(
-    `INSERT INTO vendo_threads (id, subject, messages, title, created_at, updated_at, revision)
-     VALUES ($1, $2, $3::jsonb, $4, $5, $5, 1)
+    `INSERT INTO vendo_threads (id, subject, title, created_at, updated_at, revision)
+     VALUES ($1, $2, $3, $4, $4, 1)
      ON CONFLICT (id) DO UPDATE
-       SET messages = EXCLUDED.messages, title = EXCLUDED.title, updated_at = EXCLUDED.updated_at,
+       SET title = EXCLUDED.title, updated_at = EXCLUDED.updated_at,
            revision = vendo_threads.revision + 1
        WHERE vendo_threads.subject = EXCLUDED.subject
-     RETURNING id, subject, messages, title, created_at, updated_at, revision`,
-    [input.id, input.subject, JSON.stringify(input.messages), input.title ?? null, now],
+     RETURNING id, subject, title, created_at, updated_at, revision`,
+    [input.id, input.subject, input.title ?? null, now],
   );
   const row = result.rows[0];
   if (row === undefined) {
     throw new VendoError("conflict", `thread ${input.id} belongs to another subject`);
   }
-  return threadFromRow(row as Record<string, unknown>);
+  // Only after the guard above admitted the write — so a refused cross-subject
+  // flip never leaves messages behind.
+  await replaceThreadMessages(db, input.id, input.messages, now);
+  return threadFromRow({ ...row, messages: input.messages });
 }
 
 export function stateRowFromRow(row: Record<string, unknown>): StateRow {

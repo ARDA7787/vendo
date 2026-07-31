@@ -1,7 +1,7 @@
 import type { Json, Principal, ThreadId } from "@vendoai/core";
 import { dbFor, type VendoStore } from "../store.js";
 import type { ThreadRow } from "./types.js";
-import { putThreadRow, threadFromRow } from "./rows.js";
+import { putThreadRow, THREAD_MESSAGES_AGGREGATE, threadFromRow } from "./rows.js";
 import { iso, text } from "./utils.js";
 import { parseThreadData } from "../validate.js";
 
@@ -25,9 +25,12 @@ export function threadStore(store: VendoStore): {
       });
     },
     async get(principal, id) {
+      // v6 (build contract §6): the transcript is reassembled by seq from
+      // vendo_thread_messages — the thread row holds metadata only.
       const result = await db.query(
-        `SELECT id, subject, messages, title, created_at, updated_at, revision FROM vendo_threads
-         WHERE id = $1 AND subject = $2`,
+        `SELECT t.id, t.subject, ${THREAD_MESSAGES_AGGREGATE("t")} AS messages,
+                t.title, t.created_at, t.updated_at, t.revision FROM vendo_threads t
+         WHERE t.id = $1 AND t.subject = $2`,
         [id, principal.subject],
       );
       return result.rows[0] ? threadFromRow(result.rows[0]) : null;

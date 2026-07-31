@@ -27,6 +27,8 @@ const TABLES = [
   "vendo_audit",
   "vendo_approvals",
   "vendo_grants",
+  "vendo_thread_messages",
+  "vendo_effects",
   "vendo_threads",
   "vendo_state",
   "vendo_blobs",

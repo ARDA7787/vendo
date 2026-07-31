@@ -71,7 +71,11 @@ export async function adoptEphemeralSubject(
   );
   report.apps = movedApps.rows.length;
 
-  // Threads: same shape (unique PRIMARY KEY id, door-guarded).
+  // Threads: same shape (unique PRIMARY KEY id, door-guarded). Their v6
+  // transcript rows are keyed by `thread_id` and carry no subject of their own,
+  // so — like an app's record collections above — they travel with this flip
+  // untouched. That is deliberate: the thread row is the single ownership
+  // record, which is also what lets the message doors scope by joining it.
   const movedThreads = await db.query(
     "UPDATE vendo_threads SET subject = $2 WHERE subject = $1 RETURNING id",
     [from, to],

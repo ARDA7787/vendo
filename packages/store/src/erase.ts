@@ -7,7 +7,14 @@ import { invalid } from "./validate.js";
  *  version, boot id), never user data, so no selector ever matches it and its
  *  count stays 0 — as does `vendo_secrets` (name-keyed host config, likewise
  *  never matched by a subject or app selector). Listed so the report provably
- *  covers the whole map. */
+ *  covers the whole map.
+ *
+ *  `vendo_effects` (v6, build contract §7) is in the same never-matched class
+ *  for a different and less comfortable reason: the contract freezes its shape
+ *  as `(key, outcome, at)` with no subject or app column, so no selector can
+ *  reach it even though `outcome` holds tool output. Listed here so the gap is
+ *  visible in the report rather than invisible; closing it needs a contract
+ *  amendment, not a local divergence. */
 export const ERASE_TABLES = [
   "vendo_meta",
   "vendo_apps",
@@ -15,6 +22,8 @@ export const ERASE_TABLES = [
   "vendo_blobs",
   "vendo_state",
   "vendo_threads",
+  "vendo_thread_messages",
+  "vendo_effects",
   "vendo_grants",
   "vendo_approvals",
   "vendo_audit",
@@ -103,6 +112,15 @@ export function eraseStore(store: VendoStore): {
       // below only count rows the cascade did not reach (e.g. this subject's
       // state under ANOTHER owner's app).
       await del(report, "vendo_state", "subject = $1", [subject]);
+      // v6: the transcript rows hang off the thread row, which owns the subject.
+      // Delete them BEFORE the thread row, or the join that identifies them is
+      // already gone and the messages outlive the erase.
+      await del(
+        report,
+        "vendo_thread_messages",
+        "thread_id IN (SELECT id FROM vendo_threads WHERE subject = $1)",
+        [subject],
+      );
       await del(report, "vendo_threads", "subject = $1", [subject]);
       await del(report, "vendo_grants", "subject = $1", [subject]);
       await del(report, "vendo_approvals", "subject = $1", [subject]);
