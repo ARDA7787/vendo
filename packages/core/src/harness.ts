@@ -49,7 +49,7 @@ export interface Turn<Options = unknown> {
 /** Build contract §1.1 */
 export interface TurnTools {
   /** Never throws. Guarded, audited, and mirrored before it resolves. */
-  call(name: string, args: Json, opts?: { idempotencyKey?: string }): Promise<ToolResult>;
+  call(name: string, args: Json): Promise<ToolResult>;
   /** Currently-equipped tools (post-curation). */
   list(): Promise<ToolListing[]>;
 }

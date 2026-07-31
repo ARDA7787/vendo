@@ -38,6 +38,10 @@
     "./adapter-conformance": {
       "types": "./dist/adapter-conformance.d.ts",
       "default": "./dist/adapter-conformance.js"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "default": "./dist/internal.js"
     }
   },
   "files": [

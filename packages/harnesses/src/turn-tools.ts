@@ -10,7 +10,7 @@ import type {
   ToolResult,
   TurnTools,
 } from "@vendoai/core";
-import { guardedCall, previewApproval, type ToolBridgeOptions } from "@vendoai/agent";
+import { guardedCall, previewApproval, type ToolBridgeOptions } from "@vendoai/agent/internal";
 
 /**
  * Build contract §1.4 — the frozen bound on an interactive approval wait. A
@@ -60,8 +60,17 @@ const mintToolCallId = (): string => `hcall_${(counter += 1)}_${globalThis.crypt
 export interface ApprovalWaiter {
   /** Resolves true/false with the decision, or undefined if the bound expired. */
   wait(approvalId: ApprovalId, timeoutMs: number): Promise<boolean | undefined>;
-  /** Approvals this turn raised that nobody answered — the runtime abandons them
-   *  at turn end, so a live-but-dead card cannot accrete in the pending queue. */
+  /**
+   * Note an approval this turn raised, WHICHEVER path minted it — the preview, or
+   * the real dispatching check after the preview said run (a breaker or presence
+   * boundary). Recording only the ones we wait on would leak the rest forever.
+   *
+   * `standing: true` marks the `interactive: false` card, which is MEANT to
+   * survive the turn so "Grant & re-run" can collect it.
+   */
+  raise(approvalId: ApprovalId, options?: { standing?: boolean }): void;
+  /** Raised, undecided, and not standing — the runtime abandons these at turn
+   *  end, so a live-but-dead card cannot accrete in the pending queue. */
   unanswered(): ApprovalId[];
   dispose(): void;
 }
@@ -70,6 +79,7 @@ export function createApprovalWaiter(guard: Guard): ApprovalWaiter {
   const decided = new Map<ApprovalId, boolean>();
   const waiting = new Map<ApprovalId, (approved: boolean) => void>();
   const raised = new Set<ApprovalId>();
+  const standing = new Set<ApprovalId>();
   const unsubscribe = guard.onApprovalDecision((id, approved) => {
     decided.set(id, approved);
     const resolve = waiting.get(id);
@@ -79,6 +89,10 @@ export function createApprovalWaiter(guard: Guard): ApprovalWaiter {
     }
   });
   return {
+    raise(approvalId, options) {
+      raised.add(approvalId);
+      if (options?.standing === true) standing.add(approvalId);
+    },
     async wait(approvalId, timeoutMs) {
       raised.add(approvalId);
       const already = decided.get(approvalId);
@@ -94,7 +108,7 @@ export function createApprovalWaiter(guard: Guard): ApprovalWaiter {
         });
       });
     },
-    unanswered: () => [...raised].filter((id) => !decided.has(id)),
+    unanswered: () => [...raised].filter((id) => !decided.has(id) && !standing.has(id)),
     dispose: unsubscribe,
   };
 }
@@ -192,6 +206,9 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
         })(args, { toolCallId });
 
         if (ask) {
+          if (approvalId !== undefined) {
+            waiter.raise(approvalId, { standing: !options.interactive });
+          }
           if (!options.interactive) {
             // Nobody is here to tap, so the run fails loudly and the card stands
             // as the grant "Grant & re-run" will collect.
@@ -227,6 +244,9 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
         // `toolOutputCap` all come from here — never a second implementation.
         const outcome = await guardedCall(descriptor, bridge)(args, { toolCallId });
         if (outcome.status === "pending-approval") {
+          // The preview said run and the REAL check asked — a breaker or presence
+          // boundary. Nobody is waiting on this one, so it must still be swept.
+          waiter.raise(outcome.approvalId, { standing: !options.interactive });
           // The guard asked twice for one tap; refusing to loop is the honest
           // answer (a second card for the same call would be a trap).
           return finish({

@@ -15,7 +15,7 @@ import {
   type ToolRegistry,
   type VendoViewStreamingToolCall,
 } from "@vendoai/core";
-import { wireErrorMessage } from "@vendoai/agent";
+import { wireErrorMessage } from "@vendoai/agent/internal";
 import { describe, expect, it, vi } from "vitest";
 import { defineHarness } from "./define.js";
 import { createHarnessRuntime } from "./runtime.js";
@@ -185,6 +185,57 @@ describe("C2 — the failure affordance is today's, wireErrorMessage and all", (
     expect(wireErrorMessage(new Error("connect ECONNREFUSED key=sk-123"))).toBe(
       "An error occurred while generating the response.",
     );
+  });
+});
+
+describe("one operator log per error, not two", () => {
+  it("writing the error chunk does not also trip the stream's onError log", async () => {
+    const guard = testGuard();
+    const { run } = runtimeFor({ registry: boundRegistry({}, guard), guard });
+    const logs: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      logs.push(args);
+    });
+    try {
+      await run(
+        defineHarness({
+          name: "vendo",
+          async *run() {
+            // Already `wireErrorMessage`-shaped: the harness logged the REAL error
+            // when it formatted this, so the runtime must not log it again — and
+            // writing the error chunk trips createUIMessageStream's onError too.
+            yield { type: "error", message: "Vendo: the meter is exhausted (cloud-required)" };
+          },
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const streamLogs = logs.filter((entry) => String(entry[0]).includes("harness stream error"));
+    expect(streamLogs).toHaveLength(0);
+  });
+
+  it("still logs a fault the runtime alone saw", async () => {
+    const guard = testGuard();
+    const { run } = runtimeFor({ registry: boundRegistry({}, guard), guard });
+    const logs: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      logs.push(args);
+    });
+    try {
+      await run(
+        defineHarness({
+          name: "explodes",
+          async *run() {
+            throw new Error("a real bug in the thinker");
+          },
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const runFailed = logs.filter((entry) => String(entry[0]).includes("harness run failed"));
+    expect(runFailed).toHaveLength(1);
   });
 });
 

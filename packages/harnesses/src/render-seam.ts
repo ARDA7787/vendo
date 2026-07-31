@@ -31,7 +31,10 @@ import {
   type VendoViewPart,
   type WorkspaceFs,
 } from "@vendoai/core";
-import { assembleTree, skeletonFromPlan, stripServerAuthoritativeFields } from "@vendoai/apps";
+// `skeletonFromPlan` was already public before this lane; the payload-assembly
+// pair is a cross-block internal.
+import { skeletonFromPlan } from "@vendoai/apps";
+import { assembleTree, stripServerAuthoritativeFields } from "@vendoai/apps/internal";
 
 /** §1.6 — the two files that sync mid-turn. Everything else waits for turn end. */
 export const HOT_PATH_FILES = ["app.vendo", "plan.vendo"] as const;

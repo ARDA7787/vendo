@@ -26,7 +26,12 @@ import {
   type WorkspaceFs,
 } from "@vendoai/core";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { validateUpsert, type ToolBridgeOptions } from "@vendoai/agent";
+import {
+  abandonPendingApprovals,
+  guardApprovalIds,
+  validateUpsert,
+  type ToolBridgeOptions,
+} from "@vendoai/agent/internal";
 import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from "ai";
 import {
   classifyHistory,
@@ -197,6 +202,8 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
           if (at === -1) persisted.push(message);
           else persisted[at] = message;
         }
+        // Classified BEFORE our own flip below, or the runtime's housekeeping
+        // would read as the user rewriting history and clear the session.
         if (classifyHistory(before, input.messages) !== "arbitrary-edit") {
           carried = await harnessState.get(input.threadId, input.harness.name);
         } else {
@@ -211,17 +218,31 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
       const state = createTurnState(carried);
       // What persistence diffs against. Taken BEFORE the harness runs and never
       // handed out, so a harness cannot make its own edit look like it was
-      // already stored.
+      // already stored — and BEFORE the flip, so the flip itself persists.
       const pristine = before === undefined ? [] : before.map((message) => structuredClone(message));
+
+      // The canonical transcript for this turn: our copy, so the flip below never
+      // mutates the caller's objects.
+      const messages = input.messages.map((message) => structuredClone(message));
+      // The shipped rule (agent.ts `abandonPendingApprovals`): an approval a fresh
+      // turn superseded resolves to its abandoned state. Resolving only the GUARD
+      // side would leave the PART at `approval-requested` forever, and
+      // `turnModelMessages` would then hand the provider an assistant tool-call
+      // with no tool-result — a 400 on this turn and every later one, which is
+      // exactly the swap-resuming-from-our-transcript case.
+      await abandonStaleApprovals(deps.guard, input, messages);
 
       const signal = input.signal ?? new AbortController().signal;
       let usage: UsageTotals | undefined;
       let failure: { message: string; code?: string } | undefined;
+      /** The last message we deliberately put on the error channel, so the
+       *  stream's own onError does not log it again. */
+      let surfaced: string | undefined;
       // Hoisted beside them: onFinish audits what execute collected.
       const hires: HireRecord[] = [];
 
       const stream = createUIMessageStream<UIMessage>({
-        originalMessages: input.messages,
+        originalMessages: messages,
         execute: async ({ writer }) => {
           const text = new TextChannel(writer);
           const mirror = (event: MirrorEvent): void => {
@@ -284,13 +305,13 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
           const turn: Turn<Options> = {
             // Frozen: ours, read-only. Freezing makes the contract's word true at
             // runtime instead of only at compile time.
-            messages: deepFreeze([...input.messages.map((message) => structuredClone(message))]),
+            messages: deepFreeze(messages.map((message) => structuredClone(message))),
             tools: {
               list: () => tools.list(),
               // A workspace tool edit lands the moment it returns, so the
               // skeleton appears on save rather than at turn end.
-              call: async (name, args, opts) => {
-                const result = await tools.call(name, args, opts);
+              call: async (name, args) => {
+                const result = await tools.call(name, args);
                 await commit();
                 return result;
               },
@@ -324,6 +345,7 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
                   // assistant's prose instead would read as the agent talking and
                   // would offer the user nothing to act on.
                   text.break();
+                  surfaced = event.message;
                   writeError(writer, event.message);
                   break;
                 case "usage":
@@ -364,10 +386,13 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
           await saveHarnessState(harnessState, input, state.pending());
           await reportRun(deps.guard, input, { usage, failure, hires });
         },
-        // The runtime's own last-resort gate. Harness text is already
-        // consumer-voice; anything reaching here is a runtime/transport fault.
+        // The runtime's own last-resort gate for a runtime/transport fault.
+        // A harness `error` event already reached the operator's terminal through
+        // `wireErrorMessage`, and writing its chunk trips this hook too — so an
+        // error we deliberately surfaced is NOT logged a second time here.
         onError: (error) => {
-          console.error("[vendo] harness stream error:", error);
+          const text = error instanceof Error ? error.message : String(error);
+          if (text !== surfaced) console.error("[vendo] harness stream error:", error);
           return HARNESS_FAILED;
         },
       });
@@ -511,6 +536,30 @@ async function reportRun(
   }
 }
 
+
+/**
+ * Flip stale `approval-requested` parts and resolve their guard-side approvals —
+ * the shipped `abandonPendingApprovals` semantics, applied by the runtime so a
+ * harness turn leaves the same paired history a `createAgent` turn does.
+ */
+async function abandonStaleApprovals(
+  guard: Guard,
+  input: TurnRunInput<unknown>,
+  messages: UIMessage[],
+): Promise<void> {
+  const toolCallIds = abandonPendingApprovals(messages);
+  if (toolCallIds.length === 0) return;
+  // The GUARD's approvalId rides the `data-vendo-approval` part beside the tool
+  // part, keyed by toolCallId — read it from there, as the shipped loop does.
+  const ids = guardApprovalIds(messages, toolCallIds);
+  if (ids.length === 0 || guard.abandonApprovals === undefined) return;
+  try {
+    await guard.abandonApprovals(ids, input.ctx);
+  } catch {
+    // The transcript already reflects abandonment; the guard method is
+    // idempotent, so cleanup retries on the next abandoned turn.
+  }
+}
 
 /**
  * Resolve the approvals this turn raised and nobody answered. Best-effort and

@@ -18,7 +18,7 @@
  */
 import { z } from "zod";
 import type { Harness, HarnessEvent, Json, ToolDescriptor, Turn } from "@vendoai/core";
-import { startTurn, wireErrorMessage } from "@vendoai/agent";
+import { startTurn, wireErrorMessage } from "@vendoai/agent/internal";
 import { reportHire } from "./runtime.js";
 import { jsonSchema, stepCountIs, streamText, tool, type LanguageModel, type ToolSet } from "ai";
 import { defineHarness } from "./define.js";

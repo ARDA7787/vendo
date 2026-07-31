@@ -252,7 +252,7 @@ export function validateUpsert(messages: UIMessage[], message: UIMessage): void 
   }
 }
 
-function abandonPendingApprovals(messages: UIMessage[]): string[] {
+export function abandonPendingApprovals(messages: UIMessage[]): string[] {
   const abandonedToolCallIds: string[] = [];
   for (const message of messages) {
     message.parts = message.parts.map((part) => {
@@ -287,7 +287,7 @@ function abandonPendingApprovals(messages: UIMessage[]): string[] {
  *  part's `approval.id` is the ai-SDK's own handle; the GUARD's approvalId
  *  rides the data-vendo-approval part beside it, keyed by toolCallId — read it
  *  from either the persisted nested envelope or the flat §16 shape. */
-function guardApprovalIds(messages: UIMessage[], toolCallIds: string[]): ApprovalId[] {
+export function guardApprovalIds(messages: UIMessage[], toolCallIds: string[]): ApprovalId[] {
   if (toolCallIds.length === 0) return [];
   const wanted = new Set(toolCallIds);
   const ids: ApprovalId[] = [];
