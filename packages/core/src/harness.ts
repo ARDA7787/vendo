@@ -12,9 +12,9 @@
  * change for every host renderer.
  */
 import type { StandardSchemaV1 } from "@standard-schema/spec";
-import type { UIMessage } from "ai";
+import type { LanguageModel, UIMessage } from "ai";
 import type { Json } from "./ids.js";
-import type { ResolvedModels } from "./models.js";
+import type { ResolvedModels } from "./model-seats.js";
 import type { WorkspaceFs } from "./workspace.js";
 
 /** Build contract §1 */
@@ -35,8 +35,11 @@ export interface Turn<Options = unknown> {
   readonly skills: TurnSkills;
   /** §3; the harness's file hands. */
   readonly workspace: WorkspaceFs;
-  /** §4 */
-  readonly models: ResolvedModels;
+  /** §4 — `Readonly<Record<Seat, LanguageModel>>`, exactly as the contract writes
+   *  it. `ResolvedModels` itself is generic so `@vendoai/store` can speak seats
+   *  without an `ai` dependency; a `Turn` is handed to an in-process harness that
+   *  passes the seat straight to `streamText`, so here the model type is named. */
+  readonly models: ResolvedModels<LanguageModel>;
   /** §1.3 */
   readonly state: TurnState;
   /** Parsed by optionsSchema, incl. per-turn overrides. */

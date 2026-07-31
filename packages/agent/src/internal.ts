@@ -19,3 +19,12 @@ export { assembleSystemPrompt } from "./prompt.js";
 // The transcript-side rules a harness runtime must apply identically: what a
 // client may change, and how a superseded approval resolves.
 export { abandonPendingApprovals, guardApprovalIds, validateUpsert } from "./agent.js";
+// The thread LIFECYCLE, shared rather than re-derived. A composition that serves
+// turns through the harness runtime still has to mint ids the same way, refuse a
+// foreign thread the same way, derive the same listing title, and — crucially —
+// read the SAME canonical transcript `createAgent` reads. Re-deriving any of
+// those would give one product two thread semantics depending on who ran the
+// turn.
+export { ThreadRepository } from "./threads.js";
+export { validateMessage, upsertMessage } from "./agent.js";
+export { THREAD_ID_HEADER } from "./agent.js";

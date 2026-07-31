@@ -168,7 +168,14 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
 
   return {
     async list(): Promise<ToolListing[]> {
-      const descriptors = await options.registry.descriptors();
+      // `ctx` is load-bearing, not decoration: the guard-bound registry answers
+      // `descriptors(ctx)` with `projectableForRun(all, ctx)`, which is where THE
+      // LAW (design §12) withholds destructive and external tools from an
+      // unattended run. Asking without it listed EVERY tool to an automation,
+      // which the harness then offered its model — and the refusal only arrived
+      // at call time. "Not projected into an automation run at all" has to mean
+      // not projected.
+      const descriptors = await options.registry.descriptors(options.ctx);
       return descriptors.map((descriptor) => ({
         name: descriptor.name,
         // `title` is presentation-only and optional; absent it the surfaces that
@@ -176,6 +183,12 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
         title: descriptor.title ?? descriptor.name,
         description: descriptor.description,
         risk: descriptor.risk,
+        // Contract §1.1 amendment 2026-07-30: an in-process harness must hand its
+        // model real argument schemas, and JSON Schema is the interchange.
+        // Without this a third-party harness can see a tool and still not call
+        // it — only `vendo()` worked, because composition hands IT the
+        // descriptor catalog by closure.
+        ...(descriptor.inputSchema === undefined ? {} : { inputSchema: descriptor.inputSchema }),
       }));
     },
 

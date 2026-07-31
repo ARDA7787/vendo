@@ -29,8 +29,14 @@ export interface AskUserPorts {
    *  which refuses a thread the principal does not own. */
   record(principal: Principal, answer: AskUserRecord): Promise<void>;
   /** Put the question to the person and wait for their reply. Absent means no
-   *  surface is wired (an away runner has no card surface). */
-  collect?(question: string, choices?: string[]): Promise<Json>;
+   *  surface is wired (an away runner has no card surface).
+   *
+   *  It receives the SERVER-MINTED `questionId` — the row the answer will be
+   *  recorded under. A surface that shows a card and takes the reply on a separate
+   *  request has to correlate the two, and the only correlatable id is the one
+   *  this call will actually record; a surface inventing its own would answer a
+   *  different question than the one asked. */
+  collect?(input: { question: string; choices?: string[]; questionId: string }): Promise<Json>;
 }
 
 const DESCRIPTOR: ToolDescriptor = {
@@ -107,7 +113,11 @@ export function askUserRegistry(ports: AskUserPorts): ToolRegistry {
       const questionId = `q_${ctx.sessionId}_${Date.now()}_${minted}`;
 
       try {
-        const answer = await ports.collect(question, choices);
+        const answer = await ports.collect({
+          question,
+          ...(choices === undefined ? {} : { choices }),
+          questionId,
+        });
         await ports.record(ctx.principal, { threadId: ports.threadId, questionId, answer });
         return { status: "ok", output: { answer } };
       } catch (error) {

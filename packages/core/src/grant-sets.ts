@@ -56,16 +56,20 @@ export function grantSetDelta(
 
 /** ACTION verbs that move money, message a human, or destroy something.
  *
- *  Matched only in a verb POSITION (see `actionTokens`), never anywhere in the
- *  name. Matching everywhere made `gmail_message_get` look destructive, and
- *  over-withholding is not a safe default: it silently breaks automations that
- *  only ever read, which trains people to widen permissions.
+ *  THE vocabulary — one definition, deployment-wide. `mechanicalRisk` below
+ *  matches it only in a verb POSITION (see `trailingToken`), never anywhere in
+ *  the name: matching everywhere made `gmail_message_get` look destructive, and
+ *  over-withholding is not a safe default, because it silently breaks
+ *  automations that only ever read, which trains people to widen permissions.
  *
- *  `packages/actions/src/sync/common.ts` carries an equivalent list for
- *  build-time extraction. The duplication is flagged in the lane report — core
- *  cannot import actions (layering) — and this list is now the broader of the
- *  two. */
-const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
+ *  Build-time extraction (`packages/actions/src/sync/common.ts`) reads this same
+ *  set through a DIFFERENT vote: it has no HTTP verb to lean on for tRPC and
+ *  server actions, so it matches membership anywhere in the name. Two votes, one
+ *  word list — the algorithms are meant to differ, the vocabulary is not. It was
+ *  written down twice until 2026-07-30, and a security word list with two
+ *  definitions drifts silently: a verb added here still extracted as a plain
+ *  `write`. */
+export const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
   // destroy
   "delete", "remove", "destroy", "purge", "wipe", "erase", "truncate", "drop", "clear",
   // retire / revoke
@@ -84,8 +88,9 @@ const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
 
 /** Verbs that only ever read. A name ENDING in one of these is a read: the
  *  trailing token is the action in `noun_verb` naming, so nouns before it are
- *  just the subject being read. */
-const READ_VERBS: ReadonlySet<string> = new Set([
+ *  just the subject being read. Shared with build-time extraction for the same
+ *  reason {@link DESTRUCTIVE_VERBS} is. */
+export const READ_VERBS: ReadonlySet<string> = new Set([
   "get", "list", "fetch", "read", "show", "query", "describe", "count", "search",
   "find", "lookup", "view", "peek", "head", "exists", "check", "preview", "export",
 ]);

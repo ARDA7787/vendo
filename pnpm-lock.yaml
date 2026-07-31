@@ -1478,6 +1478,9 @@ importers:
       '@vendoai/guard':
         specifier: workspace:*
         version: link:../guard
+      '@vendoai/harnesses':
+        specifier: workspace:*
+        version: link:../harnesses
       '@vendoai/knowledge':
         specifier: workspace:*
         version: link:../knowledge
