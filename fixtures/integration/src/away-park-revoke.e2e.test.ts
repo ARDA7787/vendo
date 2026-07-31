@@ -6,14 +6,16 @@
  *   2. Deciding the parked approval over the wire RESUMES the run
  *      (guard.onApprovalDecision through the umbrella) to "ok"; the deferred host
  *      side effect lands and an app-bound `source:"automation"` grant is minted.
- *   3. Revocation is live: DELETE /grants/:id, fire again, the run parks again and
- *      the host is untouched.
+ *   3. Revocation is live, and observably so: with the standing grant live THE LAW
+ *      (§12) BLOCKS the away send over it; after DELETE /grants/:id there is no
+ *      authority left at all, so the next fire PARKS to ask a human. Two distinct
+ *      outcomes across the revocation, and the host is untouched either way.
  *   4. The 05 §6 boundary at the COMPOSED level: a chat-source grant (minted via a
  *      present chat approval with `remember`, so NO appId binding) never authorizes
  *      an away run — the automation still parks.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import type { AppDocument } from "@vendoai/core";
+import { UNATTENDED_DESTRUCTIVE_REASON, type AppDocument } from "@vendoai/core";
 import {
   ADA,
   createStack,
@@ -154,10 +156,16 @@ describe("J5: away capture, park, resume, revoke through the composed wire", () 
     const missing = await enableMissing(appId);
     expect((await decideApprovals(stack, missing.map((request) => request.id), { approve: true }, ADA)).status).toBe(200);
 
-    // First run: the standing grant authorizes the away send.
+    // First run: the standing grant does NOT authorize the away send. THE LAW
+    // (§12) "refuses a standing grant, rule, judge, or default authorizing an
+    // irreversible action with nobody watching" — and `host_invoices_send`
+    // resolves destructive on the second mechanical vote whatever its declared
+    // label. So the run is BLOCKED over a live grant, and the host is untouched.
     const [firstRun] = await stack.vendo.emit("j5.revoke", { id: "inv_0003" }, ADA);
-    await waitForRunStatus(stack, firstRun!, ADA, "ok");
-    expect(await invoiceStatus("inv_0003")).toBe("open");
+    const blocked = await waitForRunStatus(stack, firstRun!, ADA, "error");
+    expect(blocked.steps.at(-1)).toMatchObject({ tool: SEND, outcome: "blocked" });
+    expect(blocked.error?.message).toBe(UNATTENDED_DESTRUCTIVE_REASON);
+    expect(await invoiceStatus("inv_0003")).toBe("draft");
 
     // Revoke the standing automation grant over the wire.
     const grants = (await (await stack.wireFetch("/grants", {}, ADA)).json()) as Array<{
