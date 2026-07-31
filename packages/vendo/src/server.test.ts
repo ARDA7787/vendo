@@ -2434,11 +2434,11 @@ describe("ENG-252 agent.loadout through createVendo", () => {
     await turn.text();
 
     // The curated loadout gates the host surface: only the named tool is
-    // offered; the rest stay discoverable via vendo_tools_search.
+    // offered; the rest stay discoverable via find_tools.
     expect(toolNamesPerCall).toHaveLength(1);
     expect(toolNamesPerCall[0]).toContain("host_beta");
     expect(toolNamesPerCall[0]).not.toContain("host_alpha");
-    expect(toolNamesPerCall[0]).toContain("vendo_tools_search");
+    expect(toolNamesPerCall[0]).toContain("find_tools");
   });
 });
 
@@ -2497,7 +2497,7 @@ describe("surfaces.agent through createVendo", () => {
                   {
                     type: "tool-call" as const,
                     toolCallId: "call_search",
-                    toolName: "vendo_tools_search",
+                    toolName: "find_tools",
                     input: JSON.stringify({ query: "export the raw ledger" }),
                   },
                   finish,
@@ -2533,7 +2533,7 @@ describe("surfaces.agent through createVendo", () => {
 
     expect(recorder.toolNamesPerCall[0]).toContain("host_listAccounts");
     expect(recorder.toolNamesPerCall[0]).not.toContain("host_exportLedger");
-    expect(recorder.toolNamesPerCall[0]).toContain("vendo_tools_search");
+    expect(recorder.toolNamesPerCall[0]).toContain("find_tools");
     // The registry itself is untouched — the door and the host's own code still
     // see the whole surface; only what the AGENT is offered is curated.
     expect((await vendo.actions.descriptors()).map((entry) => entry.name)).toContain("host_exportLedger");
@@ -2581,7 +2581,7 @@ describe("surfaces.agent through createVendo", () => {
 
     expect(recorder.toolNamesPerCall[0]).toContain("host_listAccounts");
     expect(recorder.toolNamesPerCall[0]).not.toContain("host_exportLedger");
-    expect(recorder.toolNamesPerCall[0]).toContain("vendo_tools_search");
+    expect(recorder.toolNamesPerCall[0]).toContain("find_tools");
   });
 
   it("without a surfaces block the agent surface is unchanged", async () => {

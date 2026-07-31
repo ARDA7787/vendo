@@ -84,7 +84,7 @@ createVendo({
   model's context. When the enabled host surface exceeds the cap, Vendo
   picks a deterministic read-first initial loadout (safest risk first,
   then name); the remainder stay available and the model can pull them in
-  mid-turn through the `vendo_tools_search` meta-tool. Defaults to `128`.
+  mid-turn through the `find_tools` meta-tool. Defaults to `128`.
   Vendo's own `vendo_*` tools are always active and don't count toward the
   cap.
 - `loadout` is an explicit list of host tool names to load at turn start.
@@ -92,7 +92,7 @@ createVendo({
   you want to curate the starting surface for a specific product, for
   example a support console that only needs a handful of ticket tools.
   Anything omitted from the list is still discoverable via
-  `vendo_tools_search`. Every tool, initial or searched-in, still
+  `find_tools`. Every tool, initial or searched-in, still
   executes through the same guard binding.
 - `maxSteps` caps how many agent steps (model call + tool round-trip) run in
   a single turn. Defaults to `20`. When the cap is hit, Vendo stops the loop

@@ -396,16 +396,16 @@ export interface CreateVendoConfig {
     maxOutputTokens?: number;
     historyWindow?: number;
     /** ENG-252 — cap on the uncurated initial tool loadout; the rest stay
-        discoverable via `vendo_tools_search`. Defaults to the agent block's
+        discoverable via `find_tools`. Defaults to the agent block's
         DEFAULT_MAX_INITIAL_TOOLS. */
     maxInitialTools?: number;
     /** ENG-252 — explicit curated initial loadout by tool name. When set,
         exactly these host tools (that exist and are enabled) start active —
         the cap is not applied; the rest stay discoverable via
-        `vendo_tools_search`. Vendo's own `vendo_*` tools are always active. */
+        `find_tools`. Vendo's own `vendo_*` tools are always active. */
     loadout?: string[];
     /** Discovery discipline (spec 2026-07-25) — how many lazy connector toolkits ONE
-        `vendo_tools_search` query may expand from the discovery index.
+        `find_tools` query may expand from the discovery index.
         Default 3. Lower it to keep a broad intent from fanning out schema
         loads; 0 disables index-driven expansion entirely (already-loaded
         tools stay searchable). */
@@ -1911,7 +1911,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       emit: (event) => missCapture.record(event),
     },
     // ENG-252: the agent starts with a bounded loadout and discovers the rest via
-    // `vendo_tools_search`. The search seam is the SAME guard-bound registry the
+    // `find_tools`. The search seam is the SAME guard-bound registry the
     // agent executes through — a searched-in tool has no unguarded path.
     toolSearch: {
       // A curated agent menu has to hold at BOTH doors into the toolset: the
@@ -1962,7 +1962,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const agentMenu = memoizedSurfaceMenu(() => actions.surfaceMenu("agent"));
   /** Keep only entries the agent menu offers. Vendo's OWN `vendo_*` runtime
    *  tools are never curated away: surfaces curate a product's API surface, not
-   *  the runtime's plumbing (gating `vendo_apps_*` or `vendo_tools_search` out
+   *  the runtime's plumbing (gating `vendo_apps_*` or `find_tools` out
    *  would break the product, not trim it). */
   async function onAgentMenu<T>(entries: T[], nameOf: (entry: T) => string): Promise<T[]> {
     const menu = await agentMenu();
