@@ -409,3 +409,12 @@ need).
 
 Wave-1 `can()` is exactly today's rule: a path under `/user/` belongs to its
 subject, `/host/` is read-only for everyone. Nothing more.
+
+Amendments 2026-07-30 (lane D ratifications): the design's `records_*` verbs
+ARE the shipped `vendo_apps_data_list/put/delete` — no rename; the names are
+referenced inside stored app documents, and invalidating live apps for
+cosmetics fails the migration law. `schedule` carries risk `write` (arming
+future unattended behavior is a write). `validate` returns findings in its
+output, never a tool error. The host product-slug RENAME (applying the
+shipped prefix primitive across the extraction estate) is its own post-wave-1
+lane — mixed prefixes are worse than none.
