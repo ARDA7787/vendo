@@ -26,6 +26,16 @@ const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, "");
 
 /** Build contract §3.4 — `s3(bucket)`: workspace blobs in an object store. */
 export function s3(options: S3FilesOptions): FilesAdapter {
+  // Without either, the AWS host would be `<bucket>.s3.auto.amazonaws.com` —
+  // a DNS failure on the first write instead of a configuration error here.
+  if (options.region === undefined && options.endpoint === undefined) {
+    throw new VendoError(
+      "validation",
+      "s3() needs a `region` (for AWS, e.g. `region: \"us-east-1\"`) or an `endpoint`"
+        + " (for an S3-compatible service such as R2, Supabase or MinIO, which also"
+        + " accept `region: \"auto\"`).",
+    );
+  }
   const region = options.region ?? "auto";
   const prefix = options.prefix === undefined ? "" : `${trimSlashes(options.prefix)}/`;
   const base = options.endpoint === undefined
@@ -49,10 +59,20 @@ export function s3(options: S3FilesOptions): FilesAdapter {
     return await (fetchImpl === undefined ? fetch(request) : fetchImpl(request));
   };
 
+  /** The bucket's answer, in Vendo's vocabulary. A refused or unwell bucket is
+   *  not the host's input being invalid, and treating every status as
+   *  `validation` told callers to go fix an argument that was already right. */
   const raise = (response: Response, action: string, key: string): never => {
+    const code = response.status === 401 || response.status === 403
+      ? "blocked" // credentials or bucket policy refused this call
+      : response.status === 404
+        ? "not-found" // the bucket (or the whole endpoint) is not there
+        : response.status === 429 || response.status >= 500
+          ? "conflict" // throttled or upstream failure — retryable, not the caller's fault
+          : "validation";
     throw new VendoError(
-      "validation",
-      `S3 ${action} of ${key} failed with ${response.status} ${response.statusText}`,
+      code,
+      `S3 ${action} of ${key} failed with ${response.status} ${response.statusText}`.trimEnd(),
     );
   };
 

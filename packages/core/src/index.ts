@@ -34,6 +34,7 @@ export * from "./tools.js";
 export * from "./genui/expr.js";
 export * from "./genui/tree-node.js";
 export * from "./genui/tree.js";
+export * from "./filesystem.js";
 export * from "./triggers.js";
 export * from "./workspace.js";
 // genui/wire — only the compiler entry point, the renderer/repair issue

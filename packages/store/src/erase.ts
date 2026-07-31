@@ -1,8 +1,8 @@
-import { WORKSPACE_BLOB_NAMESPACE } from "./files-store.js";
+import type { FilesAdapter } from "@vendoai/core";
+import { storeFiles } from "./files-store.js";
 import { escapeLike } from "./helpers/utils.js";
 import { dbFor, type VendoStore } from "./store.js";
 import { invalid } from "./validate.js";
-import { workspaceBlobPrefix } from "./workspace-rows.js";
 
 /** 02-store §5 — every table in §2's public map. The erase API cascades the
  *  matching data across all of them; `vendo_meta` holds schema metadata (schema
@@ -50,7 +50,7 @@ function emptyReport(): EraseReport {
  * Policy engines and schedulers stay out of scope: hosts call this from their
  * own jobs, and host SQL remains available for everything else.
  */
-export function eraseStore(store: VendoStore): {
+export function eraseStore(store: VendoStore, options: { files?: FilesAdapter } = {}): {
   /** Full erasure of one subject: their apps (and each app's records, blobs,
       state, and runs), plus every subject-keyed or subject-ref'd row and the
       subject's session registration (§4). */
@@ -62,6 +62,29 @@ export function eraseStore(store: VendoStore): {
   byApp(appId: string): Promise<EraseReport>;
 } {
   const db = dbFor(store);
+  // Workspace content past the inline cap lives behind the files adapter, and
+  // `blob_ref` is its ONLY pointer (workspace-rows mints random ids), so the
+  // cascade has to read the refs off the rows it deletes. A host that wired
+  // `files:` must pass the same adapter here, or its objects outlive the rows.
+  const files = options.files ?? storeFiles(store);
+
+  /** Delete workspace rows and the blobs they were the only pointer to. */
+  const delWorkspace = async (
+    report: EraseReport,
+    table: "vendo_workspace_files" | "vendo_workspace_history",
+    where: string,
+    params: unknown[],
+  ): Promise<void> => {
+    const result = await db.query(
+      `DELETE FROM ${table} WHERE ${where} RETURNING blob_ref`,
+      params,
+    );
+    report[table] += result.rows.length;
+    for (const row of result.rows) {
+      const ref = row["blob_ref"];
+      if (typeof ref === "string") await files.delete(ref);
+    }
+  };
 
   const del = async (
     report: EraseReport,
@@ -120,17 +143,10 @@ export function eraseStore(store: VendoStore): {
       await del(report, "vendo_knowledge_docs", "refs @> $1::jsonb", [subjectRef]);
       await del(report, "vendo_knowledge_chunks", "refs @> $1::jsonb", [subjectRef]);
       // The workspace (build contract §3.3) is keyed by `owner`, which for
-      // /user paths IS the subject — their files and every superseded revision
-      // go with them, plus the blobs the store-backed files adapter holds for
-      // them (a host-wired `files:` adapter owns its own bucket's lifecycle).
-      await del(report, "vendo_workspace_files", "owner = $1", [subject]);
-      await del(report, "vendo_workspace_history", "owner = $1", [subject]);
-      await del(
-        report,
-        "vendo_blobs",
-        "namespace = $1 AND key LIKE $2 ESCAPE '\\'",
-        [WORKSPACE_BLOB_NAMESPACE, `${escapeLike(workspaceBlobPrefix(subject))}%`],
-      );
+      // /user paths IS the subject — their files, every superseded revision,
+      // and the content each row points at.
+      await delWorkspace(report, "vendo_workspace_files", "owner = $1", [subject]);
+      await delWorkspace(report, "vendo_workspace_history", "owner = $1", [subject]);
       // The session registration (if any) is retired with the data (§4).
       await del(report, "vendo_sessions", "subject = $1", [subject]);
       return report;
@@ -161,8 +177,8 @@ export function eraseStore(store: VendoStore): {
       // `/user/files/apps/<appId>/` is not swept up with the app. (`/orgs`
       // mounts are wave 3 and deliberately not matched here.)
       const appPaths = `/user/apps/${escapeLike(appId)}/%`;
-      await del(report, "vendo_workspace_files", "path LIKE $1 ESCAPE '\\'", [appPaths]);
-      await del(report, "vendo_workspace_history", "path LIKE $1 ESCAPE '\\'", [appPaths]);
+      await delWorkspace(report, "vendo_workspace_files", "path LIKE $1 ESCAPE '\\'", [appPaths]);
+      await delWorkspace(report, "vendo_workspace_history", "path LIKE $1 ESCAPE '\\'", [appPaths]);
       return report;
     },
   };

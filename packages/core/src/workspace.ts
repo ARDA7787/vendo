@@ -1,8 +1,8 @@
-// Type-only: `import type` is erased at compile time, so core never carries
-// just-bash's ~500 KB bash implementation into any consumer's bundle graph.
-// The dependency is declared (not a devDependency) because `IFileSystem`
-// leaks into core's published .d.ts — every consumer typechecks against it.
-import type { IFileSystem } from "just-bash";
+// `IFileSystem` is vendored into ./filesystem.ts rather than imported from
+// just-bash: it leaks into core's published .d.ts, and a dependency there
+// would put ~50 MB of bash interpreter into every SDK install for a shape.
+// The runtime dependency belongs to whoever runs bash (@vendoai/harnesses).
+import type { IFileSystem } from "./filesystem.js";
 
 /** Build contract §3.2 — the agent's filesystem. just-bash's `IFileSystem`
     implemented over the store (`workspaceStore(store).open(principal)` in

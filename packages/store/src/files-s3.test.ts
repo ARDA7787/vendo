@@ -68,7 +68,7 @@ describe("s3() files adapter", () => {
       sent.url.endsWith("present")
         ? new Response(new Uint8Array([9, 8]), { status: 200, headers: { "content-type": "application/octet-stream" } })
         : new Response(null, { status: 404 }));
-    const files = s3({ bucket: "b", ...credentials, fetch });
+    const files = s3({ bucket: "b", region: "us-east-1", ...credentials, fetch });
 
     expect(await files.get("present")).toEqual({
       bytes: new Uint8Array([9, 8]),
@@ -79,10 +79,53 @@ describe("s3() files adapter", () => {
 
   it("treats a delete of a missing key as done, and raises anything else", async () => {
     const { fetch: missing } = recorder(() => new Response(null, { status: 404 }));
-    await expect(s3({ bucket: "b", ...credentials, fetch: missing }).delete("gone")).resolves.toBeUndefined();
+    await expect(s3({ bucket: "b", region: "us-east-1", ...credentials, fetch: missing }).delete("gone"))
+      .resolves.toBeUndefined();
 
     const { fetch: denied } = recorder(() => new Response(null, { status: 403, statusText: "Forbidden" }));
-    await expect(s3({ bucket: "b", ...credentials, fetch: denied }).delete("nope"))
+    await expect(s3({ bucket: "b", region: "us-east-1", ...credentials, fetch: denied }).delete("nope"))
+      .rejects.toMatchObject<Partial<VendoError>>({ code: "blocked" });
+  });
+
+  // F11 (verifier): with neither region nor endpoint the adapter built
+  // `s3.auto.amazonaws.com` — a DNS failure at the first write instead of a
+  // configuration error at construction.
+  it("refuses to be built without a region or an endpoint, naming the fix", async () => {
+    expect(() => s3({ bucket: "b", ...credentials }))
+      .toThrow(/region|endpoint/);
+    try {
+      s3({ bucket: "b", ...credentials });
+    } catch (error) {
+      expect(error).toMatchObject<Partial<VendoError>>({ code: "validation" });
+    }
+    // Either one is enough.
+    expect(() => s3({ bucket: "b", region: "us-east-1", ...credentials })).not.toThrow();
+    expect(() => s3({ bucket: "b", endpoint: "https://minio.internal", ...credentials })).not.toThrow();
+  });
+
+  // F14 (verifier): every non-2xx became VendoError("validation") — a 403 or a
+  // 500 is not the host's input being invalid.
+  it("maps a refusal, a missing bucket and an upstream failure to distinct kinds", async () => {
+    const adapterFor = (status: number, statusText = ""): ReturnType<typeof s3> => {
+      const { fetch } = recorder(() => new Response(null, { status, statusText }));
+      return s3({ bucket: "b", region: "us-east-1", ...credentials, fetch });
+    };
+
+    // The caller is not allowed: that is the guard's vocabulary, not validation.
+    await expect(adapterFor(403, "Forbidden").put("k", new Uint8Array([1])))
+      .rejects.toMatchObject<Partial<VendoError>>({ code: "blocked" });
+    await expect(adapterFor(401, "Unauthorized").put("k", new Uint8Array([1])))
+      .rejects.toMatchObject<Partial<VendoError>>({ code: "blocked" });
+    // The bucket itself is not there.
+    await expect(adapterFor(404, "Not Found").put("k", new Uint8Array([1])))
+      .rejects.toMatchObject<Partial<VendoError>>({ code: "not-found" });
+    // Upstream is unwell or throttling — neither is the host's fault.
+    for (const status of [429, 500, 503]) {
+      await expect(adapterFor(status).put("k", new Uint8Array([1])))
+        .rejects.toMatchObject<Partial<VendoError>>({ code: "conflict" });
+    }
+    // A genuinely malformed request stays validation.
+    await expect(adapterFor(400, "Bad Request").put("k", new Uint8Array([1])))
       .rejects.toMatchObject<Partial<VendoError>>({ code: "validation" });
   });
 
@@ -90,7 +133,7 @@ describe("s3() files adapter", () => {
     const { sent, fetch } = recorder(() => new Response(null, { status: 200 }));
     process.env["AWS_ACCESS_KEY_ID"] = "env-key-must-be-ignored";
     try {
-      await s3({ bucket: "b", accessKeyId: "arg-key", secretAccessKey: "arg-secret", fetch })
+      await s3({ bucket: "b", region: "us-east-1", accessKeyId: "arg-key", secretAccessKey: "arg-secret", fetch })
         .put("k", new Uint8Array([1]));
     } finally {
       delete process.env["AWS_ACCESS_KEY_ID"];

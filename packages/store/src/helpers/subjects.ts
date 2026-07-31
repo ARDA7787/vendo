@@ -1,4 +1,5 @@
-import { isReservedSubject, VendoError } from "@vendoai/core";
+import { isReservedSubject, VendoError, type FilesAdapter } from "@vendoai/core";
+import { storeFiles } from "../files-store.js";
 import { isEphemeralSubject } from "../sessions.js";
 import { dbFor, type VendoStore } from "../store.js";
 
@@ -38,6 +39,7 @@ export async function adoptEphemeralSubject(
   store: VendoStore,
   from: string,
   to: string,
+  options: { files?: FilesAdapter } = {},
 ): Promise<SubjectMergeReport | null> {
   if (from === to) throw new VendoError("validation", "cannot merge a subject into itself");
   if (isReservedSubject(to)) {
@@ -120,12 +122,28 @@ export async function adoptEphemeralSubject(
       [from, to, movedFiles.rows.map((row) => String(row["path"]))],
     );
   }
+  // The rows that lost the collision are dropped — and so is the content they
+  // pointed at. `blob_ref` is the only pointer (random ids), so skipping this
+  // orphans a blob on the MOST COMMON sign-in path. Files that MOVED keep their
+  // blobs untouched: the row travelled, and the row is the pointer.
+  const files = options.files ?? storeFiles(store);
+  const dropBlobs = async (rows: Record<string, unknown>[]): Promise<void> => {
+    for (const row of rows) {
+      const ref = row["blob_ref"];
+      if (typeof ref === "string") await files.delete(ref);
+    }
+  };
   const skippedFiles = await db.query(
-    "DELETE FROM vendo_workspace_files WHERE owner = $1 RETURNING path",
+    "DELETE FROM vendo_workspace_files WHERE owner = $1 RETURNING path, blob_ref",
     [from],
   );
   report.skipped += skippedFiles.rows.length;
-  await db.query("DELETE FROM vendo_workspace_history WHERE owner = $1", [from]);
+  await dropBlobs(skippedFiles.rows);
+  const skippedHistory = await db.query(
+    "DELETE FROM vendo_workspace_history WHERE owner = $1 RETURNING blob_ref",
+    [from],
+  );
+  await dropBlobs(skippedHistory.rows);
 
   // Everything else the anonymous subject accrued is deliberately dropped:
   // grants, approvals, audit, and the run history of its (now adopted) apps.

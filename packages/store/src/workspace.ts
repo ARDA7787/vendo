@@ -2,7 +2,7 @@ import type { FilesAdapter, Principal, WorkspaceFs } from "@vendoai/core";
 import { storeFiles } from "./files-store.js";
 import { dbFor, type VendoStore } from "./store.js";
 import { HOST_MOUNT, normalizePath, WorkspaceStoreFs } from "./workspace-fs.js";
-import { workspaceRows, type WorkspaceHistoryEntry } from "./workspace-rows.js";
+import { workspaceRows, type UndoOutcome, type WorkspaceHistoryEntry } from "./workspace-rows.js";
 
 /** What the caller projects into the read-only `/host` mount for one turn:
     path → contents. Paths outside `/host/` are refused, because the layout is
@@ -33,9 +33,11 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
   /** One workspace, one turn. Writes stage until `commit()`. `host` projects
       the read-only mount (pack skills, host knowledge) for this turn. */
   open(principal: Principal, opts?: { host?: HostProjection }): Promise<WorkspaceFs>;
-  /** Walks one step back through a path's history; `empty` when there is
-      nothing left to undo. */
-  undo(principal: Principal, path: string): Promise<{ status: "ok"; revision: number } | { status: "empty" }>;
+  /** Walks one step back through a path's history — including back to a file
+      that was deleted. `empty` means there is nothing left to undo;
+      `content-missing` is a revision whose blob is gone (consumed, so the walk
+      continues into older revisions instead of stopping there forever). */
+  undo(principal: Principal, path: string): Promise<UndoOutcome>;
   /** Newest superseded revision first. */
   history(principal: Principal, path: string): Promise<WorkspaceHistoryEntry[]>;
 } {
@@ -56,9 +58,9 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
 
 export { HOST_MOUNT, USER_MOUNT } from "./workspace-fs.js";
 export {
-  workspaceBlobPrefix,
   WORKSPACE_HISTORY_LIMIT,
   WORKSPACE_INLINE_MAX_BYTES,
+  type UndoOutcome,
   type WorkspaceFileMeta,
   type WorkspaceHistoryEntry,
 } from "./workspace-rows.js";

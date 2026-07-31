@@ -185,7 +185,7 @@ for (const backend of backends()) {
 
       const row = (await rowsFor(path))[0];
       expect(row?.["content"]).toBeNull();
-      expect(row?.["blob_ref"]).toMatch(/^ws\//);
+      expect(row?.["blob_ref"]).toMatch(/^wsb_[0-9a-f-]{36}$/);
       expect(Number(row?.["bytes"])).toBe(WORKSPACE_INLINE_MAX_BYTES + 1);
       expect(await (await workspace.open(user)).readFile(path)).toBe(big);
     });
@@ -200,7 +200,7 @@ for (const backend of backends()) {
 
       const row = (await rowsFor(path))[0];
       expect(row?.["content"]).toBeNull();
-      expect(row?.["blob_ref"]).toMatch(/^ws\//);
+      expect(row?.["blob_ref"]).toMatch(/^wsb_[0-9a-f-]{36}$/);
       expect(await (await workspace.open(user)).readFileBuffer(path)).toEqual(bytes);
     });
 
@@ -242,10 +242,16 @@ for (const backend of backends()) {
         await fs.writeFile(path, big(marker));
         await fs.commit({ message: `wrote ${marker}` });
       }
+      // Keys are random ids, so reachability is the question: how many blobs do
+      // this path's rows still point at?
       const blobsFor = async (): Promise<number> => Number(
         (await made.sql(
-          "SELECT COUNT(*)::int AS count FROM vendo_blobs WHERE namespace = 'workspace' AND key LIKE $1",
-          [`%${Buffer.from(path, "utf8").toString("base64url")}%`],
+          `SELECT COUNT(*)::int AS count FROM vendo_blobs
+           WHERE namespace = 'workspace' AND key IN (
+             SELECT blob_ref FROM vendo_workspace_files WHERE path = $1 AND blob_ref IS NOT NULL
+             UNION SELECT blob_ref FROM vendo_workspace_history WHERE path = $1 AND blob_ref IS NOT NULL
+           )`,
+          [path],
         ))[0]?.["count"],
       );
       // One live revision + one superseded revision.
@@ -275,6 +281,142 @@ for (const backend of backends()) {
       // The newest revisions survive; the oldest are trimmed.
       expect(Number(rows[0]?.["newest"])).toBe(WORKSPACE_HISTORY_LIMIT + 5);
       expect(Number(rows[0]?.["oldest"])).toBe(6);
+    });
+
+    // F5 (verifier): commit wrote files in insertion order and aborted on the
+    // first failure, so an oversized upload staged BEFORE the app edit silently
+    // dropped the edit — and staged AFTER it, kept it. Order decided the data.
+    it("commits nothing when one staged file cannot be stored, whatever the order", async () => {
+      const app = "/user/apps/app_preflight/app.vendo";
+      const upload = "/user/files/too-big.bin";
+      const workspace = workspaceStore(made.store);
+
+      for (const uploadFirst of [true, false]) {
+        const fs = await workspace.open(user);
+        if (uploadFirst) {
+          await fs.writeFile(upload, new Uint8Array(FILES_STORE_MAX_BYTES + 1));
+          await fs.writeFile(app, "page: survives");
+        } else {
+          await fs.writeFile(app, "page: survives");
+          await fs.writeFile(upload, new Uint8Array(FILES_STORE_MAX_BYTES + 1));
+        }
+
+        // Rejected up front, naming the file that cannot be stored...
+        await expect(fs.commit({ message: "tried both" }))
+          .rejects.toMatchObject<Partial<VendoError>>({ code: "validation" });
+        await expect(fs.commit()).rejects.toThrow(new RegExp(upload));
+        // ...and no row landed for EITHER path, in either order.
+        expect(await rowsFor(app)).toEqual([]);
+        expect(await rowsFor(upload)).toEqual([]);
+      }
+    });
+
+    it("leaves no orphaned content behind when a commit is rejected", async () => {
+      const workspace = workspaceStore(made.store);
+      const fs = await workspace.open(user);
+      const blobs = async (): Promise<number> => Number(
+        (await made.sql(
+          "SELECT COUNT(*)::int AS count FROM vendo_blobs WHERE namespace = 'workspace'",
+        ))[0]?.["count"],
+      );
+      const before = await blobs();
+
+      // A storable over-cap-for-inline file (goes to a blob) plus an unstorable one.
+      await fs.writeFile("/user/files/fine.txt", "y".repeat(WORKSPACE_INLINE_MAX_BYTES + 1));
+      await fs.writeFile("/user/files/doomed.bin", new Uint8Array(FILES_STORE_MAX_BYTES + 1));
+      await expect(fs.commit()).rejects.toThrow(/doomed\.bin/);
+
+      // The blob placed for the storable file is released with the rejection.
+      expect(await blobs()).toBe(before);
+    });
+
+    // F6 (verifier): an explicitly mkdir'ed directory was reported as a file, so
+    // `find -type f` returned directories.
+    it("reports an explicitly created directory as a directory", async () => {
+      const fs = await workspaceStore(made.store).open(user);
+      await fs.mkdir("/user/files/reports", { recursive: true });
+      await fs.writeFile("/user/files/summary.txt", "a file");
+
+      const entries = await fs.readdirWithFileTypes("/user/files");
+      expect(entries.find((entry) => entry.name === "reports"))
+        .toMatchObject({ isDirectory: true, isFile: false });
+      expect(entries.find((entry) => entry.name === "summary.txt"))
+        .toMatchObject({ isDirectory: false, isFile: true });
+      expect((await fs.stat("/user/files/reports")).isDirectory).toBe(true);
+    });
+
+    // F7 (verifier): rm erased the path's whole history, so a deleted file could
+    // never be undone — contract §3.3 says history is append-only.
+    it("records a delete in history so undo brings the file back", async () => {
+      const path = "/user/files/deleted-then-restored.txt";
+      const workspace = workspaceStore(made.store);
+      const first = await workspace.open(user);
+      await first.writeFile(path, "the only copy");
+      await first.commit({ message: "wrote it" });
+
+      const second = await workspace.open(user);
+      await second.rm(path);
+      expect(await second.commit({ message: "deleted the file" })).toEqual({
+        status: "ok",
+        changed: [path],
+      });
+      expect(await rowsFor(path)).toEqual([]);
+
+      // History kept what the delete removed, with the delete's own intent.
+      expect(await workspace.history(user, path)).toMatchObject([
+        { revision: 1, intent: "deleted the file" },
+      ]);
+
+      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      expect(await (await workspace.open(user)).readFile(path)).toBe("the only copy");
+      // Revisions never go backwards, even across a delete and a restore.
+      expect(Number((await rowsFor(path))[0]?.["revision"])).toBeGreaterThan(1);
+    });
+
+    // F10 (verifier): writes outside the two mounts were staged and then
+    // silently discarded with status ok — data loss on a typo.
+    it("refuses a write outside the two mounts instead of dropping it at commit", async () => {
+      const fs = await workspaceStore(made.store).open(user);
+      for (const path of ["/User/apps/app_1/app.vendo", "/user/../x", "/etc/passwd", "/tmp/scratch.txt"]) {
+        await expect(fs.writeFile(path, "lost?")).rejects.toThrow(/EACCES: permission denied/);
+      }
+      await expect(fs.mkdir("/etc/vendo")).rejects.toThrow(/EACCES: permission denied/);
+      expect(await fs.commit()).toEqual({ status: "ok", changed: [] });
+    });
+
+    // F13 (verifier): a file literally named /user/scratch persisted and
+    // shadowed the scratch directory.
+    it("treats the bare /user/scratch path as scratch, not a persisted file", async () => {
+      const fs = await workspaceStore(made.store).open(user);
+      await fs.writeFile("/user/scratch", "not a real document");
+      expect(await fs.commit()).toEqual({ status: "ok", changed: [] });
+      expect(await rowsFor("/user/scratch")).toEqual([]);
+    });
+
+    // F8 (verifier): a revision whose blob had vanished reported "empty" — a lie
+    // that also wedged every older revision behind it.
+    it("reports a revision whose content is gone and keeps walking past it", async () => {
+      const path = "/user/files/lost-blob.txt";
+      const workspace = workspaceStore(made.store);
+      const big = (marker: string): string => marker.repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
+      for (const content of [big("a"), big("b"), big("c")]) {
+        const fs = await workspace.open(user);
+        await fs.writeFile(path, content);
+        await fs.commit({ message: "wrote" });
+      }
+      // Lose the content of the newest superseded revision behind the store's back.
+      const ref = String((await made.sql(
+        `SELECT blob_ref FROM vendo_workspace_history WHERE path = $1
+         ORDER BY revision DESC LIMIT 1`,
+        [path],
+      ))[0]?.["blob_ref"]);
+      await made.sql("DELETE FROM vendo_blobs WHERE namespace = 'workspace' AND key = $1", [ref]);
+
+      // Honest about what happened, rather than claiming there is nothing to undo...
+      expect(await workspace.undo(user, path)).toMatchObject({ status: "content-missing" });
+      // ...and the older revision is still reachable.
+      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      expect(await (await workspace.open(user)).readFile(path)).toBe(big("a"));
     });
 
     it("names the fix when a file passes the store-backed cap with no files adapter wired", async () => {

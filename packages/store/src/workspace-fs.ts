@@ -1,23 +1,20 @@
-import type { CommitResult, WorkspaceFs } from "@vendoai/core";
-// Type-only: `IFileSystem`'s shape, never just-bash's ~500 KB implementation —
-// the store stays out of every bundler's bash graph (portability gate).
+// The filesystem shape lives in core (vendored from just-bash, Apache-2.0), so
+// neither core nor the store depends on the bash interpreter at runtime.
 import type {
   BufferEncoding,
+  CommitResult,
   CpOptions,
+  DirentEntry,
   FileContent,
   FsStat,
-  IFileSystem,
   MkdirOptions,
+  ReadFileOptions,
   RmOptions,
-} from "just-bash";
-import type { WorkspaceFileMeta, WorkspaceRows } from "./workspace-rows.js";
-
-// just-bash's root entry re-exports most of its fs types but not these three,
-// so they are read back off `IFileSystem` itself — the signatures we must match
-// are the definition, and this can never drift from them.
-type ReadFileOptions = Parameters<IFileSystem["readFile"]>[1];
-type WriteFileOptions = Parameters<IFileSystem["writeFile"]>[2];
-type DirentEntry = Awaited<ReturnType<NonNullable<IFileSystem["readdirWithFileTypes"]>>>[number];
+  WorkspaceFs,
+  WriteFileOptions,
+} from "@vendoai/core";
+import { safeErrorMessage, VendoError } from "@vendoai/core";
+import type { PreparedWrite, WorkspaceFileMeta, WorkspaceRows } from "./workspace-rows.js";
 
 /** Build contract §3.1 — the frozen layout. `/user` is the subject's, rw;
     `/host` is host-authored, ro for everyone (wave-1 `can()`, §8). No other
@@ -25,8 +22,10 @@ type DirentEntry = Awaited<ReturnType<NonNullable<IFileSystem["readdirWithFileTy
 export const USER_MOUNT = "/user";
 export const HOST_MOUNT = "/host";
 
-/** Intra-turn junk (§3.1): visible to the turn, never committed to the store. */
-const SCRATCH_PREFIX = "/user/scratch/";
+/** Intra-turn junk (§3.1): visible to the turn, never committed to the store.
+    The bare path counts — a FILE called `/user/scratch` would otherwise persist
+    and shadow the directory the layout reserves. */
+const SCRATCH_MOUNT = "/user/scratch";
 
 const DIR_MODE = 0o755;
 const FILE_MODE = 0o644;
@@ -45,6 +44,14 @@ const enotempty = (op: string, path: string): Error =>
   new Error(`ENOTEMPTY: directory not empty, ${op} '${path}'`);
 const eexist = (op: string, path: string): Error =>
   new Error(`EEXIST: file already exists, ${op} '${path}'`);
+/** The workspace is exactly two mounts (§3.1). A write anywhere else is a
+    mistake — `/User/apps/...`, `/user/../x`, `/etc/passwd` — and silently
+    accepting it would lose the data at commit with an `ok` status. */
+const eacces = (op: string, path: string): Error =>
+  new Error(
+    `EACCES: permission denied, ${op} '${path}'`
+      + ` (the workspace holds ${USER_MOUNT} and ${HOST_MOUNT} only)`,
+  );
 
 /** Resolve `.`/`..`, collapse slashes, drop the trailing one. Pure. */
 export function normalizePath(path: string): string {
@@ -119,8 +126,11 @@ const statOf = (kind: "file" | "directory", size: number, mtime: Date): FsStat =
  *
  * Staging is what keeps the store write law at O(files changed): a `sed -i`
  * loop writing one file forty times is one row, one revision, one history
- * entry. Paths outside `/user` and `/host` (bash's own `/tmp`, a cwd) stage and
- * are never persisted — the same role `MountableFs`'s InMemoryFs base plays.
+ * entry.
+ *
+ * The namespace is exactly the two mounts. A write anywhere else is refused
+ * (`EACCES`) rather than accepted into memory and dropped at commit — bash's
+ * own scratch belongs in `/user/scratch`, which the layout reserves for it.
  *
  * `/host/**` is a read-only overlay the caller supplies per turn, not store
  * rows: pack skills and host knowledge are code-defined (`PackSkill.body`,
@@ -153,12 +163,15 @@ export class WorkspaceStoreFs implements WorkspaceFs {
     return under(path, HOST_MOUNT);
   }
 
+  /** Every write goes through here: `/host` is read-only, and anything outside
+      the two mounts is refused outright rather than accepted and dropped. */
   private assertWritable(op: string, path: string): void {
     if (this.readOnly(path)) throw erofs(op, path);
+    if (!this.storeBacked(path)) throw eacces(op, path);
   }
 
   private persists(path: string): boolean {
-    return this.storeBacked(path) && !path.startsWith(SCRATCH_PREFIX);
+    return this.storeBacked(path) && !under(path, SCRATCH_MOUNT);
   }
 
   /** Every path the turn can see: the store's index, the host overlay, and this
@@ -281,26 +294,30 @@ export class WorkspaceStoreFs implements WorkspaceFs {
     if (this.isFile(normalized)) throw enotdir("scandir", path);
     if (!this.isDirectory(normalized)) throw enoent("scandir", path);
     const prefix = normalized === "/" ? "/" : `${normalized}/`;
-    const names = new Map<string, boolean>(); // name → isFile
-    const collect = (candidate: string): void => {
+    const files = new Set<string>();
+    const directories = new Set<string>();
+    const collect = (candidate: string, kind: "file" | "directory"): void => {
       if (!candidate.startsWith(prefix) || candidate === normalized) return;
       const rest = candidate.slice(prefix.length);
       const cut = rest.indexOf("/");
-      const name = cut === -1 ? rest : rest.slice(0, cut);
-      if (name === "") return;
-      names.set(name, cut === -1); // a deeper segment means it is a directory
+      if (rest === "") return;
+      // A deeper segment always means a directory, whatever the leaf is.
+      if (cut === -1) (kind === "file" ? files : directories).add(rest);
+      else directories.add(rest.slice(0, cut));
     };
-    for (const candidate of this.livePaths()) collect(candidate);
-    for (const candidate of this.directories) collect(candidate);
+    for (const candidate of this.livePaths()) collect(candidate, "file");
+    // An explicitly mkdir'ed path is a directory even with nothing under it —
+    // reporting it as a file made `find -type f` return directories.
+    for (const candidate of this.directories) collect(candidate, "directory");
     if (normalized === "/") {
-      names.set("user", false);
-      names.set("host", false);
+      directories.add("user");
+      directories.add("host");
     }
-    return [...names.entries()]
-      .map(([name, isFile]) => ({
+    return [...directories, ...files]
+      .map((name) => ({
         name,
-        isFile,
-        isDirectory: !isFile,
+        isFile: !directories.has(name),
+        isDirectory: directories.has(name),
         isSymbolicLink: false,
       }))
       .sort((left, right) => (left.name < right.name ? -1 : 1));
@@ -400,31 +417,54 @@ export class WorkspaceStoreFs implements WorkspaceFs {
    * Build contract §3.2 — land the turn's writes. `/user` is last-write-wins;
    * `/orgs`' compare-and-swap (and the `conflict` outcome) arrives in wave 3.
    *
+   * **Preflighted.** Every staged file's content is placed first; only when the
+   * whole set is placeable does any row change. A commit therefore either lands
+   * all of it or lands none of it — an oversized upload can no longer swallow
+   * the same turn's app edit just by being staged first. Deterministic failures
+   * (over the store-backed cap, an adapter refusal) throw a `VendoError` naming
+   * the file; `CommitResult` keeps its frozen `ok | conflict` vocabulary.
+   *
    * Only paths whose bytes actually changed are written (§3.5), so `changed` is
-   * the honest O(files changed) count. `/user/scratch/**` and anything outside
-   * the mounts stay staged and simply never land.
+   * the honest O(files changed) count. `/user/scratch/**` never lands.
    */
   async commit(opts?: { message?: string }): Promise<CommitResult> {
+    const landing: PreparedWrite[] = [];
+    for (const [path, staged] of this.staged) {
+      if (!this.persists(path)) continue;
+      let prepared: PreparedWrite | "unchanged";
+      try {
+        prepared = await this.rows.prepare(this.owner, path, staged.bytes);
+      } catch (cause) {
+        // Nothing has been written yet; release what this commit already placed
+        // so a rejected commit leaves no orphaned content behind.
+        for (const done of landing) await this.rows.discard(done);
+        throw new VendoError(
+          "validation",
+          `Cannot commit ${path}: ${safeErrorMessage(cause)}`,
+          { path },
+        );
+      }
+      if (prepared !== "unchanged") landing.push(prepared);
+    }
+
     const changed: string[] = [];
     for (const path of [...this.removed].filter((candidate) => this.persists(candidate))) {
-      if (await this.rows.remove(this.owner, path)) {
+      if (await this.rows.remove(this.owner, path, opts?.message)) {
         this.index.delete(path);
         changed.push(path);
       }
     }
     this.removed.clear();
-    for (const [path, staged] of this.staged) {
-      if (!this.persists(path)) continue;
-      const written = await this.rows.write(this.owner, path, staged.bytes, opts?.message);
-      if (!written.changed) continue;
-      this.index.set(path, {
-        path,
+    for (const prepared of landing) {
+      const written = await this.rows.land(this.owner, prepared, opts?.message);
+      this.index.set(prepared.path, {
+        path: prepared.path,
         owner: this.owner,
-        bytes: staged.bytes.byteLength,
+        bytes: prepared.bytes,
         revision: written.revision,
         updatedAt: written.updatedAt,
       });
-      changed.push(path);
+      changed.push(prepared.path);
     }
     // Committed files now read through the store like everything else.
     for (const path of changed) this.staged.delete(path);

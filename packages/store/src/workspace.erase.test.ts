@@ -34,6 +34,12 @@ for (const backend of backends()) {
     });
     afterAll(async () => { if (made) await made.cleanup(); });
 
+    const workspaceBlobs = async (): Promise<number> => Number(
+      (await made.sql(
+        "SELECT COUNT(*)::int AS count FROM vendo_blobs WHERE namespace = 'workspace'",
+      ))[0]?.["count"],
+    );
+
     const count = async (table: string, where: string, params: unknown[]): Promise<number> => {
       const rows = await made.sql(`SELECT COUNT(*)::int AS count FROM ${table} WHERE ${where}`, params);
       return Number(rows[0]?.["count"]);
@@ -58,11 +64,14 @@ for (const backend of backends()) {
       const report = await eraseStore(made.store).bySubject(erased.subject);
       expect(report.vendo_workspace_files).toBe(2);
       expect(report.vendo_workspace_history).toBe(2);
-      // The over-cap file's live blob and its superseded one both go.
-      expect(report.vendo_blobs).toBe(2);
 
       expect(await count("vendo_workspace_files", "owner = $1", [erased.subject])).toBe(0);
       expect(await count("vendo_workspace_history", "owner = $1", [erased.subject])).toBe(0);
+      // The over-cap file's live blob and its superseded one both go. They are
+      // deleted THROUGH the files adapter (the row's `blob_ref` is the only
+      // pointer), so `report.vendo_blobs` — rows the cascade's own SQL deleted —
+      // deliberately does not count them: with a host-wired `files:` adapter
+      // they would not be vendo_blobs rows at all.
       expect(await count("vendo_blobs", "namespace = 'workspace'", [])).toBe(0);
 
       // The bystander keeps their files and their history.
@@ -106,6 +115,81 @@ for (const backend of backends()) {
         .readFile("/user/apps/app_anon/app.vendo")).toBe("made while anonymous");
 
       expect(await count("vendo_workspace_files", "owner = $1", [anon.subject])).toBe(0);
+    });
+
+    // F1 (verifier): blob keys embedded the owner while adoption flips only the
+    // owner COLUMN, so erasing the signed-in subject missed the adopted blobs —
+    // an erased user's file content survived. The row is the pointer now.
+    it("erases blobs that arrived through adoption, keyed by the row and not the owner", async () => {
+      const anon: Principal = { kind: "user", subject: "anon_ws_blob", ephemeral: true };
+      const signedIn: Principal = { kind: "user", subject: "user_ws_blob_adopter" };
+      const path = "/user/files/adopted-big.txt";
+      const big = "z".repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
+      await registerEphemeralSubject(made.store, anon.subject);
+      const before = await workspaceBlobs();
+      await seed(made.store, anon, path, [big]);
+      expect(await workspaceBlobs()).toBe(before + 1);
+
+      expect((await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject))?.files).toBe(1);
+      // The blob still reads through the new owner's workspace...
+      expect(await (await workspaceStore(made.store).open(signedIn)).readFile(path)).toBe(big);
+
+      // ...and erasing that owner must take the content with them.
+      await eraseStore(made.store).bySubject(signedIn.subject);
+      expect(await workspaceBlobs()).toBe(before);
+    });
+
+    // F2 (verifier): the skip path is the COMMON sign-in path, and its DELETEs
+    // never called files.delete — every collided blob orphaned.
+    it("deletes the blobs of adopted rows it drops on a collision", async () => {
+      const anon: Principal = { kind: "user", subject: "anon_ws_blob_skip", ephemeral: true };
+      const signedIn: Principal = { kind: "user", subject: "user_ws_blob_skipper" };
+      const path = "/user/files/collides.txt";
+      await registerEphemeralSubject(made.store, anon.subject);
+      const before = await workspaceBlobs();
+      await seed(made.store, anon, path, ["a".repeat(WORKSPACE_INLINE_MAX_BYTES + 1)]);
+      await seed(made.store, signedIn, path, ["b".repeat(WORKSPACE_INLINE_MAX_BYTES + 1)]);
+      expect(await workspaceBlobs()).toBe(before + 2);
+
+      const report = await adoptEphemeralSubject(made.store, anon.subject, signedIn.subject);
+      expect(report?.files).toBe(0);
+      // The dropped anonymous copy takes its blob with it; the survivor keeps its own.
+      expect(await workspaceBlobs()).toBe(before + 1);
+      expect(await (await workspaceStore(made.store).open(signedIn)).readFile(path))
+        .toBe("b".repeat(WORKSPACE_INLINE_MAX_BYTES + 1));
+    });
+
+    // F3 (verifier): erase.byApp deleted rows with no blob cascade at all.
+    it("deletes an app's blobs when the app is erased", async () => {
+      const owner: Principal = { kind: "user", subject: "user_ws_blob_app" };
+      const big = "q".repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
+      const before = await workspaceBlobs();
+      await seed(made.store, owner, "/user/apps/app_blob_drop/app.vendo", [big, `${big}!`]);
+      // The live revision plus the superseded one.
+      expect(await workspaceBlobs()).toBe(before + 2);
+
+      const report = await eraseStore(made.store).byApp("app_blob_drop");
+      expect(report.vendo_workspace_files).toBe(1);
+      expect(await workspaceBlobs()).toBe(before);
+    });
+
+    // F15 (verifier): keys derived from owner+path+revision were guessable
+    // across tenants. A blob key is now a random id; the row is the only pointer.
+    it("mints unguessable blob keys that carry no owner or path", async () => {
+      const owner: Principal = { kind: "user", subject: "user_ws_key_shape" };
+      const path = "/user/files/secret-name.txt";
+      await seed(made.store, owner, path, ["k".repeat(WORKSPACE_INLINE_MAX_BYTES + 1)]);
+      const refs = (await made.sql(
+        "SELECT blob_ref FROM vendo_workspace_files WHERE path = $1",
+        [path],
+      )).map((row) => String(row["blob_ref"]));
+
+      expect(refs).toHaveLength(1);
+      const ref = refs[0] ?? "";
+      for (const secret of [owner.subject, "secret-name", path, "r1"]) {
+        expect(ref).not.toContain(secret);
+        expect(ref).not.toContain(Buffer.from(secret, "utf8").toString("base64url"));
+      }
     });
 
     it("never lets an adopted file overwrite one the signed-in subject already owns", async () => {
