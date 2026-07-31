@@ -233,6 +233,31 @@ for (const backend of backends()) {
       expect(await blobCount()).toBe(before);
     });
 
+    it("strands no blob when undo discards a blob-backed revision", async () => {
+      const path = "/user/files/big-history.txt";
+      const workspace = workspaceStore(made.store);
+      const big = (marker: string): string => marker.repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
+      for (const marker of ["a", "b"]) {
+        const fs = await workspace.open(user);
+        await fs.writeFile(path, big(marker));
+        await fs.commit({ message: `wrote ${marker}` });
+      }
+      const blobsFor = async (): Promise<number> => Number(
+        (await made.sql(
+          "SELECT COUNT(*)::int AS count FROM vendo_blobs WHERE namespace = 'workspace' AND key LIKE $1",
+          [`%${Buffer.from(path, "utf8").toString("base64url")}%`],
+        ))[0]?.["count"],
+      );
+      // One live revision + one superseded revision.
+      expect(await blobsFor()).toBe(2);
+
+      expect(await workspace.undo(user, path)).toEqual({ status: "ok", revision: 3 });
+      expect(await (await workspace.open(user)).readFile(path)).toBe(big("a"));
+      // Undo has no redo, so the discarded revision's blob must not linger:
+      // only the restored one is still referenced.
+      expect(await blobsFor()).toBe(1);
+    });
+
     it("keeps history to WORKSPACE_HISTORY_LIMIT revisions per path", async () => {
       const path = "/user/memory/chatty.md";
       const workspace = workspaceStore(made.store);

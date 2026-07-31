@@ -159,6 +159,9 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
     const revision = (prior?.revision ?? 0) + 1;
     const stored = await place(owner, path, revision, bytes);
     const now = new Date().toISOString();
+    // Without a history row, nothing references the revision being replaced —
+    // so its blob (if any) goes with it rather than lingering unreachable.
+    if (prior !== undefined && !options.recordHistory) await dropBlob(prior.stored);
     if (prior !== undefined && options.recordHistory) {
       await db.query(
         `INSERT INTO vendo_workspace_history (id, path, owner, revision, content, blob_ref, intent, at)
