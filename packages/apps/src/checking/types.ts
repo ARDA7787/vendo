@@ -1,45 +1,31 @@
 /**
- * The checking layer's contract (generation pipeline rebuild, Task 3): one
- * plug-in shape for every kind of check the pipeline runs over a generated
- * app — the deterministic fact checks (facts.ts), the AI reviewer, and the
- * host's own checks (AppsConfig.checks). Findings are advice, not exceptions:
- * a check reports, it never throws the build away.
- */
-import type { AppPlan } from "@vendoai/core";
-import type { GeneratedAppDocument } from "../generation/engine.js";
-
-/**
- * One thing wrong with a generated app. `message` is a TEACHING sentence: it
- * names what is wrong AND the real alternative ("…the real fields are: …"),
- * because its readers are a model repairing the app and a human reading the
- * refusal.
+ * The checking floor's contract. The shapes themselves live in core
+ * (`@vendoai/core` `pack.ts`, build contract §5) because a pack is how a host
+ * plugs a check in, and a pack must be authorable without depending on the apps
+ * block. This file re-exports them so the floor's own modules read naturally,
+ * and adds the one shape that belongs to the floor rather than to the contract:
+ * the assembled layer.
  *
- * `block` stops the app shipping as-is; `warn` rides along (the section-sized
- * failure, and every check that could not run).
+ * Findings are advice, not exceptions: a check reports, it never throws the
+ * build away.
  */
-export interface Finding {
-  severity: "block" | "warn";
-  /** The locus: `document`, `node "n3" prop "rows"`, `query "invoices"`, or a
-   *  check name when the finding is about the check itself. */
-  where: string;
-  message: string;
-}
+import type { Check, CheckInput, Finding } from "@vendoai/core";
 
-export interface CheckInput {
-  app: GeneratedAppDocument;
-  /** The user's own words — what the app was asked to be. */
-  request: string;
-  /** The plan the app was built from, when the check runs mid-pipeline; absent
-   *  for checks over a finished document. */
-  plan?: AppPlan;
-}
-
-export interface Check {
-  name: string;
-  run(input: CheckInput): Promise<Finding[]>;
-}
+export type { Check, CheckInput, Finding };
 
 export interface CheckingLayer {
+  /** Every registered check, both kinds, built-ins first — what a boot report
+   *  or a diagnostic names. */
   checks: Check[];
+  /**
+   * The judgment rules, one sentence per line, in registration order.
+   *
+   * Separate lines, never concatenated into one string: the reviewer appends
+   * them to its rubric as its own list items, and a joined blob would read as a
+   * single garbled rule.
+   */
+  rubric: string[];
+  /** Run every FACT check. Judgment rules are not code and are not run here —
+   *  they are {@link CheckingLayer.rubric}. */
   run(input: CheckInput): Promise<Finding[]>;
 }

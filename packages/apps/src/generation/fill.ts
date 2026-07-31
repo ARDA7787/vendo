@@ -31,6 +31,7 @@ import {
   compileWire,
   printWire,
   recompileWithIdentity,
+  type AppDocument,
   type AppPlan,
   type PlanGroup,
   type PlanQuery,
@@ -44,7 +45,7 @@ import { readEdits } from "./brain.js";
 import { spliceFragment, type Skeleton } from "./skeleton.js";
 import { workerFillMessage, workerFixMessage, workerSystemPrompt } from "./prompts/worker.js";
 import { wireCompileOptionsFor } from "./wire-options.js";
-import { asPayload, askModel, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
+import { UNSTORED_APP_ID, asPayload, askModel, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
 
 /** Groups filled at once when the host set no dial. Two, not one, because the
  *  point is parallelism; two, not eight, because every worker is a model call
@@ -248,12 +249,13 @@ export const fillPlan = async (
   // one, structurally (the same cast the brain makes when it prints an app).
   // The app's generated components ride along so a leaf showing the island the
   // plan asked for resolves during the per-fragment checks.
-  const document = (of: Tree): GeneratedAppDocument => ({
+  const document = (of: Tree): AppDocument => ({
     format: VENDO_APP_FORMAT,
+    id: UNSTORED_APP_ID,
     name: plan.name,
     tree: asPayload(of),
     ...(Object.keys(islands).length === 0 ? {} : { components: { ...islands } }),
-  });
+  } as AppDocument);
   const emitted: Array<Promise<void>> = [];
   /** Commit a splice and show it: the app grows a section at a time. */
   const commit = (next: Tree): void => {
@@ -272,12 +274,14 @@ export const fillPlan = async (
       .filter((id) => id.startsWith(`${slot}-`)));
     // `request` is the reviewer's input; no fact check reads it, and the
     // reviewer does not run per fragment (it judges the finished app).
-    const found = await checking.run({ app: document(candidate), request: plan.name, plan });
+    const found = await checking.run({ document: document(candidate), request: plan.name, plan });
     return [
       ...compiled.issues.map((issue) => issue.message),
       ...found
-        .filter((finding) => mine.has(NODE_LOCUS.exec(finding.where)?.[1] ?? ""))
-        .map((finding) => `${finding.where} ${finding.message}`),
+        // A finding with no locus at all cannot be anchored on this worker's
+        // nodes, so it is never this worker's to fix.
+        .filter((finding) => mine.has(NODE_LOCUS.exec(finding.where ?? "")?.[1] ?? ""))
+        .map((finding) => `${finding.where ?? ""} ${finding.message}`.trim()),
     ];
   };
 

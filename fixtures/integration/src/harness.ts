@@ -25,10 +25,10 @@ import { inject } from "vitest";
 import { zipSync } from "fflate";
 import type { Connector } from "@vendoai/actions";
 import type { SandboxAdapter } from "@vendoai/apps";
-import type { AppDocument, Principal, ToolRegistry } from "@vendoai/core";
+import type { AppDocument, PackProvider, Principal, ToolRegistry } from "@vendoai/core";
 import { createMcpDoor, type AppsPort, type HostOAuthAdapter, type McpDoor } from "@vendoai/mcp";
 import { createStore, type VendoStore } from "@vendoai/store";
-import { createVendo, type Vendo } from "@vendoai/vendo/server";
+import { createVendo, type PackContext, type Vendo } from "@vendoai/vendo/server";
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { LanguageModel } from "ai";
 
@@ -214,6 +214,10 @@ export interface StackOptions {
   /** A sandbox adapter composed into the umbrella (explicit adapter always
    * wins, the adapter rule) — the machine-skin journey passes a fake box. */
   sandbox?: SandboxAdapter;
+  /** Packs composed into the umbrella (architecture §5) — the external-pack
+   * journey passes a pack authored outside `packages/` through this one key,
+   * which is the whole install story. Unset keeps the default `[apps()]`. */
+  packs?: readonly PackProvider<PackContext>[];
 }
 
 /** The door mounted alongside the wire when `createStack({ mcp: true })`. */
@@ -275,6 +279,7 @@ export async function createStack(options: StackOptions = {}): Promise<Stack> {
     // Wave 9 — machine provisioning is flag-gated; a stack composed WITH a
     // sandbox is here to exercise the box machinery, so opt in.
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox, apps: { experimentalMachines: true } }),
+    ...(options.packs === undefined ? {} : { packs: options.packs }),
   });
 
   // J6 — the MCP door, composed from the umbrella's OWN parts (the hookup note's

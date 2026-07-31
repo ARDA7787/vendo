@@ -100,10 +100,17 @@ export type {
 // function of the public AppPlan, so demo/harness surfaces can render a plan's
 // skeleton without booting the engine.
 export { skeletonFromPlan, type Skeleton } from "./generation/skeleton.js";
-export type {
-  GeneratedAppDocument,
-  GenerationDependencies,
+export {
+  UNSTORED_APP_ID,
+  type GeneratedAppDocument,
+  type GenerationDependencies,
 } from "./generation/engine.js";
+// The apps PACK's raw materials: the tools it declares through `Pack.tools` and
+// the skill it teaches the pattern with. The pack itself is assembled in the
+// umbrella (`vendo/src/packs/apps.ts`), which is the only layer that has both
+// the runtime and `definePack` in scope.
+export { agentToolDescriptors } from "./agent-tools.js";
+export { buildingAppsSkill } from "./skills/building-apps.js";
 // The generation seam for the genui-bench vendo lane: the SAME conductor
 // createApps() rides, driven directly against a host fixture with no store
 // behind it. Additive export — generation behavior is identical.

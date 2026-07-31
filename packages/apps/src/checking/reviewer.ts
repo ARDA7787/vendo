@@ -8,12 +8,12 @@
  * be the reason a generated app dies (the layer guards a throw too, but this
  * one does not throw in the first place).
  */
-import { printWire, type AppPlan } from "@vendoai/core";
+import { printWire, type AppDocument, type AppPlan } from "@vendoai/core";
 import { treeOf } from "./facts.js";
 import type { Check, Finding } from "./types.js";
 import { REPORT_FINDINGS_DESCRIPTION, REVIEWER_SYSTEM } from "../generation/prompts/reviewer.js";
 import { strictToolCall } from "../generation/strict-tool-call.js";
-import type { GeneratedAppDocument, GenerationDependencies } from "../generation/engine.js";
+import type { GenerationDependencies } from "../generation/engine.js";
 
 export const REVIEWER_CHECK_NAME = "reviewer";
 
@@ -79,7 +79,7 @@ const findingsFrom = (reported: unknown): Finding[] => {
  *  person sees rather than compiler bookkeeping. Undefined when the document
  *  carries no valid tree — the `document` fact check reports that, and the
  *  reviewer stays quiet instead of judging rubble. */
-const printedApp = (app: GeneratedAppDocument): string | undefined => {
+const printedApp = (app: AppDocument): string | undefined => {
   const tree = treeOf(app);
   if (tree === undefined) return undefined;
   return printWire(
@@ -132,8 +132,13 @@ export const reviewerCheck = (
   samples?: Readonly<Record<string, unknown>>,
 ): Check => ({
   name: REVIEWER_CHECK_NAME,
-  run: async ({ app, request, plan }): Promise<Finding[]> => {
-    const printed = printedApp(app);
+  // `fact` is about WHO RUNS IT, not about how sure it is: the two kinds are
+  // "code the floor runs" and "a sentence for the reviewer's rubric" (core
+  // `pack.ts`). The reviewer is code, and it is the thing rubric lines are
+  // handed to — it can hardly be one of them.
+  kind: "fact",
+  run: async ({ document, request, plan }): Promise<Finding[]> => {
+    const printed = printedApp(document);
     if (printed === undefined) return [];
     const reported = await strictToolCall(
       deps,

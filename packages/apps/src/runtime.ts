@@ -2021,7 +2021,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       }
       const blocking = conducted.findings.filter(({ severity }) => severity === "block");
       const issues = [
-        ...blocking.map(({ where, message }) => `${where} ${message}`),
+        // `where` is optional (a pack check may not be able to name a locus),
+        // so it is prefixed only when there is one — never as "undefined ...".
+        ...blocking.map(({ where, message }) => (where === undefined ? message : `${where} ${message}`)),
         ...serverIssues,
       ];
       // The version records the surface the edit LANDED on, so a flip to a

@@ -7,6 +7,7 @@
 import {
   VENDO_APP_FORMAT,
   compileWire,
+  type AppDocument,
   type AppPlan,
   type NormalizedCatalog,
   type ShapeType,
@@ -15,10 +16,10 @@ import { describe, expect, it } from "vitest";
 import { createCheckingLayer } from "./layer.js";
 import { reviewerCheck } from "./reviewer.js";
 import type { CheckInput } from "./types.js";
-import type {
-  GeneratedAppDocument,
-  GenerationDependencies,
-  HostToolInfo,
+import {
+  UNSTORED_APP_ID,
+  type GenerationDependencies,
+  type HostToolInfo,
 } from "../generation/engine.js";
 import { scriptedLanguageModel, type ScriptedModelCall } from "../testing/scripted-model.js";
 
@@ -53,18 +54,19 @@ const catalog: NormalizedCatalog = [];
 const deps = (model: GenerationDependencies["model"]): GenerationDependencies =>
   ({ model, catalog, tools, toolShapes });
 
-const documentFrom = (wire: string): GeneratedAppDocument => {
+const documentFrom = (wire: string): AppDocument => {
   const compiled = compileWire(wire, { toolShapes });
   return {
     format: VENDO_APP_FORMAT,
+    id: UNSTORED_APP_ID,
     name: compiled.name ?? "Untitled",
     ui: "tree",
-    tree: compiled.tree as GeneratedAppDocument["tree"],
-  };
+    tree: compiled.tree as AppDocument["tree"],
+  } as AppDocument;
 };
 
 const inputFor = (wire: string, request = "show me my invoices"): CheckInput =>
-  ({ app: documentFrom(wire), request });
+  ({ document: documentFrom(wire), request });
 
 const invoicesApp =
   '<App name="Invoices"><Query id="invoices" tool="host_listInvoices"/><Stack gap={12}><Text text="Total: $12,480" variant="heading"/><Table rows={invoices.data}/></Stack></App>';
