@@ -49,11 +49,21 @@ export interface PackSkill {
   body: string;
 }
 
-/** One thing wrong with an app. `where` is the locus (`document`, `node "n3"
- *  prop "rows"`, `query "invoices"`) when the check can name one. `block` stops
- *  the app shipping as-is; `warn` rides along. */
+/**
+ * One thing wrong with an app.
+ *
+ * `message` is a TEACHING sentence: it names what is wrong AND the real
+ * alternative ("…the real fields are: …"), because its readers are a model
+ * repairing the app and a person reading the refusal.
+ *
+ * `block` stops the app shipping as-is; `warn` rides along (the section-sized
+ * failure, and every check that could not run).
+ */
 export interface Finding {
   severity: "block" | "warn";
+  /** The locus: `document`, `node "n3" prop "rows"`, `query "invoices"`, or a
+   *  check name when the finding is about the check itself. Optional — a check
+   *  judging the whole app may honestly have no locus to name. */
   where?: string;
   message: string;
 }
