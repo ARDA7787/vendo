@@ -126,7 +126,10 @@ export type HarnessEvent =
 ```
 
 Routing (frozen): `text` → screen + transcript · `status` → screen only ·
-`error` → screen + transcript + audit · `usage` → audit/metering only. Tool
+`error` → screen + audit (amendment 2026-07-30: the original "…+ transcript"
+leg was aspirational — the ai-SDK error chunk is not persisted and today's
+shipped agent does not persist errors either; parity with today wins, and
+audit ⊇ transcript holds trivially) · `usage` → audit/metering only. Tool
 calls are mirrored by the runtime, never yielded. Adding a member later is a
 breaking change for host renderers — this list is closed for v1.
 
