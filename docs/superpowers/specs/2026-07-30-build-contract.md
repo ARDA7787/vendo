@@ -272,7 +272,7 @@ skeleton on screen); everything else at turn end.
 ## 4. Model seats
 
 ```ts
-export type Seat = "default" | "reviewer" | "judge" | "fill";
+export type Seat = "default" | "reviewer" | "judge" | "fill" | "verifier";
 export type ResolvedModels = Readonly<Record<Seat, LanguageModel>>;
 ```
 
@@ -280,8 +280,11 @@ Config takes `models?: Partial<Record<Seat, LanguageModel | string>>`.
 Resolution per seat: explicit seat → `default` → the env credential ladder →
 Cloud gateway (if `VENDO_API_KEY`) → a first-use error naming the exact key.
 Migration from today's `ModelsConfig`: `agent → default`, `paint → fill`,
-`judge` unchanged, `knowledgeVerifier` folded into `default` (it had no
-independent consumer worth a seat). Deprecated `model:` / `paint:` keys keep
+`judge` unchanged, `knowledgeVerifier → verifier` (amendment 2026-07-30: the
+fold into `default` was premised on it having no independent consumer — that
+premise was FALSE, `server.ts` still reads it, and folding silently repointed
+the agent model when a host set only `knowledgeVerifier`. It keeps its own
+seat; the knowledge check's cheap/fast model must never be the agent's). Deprecated `model:` / `paint:` keys keep
 their existing shims for one minor. **Boot error** if a harness option sets a
 model *and* `models.default` is set for the same seat.
 
@@ -384,7 +387,13 @@ Effect ledger (makes fail-and-re-run correct):
 
 ```sql
 vendo_effects (
-  key         text primary key,   -- sha256(runId|turnId + tool + exactInputHash)
+  key         text primary key,   -- sha256(runId|turnId + tool + exactInputHash
+                                  --        + ordinal), where ordinal counts
+                                  --        prior identical calls in the same
+                                  --        (run, turn) — amendment 2026-07-30:
+                                  --        without it, two legitimately
+                                  --        intended identical mutations (pay
+                                  --        $10 twice) silently collapse to one
   subject     text not null,      -- amendment 2026-07-30: outcome holds tool output,
                                   -- so the ledger must join the erase cascade
   outcome     jsonb not null,
