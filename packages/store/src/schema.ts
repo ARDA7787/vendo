@@ -20,8 +20,14 @@ import type { Db } from "./db-postgres.js";
     Bumping the version is load-bearing, not cosmetic (review fix F1): the DDL
     loop runs only while `version < SCHEMA_VERSION`, so appending the tables
     WITHOUT this bump would leave every existing v4 database on 4 forever and the
-    new tables would never be created. */
-export const SCHEMA_VERSION = 5;
+    new tables would never be created.
+
+    v6 (embedded-agent build contract §3.3, wave-1 lane B) adds the workspace
+    pair `vendo_workspace_files` / `vendo_workspace_history`: the agent's
+    filesystem is a façade over these two tables (documents are files, records
+    stay tables). Same load-bearing bump as v5 — the DDL loop only runs while
+    version < SCHEMA_VERSION. */
+export const SCHEMA_VERSION = 6;
 
 /** 02-store §2 */
 export const DDL = [
@@ -110,6 +116,29 @@ export const DDL = [
     created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS vendo_knowledge_chunks_refs_idx ON vendo_knowledge_chunks USING GIN (refs jsonb_path_ops)",
+  // Build contract §3.3 (v6): the workspace. One row per file, keyed
+  // (path, owner) — `owner` is the subject for /user/** paths and the reserved
+  // host subject for the read-only /host/** mounts. Content is inline up to
+  // WORKSPACE_INLINE_MAX_BYTES; past it (or when the bytes are not text) the
+  // row carries a `blob_ref` into the files adapter instead. `revision` is the
+  // per-file counter the /orgs compare-and-swap will arm in wave 3 — it ships
+  // now so the table never migrates for it.
+  `CREATE TABLE IF NOT EXISTS vendo_workspace_files (
+    path text NOT NULL, owner text NOT NULL, content text, blob_ref text,
+    bytes integer NOT NULL, revision integer NOT NULL DEFAULT 1,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (path, owner)
+  )`,
+  "CREATE INDEX IF NOT EXISTS vendo_workspace_files_owner_idx ON vendo_workspace_files (owner)",
+  // Undo + provenance. One row per superseded revision, carrying the content
+  // that revision held and the consumer-voice `intent` of the write that
+  // replaced it ("made the chart blue"). Retention: WORKSPACE_HISTORY_LIMIT
+  // rows per path.
+  `CREATE TABLE IF NOT EXISTS vendo_workspace_history (
+    id text PRIMARY KEY, path text NOT NULL, owner text NOT NULL, revision integer NOT NULL,
+    content text, blob_ref text, intent text, at timestamptz NOT NULL DEFAULT now()
+  )`,
+  "CREATE INDEX IF NOT EXISTS vendo_workspace_history_path_idx ON vendo_workspace_history (path, owner, revision DESC)",
 ] as const;
 
 // Additive columns stay compatible with same-version development databases (02 §2

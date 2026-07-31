@@ -1,3 +1,4 @@
+import { storeFiles } from "./files-store.js";
 import { VendoError, type Principal } from "@vendoai/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backends, type MadeBackend } from "./backends.test-util.js";
@@ -45,7 +46,7 @@ for (const backend of backends()) {
     afterAll(async () => { if (made) await made.cleanup(); });
 
     it("rejects an empty subject", async () => {
-      await expect(eraseStore(made.store).bySubject(""))
+      await expect(eraseStore(made.store, { files: storeFiles(made.store) }).bySubject(""))
         .rejects.toMatchObject<VendoError>({ code: "validation" });
     });
 
@@ -112,7 +113,7 @@ for (const backend of backends()) {
       const bystanderEvent = auditFixture("aud_erase_bystander", { principal: { kind: "user", subject: bystander } });
       await store.records("vendo_audit").put({ id: bystanderEvent.id, data: bystanderEvent });
 
-      const report = await eraseStore(store).bySubject(erased);
+      const report = await eraseStore(store, { files: storeFiles(store) }).bySubject(erased);
       expect(report).toEqual({
         vendo_meta: 0,
         vendo_apps: 1,
@@ -130,6 +131,9 @@ for (const backend of backends()) {
         vendo_sessions: 0, // durable subject — never registered as a session
         vendo_knowledge_docs: 1,
         vendo_knowledge_chunks: 1,
+        vendo_workspace_files: 0, // this subject wrote no workspace files
+        vendo_workspace_history: 0,
+        workspace_content_objects: 0, // ...so no workspace content was deleted either
       });
 
       // Gone through the doors...
@@ -164,7 +168,7 @@ for (const backend of backends()) {
       const event = auditFixture("aud_erase_anon", { principal: anon });
       await store.records("vendo_audit").put({ id: event.id, data: event });
 
-      const report = await eraseStore(store).bySubject(anon.subject);
+      const report = await eraseStore(store, { files: storeFiles(store) }).bySubject(anon.subject);
       expect(report.vendo_apps).toBe(1);
       expect(report.vendo_records).toBe(1);
       expect(report.vendo_threads).toBe(1);
@@ -189,7 +193,7 @@ for (const backend of backends()) {
     afterAll(async () => { if (made) await made.cleanup(); });
 
     it("rejects an empty appId", async () => {
-      await expect(eraseStore(made.store).byApp(""))
+      await expect(eraseStore(made.store, { files: storeFiles(made.store) }).byApp(""))
         .rejects.toMatchObject<VendoError>({ code: "validation" });
     });
 
@@ -216,7 +220,7 @@ for (const backend of backends()) {
         data: { subject, messages: [] },
       });
 
-      const report = await eraseStore(store).byApp("app_erase_drop");
+      const report = await eraseStore(store, { files: storeFiles(store) }).byApp("app_erase_drop");
       expect(report.vendo_apps).toBe(1);
       expect(report.vendo_records).toBe(1);
       expect(report.vendo_blobs).toBe(1);

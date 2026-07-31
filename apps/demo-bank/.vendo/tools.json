@@ -151,7 +151,7 @@
         "path": "/api/demo/reset",
         "argsIn": "body"
       },
-      "srcHash": "sha256:3f7f5ad1b2866abc1333c37150ad0798424ca4708b223c4e700ef0f9cf05cf0e"
+      "srcHash": "sha256:02d9438f66a05b4f5776fb8b727bc8aefdf7fac787f96d4a41afe60682a4dc1c"
     },
     {
       "name": "host_getAccount",

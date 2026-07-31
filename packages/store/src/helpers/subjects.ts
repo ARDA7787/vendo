@@ -1,4 +1,4 @@
-import { isReservedSubject, VendoError } from "@vendoai/core";
+import { isReservedSubject, VendoError, type FilesAdapter } from "@vendoai/core";
 import { isEphemeralSubject } from "../sessions.js";
 import { dbFor, type VendoStore } from "../store.js";
 
@@ -7,6 +7,8 @@ export interface SubjectMergeReport {
   apps: number;
   threads: number;
   states: number;
+  /** Workspace files carried over (build contract §3.3, keyed on `owner`). */
+  files: number;
   /** Rows whose slot the signed-in subject already owned — NEVER overwritten
       (a merge cannot replace the target's data); the anonymous copy is dropped. */
   skipped: number;
@@ -36,6 +38,7 @@ export async function adoptEphemeralSubject(
   store: VendoStore,
   from: string,
   to: string,
+  options: { files: FilesAdapter },
 ): Promise<SubjectMergeReport | null> {
   if (from === to) throw new VendoError("validation", "cannot merge a subject into itself");
   if (isReservedSubject(to)) {
@@ -58,7 +61,7 @@ export async function adoptEphemeralSubject(
     [from],
   );
   if (claimed.rows[0] === undefined) return null;
-  const report: SubjectMergeReport = { apps: 0, threads: 0, states: 0, skipped: 0 };
+  const report: SubjectMergeReport = { apps: 0, threads: 0, states: 0, files: 0, skipped: 0 };
 
   // Apps move by flipping the subject column. Ids are the vendo_apps PRIMARY
   // KEY and the write doors refuse cross-subject flips, so `from`'s app ids
@@ -96,6 +99,50 @@ export async function adoptEphemeralSubject(
     [from],
   );
   report.skipped += skippedStates.rows.length;
+
+  // Workspace files travel with the subject: they ARE the anonymous session's
+  // apps and notes as files (build contract §3.3, keyed on `owner`). Same rule
+  // as state — a path the signed-in subject already holds wins, and the
+  // anonymous copy is dropped rather than overwriting it. History rows follow
+  // their file, so a path whose file was skipped drops its history too.
+  const movedFiles = await db.query(
+    `UPDATE vendo_workspace_files SET owner = $2 WHERE owner = $1
+       AND NOT EXISTS (
+         SELECT 1 FROM vendo_workspace_files existing
+         WHERE existing.path = vendo_workspace_files.path AND existing.owner = $2
+       )
+     RETURNING path`,
+    [from, to],
+  );
+  report.files = movedFiles.rows.length;
+  if (report.files > 0) {
+    await db.query(
+      "UPDATE vendo_workspace_history SET owner = $2 WHERE owner = $1 AND path = ANY($3::text[])",
+      [from, to, movedFiles.rows.map((row) => String(row["path"]))],
+    );
+  }
+  // The rows that lost the collision are dropped — and so is the content they
+  // pointed at. `blob_ref` is the only pointer (random ids), so skipping this
+  // orphans a blob on the MOST COMMON sign-in path. Files that MOVED keep their
+  // blobs untouched: the row travelled, and the row is the pointer.
+  const files = options.files;
+  const dropBlobs = async (rows: Record<string, unknown>[]): Promise<void> => {
+    for (const row of rows) {
+      const ref = row["blob_ref"];
+      if (typeof ref === "string") await files.delete(ref);
+    }
+  };
+  const skippedFiles = await db.query(
+    "DELETE FROM vendo_workspace_files WHERE owner = $1 RETURNING path, blob_ref",
+    [from],
+  );
+  report.skipped += skippedFiles.rows.length;
+  await dropBlobs(skippedFiles.rows);
+  const skippedHistory = await db.query(
+    "DELETE FROM vendo_workspace_history WHERE owner = $1 RETURNING blob_ref",
+    [from],
+  );
+  await dropBlobs(skippedHistory.rows);
 
   // Everything else the anonymous subject accrued is deliberately dropped:
   // grants, approvals, audit, and the run history of its (now adopted) apps.

@@ -29,3 +29,18 @@ export {
   adoptEphemeralSubject,
   type SubjectMergeReport,
 } from "./helpers/subjects.js";
+// The workspace (build contract §3): the agent's filesystem as a façade over
+// the two vendo_workspace_* tables, plus the blob seam under it.
+export {
+  workspaceStore,
+  WORKSPACE_HISTORY_LIMIT,
+  WORKSPACE_INLINE_MAX_BYTES,
+  HOST_MOUNT,
+  USER_MOUNT,
+  type HostProjection,
+  type WorkspaceFileMeta,
+  type WorkspaceHistoryEntry,
+} from "./workspace.js";
+export { storeFiles, FILES_STORE_MAX_BYTES } from "./files-store.js";
+export { s3, type S3FilesOptions } from "./files-s3.js";
+export { workspaceBash, type BashRun, type WorkspaceBashSetup } from "./workspace-bash.js";

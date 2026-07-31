@@ -1,3 +1,4 @@
+import type { FilesAdapter } from "@vendoai/core";
 import { escapeLike } from "./helpers/utils.js";
 import { dbFor, type VendoStore } from "./store.js";
 import { invalid } from "./validate.js";
@@ -25,15 +26,30 @@ export const ERASE_TABLES = [
   "vendo_sessions",
   "vendo_knowledge_docs",
   "vendo_knowledge_chunks",
+  "vendo_workspace_files",
+  "vendo_workspace_history",
 ] as const;
 
 export type EraseTable = typeof ERASE_TABLES[number];
 
-/** Rows deleted per table. */
-export type EraseReport = Record<EraseTable, number>;
+/** Rows deleted per table, plus the workspace content deleted behind the files
+ *  adapter, plus a count of the workspace content objects erased. That last is
+ *  its own axis because a workspace file's content is EITHER inline in the row
+ *  OR a blob reached through `blob_ref` (the row is the only pointer), and with
+ *  a host-wired `files:` adapter the blobs are not `vendo_blobs` rows at all —
+ *  so neither the table counts nor `vendo_blobs` alone tell a GDPR audit how
+ *  many pieces of user content this erase actually destroyed.
+ *
+ *  It is a COUNT OF OBJECTS, never bytes: one per content-bearing workspace row
+ *  removed, inline or blob. The name says `objects` because that is the unit it
+ *  measures. */
+export type EraseReport = Record<EraseTable, number> & { workspace_content_objects: number };
 
 function emptyReport(): EraseReport {
-  return Object.fromEntries(ERASE_TABLES.map((table) => [table, 0])) as EraseReport;
+  return {
+    ...Object.fromEntries(ERASE_TABLES.map((table) => [table, 0])) as Record<EraseTable, number>,
+    workspace_content_objects: 0,
+  };
 }
 
 /**
@@ -46,7 +62,7 @@ function emptyReport(): EraseReport {
  * Policy engines and schedulers stay out of scope: hosts call this from their
  * own jobs, and host SQL remains available for everything else.
  */
-export function eraseStore(store: VendoStore): {
+export function eraseStore(store: VendoStore, options: { files: FilesAdapter }): {
   /** Full erasure of one subject: their apps (and each app's records, blobs,
       state, and runs), plus every subject-keyed or subject-ref'd row and the
       subject's session registration (§4). */
@@ -58,6 +74,39 @@ export function eraseStore(store: VendoStore): {
   byApp(appId: string): Promise<EraseReport>;
 } {
   const db = dbFor(store);
+  // Workspace content past the inline cap lives behind the files adapter, and
+  // `blob_ref` is its ONLY pointer (workspace-rows mints random ids), so the
+  // cascade has to read the refs off the rows it deletes. The adapter is
+  // REQUIRED, not defaulted: defaulting to the store-backed one let a host with
+  // a wired bucket erase the rows and silently keep the objects. Pass the same
+  // adapter the workspace was opened with (`storeFiles(store)` when none).
+  const files = options.files;
+
+  /** Delete workspace rows and the blobs they were the only pointer to. */
+  const delWorkspace = async (
+    report: EraseReport,
+    table: "vendo_workspace_files" | "vendo_workspace_history",
+    where: string,
+    params: unknown[],
+  ): Promise<void> => {
+    const result = await db.query(
+      `DELETE FROM ${table} WHERE ${where} RETURNING content, blob_ref`,
+      params,
+    );
+    report[table] += result.rows.length;
+    for (const row of result.rows) {
+      const ref = row["blob_ref"];
+      if (typeof ref === "string") {
+        // A blob object: delete it through the adapter and count it.
+        await files.delete(ref);
+        report.workspace_content_objects += 1;
+      } else if (typeof row["content"] === "string") {
+        // Inline content: no separate object to delete (it left with the row),
+        // but it is still a piece of user content this erase destroyed.
+        report.workspace_content_objects += 1;
+      }
+    }
+  };
 
   const del = async (
     report: EraseReport,
@@ -115,6 +164,11 @@ export function eraseStore(store: VendoStore): {
       // a ref, same as the door tables (the knowledge engine owns what it refs).
       await del(report, "vendo_knowledge_docs", "refs @> $1::jsonb", [subjectRef]);
       await del(report, "vendo_knowledge_chunks", "refs @> $1::jsonb", [subjectRef]);
+      // The workspace (build contract §3.3) is keyed by `owner`, which for
+      // /user paths IS the subject — their files, every superseded revision,
+      // and the content each row points at.
+      await delWorkspace(report, "vendo_workspace_files", "owner = $1", [subject]);
+      await delWorkspace(report, "vendo_workspace_history", "owner = $1", [subject]);
       // The session registration (if any) is retired with the data (§4).
       await del(report, "vendo_sessions", "subject = $1", [subject]);
       return report;
@@ -138,6 +192,15 @@ export function eraseStore(store: VendoStore): {
       // An app's knowledge corpus (docs + their chunks) goes with the app.
       await del(report, "vendo_knowledge_docs", "refs @> $1::jsonb", [appRef]);
       await del(report, "vendo_knowledge_chunks", "refs @> $1::jsonb", [appRef]);
+      // The app's workspace documents. `/user/apps/<appId>/…` is the frozen
+      // path layout (build contract §3.1) with the app id verbatim, so they are
+      // addressable without knowing whose workspace holds them. Anchored at the
+      // mount, so a user file that merely happens to live under a path like
+      // `/user/files/apps/<appId>/` is not swept up with the app. (`/orgs`
+      // mounts are wave 3 and deliberately not matched here.)
+      const appPaths = `/user/apps/${escapeLike(appId)}/%`;
+      await delWorkspace(report, "vendo_workspace_files", "path LIKE $1 ESCAPE '\\'", [appPaths]);
+      await delWorkspace(report, "vendo_workspace_history", "path LIKE $1 ESCAPE '\\'", [appPaths]);
       return report;
     },
   };
