@@ -121,6 +121,12 @@ for (const backend of backends()) {
         vendo_blobs: 1,
         vendo_state: 1,
         vendo_threads: 1,
+        // The seeded thread carries an empty transcript, so it owns no message
+        // rows; the cascade is proven on a populated thread in thread-messages.test.ts.
+        vendo_thread_messages: 0,
+        // No selector can reach vendo_effects: the build contract freezes it
+        // without a subject or app column (see ERASE_TABLES).
+        vendo_effects: 0,
         vendo_grants: 1,
         vendo_approvals: 1,
         vendo_audit: 1,

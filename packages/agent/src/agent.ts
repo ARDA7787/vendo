@@ -119,7 +119,7 @@ interface AgentConfig {
     maxSteps?: number;
   };
   capabilityMiss?: CapabilityMissConfig;
-  /** ENG-252: enable the `vendo_tools_search` meta-tool and runtime loadout.
+  /** ENG-252: enable the `find_tools` meta-tool and runtime loadout.
    *  When set, the model starts with a bounded initial loadout and discovers the
    *  rest through search; searched-in tools execute through the same guard-bound
    *  registry as any initially-enabled tool. */
@@ -404,7 +404,7 @@ export function createAgent(config: AgentConfig): VendoAgent {
   // process lifetime — through the exact same ThreadRepository code path a
   // store-backed composition uses. No separate memory-only branch survives.
   const threads = new ThreadRepository(config.store ?? memoryStoreAdapter());
-  // ENG-252: per-thread set of tools loaded in via `vendo_tools_search`. It
+  // ENG-252: per-thread set of tools loaded in via `find_tools`. It
   // persists across turns within a run so a discovered tool stays callable, and
   // is reclaimed on thread delete + session eviction. The LRU cap bounds memory
   // for long-lived, store-backed processes where threads never get evicted (a
@@ -511,14 +511,20 @@ export function createAgent(config: AgentConfig): VendoAgent {
             ? undefined
             : createToolSearchSession({
                 config: config.toolSearch,
-                descriptors: await config.tools.descriptors(),
+                // Per-subject connection state annotates search results.
+                ctx: input.ctx,
+                // THE LAW's projection (design §12): an unattended turn is
+                // never even offered a destructive or external tool.
+                descriptors: await config.tools.descriptors(input.ctx),
                 loaded: loadedFor(thread.id),
                 ...(seedNames === undefined ? {} : { seedNames }),
                 ...(menuNames === undefined ? {} : { menuNames }),
                 // Search hits expanded mid-turn resolve to full descriptors and
                 // materialize into the LIVE toolset — prepareStep re-reads the
                 // active names each step, so they are callable next step.
-                resolve: async (names) => (await config.tools.descriptors()).filter((d) => names.includes(d.name)),
+                // Search must not be a way back to a withheld tool, so the
+                // same projection applies to what it can resolve.
+                resolve: async (names) => (await config.tools.descriptors(input.ctx)).filter((d) => names.includes(d.name)),
                 materialize: (descriptor) => addAgentTool(tools, descriptor, bridgeOptions),
               });
           toolSearch?.attach(tools);
@@ -550,7 +556,7 @@ export function createAgent(config: AgentConfig): VendoAgent {
             maxOutputTokens: config.context?.maxOutputTokens,
             // ENG-252 loadout: restrict what the model may pick to the current
             // loadout. `prepareStep` re-reads it each step so a tool loaded via
-            // `vendo_tools_search` becomes callable on the very next step. This
+            // `find_tools` becomes callable on the very next step. This
             // gates the model's CHOICE only — every tool still executes through
             // the guard-bound registry, so there is no unguarded path.
             ...(toolSearch === undefined

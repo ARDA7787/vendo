@@ -8,7 +8,12 @@ import { invalid } from "./validate.js";
  *  version, boot id), never user data, so no selector ever matches it and its
  *  count stays 0 — as does `vendo_secrets` (name-keyed host config, likewise
  *  never matched by a subject or app selector). Listed so the report provably
- *  covers the whole map. */
+ *  covers the whole map.
+ *
+ *  `vendo_effects` used to be in that same never-matched class, because the
+ *  frozen v1 shape had no subject column — its `outcome` holds real tool output
+ *  and survived an erase forever. The 2026-07-30 contract amendment added
+ *  `subject`, so the subject axis now reaches it like any other owned table. */
 export const ERASE_TABLES = [
   "vendo_meta",
   "vendo_apps",
@@ -16,6 +21,8 @@ export const ERASE_TABLES = [
   "vendo_blobs",
   "vendo_state",
   "vendo_threads",
+  "vendo_thread_messages",
+  "vendo_effects",
   "vendo_grants",
   "vendo_approvals",
   "vendo_audit",
@@ -152,8 +159,20 @@ export function eraseStore(store: VendoStore, options: { files: FilesAdapter }):
       // below only count rows the cascade did not reach (e.g. this subject's
       // state under ANOTHER owner's app).
       await del(report, "vendo_state", "subject = $1", [subject]);
+      // v6: the transcript rows hang off the thread row, which owns the subject.
+      // Delete them BEFORE the thread row, or the join that identifies them is
+      // already gone and the messages outlive the erase.
+      await del(
+        report,
+        "vendo_thread_messages",
+        "thread_id IN (SELECT id FROM vendo_threads WHERE subject = $1)",
+        [subject],
+      );
       await del(report, "vendo_threads", "subject = $1", [subject]);
       await del(report, "vendo_grants", "subject = $1", [subject]);
+      // The effect ledger's receipts carry tool output (contract amendment
+      // 2026-07-30), so they go with the subject's data.
+      await del(report, "vendo_effects", "subject = $1", [subject]);
       await del(report, "vendo_approvals", "subject = $1", [subject]);
       await del(report, "vendo_audit", "subject = $1", [subject]);
       // Generic and door-owned rows carry the subject only as a ref (§2/§3).

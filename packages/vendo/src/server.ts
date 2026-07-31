@@ -112,6 +112,7 @@ import { bindVendoModelSlots, vendoModel } from "#dev-creds/model";
 // argument means `vendo` semantics (per-rung defaults); a name passes through
 // VERBATIM to the resolved rung. `devModel` stays as the deprecated alias.
 export { devModel, vendoModel, type DevModelOptions, type VendoModelOptions, type VendoModelSlot } from "#dev-creds/model";
+import { withUniqueToolTitles } from "./duplicate-titles.js";
 import { resolveModels } from "./models-config.js";
 export { type ModelsConfig } from "./models-config.js";
 import type { ModelsConfig, ResolveModelsInput } from "./models-config.js";
@@ -397,16 +398,16 @@ export interface CreateVendoConfig {
     maxOutputTokens?: number;
     historyWindow?: number;
     /** ENG-252 — cap on the uncurated initial tool loadout; the rest stay
-        discoverable via `vendo_tools_search`. Defaults to the agent block's
+        discoverable via `find_tools`. Defaults to the agent block's
         DEFAULT_MAX_INITIAL_TOOLS. */
     maxInitialTools?: number;
     /** ENG-252 — explicit curated initial loadout by tool name. When set,
         exactly these host tools (that exist and are enabled) start active —
         the cap is not applied; the rest stay discoverable via
-        `vendo_tools_search`. Vendo's own `vendo_*` tools are always active. */
+        `find_tools`. Vendo's own `vendo_*` tools are always active. */
     loadout?: string[];
     /** Discovery discipline (spec 2026-07-25) — how many lazy connector toolkits ONE
-        `vendo_tools_search` query may expand from the discovery index.
+        `find_tools` query may expand from the discovery index.
         Default 3. Lower it to keep a broad intent from fanning out schema
         loads; 0 disables index-driven expansion entirely (already-loaded
         tools stay searchable). */
@@ -687,7 +688,13 @@ function knowledgeToolOptions(
 ): KnowledgeToolsOptions {
   if (hostConfigured || !knowledgeVerifyEnabled()) return {};
   const model = vendoModel(undefined, { slot: "knowledgeVerifier" });
-  bindVendoModelSlots(model, models);
+  // The seat is spelled `verifier` in the new vocabulary and `knowledgeVerifier`
+  // in the old one; the slot binder only knows the old name, so normalise here.
+  // The new spelling wins, same rule as every other seat.
+  bindVendoModelSlots(model, models === undefined ? undefined : {
+    ...models,
+    ...(models.verifier === undefined ? {} : { knowledgeVerifier: models.verifier }),
+  });
   return { verifier: entailmentVerifier({ model }) };
 }
 
@@ -1582,7 +1589,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // same tool-call event (with connectorAccount enrichment) itself.
     report: (event) => guard.report(event),
   });
-  const boundTools = connectGate.bind(guard.bind(actions));
+  // Design §12: a deployment where two tools share a `title` cannot render an
+  // honest consent card, so it must not serve. Composition installs the check
+  // here — the one place the deployment's whole registry is assembled — and it
+  // fires the instant the descriptor set first resolves, which is the earliest
+  // this is knowable (createVendo is synchronous; descriptors are not).
+  const boundTools = withUniqueToolTitles(connectGate.bind(guard.bind(actions)));
   // 04 §6: compound steps route through the guard binding — grants, approvals,
   // breakers, and audit see every real call; there is no second
   // execution path. createActions reads invokeTool at execution time (same
@@ -1919,9 +1931,14 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       emit: (event) => missCapture.record(event),
     },
     // ENG-252: the agent starts with a bounded loadout and discovers the rest via
-    // `vendo_tools_search`. The search seam is the SAME guard-bound registry the
+    // `find_tools`. The search seam is the SAME guard-bound registry the
     // agent executes through — a searched-in tool has no unguarded path.
     toolSearch: {
+      // Annotate results the subject cannot run yet. The tool description and the
+      // system prompt both promise this, and the connect-card flow depends on it;
+      // same predicate the connect gate executes against, so the annotation and
+      // the refusal can never disagree.
+      connectRequired: async (toolkit, toolkitCtx) => !(await subjectHasToolkit(toolkit, toolkitCtx)),
       // A curated agent menu has to hold at BOTH doors into the toolset: the
       // per-turn seed below and search, which materializes hits into the live
       // toolset mid-turn. Filtering only the seed would let the model search
@@ -1970,7 +1987,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const agentMenu = memoizedSurfaceMenu(() => actions.surfaceMenu("agent"));
   /** Keep only entries the agent menu offers. Vendo's OWN `vendo_*` runtime
    *  tools are never curated away: surfaces curate a product's API surface, not
-   *  the runtime's plumbing (gating `vendo_apps_*` or `vendo_tools_search` out
+   *  the runtime's plumbing (gating `vendo_apps_*` or `find_tools` out
    *  would break the product, not trim it). */
   async function onAgentMenu<T>(entries: T[], nameOf: (entry: T) => string): Promise<T[]> {
     const menu = await agentMenu();

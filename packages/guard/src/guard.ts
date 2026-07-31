@@ -1,7 +1,13 @@
 import {
   canonicalJson,
   descriptorHash,
+  isUnattended,
+  mechanicalRisk,
+  projectableForRun,
+  resolvedRisk,
   sha256Hex,
+  toolOutcomeSchema,
+  UNATTENDED_DESTRUCTIVE_REASON,
   VendoError,
 } from "@vendoai/core";
 import type {
@@ -14,6 +20,7 @@ import type {
   GrantScope,
   GuardDecision,
   IsoDateTime,
+  Json,
   PermissionGrant,
   Principal,
   RecordQuery,
@@ -43,6 +50,10 @@ const APPROVALS_COLLECTION = "vendo_approvals";
  *  02-store §5 erase cascade collects them with the rest of the subject's data. */
 const APPROVAL_CLAIMS_COLLECTION = "guard:approval-claims";
 const AUDIT_COLLECTION = "vendo_audit";
+/** Build contract §7 — the effect ledger: one row per completed mutating call,
+ *  keyed by (run, tool, exact input). It is what makes fail-and-re-run correct:
+ *  a re-run of a run that already sent the payment must not send it again. */
+const EFFECTS_COLLECTION = "vendo_effects";
 const JUDGE_TIMEOUT_MS = 15_000;
 
 interface ApprovalRecordData {
@@ -115,6 +126,43 @@ function cloneJson<T>(value: T): T {
 
 function exactInputHash(args: unknown): string {
   return `sha256:${sha256Hex(canonicalJson(args))}`;
+}
+
+/** Build contract §7's key: sha256 over the run, the tool, and the exact input.
+ *  `undefined` means this call is not ledger-eligible at all.
+ *
+ *  The contract writes the preimage as `runId|turnId`. There is no turn id
+ *  anywhere in this codebase, so the run component is `ctx.trigger.runId`.
+ *
+ *  It deliberately does NOT fall back to `ctx.sessionId`, even though the write
+ *  breaker and `task`-duration grants do. The ledger exists to make
+ *  fail-and-RE-RUN correct, and a re-run is a property of a run: an unattended
+ *  run that failed halfway is retried with the same runId, which is exactly what
+ *  must not double-charge. A chat session has no such identity — it spans many
+ *  turns — so keying on it made "pay this invoice" asked twice in one
+ *  conversation execute once and replay the first receipt. That was a real bug
+ *  (caught by vendo's compound e2e), not a theoretical one.
+ *
+ *  Scoping is load-bearing in both directions: narrower (per call id) would never
+ *  dedupe a re-run at all, and broader (per subject) would make a daily
+ *  automation fire once and then never again. */
+function effectBaseKey(ctx: RunContext, call: ToolCall): string | undefined {
+  const runId = ctx.trigger?.runId;
+  if (runId === undefined) return undefined;
+  return canonicalJson([runId, call.tool, exactInputHash(call.args)]);
+}
+
+/** Build contract §7 (amended 2026-07-30) — the key includes an ORDINAL counting
+ *  prior identical calls in the same run.
+ *
+ *  Without it, "pay $10 twice" — two deliberate, separately-authorized calls with
+ *  identical arguments — collapsed into one payment while both reported success.
+ *  The ordinal is assigned per CALL ID, so the two intents get 0 and 1 and both
+ *  execute, while a genuine re-run of an already-completed call reuses its own
+ *  ordinal and is still deduped. That is the whole distinction the ledger has to
+ *  draw: same intent repeated, versus one intent retried. */
+function effectKeyOf(base: string, ordinal: number): string {
+  return `sha256:${sha256Hex(canonicalJson([base, ordinal]))}`;
 }
 
 function inputPreview(call: ToolCall): string {
@@ -229,6 +277,13 @@ function normalizeRememberedScope(scope: GrantScope, request: ApprovalRequest): 
 
 class GuardImplementation implements VendoGuard {
   readonly #store: StoreAdapter;
+  /** Per (run, tool, exact input): which ordinal each CALL ID was assigned.
+   *  Keyed by call id so a replay of one call reuses its ordinal (and dedupes)
+   *  while a second, separately-intended identical call gets the next one. */
+  readonly #effectOrdinals = new Map<string, Map<string, number>>();
+  /** In-flight execution per effect key, so concurrent identical calls share one
+   *  execution instead of both racing past an empty ledger (finding 14). */
+  readonly #effectsInFlight = new Map<string, Promise<ToolOutcome>>();
   readonly #config: CreateGuardConfig;
   readonly #policyConfig: PolicyConfigObject | undefined;
   readonly #policy: PolicyResolver;
@@ -384,7 +439,15 @@ class GuardImplementation implements VendoGuard {
 
   bind(tools: ToolRegistry): ToolRegistry {
     return {
-      descriptors: () => tools.descriptors(),
+      // THE LAW (design §12), primary mechanism: a destructive or external tool
+      // is NOT PROJECTED into an unattended run at all. A tool the model cannot
+      // see is one it cannot be talked into using; a tool it can see but is
+      // refused becomes something it retries and works around. Callers that pass
+      // no context get the full set, exactly as before.
+      descriptors: async (ctx?: Pick<RunContext, "venue" | "presence">) => {
+        const all = await tools.descriptors();
+        return ctx === undefined ? all : projectableForRun(all, ctx);
+      },
       execute: async (call, ctx) => {
         const descriptors = await tools.descriptors();
         const descriptor = descriptors.find((candidate) => candidate.name === call.tool);
@@ -410,6 +473,45 @@ class GuardImplementation implements VendoGuard {
         const { decision } = completed;
         let outcome: ToolOutcome;
 
+        // THE LAW (design §12), defence in depth. `projectableForRun` above is
+        // the primary mechanism; this refuses whatever still got through.
+        //
+        // It sits AFTER the pipeline, not before, because two outcomes the law
+        // explicitly wants must survive it:
+        //  - `ask` parks the call and shows a person the real arguments. That IS
+        //    the law's replacement pattern — the automation prepares, the human
+        //    sends. Refusing ahead of the pipeline would delete it.
+        //  - an approved REPLAY (run/"grant" with no grantId — see
+        //    #grantForExecution) means a human already tapped this exact call
+        //    with these exact arguments. That is attended irreversibility, which
+        //    is precisely what the law asks for.
+        // What it does refuse is a standing grant, rule, judge, or default
+        // authorizing an irreversible action with nobody watching. No limit and
+        // no override reaches past this.
+        const replayApproved = decision.action === "run"
+          && decision.decidedBy === "grant" && decision.grantId === undefined;
+        if (
+          decision.action === "run" && !replayApproved
+          && isUnattended(ctx) && resolvedRisk(completed.descriptor) === "destructive"
+        ) {
+          const refused: ToolOutcome = { status: "blocked", reason: UNATTENDED_DESTRUCTIVE_REASON };
+          await this.report(
+            eventFromContext(ctx, {
+              kind: "policy-decision",
+              tool: call.tool,
+              inputPreview: preview,
+              outcome: refused.status,
+              decidedBy: "rule",
+              detail: {
+                reason: "unattended-destructive",
+                declaredRisk: completed.descriptor.risk,
+                mechanicalRisk: mechanicalRisk(completed.descriptor),
+              },
+            }),
+          );
+          return refused;
+        }
+
         if (decision.action === "block") {
           outcome = { status: "blocked", reason: decision.reason };
         } else if (decision.action === "ask") {
@@ -421,16 +523,69 @@ class GuardImplementation implements VendoGuard {
           const grant = await this.#grantForExecution(decision, call, completed.descriptor, ctx);
           // CORE-2: `grant` is a first-class RunContext field — no cast needed.
           const executeCtx = grant === undefined ? ctx : { ...ctx, grant };
-          try {
-            outcome = await tools.execute(call, executeCtx);
-          } catch (error) {
-            outcome = {
-              status: "error",
-              error: {
-                code: error instanceof VendoError ? error.code : "error",
-                message: errorMessage(error),
-              },
-            };
+          // Build contract §7: for a MUTATING call, a key that already succeeded
+          // returns its recorded outcome INSTEAD of executing. The check sits
+          // here, after the guard has said run and before the registry is
+          // touched, because that is the only point where skipping is both safe
+          // (authority was still checked) and effective (the effect is avoided).
+          //
+          // `resolvedRisk`, not the declared label: gating on what the model said
+          // left the most dangerous class — a destructive tool mislabelled
+          // `read` — with no ledger protection at all.
+          const resolved = resolvedRisk(completed.descriptor);
+          const mutating = resolved === "write" || resolved === "destructive";
+          const base = mutating ? effectBaseKey(ctx, call) : undefined;
+          const key = base === undefined ? undefined : effectKeyOf(base, this.#effectOrdinal(base, call.id));
+          const recorded = key === undefined ? undefined : await this.#recordedEffect(key);
+          if (recorded !== undefined) {
+            outcome = recorded;
+          } else {
+            // Finding 14 (TOCTOU): two concurrent identical calls both read "no
+            // receipt" and both executed. Share one in-flight execution per key
+            // so the second awaits the first's outcome instead of repeating it.
+            const inFlight = key === undefined ? undefined : this.#effectsInFlight.get(key);
+            if (inFlight !== undefined) {
+              outcome = await inFlight;
+            } else {
+              const run = (async (): Promise<ToolOutcome> => {
+                try {
+                  return await tools.execute(call, executeCtx);
+                } catch (error) {
+                  return {
+                    status: "error",
+                    error: {
+                      code: error instanceof VendoError ? error.code : "error",
+                      message: errorMessage(error),
+                    },
+                  };
+                }
+              })();
+              if (key !== undefined) this.#effectsInFlight.set(key, run);
+              try {
+                outcome = await run;
+              } finally {
+                if (key !== undefined) this.#effectsInFlight.delete(key);
+              }
+              // Only a SUCCESS is ledgered. A failed mutation may not have landed
+              // at all, so recording it would turn a transient upstream error into
+              // a permanent refusal to retry — the opposite of the goal.
+              if (key !== undefined && outcome.status === "ok") {
+                // The mutation ALREADY HAPPENED. A receipt-store failure must
+                // never discard it: throwing here would lose both the caller's
+                // outcome and the audit row for real, completed work. Surface it
+                // loudly and carry on — an unrecorded receipt risks a duplicate
+                // on a later re-run, which is strictly better than losing the
+                // record of a payment that went out.
+                try {
+                  await this.#recordEffect(key, outcome, ctx.principal.subject);
+                } catch (error) {
+                  console.error(
+                    `[vendo] guard: ${call.tool} completed but its effect receipt could not be written `
+                    + `(${errorMessage(error)}). A re-run of this run may repeat the call.`,
+                  );
+                }
+              }
+            }
           }
         }
 
@@ -809,6 +964,56 @@ class GuardImplementation implements VendoGuard {
    *  (actions resolves ActAs against ctx.grant on away calls — 04 §4). Approval
    *  replays carry no grantId; away replays re-match, because deciding a parked
    *  automation approval mints the app-bound grant first (07 §3). */
+  /** The ordinal for this call within its (run, tool, input) group. Stable per
+   *  call id: asking twice for the same call id gives the same number, which is
+   *  what makes a retry dedupe while a second distinct call does not. */
+  #effectOrdinal(base: string, callId: string): number {
+    let byCall = this.#effectOrdinals.get(base);
+    if (byCall === undefined) {
+      byCall = new Map();
+      this.#effectOrdinals.set(base, byCall);
+    }
+    const existing = byCall.get(callId);
+    if (existing !== undefined) return existing;
+    const ordinal = byCall.size;
+    byCall.set(callId, ordinal);
+    return ordinal;
+  }
+
+  async #recordedEffect(key: string): Promise<ToolOutcome | undefined> {
+    const record = await this.#store.records(EFFECTS_COLLECTION).get(key);
+    if (record === null) return undefined;
+    const outcome = (record.data as { outcome?: unknown }).outcome;
+    const parsed = toolOutcomeSchema.safeParse(outcome);
+    // A row we cannot read is treated as absent: refusing to execute on the
+    // strength of an unparseable receipt would strand the call forever.
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  /** Write the receipt. `insertIfAbsent` where the adapter offers it, so a racing
+   *  writer cannot overwrite an already-recorded outcome.
+   *
+   *  Note precisely what that does and does not buy: it protects the RECORD, not
+   *  the execution. Nothing is reserved before the call, so two PROCESSES can
+   *  still both execute the same key — `#effectsInFlight` closes that window
+   *  within one process only. Cross-process exclusion needs a reservation row the
+   *  contract does not yet describe; it is reported, not silently implied.
+   *
+   *  `subject` rides the row (contract amendment 2026-07-30): `outcome` holds
+   *  real tool output, so a receipt with no owner is data that would survive an
+   *  erase forever. It goes in `refs` as well as the body, because that is what
+   *  the 02-store §5 cascade matches on for generic collections. */
+  async #recordEffect(key: string, outcome: ToolOutcome, subject: string): Promise<void> {
+    const records = this.#store.records(EFFECTS_COLLECTION);
+    const input = {
+      id: key,
+      data: { subject, outcome: cloneJson(outcome) as Json, at: now() },
+      refs: { subject },
+    };
+    if (records.atomic === undefined) await records.put(input);
+    else await records.atomic.insertIfAbsent(input);
+  }
+
   async #grantForExecution(
     decision: GuardDecision,
     call: ToolCall,

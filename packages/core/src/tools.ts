@@ -121,6 +121,13 @@ export const toolOutcomeSchema = z.discriminatedUnion("status", [
 
 /** 01-core §4 */
 export interface ToolRegistry {
-  descriptors(): Promise<ToolDescriptor[]>;
+  /** The tools available. Passing a run's venue/presence asks for the set that
+   *  may be PROJECTED into that run — the guard withholds destructive and
+   *  external tools from an unattended one (design §12's law, `projectableForRun`).
+   *
+   *  Optional so every existing registry stays a valid implementation: a
+   *  zero-parameter `descriptors()` is assignable here and simply ignores the
+   *  hint, which means only the guard-bound registry has to know the law. */
+  descriptors(ctx?: Pick<RunContext, "venue" | "presence">): Promise<ToolDescriptor[]>;
   execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome>;
 }
