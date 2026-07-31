@@ -57,11 +57,10 @@ export function grantSetDelta(
 /** ACTION verbs that move money, message a human, or destroy something.
  *
  *  THE vocabulary — one definition, deployment-wide. `mechanicalRisk` below
- *  matches it anywhere in the name, but only AFTER the trailing-token read
- *  short-circuit has had its say: matching everywhere with nothing in front of it
- *  made `gmail_message_get` look destructive, and over-withholding is not a safe
- *  default, because it silently breaks automations that only ever read, which
- *  trains people to widen permissions.
+ *  matches it only in a verb POSITION (see `trailingToken`), never anywhere in
+ *  the name: matching everywhere made `gmail_message_get` look destructive, and
+ *  over-withholding is not a safe default, because it silently breaks
+ *  automations that only ever read, which trains people to widen permissions.
  *
  *  Build-time extraction (`packages/actions/src/sync/common.ts`) reads this same
  *  set through a DIFFERENT vote: it has no HTTP verb to lean on for tRPC and
@@ -87,11 +86,10 @@ export const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
   "approve", "confirm", "finalize", "commit", "merge", "deploy",
 ]);
 
-/** Verbs that only ever read. A name ending in one of these is a read (the
+/** Verbs that only ever read. A name ENDING in one of these is a read: the
  *  trailing token is the action in `noun_verb` naming, so nouns before it are
- *  just the subject being read), and so is a name that merely CONTAINS one, on
- *  the two conditions `mechanicalRisk` documents. Shared with build-time
- *  extraction for the same reason {@link DESTRUCTIVE_VERBS} is. */
+ *  just the subject being read. Shared with build-time extraction for the same
+ *  reason {@link DESTRUCTIVE_VERBS} is. */
 export const READ_VERBS: ReadonlySet<string> = new Set([
   "get", "list", "fetch", "read", "show", "query", "describe", "count", "search",
   "find", "lookup", "view", "peek", "head", "exists", "check", "preview", "export",
@@ -133,13 +131,6 @@ function trailingToken(name: string): string | undefined {
  * exposed over GET is still a deletion), and a mutating method beats a
  * read-shaped name (a POST that calls itself `get` is not a read).
  *
- * Both name axes now match a verb ANYWHERE, which is the symmetry this vote
- * lacked until 2026-07-31 (see the read-anywhere rule below). Position is still
- * what breaks the tie between them: the TRAILING token is checked first, so a
- * destructive NOUN cannot withhold a read (`gmail_message_get`), and the
- * destructive scan is checked before the read one, so a read verb cannot rescue a
- * compound (`list_and_delete`).
- *
  * The method axis reads {@link ToolDescriptor.bindingRisk} — the distilled fact
  * the actions registry derives from a tool's execution binding. It read a raw
  * `method` field off the descriptor until 2026-07-31, which meant it never fired
@@ -168,8 +159,6 @@ export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
   // discrimination; it must run before the destructive scan below.
   if (trailing !== undefined && READ_VERBS.has(trailing) && !mutating) return "read";
 
-  const tokens = words(descriptor.name);
-
   // Not read-shaped, so a destructive verb ANYWHERE in the name decides. Match
   // anywhere, not just at the ends: `maple_customer_delete_all` and
   // `maple_money_transfer_out` bury the verb in the middle of a long name with a
@@ -178,29 +167,7 @@ export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
   // above already protected the destructive-NOUN reads, so matching anywhere here
   // costs a false-positive only on a non-read-shaped name that merely mentions a
   // destructive word — which is the fail-toward-destructive direction §12 wants.
-  //
-  // This stays AHEAD of the read-anywhere rule below, which is what keeps a
-  // compound (`list_and_delete`, `get_then_purge`, `fetch_and_wire_funds`)
-  // destructive: the two rules overlap on exactly those names, and the
-  // destructive one has to win.
-  if (tokens.some((token) => DESTRUCTIVE_VERBS.has(token))) return "destructive";
-
-  // A read verb ANYWHERE is a read, which is the same-position symmetry the
-  // destructive scan above has had since 2026-07-30. Only the TRAILING token was
-  // inspected until 2026-07-31, so `verb_noun` — which is how essentially every
-  // extracted host read is named — fell through to the fail-closed default:
-  // `host_listAccounts`, `host_getAccount`, `host_getProfile` and
-  // `host_listTransactions` all voted `write` on the flagship demo despite being
-  // GET-bound reads. Downstream a `write` IS a mutating call, so each took an
-  // effect-ledger receipt on every call and a host rule matching `{risk:"write"}`
-  // would card a plain read — both against §12's "reads are silent, always".
-  //
-  // It cannot LOWER anything, because it is reached only when the two escalating
-  // axes have already had their say: no destructive verb appears anywhere (the
-  // check above returned), and the binding is not mutating (`!mutating`, so a
-  // POST-bound `host_listInvoices` stays `write` and a DELETE never gets here at
-  // all). A read verb never talks a mutating shape down.
-  if (!mutating && tokens.some((token) => READ_VERBS.has(token))) return "read";
+  if (words(descriptor.name).some((token) => DESTRUCTIVE_VERBS.has(token))) return "destructive";
 
   // Everything else is a write: fail-closed, because an unrecognised verb is not
   // evidence of safety — but not `destructive`, because withholding every

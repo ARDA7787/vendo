@@ -29,14 +29,6 @@
  * call Maple has: `/api/profile` is the one endpoint whose answer is derived from
  * the SESSION rather than the shared demo seed, which is what lets the away run's
  * own recorded answer name the granting user.
- *
- * That answer is captured at the stack's own `fetch` seam. It was read out of the
- * guard's effect ledger until 2026-07-31, which worked only because
- * `host_getProfile` mis-voted `write` and so got receipted; now that the vote
- * reads `verb_noun` correctly the call is a `read`, and §12's "reads are silent,
- * always" means there is no receipt to read. The real HTTP response is the better
- * witness anyway — it is what Maple actually sent, not a record of it — and the
- * empty ledger became an assertion of its own.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
@@ -136,9 +128,6 @@ interface Stack {
   bound: ToolRegistry;
   automations: AutomationsEngine;
   dataDir: string;
-  /** Every body Maple returned to a tool call made THROUGH this stack — see
-   *  {@link createStack}. The away run's own evidence channel. */
-  hostAnswers: string[];
   close(): Promise<void>;
 }
 
@@ -151,7 +140,6 @@ async function mapleTools(): Promise<Parameters<typeof createActions>[0]["tools"
 
 async function createStack(): Promise<Stack> {
   const dataDir = await mkdtemp(join(tmpdir(), "maple-away-drill-"));
-  const hostAnswers: string[] = [];
   const store = createStore({ dataDir });
   await store.ensureSchema();
   const guard = createGuard({ store });
@@ -164,17 +152,7 @@ async function createStack(): Promise<Stack> {
       secret: AUTH_SECRET,
       claims: (principal) => (SEEDED.has(principal.subject) ? {} : null),
     }),
-    // The away call's OWN answer, captured at the real HTTP boundary. §12 says
-    // "reads are silent, always", so the drill's read leaves no effect receipt
-    // to read back, and a run record carries step outcomes only — this seam is
-    // the one place Maple's response to an away call survives. It is also the
-    // most direct evidence there is: the actual bytes Maple sent the away run,
-    // not a guard-written record of them.
-    fetch: async (input, init) => {
-      const response = await appFetch(String(input), init);
-      hostAnswers.push(await response.clone().text());
-      return response;
-    },
+    fetch: (input, init) => appFetch(String(input), init),
   });
   const bound = guard.bind(actions);
   const apps = createApps({ store, guard, tools: bound, catalog: [] });
@@ -185,7 +163,6 @@ async function createStack(): Promise<Stack> {
     bound,
     automations,
     dataDir,
-    hostAnswers,
     async close() {
       await store.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -277,12 +254,13 @@ async function descriptorFor(stack: Stack, name: string): Promise<ToolDescriptor
   return found!;
 }
 
-/** Rows in the guard's effect ledger (build contract §7), which receipts every
- *  MUTATING call and NOTHING else. The drill's step is a read, so §12's "reads
- *  are silent, always" says this stays empty — asserted rather than assumed,
- *  because an effect row on a read is exactly the bug that made
- *  `host_getProfile` vote `write`. */
-async function effectRows(stack: Stack, subject: string): Promise<unknown[]> {
+/** The away call's OWN answer, read back. A run record carries step outcomes
+ *  only, so the one place Maple's response to an away call survives is the
+ *  guard's effect ledger (build contract §7), which receipts every MUTATING
+ *  call. That is why `resolvedRisk` below is load-bearing twice: `write` is
+ *  both what makes the drill's step legal unattended and what makes its
+ *  receipt exist. */
+async function awayReceipts(stack: Stack, subject: string): Promise<unknown[]> {
   const page = await stack.store.records("vendo_effects").list({ refs: { subject } });
   return page.records.map((record) => record.data);
 }
@@ -359,13 +337,14 @@ describe("Maple away drill (ENG-260)", () => {
       // be one an automation may legally run unattended. Pin that against the
       // REAL resolution (both votes, including the binding axis), so relabelling
       // or repointing this step fails here loudly instead of silently turning
-      // the drill into a law test. `read` is the honest answer for a GET-bound
-      // `host_getProfile` and, since 2026-07-31, the answer the vote actually
-      // reaches: its read axis matched only the TRAILING token until then, so
-      // every `verb_noun` host read voted `write` on the fail-closed default.
+      // the drill into a law test. `write` on a GET is the mechanical vote
+      // fail-closed default: `host_getProfile` is `verb_noun`, so its trailing
+      // token is a noun and the read short-circuit never fires. Legal either
+      // way — the law's predicate is `destructive` — but `write` is also what
+      // gives the call an effect receipt, which is the evidence read back below.
       const profile = await descriptorFor(stack, DRILL_TOOL);
       expect(profile.bindingRisk).toBeUndefined(); // GET, not DELETE
-      expect(resolvedRisk(profile)).toBe("read");
+      expect(resolvedRisk(profile)).toBe("write");
 
       await enableAndApprove(stack, subject, whoamiAutomation(appId));
 
@@ -389,16 +368,11 @@ describe("Maple away drill (ENG-260)", () => {
       // came back. Neither is in the shared demo seed — that seed hardcodes the
       // OTHER user's identity, so its absence here is what rules out "some
       // valid session" and "no session at all".
-      expect(stack.hostAnswers).toHaveLength(1);
-      const answer = stack.hostAnswers[0]!;
+      const receipts = await awayReceipts(stack, subject);
+      expect(receipts).toHaveLength(1);
+      const answer = JSON.stringify(receipts[0]);
       expect(answer).toContain(GRANTING_USER.email);
       expect(answer).toContain(GRANTING_USER.display);
-
-      // §12, "reads are silent, always": the away run really executed, and it
-      // left the effect ledger empty. This is the assertion the drill could not
-      // make while `host_getProfile` voted `write` — back then the row below was
-      // the drill's evidence channel.
-      expect(await effectRows(stack, subject)).toEqual([]);
       expect(answer).not.toContain(SEED_IDENTITY_USER.email);
     } finally {
       await stack.close();
