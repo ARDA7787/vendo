@@ -133,6 +133,21 @@ stream with today's `data-vendo-*` parts (`packages/core/src/stream-parts.ts` �
 unchanged; no new wire format), persists the transcript, and enforces the
 routing table. Harness adapters contain no persistence and no wire code.
 
+**Hot-path render seam** (orchestrator addition, 2026-07-30, ratified with
+Yousef — closes the gap between §3.5's mid-turn sync and "the skeleton renders
+the moment the plan file exists"): on every store write to a hot-path file
+(`app.vendo`, `plan.vendo`) — façade tool edit, in-process bash, or sandbox
+mid-turn sync — the **runtime** parses the content and, iff it parses, emits
+today's `data-vendo-view` part: same payload shape (assembled tree), same
+stable per-app stream id, same server-authoritative field stripping, same
+progressive query-resolver data fill (all existing code, relocated from the
+engine). An unparseable write emits **nothing** — the last good view stays on
+screen and the brokenness reaches the harness through `validate`, never the
+user. Granularity is per file save (accepted trade: a harness that writes once
+at the end shows nothing until it finishes — a bench-visible quality
+difference, not a correctness one). Harnesses never yield view events;
+`HarnessEvent` stays closed.
+
 ## 2. Layering (dependency-guard rows)
 
 ```
@@ -321,6 +336,18 @@ rewrite older messages). Backfill follows the existing versioned-migration
 pattern in `packages/store/src/schema.ts` (`SCHEMA_VERSION` bump + one
 `DATA_BACKFILL` step splitting existing arrays). Add the table to
 `ERASE_TABLES`, the subject-adoption path, and `02-store.md`'s row map.
+
+Helper surface (orchestrator addition, 2026-07-30 — lane D builds it, lane A's
+runtime consumes it; style matches `helpers/threads.ts`):
+
+```ts
+export function threadMessageStore(store: VendoStore): {
+  /** One row per message; per-row CAS on `revision` for edits. */
+  upsert(principal: Principal, threadId: ThreadId, message: UIMessage, seq: number): Promise<void>;
+  /** Reassembled by seq, oldest → newest. */
+  list(principal: Principal, threadId: ThreadId): Promise<UIMessage[]>;
+}
+```
 
 ## 7. Consent shapes
 
