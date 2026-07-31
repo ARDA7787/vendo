@@ -191,7 +191,52 @@ const STRIPPED_HEADERS = new Set([
   "upgrade",
 ]);
 
-function descriptorOf(tool: ToolDescriptor): ToolDescriptor {
+/**
+ * Design §12's second mechanical vote, METHOD axis — the tool's execution shape
+ * distilled into the one fact the vote needs (`ToolDescriptor.bindingRisk`).
+ *
+ * DERIVED here rather than copied off the tool, because the descriptor surface is
+ * fed by data a host controls (`.vendo/tools.json`, `overrides.json`, a connector
+ * catalog) and `overrides.json` may LOWER a declared `risk`. The vote is the
+ * backstop for exactly that, so it must read something no author can set.
+ *
+ * Every value returned escalates or says nothing: `undefined` for a read shape is
+ * how the vote behaved before this existed, and there is no value meaning "read".
+ * A compound returns nothing on purpose — its declared risk is already the
+ * riskiest step's (§4), and each step re-enters the guard on its own.
+ */
+function bindingRiskOf(binding: ToolBinding | undefined): ToolDescriptor["bindingRisk"] {
+  switch (binding?.kind) {
+    case "route":
+    case "openapi":
+      if (binding.method === "DELETE") return "destructive";
+      return binding.method === "GET" ? undefined : "write";
+    case "trpc":
+    case "graphql":
+      return binding.type === "mutation" ? "write" : undefined;
+    // A server action is a POST-shaped mutation surface and static parsing cannot
+    // prove otherwise — the same stance `serverActionRisk` takes at build time.
+    case "server-action":
+      return "write";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The descriptor surface, as a field WHITELIST: provenance the registry knows
+ * (audience, semantics, the binding itself) deliberately does not travel to
+ * whoever reads `descriptors()`.
+ *
+ * `bindingRisk` is the one field added FROM the binding rather than passed
+ * through, and it is added because the whitelist was silently disabling half of
+ * THE LAW: `mechanicalRisk` reads the tool's method, the whitelist dropped
+ * `binding.method`, and so a DELETE-bound tool labelled `write` was projected
+ * into unattended runs. It is derived, never copied, so nothing a host can author
+ * widens what reaches the vote (see {@link bindingRiskOf}).
+ */
+function descriptorOf(tool: ToolDescriptor & { binding?: ToolBinding }): ToolDescriptor {
+  const bindingRisk = bindingRiskOf(tool.binding);
   return {
     name: tool.name,
     description: tool.description,
@@ -199,6 +244,7 @@ function descriptorOf(tool: ToolDescriptor): ToolDescriptor {
     risk: tool.risk,
     ...(tool.critical !== undefined ? { critical: tool.critical } : {}),
     ...(tool.title !== undefined ? { title: tool.title } : {}),
+    ...(bindingRisk !== undefined ? { bindingRisk } : {}),
   };
 }
 

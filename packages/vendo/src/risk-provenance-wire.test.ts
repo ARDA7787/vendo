@@ -316,13 +316,17 @@ describe("fail-closed is untouched for every AI-assigned label", () => {
     expect(outcome.status).toBe("blocked");
   });
 
-  it("keeps a host-registry tool destructive when its METHOD reads destructive", async () => {
+  it("keeps a host-registry tool destructive when its BINDING reads destructive", async () => {
+    // An `actions.add` registry has no extraction binding for `descriptorOf` to
+    // read, so it states the fact itself. `bindingRisk` carries only the two
+    // values that ESCALATE, which is why a source that arrived as data is allowed
+    // to set it: there is no value it could send to look safer than its name.
     const mutating = {
       name: "maple_thing_update",
       description: "update a thing",
       inputSchema: { type: "object", properties: {}, additionalProperties: true },
       risk: "read",
-      method: "DELETE",
+      bindingRisk: "destructive",
     } as ToolDescriptor;
     const { vendo } = await compose();
     vendo.actions.add(hostRegistry([mutating]));
