@@ -25,9 +25,16 @@ packages:
 allowBuilds:
   # Scarf is install telemetry riding in via @copilotkit/runtime (genui-bench
   # only); its postinstall phones home, so it stays denied.
+  # just-bash's optional compression addons (its zstd/xz commands). The
+  # workspace façade imports just-bash's TYPES only, and nothing in the tree
+  # shells out to those commands, so the native builds are denied rather than
+  # compiled — listed explicitly because strictDepBuilds fails an install that
+  # merely ignores them.
+  '@mongodb-js/zstd': false
   '@scarf/scarf': false
   cbor-extract: true
   esbuild: true
+  node-liblzma: false
   protobufjs: true
   sharp: true
   unrs-resolver: true

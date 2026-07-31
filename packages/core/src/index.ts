@@ -35,6 +35,7 @@ export * from "./genui/expr.js";
 export * from "./genui/tree-node.js";
 export * from "./genui/tree.js";
 export * from "./triggers.js";
+export * from "./workspace.js";
 // genui/wire — only the compiler entry point, the renderer/repair issue
 // contract, and the per-binding repair shape (v2 spec §3) are public; the
 // sibling modules (expressions, attributes, scan, limits, state) stay

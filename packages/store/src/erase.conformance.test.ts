@@ -130,6 +130,8 @@ for (const backend of backends()) {
         vendo_sessions: 0, // durable subject — never registered as a session
         vendo_knowledge_docs: 1,
         vendo_knowledge_chunks: 1,
+        vendo_workspace_files: 0, // this subject wrote no workspace files
+        vendo_workspace_history: 0,
       });
 
       // Gone through the doors...

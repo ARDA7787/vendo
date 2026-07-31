@@ -1,6 +1,8 @@
+import { WORKSPACE_BLOB_NAMESPACE } from "./files-store.js";
 import { escapeLike } from "./helpers/utils.js";
 import { dbFor, type VendoStore } from "./store.js";
 import { invalid } from "./validate.js";
+import { workspaceBlobPrefix } from "./workspace-rows.js";
 
 /** 02-store §5 — every table in §2's public map. The erase API cascades the
  *  matching data across all of them; `vendo_meta` holds schema metadata (schema
@@ -25,6 +27,8 @@ export const ERASE_TABLES = [
   "vendo_sessions",
   "vendo_knowledge_docs",
   "vendo_knowledge_chunks",
+  "vendo_workspace_files",
+  "vendo_workspace_history",
 ] as const;
 
 export type EraseTable = typeof ERASE_TABLES[number];
@@ -115,6 +119,18 @@ export function eraseStore(store: VendoStore): {
       // a ref, same as the door tables (the knowledge engine owns what it refs).
       await del(report, "vendo_knowledge_docs", "refs @> $1::jsonb", [subjectRef]);
       await del(report, "vendo_knowledge_chunks", "refs @> $1::jsonb", [subjectRef]);
+      // The workspace (build contract §3.3) is keyed by `owner`, which for
+      // /user paths IS the subject — their files and every superseded revision
+      // go with them, plus the blobs the store-backed files adapter holds for
+      // them (a host-wired `files:` adapter owns its own bucket's lifecycle).
+      await del(report, "vendo_workspace_files", "owner = $1", [subject]);
+      await del(report, "vendo_workspace_history", "owner = $1", [subject]);
+      await del(
+        report,
+        "vendo_blobs",
+        "namespace = $1 AND key LIKE $2 ESCAPE '\\'",
+        [WORKSPACE_BLOB_NAMESPACE, `${escapeLike(workspaceBlobPrefix(subject))}%`],
+      );
       // The session registration (if any) is retired with the data (§4).
       await del(report, "vendo_sessions", "subject = $1", [subject]);
       return report;
@@ -138,6 +154,12 @@ export function eraseStore(store: VendoStore): {
       // An app's knowledge corpus (docs + their chunks) goes with the app.
       await del(report, "vendo_knowledge_docs", "refs @> $1::jsonb", [appRef]);
       await del(report, "vendo_knowledge_chunks", "refs @> $1::jsonb", [appRef]);
+      // The app's workspace files: `<mount>/apps/<appId>/…` is the frozen path
+      // layout (build contract §3.1), with the app id verbatim, so the app's
+      // documents are addressable without knowing whose workspace holds them.
+      const appPaths = `%/apps/${escapeLike(appId)}/%`;
+      await del(report, "vendo_workspace_files", "path LIKE $1 ESCAPE '\\'", [appPaths]);
+      await del(report, "vendo_workspace_history", "path LIKE $1 ESCAPE '\\'", [appPaths]);
       return report;
     },
   };
