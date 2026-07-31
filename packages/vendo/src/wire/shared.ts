@@ -56,9 +56,9 @@ export interface WireDeps {
   agent: VendoAgent;
   /** Architecture §3 — turns through the composed `Harness`. Present only when
       the host NAMED a harness: `POST /threads` then routes here instead of
-      `agent.stream`. Unset keeps today's path byte for byte, because the harness
-      path does not yet carry `find_tools`, the connection-scoped loadout, the
-      curated agent menu or capability-miss detection (PARKED.md P3). */
+      `agent.stream`. Unset keeps today's path byte for byte — a wave-1 ruling,
+      not a gap: `find_tools`, the connection-scoped loadout, the curated agent
+      menu and capability-miss detection all reach the harness path too. */
   harness?: Pick<HarnessTurns, "stream">;
   guard: VendoGuard;
   apps: AppsRuntime;

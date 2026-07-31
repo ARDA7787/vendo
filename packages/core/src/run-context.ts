@@ -13,6 +13,14 @@ export interface McpConsent {
   scopes: string[];
 }
 
+/** The doors a run can arrive through. ONE list: the type, the schema, and the
+ *  security tests that sweep every venue all derive from it, so a fifth venue
+ *  cannot be added in one place and silently escape the others. THE LAW's
+ *  predicate is presence, never the venue (grant-sets `isUnattended`) — the
+ *  sweeps exist to keep it that way for venues nobody has thought of yet. */
+export const VENUES = ["chat", "app", "automation", "mcp"] as const;
+export type Venue = (typeof VENUES)[number];
+
 /** CORE-2 */
 const mcpConsentSchema = z.object({
   clientId: z.string(),
@@ -33,7 +41,7 @@ const mcpConsentSchema = z.object({
     structural twins downstream blocks used to declare. */
 export interface RunContext {
   principal: Principal;
-  venue: "chat" | "app" | "automation" | "mcp";
+  venue: Venue;
   presence: "present" | "away";
   sessionId: string;
   appId?: AppId;
@@ -47,7 +55,7 @@ export interface RunContext {
 /** 01-core §3 */
 export const runContextSchema = z.object({
   principal: principalSchema,
-  venue: z.enum(["chat", "app", "automation", "mcp"]),
+  venue: z.enum(VENUES),
   presence: z.enum(["present", "away"]),
   sessionId: z.string(),
   appId: appIdSchema.optional(),

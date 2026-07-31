@@ -28,24 +28,29 @@ import {
   type WorkspaceFs,
 } from "@vendoai/core";
 import {
+  latestUserIntent,
   THREAD_ID_HEADER,
   ThreadRepository,
   upsertMessage,
   validateMessage,
   validateUpsert,
+  type CapabilityMissConfig,
   type ToolBridgeOptions,
+  type ToolSearchConfig,
 } from "@vendoai/agent/internal";
 import type { VendoGuard } from "@vendoai/guard";
 import { threadMessageStore, workspaceStore, type VendoStore } from "@vendoai/store";
 import {
+  createDiscoveryRails,
   createHarnessRuntime,
   memoryHarnessStateStore,
   reportHire,
   vendo,
+  type DiscoveryRails,
   type HarnessRuntimeDeps,
 } from "@vendoai/harnesses";
 import type { LanguageModel, UIMessage } from "ai";
-import { withAskUserTurn } from "./ask-user.js";
+
 
 export interface HarnessTurnsConfig {
   /** The host's chosen harness. Unset means `vendo()` — see {@link resolveHarness}. */
@@ -64,9 +69,17 @@ export interface HarnessTurnsConfig {
   /** The venue-gated, guard-directions-carrying system prompt. Assembled per
    *  turn by composition because it needs the ctx a `Turn` does not carry. */
   system: (ctx: RunContext) => Promise<string | undefined>;
-  /** The descriptor catalog `vendo()` equips its model from — projected for THIS
-   *  ctx, so THE LAW's unattended filter applies to what the model can see. */
+  /** The descriptor catalog the loadout and `find_tools` work over — projected for
+   *  THIS ctx, so THE LAW's unattended filter decides what the model can even see,
+   *  and search can never resolve its way back to a withheld tool. */
   descriptors: (ctx: RunContext) => Promise<ToolDescriptor[]>;
+  /** The shipped `find_tools` rail: the search seam, the connect-required
+   *  annotation, and the loadout caps. Unset → no discovery rail (`list()` offers
+   *  everything projected), which is what the harness path carried before. */
+  toolSearch?: ToolSearchConfig;
+  /** The shipped capability-miss rail. Load-bearing for evaluation E1's fifth ask:
+   *  an impossible request must produce an honest refusal, not an invention. */
+  capabilityMiss?: CapabilityMissConfig;
   render?: HarnessRuntimeDeps["render"];
   /** The shipped tool-bridge rails composition owns, per turn (`toolOutputCap`,
    *  the connect `preflight`, the capability-miss `onCall`). */
@@ -137,20 +150,100 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
 
   /**
    * Who thinks. `config.harness` if the host chose one, else `vendo()` — built
-   * HERE rather than at boot because its two deps need the turn's ctx: the
-   * system prompt is venue-gated and carries the guard's directions, and the
-   * descriptor catalog is projected for this run (THE LAW, design §12).
+   * HERE rather than at boot because its system prompt needs the turn's ctx: it is
+   * venue-gated and carries the guard's directions.
    *
-   * A host-supplied harness gets neither, by design: it reads `turn.tools.list()`
-   * (schemas and all) and authors its own instructions. `vendo()` predates that
-   * listing and rides the shipped prompt instead.
+   * `vendo()` no longer takes a descriptor catalog. It reads `turn.tools.list()`
+   * like any other harness, which is what puts every harness on the same
+   * discovery rail: the loadout, `find_tools` and the curated menu are the
+   * RUNTIME's, so a host's own thinker gets them without asking.
    */
   const resolveHarness = (ctx: RunContext): Harness<never> =>
     config.harness ?? (vendo({
       system: () => config.system(ctx),
-      descriptors: () => config.descriptors(ctx),
       onHire: reportHire,
     }) as unknown as Harness<never>);
+
+  /**
+   * The per-THREAD searched-in set, exactly as `createAgent` keeps one: a tool
+   * discovered through `find_tools` stays callable for the rest of the
+   * conversation, and the LRU cap bounds memory in a long-lived process where
+   * threads are never evicted.
+   */
+  const loadedTools = new Map<string, Set<string>>();
+  const MAX_LOADED_THREADS = 1024;
+  const loadedFor = (threadId: string): Set<string> => {
+    const existing = loadedTools.get(threadId);
+    if (existing !== undefined) {
+      loadedTools.delete(threadId);
+      loadedTools.set(threadId, existing); // touch: most-recently-used
+      return existing;
+    }
+    const fresh = new Set<string>();
+    loadedTools.set(threadId, fresh);
+    while (loadedTools.size > MAX_LOADED_THREADS) {
+      const oldest = loadedTools.keys().next().value;
+      if (oldest === undefined) break;
+      loadedTools.delete(oldest);
+    }
+    return fresh;
+  };
+
+  /**
+   * This turn's discovery rails. Every input is ctx-shaped, which is why they are
+   * built here and not at compose: the projected catalog, the connection-scoped
+   * seed, the host's surface menu, and the user's latest intent.
+   *
+   * The seed and the menu are resolved BESIDE each other and each degrades on
+   * failure rather than failing the turn — the shipped path's own rule. A failed
+   * menu degrades to unrestricted (the composition seam owns the warning); an
+   * EMPTY menu is a real answer and must not read as unrestricted, which is why
+   * `undefined` and `[]` are kept apart.
+   */
+  const discoveryFor = async (
+    ctx: RunContext,
+    threadId: ThreadId,
+    messages: readonly UIMessage[],
+  ): Promise<DiscoveryRails | undefined> => {
+    if (config.toolSearch === undefined && config.capabilityMiss === undefined) return undefined;
+    let seedNames: string[] | undefined;
+    if (config.toolSearch?.seed !== undefined) {
+      try {
+        seedNames = await config.toolSearch.seed(ctx);
+      } catch {
+        seedNames = undefined;
+      }
+    }
+    let menuNames: readonly string[] | undefined;
+    if (config.toolSearch?.menu !== undefined) {
+      try {
+        menuNames = await config.toolSearch.menu(ctx);
+      } catch {
+        menuNames = undefined;
+      }
+    }
+    return createDiscoveryRails({
+      descriptors: await config.descriptors(ctx),
+      ctx,
+      loaded: loadedFor(threadId),
+      ...(config.toolSearch === undefined ? {} : { toolSearch: config.toolSearch }),
+      ...(seedNames === undefined ? {} : { seedNames }),
+      ...(menuNames === undefined ? {} : { menuNames }),
+      // A search hit outside the built catalog was lazily expanded during the
+      // search itself; re-reading the PROJECTED catalog resolves it, so the same
+      // LAW filter applies to what search can reach.
+      resolve: async (names) => (await config.descriptors(ctx)).filter((d) => names.includes(d.name)),
+      ...(config.capabilityMiss === undefined
+        ? {}
+        : {
+            capabilityMiss: {
+              config: config.capabilityMiss,
+              intent: latestUserIntent([...messages]),
+              threadId,
+            },
+          }),
+    });
+  };
 
   return {
     workspace: (principal, opts) =>
@@ -203,23 +296,21 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
         ...(config.approvalWaitMs === undefined ? {} : { approvalWaitMs: config.approvalWaitMs }),
       });
 
-      // `ask_user`'s thread, bound for the whole turn (design §4). Everything the
-      // turn awaits — including a tool call several frames deep — sees THIS
-      // thread, so one composed registry serves concurrent turns without ever
-      // recording an answer into someone else's conversation.
-      const response = await withAskUserTurn({ threadId: thread.id }, async () => runtime.run<never>({
+      const discovery = await discoveryFor(input.ctx, thread.id, thread.messages);
+      const response = await runtime.run<never>({
         harness: resolveHarness(input.ctx),
         threadId: thread.id,
         messages: thread.messages,
         ctx: input.ctx,
         workspace,
         models: config.models,
+        ...(discovery === undefined ? {} : { discovery }),
         // §1.4 — presence is proof, and `isUnattended` is the one predicate that
-        // decides it (an automation venue or an absent person). Interactive turns
-        // await the tap inside `call()`; the rest fail loudly with a standing card.
+        // decides it. Interactive turns await the tap inside `call()`; the rest
+        // fail loudly with a standing card.
         interactive: !isUnattended(input.ctx),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
-      }));
+      });
       // A caller may begin without an id; hand the effective one back on every
       // turn, like `createAgent` does, so the wire can register turn liveness.
       response.headers.set(THREAD_ID_HEADER, thread.id);

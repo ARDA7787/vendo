@@ -39,6 +39,7 @@ import {
   memoryHarnessStateStore,
   type HarnessStateStore,
 } from "./harness-state.js";
+import type { DiscoveryRails } from "./discovery.js";
 import { wrapWorkspaceForRender, type RenderSeamOptions } from "./render-seam.js";
 import { createTurnTools, type MirrorEvent } from "./turn-tools.js";
 import { TextChannel, writeError, writeMirror, writeStatus, writeView } from "./wire.js";
@@ -136,6 +137,12 @@ export interface TurnRunInput<Options = unknown> {
   options?: Options;
   /** §1.4 — did the caller prove presence (a click/message/submit)? */
   interactive: boolean;
+  /** The shipped discovery rails for THIS turn (`createDiscoveryRails`): the
+   *  loadout `list()` is curated by, plus `find_tools` and the capability-miss
+   *  reporter as callable meta-tools. Per turn, not per runtime, because every
+   *  input it needs is ctx-shaped — the projected catalog, the connection-scoped
+   *  seed, the surface menu, the user's latest intent. */
+  discovery?: DiscoveryRails;
   signal?: AbortSignal;
 }
 
@@ -262,7 +269,15 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             // `data-vendo-*` part goes to (view, approval, connect, build-failed,
             // citations), `toolOutputCap`, the connect gate, the capability-miss
             // hook, and a FRESH per-turn connect-card dedupe set.
-            bridge: { ...deps.bridge, writer, connectCards: new Set<string>() },
+            // The capability-miss hook rides the bridge: a tool that fails twice
+            // in one turn reports itself, wherever the failure came from.
+            bridge: {
+              ...deps.bridge,
+              ...(input.discovery?.onCall === undefined ? {} : { onCall: input.discovery.onCall }),
+              writer,
+              connectCards: new Set<string>(),
+            },
+            ...(input.discovery === undefined ? {} : { discovery: input.discovery }),
             ...(deps.approvalWaitMs === undefined ? {} : { approvalWaitMs: deps.approvalWaitMs }),
           });
 

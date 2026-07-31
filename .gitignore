@@ -65,6 +65,10 @@ apps/*/.vendo/data/
 apps/*/.vendo/data-*/
 fixtures/*/.vendo/data/
 examples/*/.vendo/data/
+# Same state, written by a package's own tests: the capability-miss sink resolves
+# its data dir from the cwd, so a real-path test of that rail
+# (packages/vendo/src/harness-wire.test.ts) lands misses.jsonl here.
+packages/*/.vendo/data/
 
 # wave-6 orchestration lane briefs/signals (never committed)
 .lanes/

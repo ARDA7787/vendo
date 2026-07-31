@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mechanicalRisk, projectableForRun, resolvedRisk, type ToolDescriptor } from "./index.js";
+import { ASK_USER_TOOL, mechanicalRisk, projectableForRun, resolvedRisk, type ToolDescriptor } from "./index.js";
 
 const tool = (name: string, extra: Partial<ToolDescriptor> = {}): ToolDescriptor => ({
   name,
@@ -27,6 +27,37 @@ describe("the mechanical vote is genuinely independent of the AI label", () => {
   it("defaults an unrecognisable name to write, never to read", () => {
     // Fail-closed: an unknown verb is not evidence of safety.
     expect(mechanicalRisk(tool("maple_frobnicate_widget"))).toBe("write");
+  });
+});
+
+describe("a question is not an action (design §4, §12 'reads are silent, always')", () => {
+  // The verb-shape heuristic is calibrated for extracted host API names, which
+  // are `noun_verb`. `ask_user` is Vendo's OWN hand-authored door and reads the
+  // other way round: the trailing token is `user`, a noun, so the read
+  // short-circuit misses it and the fail-closed default calls it a `write`.
+  //
+  // A `write` is a MUTATING call to everything downstream of `resolvedRisk`: a
+  // host policy matching `{ risk: "write" }` would raise a consent card for
+  // asking a question, and the guard would write it an effect-ledger row. There
+  // is also nothing for a second opinion to correct here — the label was not
+  // AI-assigned, it was written in this repo.
+  it("votes read on ask_user, so the trailing noun cannot make a question mutating", () => {
+    expect(mechanicalRisk(tool(ASK_USER_TOOL))).toBe("read");
+  });
+
+  it("resolves read even when the declared label is riskier — neither vote invents an action", () => {
+    expect(resolvedRisk(tool(ASK_USER_TOOL))).toBe("read");
+    // `resolvedRisk` takes the RISKIER of the two, so this pins the mechanical
+    // half only: an honest `read` descriptor stays a read.
+    expect(mechanicalRisk(tool(ASK_USER_TOOL, { risk: "write" }))).toBe("read");
+  });
+
+  it("still projects the question door into an away run — a read is never withheld", () => {
+    // Withholding is THE LAW's destructive filter. Asking is not destructive, so
+    // the descriptor survives projection; `askUserRegistry` is what refuses to
+    // ask a question nobody is there to answer.
+    expect(projectableForRun([tool(ASK_USER_TOOL)], { venue: "automation", presence: "away" }))
+      .toHaveLength(1);
   });
 });
 

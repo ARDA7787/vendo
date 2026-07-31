@@ -29,6 +29,14 @@ export const VENDO_APPS_CREATE_TOOL = "vendo_apps_create";
  *  refusal) stays the model's to handle. */
 export const VENDO_APP_BUILD_FAILED_PREFIX = "app build failed";
 
+/** Design §4 — the one question door, any seat.
+ *
+ *  The name lives in core because three sides read it and a security-relevant
+ *  name with two definitions drifts silently (the lesson `DESTRUCTIVE_VERBS`
+ *  records): the registry that implements it, the loop that ends a turn on it,
+ *  and `mechanicalRisk`, which has to know a question is not an action. */
+export const ASK_USER_TOOL = "ask_user";
+
 /** 01-core §4 */
 export type RiskLabel = "read" | "write" | "destructive";
 

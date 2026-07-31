@@ -9,6 +9,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Connector } from "@vendoai/actions";
 import type { FilesAdapter, Principal, ToolDescriptor, ToolRegistry } from "@vendoai/core";
 import { createStore, type VendoStore } from "@vendoai/store";
 import { vendo as vendoHarness } from "@vendoai/harnesses";
@@ -448,5 +449,157 @@ describe("the default harness is `vendo()`", () => {
     expect(typeof vendo.harness.stream).toBe("function");
     expect(typeof vendo.harness.workspace).toBe("function");
     expect(vendoHarness().name).toBe("vendo");
+  });
+});
+
+/**
+ * The four shipped rails, on the harness path — the reason `POST /threads` could
+ * not be pointed at a harness by default. Each one is proven through a real
+ * `Request` into `vendo.handler`, because a unit test of `createDiscoveryRails`
+ * cannot tell you the composition wired it.
+ */
+describe("rail parity: find_tools, the loadout, the menu, capability miss", () => {
+  /** A brokered connector whose toolkit the subject has NOT connected. */
+  function gmailConnector(executed: string[]): Connector {
+    const descriptor: ToolDescriptor = {
+      name: "gmail_GMAIL_SEND_EMAIL",
+      title: "Send an email",
+      description: "Send an email through the connected Gmail account",
+      inputSchema: { type: "object", properties: { to: { type: "string" } } },
+      risk: "write",
+      // Core `tools.ts`: `toolkit` is present on connector tools whose usefulness
+      // is gated by a per-user connected account. It is what the search
+      // annotation and the connect card are both keyed on.
+      toolkit: "gmail",
+    };
+    return {
+      name: "composio",
+      descriptors: async () => [descriptor],
+      execute: async (call) => {
+        executed.push(call.tool);
+        return { status: "ok", output: { sent: true } };
+      },
+      toolkitOf: (tool) => (tool.startsWith("gmail_") ? "gmail" : undefined),
+    };
+  }
+
+  it("equips a searched-in tool and makes it CALLABLE in the same turn", async () => {
+    // The rail in one test: the curated loadout hides the long tail, `find_tools`
+    // equips a match, and the SAME turn's next `list()` offers it — which is how a
+    // harness discovers, since `list()` is the one discovery surface.
+    const before: string[][] = [];
+    const after: string[][] = [];
+    let searched: unknown;
+    let called: string | undefined;
+    const { vendo, host } = await compose({
+      // A curated menu of exactly ONE tool: the long tail is off the initial
+      // loadout, so `list()` must not offer `maple_invoices_list` until it is
+      // searched in. This is the host's `surfaces.agent` menu in effect.
+      agent: { loadout: ["maple_reports_read"] },
+      harness: scriptedHarness(async function* (turn) {
+        before.push((await turn.tools.list()).map((entry) => entry.name));
+        const search = await turn.tools.call("find_tools", { query: "invoices" });
+        searched = search.status === "ok" ? search.output : search;
+        after.push((await turn.tools.list()).map((entry) => entry.name));
+        const result = await turn.tools.call("maple_invoices_list", {});
+        called = result.status;
+        yield { type: "text", delta: `called=${called}` };
+      }),
+    });
+    // A second host tool so the curated loadout has something to exclude.
+    vendo.actions.add({
+      async descriptors() {
+        return [{
+          name: "maple_reports_read",
+          title: "Read reports",
+          description: "Read the customer's reports",
+          inputSchema: { type: "object", properties: {} },
+          risk: "read" as const,
+        }];
+      },
+      async execute() {
+        return { status: "ok" as const, output: {} };
+      },
+    });
+
+    const turn = await vendo.handler(request("/threads", {
+      threadId: "thr_find", message: userMessage("m1", "how many invoices are open?"),
+    }));
+    expect(await turn.text()).toContain("called=ok");
+
+    // The loadout really was curated: the tool was NOT on offer to start with...
+    expect(before[0]).toContain("find_tools");
+    expect(before[0]).not.toContain("maple_invoices_list");
+    // ...`find_tools` equipped it, reporting what it loaded...
+    expect(JSON.stringify(searched)).toContain("maple_invoices_list");
+    // ...the very next `list()` offers it, with its schema...
+    expect(after[0]).toContain("maple_invoices_list");
+    // ...and it really executed, through the guard, in the same turn.
+    expect(called).toBe("ok");
+    expect(host.calls).toHaveLength(1);
+  });
+
+  it("annotates an UNCONNECTED connector's tool and answers a call with the connect card", async () => {
+    const executed: string[] = [];
+    let searched = "";
+    let denied: unknown;
+    const { vendo } = await compose({
+      connectors: [gmailConnector(executed)],
+      harness: scriptedHarness(async function* (turn) {
+        const search = await turn.tools.call("find_tools", { query: "send an email" });
+        searched = JSON.stringify(search.status === "ok" ? search.output : search);
+        denied = await turn.tools.call("gmail_GMAIL_SEND_EMAIL", { to: "a@b.test" });
+        yield { type: "text", delta: "tried" };
+      }),
+    });
+
+    const turn = await vendo.handler(request("/threads", {
+      threadId: "thr_connect", message: userMessage("m1", "email the invoice"),
+    }));
+    expect(await turn.text()).toContain("tried");
+
+    // The search told the model it cannot run this yet — the annotation the tool
+    // description and the system prompt both promise, and what stops the model
+    // burning a turn reading a refusal as a failure.
+    expect(searched).toContain("gmail_GMAIL_SEND_EMAIL");
+    expect(searched).toContain("connectRequired");
+    // And the call itself is the connect card, not an execution: `DeniedNeeds`
+    // carries the toolkit so the harness can offer connecting.
+    expect(denied).toMatchObject({ status: "denied", needs: { kind: "connect", toolkit: "gmail" } });
+    expect(executed).toEqual([]);
+  });
+
+  it("takes the honest capability-miss path on an impossible ask (evaluation E1)", async () => {
+    // E1's fifth ask: an impossible request must get an honest refusal, not an
+    // invention. The reporter tool is what makes "I cannot" a recorded, reviewable
+    // event instead of the model quietly making something up.
+    let reported: unknown;
+    let offered: string[] = [];
+    const { vendo } = await compose({
+      harness: scriptedHarness(async function* (turn) {
+        offered = (await turn.tools.list()).map((entry) => entry.name);
+        // No tool can launch a rocket. The model says so through the door.
+        const outcome = await turn.tools.call("vendo_report_capability_miss", {
+          kind: "no-matching-tool",
+          toolsConsidered: ["maple_invoices_list"],
+        });
+        reported = outcome.status === "ok" ? outcome.output : outcome;
+        yield { type: "text", delta: "I can't do that — nothing here reaches it." };
+      }),
+    });
+
+    const turn = await vendo.handler(request("/threads", {
+      threadId: "thr_miss", message: userMessage("m1", "launch a rocket to Mars"),
+    }));
+    expect(await turn.text()).toContain("I can't do that");
+
+    // The reporter is on the offered surface, so a model can reach it at all —
+    // this is the half that was simply absent from the harness path.
+    expect(offered).toContain("vendo_report_capability_miss");
+    // `reported: true` is only returned once the detector has actually fired its
+    // report (it latches, so a second call answers false). The event's own
+    // journey to the sink is the shipped, separately-tested half, and both
+    // thinkers are handed the SAME `capabilityMiss` config value by composition.
+    expect(reported).toEqual({ reported: true });
   });
 });
