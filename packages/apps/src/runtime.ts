@@ -711,8 +711,10 @@ const conductorOptions = (
 });
 
 /** v2 spec §1 — assemble the emitted payload: the tree plus document islands
- *  at payload level (the renderer lifts them into the shared walk). */
-const assembleTree = (source: {
+ *  at payload level (the renderer lifts them into the shared walk). Exported for
+ *  the harness runtime's hot-path render seam, which must produce the IDENTICAL
+ *  payload shape this emitter does. */
+export const assembleTree = (source: {
   tree: UIPayload | Tree;
   components?: Record<string, string>;
   /** W4b — the stamped per-island tool manifests ride beside the sources. */

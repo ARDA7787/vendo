@@ -1,0 +1,21 @@
+/**
+ * Cross-block internals — NOT a host surface.
+ *
+ * These are the seams `@vendoai/harnesses` needs so `vendo()` rides the shipped
+ * turn loop instead of reimplementing it. They live behind a subpath (the idiom
+ * `@vendoai/core/conformance` and `@vendoai/apps/adapter-conformance` already
+ * set) for one reason: a host's public surface must look the same after this lane
+ * as before it. Anything re-exported here is free to change shape without a major
+ * bump — the only supported consumer is another `@vendoai/*` block.
+ */
+export { startTurn, providerHistory, turnModelMessages, DEFAULT_MAX_STEPS } from "./loop.js";
+export type { TurnLoop, TurnLoopOptions } from "./loop.js";
+export { wireErrorMessage } from "./wire-error.js";
+export { addAgentTool, buildAgentTools, guardedCall, previewApproval } from "./tools.js";
+export type { ToolBridgeOptions } from "./tools.js";
+export { createToolSearchSession } from "./tool-search.js";
+export type { ToolSearchSession } from "./tool-search.js";
+export { assembleSystemPrompt } from "./prompt.js";
+// The transcript-side rules a harness runtime must apply identically: what a
+// client may change, and how a superseded approval resolves.
+export { abandonPendingApprovals, guardApprovalIds, validateUpsert } from "./agent.js";

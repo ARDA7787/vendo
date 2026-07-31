@@ -1,18 +1,18 @@
 {
-  "name": "@vendoai/apps",
+  "name": "@vendoai/harnesses",
   "version": "0.5.0",
-  "description": "The Vendo app artifact, build engine, sandbox seam, and runtime.",
+  "description": "The harness runtime: runs any Harness safely, and vendo() \u2014 the default in-process thinker.",
   "keywords": [
     "ai",
     "agent",
-    "apps",
+    "harness",
     "vendo"
   ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/runvendo/vendo.git",
-    "directory": "packages/apps"
+    "directory": "packages/harnesses"
   },
   "homepage": "https://vendo.run",
   "bugs": "https://github.com/runvendo/vendo/issues",
@@ -30,18 +30,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./e2b": {
-      "types": "./dist/e2b/index.d.ts",
-      "default": "./dist/e2b/index.js"
-    },
-    "./adapter-conformance": {
-      "types": "./dist/adapter-conformance.d.ts",
-      "default": "./dist/adapter-conformance.js"
-    },
-    "./internal": {
-      "types": "./dist/internal.d.ts",
-      "default": "./dist/internal.js"
     }
   },
   "files": [
@@ -55,37 +43,20 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@vendoai/agent": "workspace:*",
+    "@vendoai/apps": "workspace:*",
     "@vendoai/core": "workspace:*",
-    "croner": "^9.0.0",
-    "esbuild": "^0.25.0",
-    "fflate": "^0.8.2",
-    "jsdom": "^25.0.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "@vendoai/guard": "workspace:*",
     "zod": "^3.25.0"
   },
   "peerDependencies": {
     "ai": ">=6.0.0 <7",
-    "e2b": "^2.32.0",
-    "vitest": "^2.0.0",
     "zod": ">=3.25.0 <5"
   },
-  "peerDependenciesMeta": {
-    "ai": {
-      "optional": true
-    },
-    "e2b": {
-      "optional": true
-    },
-    "vitest": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@ai-sdk/anthropic": "3.0.12",
     "@types/node": "^22.0.0",
     "ai": "6.0.28",
-    "e2b": "^2.32.0",
+    "just-bash": "^3.1.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

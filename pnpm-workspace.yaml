@@ -31,6 +31,13 @@ allowBuilds:
   '@mongodb-js/zstd': false
   # Scarf is install telemetry riding in via @copilotkit/runtime (genui-bench
   # only); its postinstall phones home, so it stays denied.
+  # zstd + lzma are just-bash's OPTIONAL native backends for its compressed-tar
+  # commands (arriving with the workspace filesystem, build contract §3.2).
+  # Denied: nothing in the tree compresses an archive through just-bash — the
+  # workspace uses its filesystem and its in-memory fs only — so running two
+  # native build scripts would widen the supply-chain surface for a code path
+  # with no caller. Flip to true the day a bash-native harness needs `tar -z`.
+  '@mongodb-js/zstd': false
   '@scarf/scarf': false
   cbor-extract: true
   esbuild: true
