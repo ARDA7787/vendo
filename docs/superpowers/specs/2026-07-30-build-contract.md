@@ -374,13 +374,19 @@ Effect ledger (makes fail-and-re-run correct):
 ```sql
 vendo_effects (
   key         text primary key,   -- sha256(runId|turnId + tool + exactInputHash)
+  subject     text not null,      -- amendment 2026-07-30: outcome holds tool output,
+                                  -- so the ledger must join the erase cascade
   outcome     jsonb not null,
   at          timestamptz not null default now()
 );
+create index on vendo_effects (subject);
 ```
 
 Written inside the guard's execute path for mutating calls only; a call whose
-key already exists returns the recorded outcome instead of executing.
+key already exists returns the recorded outcome instead of executing. The
+table joins `ERASE_TABLES` and the subject-adoption path, keyed on `subject`
+(orchestrator amendment, 2026-07-30 — the frozen v1 shape had no subject
+column and was therefore un-erasable).
 
 ## 8. Explicit wave-1 cuts (do not build)
 
