@@ -8,8 +8,15 @@
  * global as authored (build contract §5): a rewritten body would point the
  * model at a tool that does not exist.
  *
- * The disk is the one source of truth here, which is why a hand-authored
- * host skill lists beside a pack's without registering anywhere.
+ * `/host/**` is a PER-TURN PROJECTION, not stored rows: a pack skill is a code
+ * value that `definePack` declared, so the host's own deploy IS its update path
+ * and there is nothing to migrate, invalidate, or erase. {@link hostSkillFiles}
+ * turns the merged pack skills into the path→content map the workspace is opened
+ * with; the mount is read-only through the façade, and this module never writes.
+ *
+ * Whatever ends up on the mount is the one source of truth for what exists,
+ * which is why a host's own hand-authored SKILL.md lists beside a pack's without
+ * registering anywhere.
  */
 import type { PackSkill } from "./pack.js";
 
@@ -22,15 +29,15 @@ export const HOST_SKILLS_MOUNT = "/host/skills";
 export const skillPath = (name: string): string => `${HOST_SKILLS_MOUNT}/${name}/SKILL.md`;
 
 /**
- * The slice of the workspace filesystem the skills store touches. The signatures
- * are just-bash's `IFileSystem` (build contract §3.2) for exactly these five
- * methods, so lane B's `WorkspaceFs` — and just-bash's own `InMemoryFs` —
- * satisfy it structurally, with nothing to adapt.
+ * The slice of the workspace filesystem the skills store touches — READS only,
+ * because `/host/` is read-only and a write through the façade is an EROFS.
+ *
+ * The signatures are just-bash's `IFileSystem` (build contract §3.2) for exactly
+ * these three methods, so the real `WorkspaceFs` — and just-bash's own
+ * `InMemoryFs` — satisfy it structurally, with nothing to adapt.
  */
 export interface SkillsFs {
   readFile(path: string): Promise<string>;
-  writeFile(path: string, content: string): Promise<void>;
-  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   exists(path: string): Promise<boolean>;
   getAllPaths(): string[];
 }
@@ -83,16 +90,15 @@ const describe = (text: string): string => {
 const bodyOf = (text: string): string => text.replace(FRONTMATTER, "");
 
 /**
- * Write the pack skills onto the mount. Called once at boot, and it overwrites:
- * the configured packs are the truth about what skills exist, so a skill
- * renamed or reworded between boots never leaves a stale copy behind.
+ * The merged pack skills as the `/host/skills` half of the workspace's host
+ * projection: path → SKILL.md text, ready to hand to the workspace open call.
+ *
+ * It is a plain value because the projection is per turn. Nothing is persisted,
+ * so a skill renamed or reworded between deploys cannot leave a stale copy
+ * behind — the configured packs are simply what exists, every turn.
  */
-export const projectSkills = async (fs: SkillsFs, skills: readonly PackSkill[]): Promise<void> => {
-  for (const skill of skills) {
-    await fs.mkdir(`${HOST_SKILLS_MOUNT}/${skill.name}`, { recursive: true });
-    await fs.writeFile(skillPath(skill.name), renderSkillMd(skill));
-  }
-};
+export const hostSkillFiles = (skills: readonly PackSkill[]): Record<string, string> =>
+  Object.fromEntries(skills.map((skill) => [skillPath(skill.name), renderSkillMd(skill)]));
 
 /** Every skill directory on the mount, sorted, so a listing never depends on
  *  how the filesystem happens to enumerate. */

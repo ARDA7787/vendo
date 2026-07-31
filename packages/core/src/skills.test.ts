@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   HOST_SKILLS_MOUNT,
   createTurnSkills,
-  projectSkills,
+  hostSkillFiles,
   renderSkillMd,
   skillPath,
   type PackSkill,
@@ -12,8 +12,11 @@ import {
 /**
  * An in-memory stand-in for the workspace filesystem, with the exact method
  * signatures just-bash 3.1.0 gives `IFileSystem` (`dist/fs/interface.d.ts`) for
- * the five methods the skills store touches — so anything that satisfies
- * {@link SkillsFs} here satisfies it for lane B's real `WorkspaceFs` too.
+ * the three methods the skills store touches — so anything that satisfies
+ * {@link SkillsFs} here satisfies it for the real `WorkspaceFs` too.
+ *
+ * READ-ONLY, like the real `/host/` mount: the only way content gets in is the
+ * host projection the workspace is opened with, which is what `initial` is.
  */
 const memoryFs = (initial: Record<string, string> = {}): SkillsFs & { paths(): string[] } => {
   const files = new Map<string, string>(Object.entries(initial));
@@ -24,12 +27,6 @@ const memoryFs = (initial: Record<string, string> = {}): SkillsFs & { paths(): s
       if (content === undefined) throw new Error(`ENOENT: no such file, open '${path}'`);
       return content;
     },
-    async writeFile(path: string, content: string): Promise<void> {
-      files.set(path, content);
-    },
-    async mkdir(path: string): Promise<void> {
-      dirs.add(path);
-    },
     async exists(path: string): Promise<boolean> {
       return files.has(path) || dirs.has(path);
     },
@@ -39,6 +36,11 @@ const memoryFs = (initial: Record<string, string> = {}): SkillsFs & { paths(): s
     paths: () => [...files.keys()],
   };
 };
+
+/** Open a workspace whose `/host` projection carries these skills — the real
+ *  path: `hostSkillFiles` in, façade reads out, nothing written. */
+const mounted = (...skills: PackSkill[]): SkillsFs & { paths(): string[] } =>
+  memoryFs(hostSkillFiles(skills));
 
 const skill = (name: string, description: string, body: string): PackSkill => ({ name, description, body });
 
@@ -69,8 +71,7 @@ describe("SKILL.md on disk (agentskills.io format)", () => {
     // Every character class that a translator would be tempted to touch:
     // frontmatter delimiters inside the body, quotes, backslashes, unicode.
     const body = '---\nnot: frontmatter\n---\n\n"quoted" \\ backslash — em dash 🎈\n\ttab\n';
-    const fs = memoryFs();
-    await projectSkills(fs, [skill("edges", "Every awkward character.", body)]);
+    const fs = mounted(skill("edges", "Every awkward character.", body));
 
     const loaded = await createTurnSkills(fs).load("edges");
     expect(loaded).toBe(body);
@@ -78,40 +79,42 @@ describe("SKILL.md on disk (agentskills.io format)", () => {
 
   it("roundtrips a description carrying colons and quotes", async () => {
     const description = 'Totals: cite the query, and never say "done".';
-    const fs = memoryFs();
-    await projectSkills(fs, [skill("tricky", description, "body\n")]);
+    const fs = mounted(skill("tricky", description, "body\n"));
 
     expect(await createTurnSkills(fs).list()).toEqual([{ name: "tricky", description }]);
   });
 });
 
-describe("projectSkills", () => {
-  it("writes one SKILL.md per skill under the host mount", async () => {
-    const fs = memoryFs();
-    await projectSkills(fs, [skill("a", "First.", "a body\n"), skill("b", "Second.", "b body\n")]);
+describe("hostSkillFiles — the /host projection, not stored rows", () => {
+  it("maps each skill to its SKILL.md path under the host mount", () => {
+    const files = hostSkillFiles([skill("a", "First.", "a body\n"), skill("b", "Second.", "b body\n")]);
 
-    expect(fs.paths().sort()).toEqual([
+    expect(Object.keys(files).sort()).toEqual([
       "/host/skills/a/SKILL.md",
       "/host/skills/b/SKILL.md",
     ]);
   });
 
-  it("overwrites a stale copy so the store is the source of truth each boot", async () => {
-    const fs = memoryFs();
-    await projectSkills(fs, [skill("a", "Old.", "old\n")]);
-    await projectSkills(fs, [skill("a", "New.", "new\n")]);
+  it("is a pure value of the configured packs, so a reworded skill leaves nothing stale", async () => {
+    // Two deploys, two projections. There is no store to carry the old one
+    // forward — the second projection simply IS what exists.
+    const before = createTurnSkills(memoryFs(hostSkillFiles([skill("a", "Old.", "old\n")])));
+    const after = createTurnSkills(memoryFs(hostSkillFiles([skill("a", "New.", "new\n")])));
 
-    const skills = createTurnSkills(fs);
-    expect(await skills.list()).toEqual([{ name: "a", description: "New." }]);
-    expect(await skills.load("a")).toBe("new\n");
+    expect(await before.load("a")).toBe("old\n");
+    expect(await after.list()).toEqual([{ name: "a", description: "New." }]);
+    expect(await after.load("a")).toBe("new\n");
+  });
+
+  it("projects nothing for no skills", () => {
+    expect(hostSkillFiles([])).toEqual({});
   });
 });
 
 describe("TurnSkills (build contract §1.2)", () => {
   it("lists name and description only — never the body", async () => {
-    const fs = memoryFs();
     const body = "a very long body ".repeat(500);
-    await projectSkills(fs, [skill("big", "One short line.", body)]);
+    const fs = mounted(skill("big", "One short line.", body));
 
     const listing = await createTurnSkills(fs).list();
     expect(listing).toEqual([{ name: "big", description: "One short line." }]);

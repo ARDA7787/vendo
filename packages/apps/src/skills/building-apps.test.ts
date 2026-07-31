@@ -4,23 +4,21 @@
  * is a sentence in the BODY rather than machinery, that it teaches write-early /
  * write-per-group, and that it carries the consumer-voice register.
  */
-import { createTurnSkills, projectSkills, renderSkillMd, type SkillsFs } from "@vendoai/core";
+import { createTurnSkills, hostSkillFiles, renderSkillMd, type SkillsFs } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { buildingAppsSkill } from "./building-apps.js";
 
-const memoryFs = (): SkillsFs => {
-  const files = new Map<string, string>();
-  const dirs = new Set<string>(["/"]);
+/** A workspace opened with this skill in its read-only `/host` projection. */
+const mounted = (): SkillsFs => {
+  const files = new Map(Object.entries(hostSkillFiles([buildingAppsSkill])));
   return {
     async readFile(path) {
       const content = files.get(path);
       if (content === undefined) throw new Error(`ENOENT: ${path}`);
       return content;
     },
-    async writeFile(path, content) { files.set(path, content); },
-    async mkdir(path) { dirs.add(path); },
-    async exists(path) { return files.has(path) || dirs.has(path); },
-    getAllPaths() { return [...dirs, ...files.keys()]; },
+    async exists(path) { return files.has(path); },
+    getAllPaths() { return [...files.keys()]; },
   };
 };
 
@@ -35,10 +33,7 @@ describe("the building-apps skill is a real SKILL.md", () => {
 
   it("renders as agentskills.io frontmatter plus the body, and loads back verbatim", async () => {
     expect(renderSkillMd(buildingAppsSkill).startsWith("---\nname: \"building-apps\"\n")).toBe(true);
-
-    const fs = memoryFs();
-    await projectSkills(fs, [buildingAppsSkill]);
-    expect(await createTurnSkills(fs).load("building-apps")).toBe(body);
+    expect(await createTurnSkills(mounted()).load("building-apps")).toBe(body);
   });
 });
 

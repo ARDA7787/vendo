@@ -13,7 +13,7 @@
  */
 import {
   createTurnSkills,
-  projectSkills,
+  hostSkillFiles,
   type PackSkill,
   type SkillsFs,
 } from "@vendoai/core";
@@ -28,21 +28,19 @@ import {
 } from "./harness.js";
 import { RETENTION_RULE, UNMASKED_ACCOUNT, complianceReports } from "./external-pack/index.js";
 
-/** just-bash's `IFileSystem` slice the skills store uses (build contract §3.2),
- *  in memory — lane B's `WorkspaceFs` is the real thing behind this same shape. */
-const memoryFs = (): SkillsFs => {
-  const files = new Map<string, string>();
-  const dirs = new Set<string>(["/"]);
+/** A workspace opened with a `/host` projection, read-only exactly like the real
+ *  mount: just-bash's `IFileSystem` slice the skills store uses (build contract
+ *  §3.2), over the projection the merged packs produced. */
+const openedWith = (projection: Record<string, string>): SkillsFs => {
+  const files = new Map(Object.entries(projection));
   return {
     async readFile(path) {
       const content = files.get(path);
       if (content === undefined) throw new Error(`ENOENT: ${path}`);
       return content;
     },
-    async writeFile(path, content) { files.set(path, content); },
-    async mkdir(path) { dirs.add(path); },
-    async exists(path) { return files.has(path) || dirs.has(path); },
-    getAllPaths() { return [...dirs, ...files.keys()]; },
+    async exists(path) { return files.has(path); },
+    getAllPaths() { return [...files.keys()]; },
   };
 };
 
@@ -168,10 +166,12 @@ describe("E5: the pack's skill loads on demand from the host mount", () => {
   it("projects every merged pack skill to /host/skills/<name>/SKILL.md and loads it back", async () => {
     const context = { apps: () => { throw new Error("no tool runs in this test"); } } as unknown as PackContext;
     const merged = mergePacks([apps(), complianceReports], context);
-    const fs = memoryFs();
 
-    await projectSkills(fs, merged.skills);
-    const skills = createTurnSkills(fs);
+    // What the runtime hands the workspace open call as its `/host` projection.
+    const projection = hostSkillFiles(merged.skills);
+    expect(Object.keys(projection)).toContain("/host/skills/building-compliance-reports/SKILL.md");
+
+    const skills = createTurnSkills(openedWith(projection));
     const listing = await skills.list();
 
     // Cheap listing: both skills, descriptions only.
