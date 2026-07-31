@@ -2,6 +2,7 @@ import {
   canonicalJson,
   descriptorHash,
   sha256Hex,
+  toolOutcomeSchema,
   VendoError,
 } from "@vendoai/core";
 import type {
@@ -14,6 +15,7 @@ import type {
   GrantScope,
   GuardDecision,
   IsoDateTime,
+  Json,
   PermissionGrant,
   Principal,
   RecordQuery,
@@ -43,6 +45,10 @@ const APPROVALS_COLLECTION = "vendo_approvals";
  *  02-store §5 erase cascade collects them with the rest of the subject's data. */
 const APPROVAL_CLAIMS_COLLECTION = "guard:approval-claims";
 const AUDIT_COLLECTION = "vendo_audit";
+/** Build contract §7 — the effect ledger: one row per completed mutating call,
+ *  keyed by (run, tool, exact input). It is what makes fail-and-re-run correct:
+ *  a re-run of a run that already sent the payment must not send it again. */
+const EFFECTS_COLLECTION = "vendo_effects";
 const JUDGE_TIMEOUT_MS = 15_000;
 
 interface ApprovalRecordData {
@@ -115,6 +121,22 @@ function cloneJson<T>(value: T): T {
 
 function exactInputHash(args: unknown): string {
   return `sha256:${sha256Hex(canonicalJson(args))}`;
+}
+
+/** Build contract §7's key: sha256 over the run, the tool, and the exact input.
+ *
+ *  The contract writes the preimage as `runId|turnId`. There is no turn id
+ *  anywhere in this codebase, so the run component reuses the guard's existing
+ *  run key — `ctx.trigger?.runId ?? ctx.sessionId`, the same value the write
+ *  breaker and `task`-duration grants are keyed by — rather than inventing a
+ *  second, divergent notion of "this run". Noted in the lane report.
+ *
+ *  Scoping to the run is load-bearing in both directions: narrower (per call id)
+ *  would never dedupe a re-run, and broader (per subject) would make a daily
+ *  automation fire exactly once and then never again. */
+function effectKey(ctx: RunContext, call: ToolCall): string {
+  const runKey = ctx.trigger?.runId ?? ctx.sessionId;
+  return `sha256:${sha256Hex(canonicalJson([runKey, call.tool, exactInputHash(call.args)]))}`;
 }
 
 function inputPreview(call: ToolCall): string {
@@ -421,16 +443,35 @@ class GuardImplementation implements VendoGuard {
           const grant = await this.#grantForExecution(decision, call, completed.descriptor, ctx);
           // CORE-2: `grant` is a first-class RunContext field — no cast needed.
           const executeCtx = grant === undefined ? ctx : { ...ctx, grant };
-          try {
-            outcome = await tools.execute(call, executeCtx);
-          } catch (error) {
-            outcome = {
-              status: "error",
-              error: {
-                code: error instanceof VendoError ? error.code : "error",
-                message: errorMessage(error),
-              },
-            };
+          // Build contract §7: for a MUTATING call, a key that already succeeded
+          // returns its recorded outcome INSTEAD of executing. The check sits
+          // here, after the guard has said run and before the registry is
+          // touched, because that is the only point where skipping is both safe
+          // (authority was still checked) and effective (the effect is avoided).
+          const mutating = completed.descriptor.risk === "write"
+            || completed.descriptor.risk === "destructive";
+          const key = mutating ? effectKey(ctx, call) : undefined;
+          const recorded = key === undefined ? undefined : await this.#recordedEffect(key);
+          if (recorded !== undefined) {
+            outcome = recorded;
+          } else {
+            try {
+              outcome = await tools.execute(call, executeCtx);
+            } catch (error) {
+              outcome = {
+                status: "error",
+                error: {
+                  code: error instanceof VendoError ? error.code : "error",
+                  message: errorMessage(error),
+                },
+              };
+            }
+            // Only a SUCCESS is ledgered. A failed mutation may not have landed
+            // at all, so recording it would turn a transient upstream error into
+            // a permanent refusal to retry — the opposite of the goal.
+            if (key !== undefined && outcome.status === "ok") {
+              await this.#recordEffect(key, outcome);
+            }
           }
         }
 
@@ -809,6 +850,26 @@ class GuardImplementation implements VendoGuard {
    *  (actions resolves ActAs against ctx.grant on away calls — 04 §4). Approval
    *  replays carry no grantId; away replays re-match, because deciding a parked
    *  automation approval mints the app-bound grant first (07 §3). */
+  async #recordedEffect(key: string): Promise<ToolOutcome | undefined> {
+    const record = await this.#store.records(EFFECTS_COLLECTION).get(key);
+    if (record === null) return undefined;
+    const outcome = (record.data as { outcome?: unknown }).outcome;
+    const parsed = toolOutcomeSchema.safeParse(outcome);
+    // A row we cannot read is treated as absent: refusing to execute on the
+    // strength of an unparseable receipt would strand the call forever.
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  /** Write the receipt. `insertIfAbsent` where the adapter offers it, so two
+   *  processes racing the same re-run cannot both believe they were first — the
+   *  loser's write is refused instead of overwriting the recorded truth. */
+  async #recordEffect(key: string, outcome: ToolOutcome): Promise<void> {
+    const records = this.#store.records(EFFECTS_COLLECTION);
+    const input = { id: key, data: { outcome: cloneJson(outcome) as Json, at: now() } };
+    if (records.atomic === undefined) await records.put(input);
+    else await records.atomic.insertIfAbsent(input);
+  }
+
   async #grantForExecution(
     decision: GuardDecision,
     call: ToolCall,
