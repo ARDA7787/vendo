@@ -423,6 +423,22 @@ for (const backend of backends()) {
       ]);
     });
 
+    // N5, second half: the write guard cannot police the /host projection (its
+    // paths never pass through a write), so a caller CAN hand in a file and a
+    // directory with the same name. readdir must still answer once.
+    it("lists a projected name once even when it is both a file and a directory", async () => {
+      const fs = await workspaceStore(made.store).open(user, {
+        host: {
+          "/host/skills/charting": "a file called charting",
+          "/host/skills/charting/SKILL.md": "# Charting",
+        },
+      });
+
+      expect(await fs.readdir("/host/skills")).toEqual(["charting"]);
+      expect((await fs.readdirWithFileTypes("/host/skills")).map((entry) => entry.name))
+        .toEqual(["charting"]);
+    });
+
     // F7 (verifier): rm erased the path's whole history, so a deleted file could
     // never be undone — contract §3.3 says history is append-only.
     it("records a delete in history so undo brings the file back", async () => {
