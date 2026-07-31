@@ -19,6 +19,7 @@
 import { z } from "zod";
 import type { Harness, HarnessEvent, Json, ToolDescriptor, Turn } from "@vendoai/core";
 import { startTurn, wireErrorMessage } from "@vendoai/agent";
+import { reportHire } from "./runtime.js";
 import { jsonSchema, stepCountIs, streamText, tool, type LanguageModel, type ToolSet } from "ai";
 import { defineHarness } from "./define.js";
 
@@ -65,19 +66,14 @@ export interface VendoHarnessDeps {
   descriptors?: () => Promise<ToolDescriptor[]>;
   maxSteps?: number;
   /**
-   * Called once per hired specialist, so the hire is not invisible: composition
-   * turns it into an audit row and a consumer-voice receipt line.
-   *
-   * A hire is the harness's own staffing decision, so it does NOT pass through
-   * `turn.tools` and the guard therefore never sees that it happened — only the
-   * specialist's guarded CALLS are audited. That is the honest gap: a `Turn`
-   * carries no guard (harnesses are permission-blind by design) and
-   * `HarnessEvent` is closed with no transcript-only member, so a harness cannot
-   * write either record itself. This hook is the minimum seam that lets
-   * composition write both. ESCALATED: closing it properly needs either a
-   * `HarnessEvent` receipt member or a runtime-level staffing hook.
+   * Called once per hired specialist. Defaults to the runtime's own
+   * {@link reportHire}, which writes the audit row and the transcript receipt — a
+   * hire is staffing the guard never sees (only the specialist's guarded CALLS
+   * reach it), so without this it would be invisible. Override only to observe it
+   * somewhere else too.
    */
   onHire?: (record: {
+    purpose: string;
     skill?: string;
     summary: string;
     usage: { inputTokens: number; outputTokens: number };
@@ -176,7 +172,8 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
               // The specialist gets the same hands, minus the hiring tool.
               const report = await runSubagent(turn, model, input, hostTools);
               hiredUsage.push(report.usage);
-              deps.onHire?.({
+              (deps.onHire ?? reportHire)({
+                purpose: input.instructions,
                 ...(input.skill === undefined ? {} : { skill: input.skill }),
                 summary: report.summary,
                 usage: report.usage,

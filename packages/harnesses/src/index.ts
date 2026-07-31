@@ -13,8 +13,11 @@ export { defineHarness } from "./define.js";
 export { assertHarnessComposable, type ComposedAdapters } from "./compose.js";
 export {
   createHarnessRuntime,
+  reportHire,
+  VENDO_SUBAGENT_PART,
   type HarnessRuntime,
   type HarnessRuntimeDeps,
+  type HireRecord,
   type TranscriptStore,
   type TurnRunInput,
 } from "./runtime.js";

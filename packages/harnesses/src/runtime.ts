@@ -12,6 +12,7 @@ import {
   VendoError,
   type ApprovalId,
   type AuditEvent,
+  type Json,
   type Guard,
   type Harness,
   type HarnessEvent,
@@ -24,6 +25,7 @@ import {
   type TurnSkills,
   type WorkspaceFs,
 } from "@vendoai/core";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { validateUpsert, type ToolBridgeOptions } from "@vendoai/agent";
 import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from "ai";
 import {
@@ -49,6 +51,42 @@ function deepFreeze<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+/**
+ * The transcript-only channel. A persisted data part with NO renderer reaches the
+ * transcript and never the screen — the transient status part's trick in reverse —
+ * which is what lets a subagent receipt exist without opening the closed
+ * `HarnessEvent` vocabulary. The runtime owns the write; a harness only reports.
+ */
+export const VENDO_SUBAGENT_PART = "data-vendo-subagent" as const;
+
+/** Design §6's ~80-token receipt: what the specialist was for, and what it cost. */
+export interface HireRecord {
+  /** Consumer-voice: what the specialist was hired to accomplish. */
+  purpose: string;
+  skill?: string;
+  /** The specialist's own report back, as the resident received it. */
+  summary: string;
+  usage?: { inputTokens: number; outputTokens: number };
+}
+
+/**
+ * Per-turn sink for hire reports. AsyncLocalStorage rather than a module-level
+ * variable because a `harness:` slot is constructed ONCE for the deployment while
+ * turns run concurrently — a shared variable would attribute one user's hire to
+ * another user's thread.
+ */
+const hireSink = new AsyncLocalStorage<(record: HireRecord) => void>();
+
+/**
+ * Report a hired specialist. Composition wires this into the harness
+ * (`vendo({ onHire: reportHire })`); the runtime turns it into an audit row and a
+ * transcript receipt. Outside a turn it is a no-op: a harness driven by something
+ * other than this runtime must not crash for want of a receipt.
+ */
+export function reportHire(record: HireRecord): void {
+  hireSink.getStore()?.(record);
 }
 
 /** Build contract §6 — lane D's `threadMessageStore(store)` return value. Typed
@@ -179,6 +217,8 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
       const signal = input.signal ?? new AbortController().signal;
       let usage: UsageTotals | undefined;
       let failure: { message: string; code?: string } | undefined;
+      // Hoisted beside them: onFinish audits what execute collected.
+      const hires: HireRecord[] = [];
 
       const stream = createUIMessageStream<UIMessage>({
         originalMessages: input.messages,
@@ -228,6 +268,19 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             }
           };
 
+          const recordHire = (record: HireRecord): void => {
+            hires.push(record);
+            // The receipt: persisted (no `transient`), unrendered by design.
+            writer.write({
+              type: VENDO_SUBAGENT_PART,
+              data: {
+                purpose: record.purpose,
+                ...(record.skill === undefined ? {} : { skill: record.skill }),
+                summary: record.summary,
+              },
+            } as never);
+          };
+
           const turn: Turn<Options> = {
             // Frozen: ours, read-only. Freezing makes the contract's word true at
             // runtime instead of only at compile time.
@@ -252,6 +305,9 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
           };
 
           try {
+            // Every hire the harness makes inside this turn lands in THIS turn's
+            // records, even from a subagent several awaits deep.
+            await hireSink.run(recordHire, async () => {
             for await (const event of input.harness.run(turn)) {
               switch (event.type) {
                 case "text":
@@ -276,6 +332,7 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
                   break;
               }
             }
+            });
           } catch (error) {
             // A harness that throws is a bug in the thinker, not in the user's
             // day. The real error goes to the operator's terminal; the user gets
@@ -305,7 +362,7 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
         onFinish: async ({ messages }) => {
           await persistTurn(deps.transcript, input, messages, pristine);
           await saveHarnessState(harnessState, input, state.pending());
-          await reportRun(deps.guard, input, { usage, failure });
+          await reportRun(deps.guard, input, { usage, failure, hires });
         },
         // The runtime's own last-resort gate. Harness text is already
         // consumer-voice; anything reaching here is a runtime/transport fault.
@@ -326,12 +383,42 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
  * nothing, so a turn lands O(messages changed) rows — not O(thread), and never
  * O(tokens).
  */
+/**
+ * States that mean "the call was announced and never resolved". A turn that ended
+ * mid-call (an abort inside a tool, a harness that stopped awaiting) leaves one,
+ * and `convertToModelMessages` turns it into an assistant tool-call with no
+ * matching tool-result — which providers reject, corrupting every later turn on
+ * the thread.
+ *
+ * `approval-requested` is deliberately NOT here: a call waiting on a human is
+ * legitimately pending, and the client flips it. Only the unreachable states go.
+ */
+const DANGLING_TOOL_STATES = new Set(["input-streaming", "input-available"]);
+
+const isToolPart = (part: { type: string }): boolean =>
+  part.type === "dynamic-tool" || part.type.startsWith("tool-");
+
+/**
+ * Enforce the result-pairing invariant instead of racing for it. The shipped loop
+ * happens to win this race by a microtask (see abort.test.ts, which pins the
+ * timing); dropping the part here makes the guarantee independent of who wins.
+ */
+function withoutDanglingToolCalls(messages: UIMessage[]): UIMessage[] {
+  return messages.map((message) => {
+    const kept = message.parts.filter(
+      (part) => !(isToolPart(part) && DANGLING_TOOL_STATES.has((part as { state?: string }).state ?? "")),
+    );
+    return kept.length === message.parts.length ? message : { ...message, parts: kept };
+  });
+}
+
 async function persistTurn(
   transcript: TranscriptStore,
   input: TurnRunInput<unknown>,
-  messages: UIMessage[],
+  rawMessages: UIMessage[],
   before: readonly UIMessage[] | undefined,
 ): Promise<void> {
+  const messages = withoutDanglingToolCalls(rawMessages);
   try {
     const unchanged = new Map(
       (before ?? []).map((message) => [message.id, JSON.stringify(message)]),
@@ -376,10 +463,13 @@ async function saveHarnessState(
 async function reportRun(
   guard: Guard,
   input: TurnRunInput<unknown>,
-  detail: { usage: UsageTotals | undefined; failure: { message: string; code?: string } | undefined },
+  detail: {
+    usage: UsageTotals | undefined;
+    failure: { message: string; code?: string } | undefined;
+    hires: HireRecord[];
+  },
 ): Promise<void> {
-  if (detail.usage === undefined && detail.failure === undefined) return;
-  const event: AuditEvent = {
+  const row = (body: Json): AuditEvent => ({
     id: mintAuditId(),
     at: new Date().toISOString(),
     kind: "run",
@@ -388,16 +478,36 @@ async function reportRun(
     presence: input.ctx.presence,
     ...(input.ctx.appId === undefined ? {} : { appId: input.ctx.appId }),
     ...(input.ctx.trigger === undefined ? {} : { trigger: input.ctx.trigger }),
-    detail: {
+    detail: body,
+  });
+
+  const events: AuditEvent[] = [];
+  if (detail.usage !== undefined || detail.failure !== undefined) {
+    events.push(row({
       harness: input.harness.name,
       ...(detail.usage === undefined ? {} : { usage: detail.usage }),
       ...(detail.failure === undefined ? {} : { error: detail.failure }),
-    },
-  };
-  try {
-    await guard.report(event);
-  } catch {
-    // A reporting failure cannot change a completed turn's result.
+    }));
+  }
+  // A hire is staffing the guard never saw (only the specialist's guarded CALLS
+  // reach it), so it gets its own row: who ran, what for, what it cost.
+  for (const hire of detail.hires) {
+    events.push(row({
+      harness: input.harness.name,
+      subagent: {
+        purpose: hire.purpose,
+        ...(hire.skill === undefined ? {} : { skill: hire.skill }),
+        ...(hire.usage === undefined ? {} : { usage: hire.usage }),
+      },
+    }));
+  }
+
+  for (const event of events) {
+    try {
+      await guard.report(event);
+    } catch {
+      // A reporting failure cannot change a completed turn's result.
+    }
   }
 }
 
