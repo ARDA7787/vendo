@@ -23,6 +23,12 @@ export {
 } from "./runtime.js";
 export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "./vendo.js";
 export {
+  createDiscoveryRails,
+  type DiscoveryOptions,
+  type DiscoveryRails,
+  type MetaTool,
+} from "./discovery.js";
+export {
   APPROVAL_WAIT_MS,
   createApprovalWaiter,
   createTurnTools,

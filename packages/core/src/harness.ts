@@ -14,6 +14,7 @@
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import type { LanguageModel, UIMessage } from "ai";
 import type { Json } from "./ids.js";
+import type { JsonSchema } from "./ids.js";
 import type { ResolvedModels } from "./model-seats.js";
 import type { WorkspaceFs } from "./workspace.js";
 
@@ -79,6 +80,12 @@ export interface ToolListing {
   title: string;
   description: string;
   risk: "read" | "write" | "destructive";
+  /** Amendment 2026-07-30: JSON Schema for the tool's input. Every in-process
+   *  harness must hand schemas to its model, and JSON Schema is the interchange —
+   *  without it a harness can SEE a tool and still not call it. The runtime has
+   *  populated this since the amendment landed; the field was missing from the
+   *  type, so the contract held at runtime and not at compile time. */
+  inputSchema?: JsonSchema;
 }
 
 /** Build contract §1.2 */

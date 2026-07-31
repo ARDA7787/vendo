@@ -13,8 +13,18 @@ export type { TurnLoop, TurnLoopOptions } from "./loop.js";
 export { wireErrorMessage } from "./wire-error.js";
 export { addAgentTool, buildAgentTools, guardedCall, previewApproval } from "./tools.js";
 export type { ToolBridgeOptions } from "./tools.js";
-export { createToolSearchSession } from "./tool-search.js";
-export type { ToolSearchSession } from "./tool-search.js";
+// The four shipped rails a harness turn owes parity on. All three of these are
+// authored as ai-SDK `dynamicTool`s attached into a `ToolSet`; the harness
+// runtime attaches them into one of its own and reads them back as callable
+// meta-tools, so there is ONE find_tools and ONE miss detector, not two.
+export { createToolSearchSession, FIND_TOOLS_TOOL_NAME } from "./tool-search.js";
+export type { ToolSearchSession, ToolSearchConfig } from "./tool-search.js";
+export {
+  CAPABILITY_MISS_TOOL_NAME,
+  createCapabilityMissDetector,
+  latestUserIntent,
+} from "./capability-miss.js";
+export type { CapabilityMissConfig, CapabilityMissDetector } from "./capability-miss.js";
 export { assembleSystemPrompt } from "./prompt.js";
 // The transcript-side rules a harness runtime must apply identically: what a
 // client may change, and how a superseded approval resolves.

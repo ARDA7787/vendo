@@ -14,7 +14,7 @@
  * merges `result.toUIMessageStream()`; the harness reads `result.fullStream` and
  * yields events. Everything before that fork is identical.
  */
-import { VENDO_APPS_CREATE_TOOL, VENDO_APP_BUILD_FAILED_PREFIX, type VendoStepLimitPart } from "@vendoai/core";
+import { ASK_USER_TOOL, VENDO_APPS_CREATE_TOOL, VENDO_APP_BUILD_FAILED_PREFIX, type VendoStepLimitPart } from "@vendoai/core";
 import {
   convertToModelMessages,
   isToolUIPart,
@@ -55,6 +55,22 @@ const buildFailedStop: StopCondition<ToolSet> = ({ steps }) => {
       && output.status === "error"
       && typeof output.error?.message === "string"
       && output.error.message.startsWith(VENDO_APP_BUILD_FAILED_PREFIX);
+  });
+};
+
+/** Design §4 + §6 — a question through the one door is TURN-ENDING. The builder
+ *  "asks the user … and dies"; build contract §8 cuts steering, so there is no
+ *  mid-turn answer to wait for. Without this the model keeps its own steps after
+ *  asking, which is precisely the invention `ask_user` exists to prevent: it
+ *  guesses an answer and carries on, and the user's real reply lands a turn too
+ *  late to matter. A REFUSED question (unattended, blank) is not a stop — the
+ *  model still has to finish what it can. */
+const askedUserStop: StopCondition<ToolSet> = ({ steps }) => {
+  const last = steps.at(-1);
+  return last !== undefined && last.toolResults.some((result) => {
+    if (result.toolName !== ASK_USER_TOOL) return false;
+    const output = result.output as { status?: unknown } | null;
+    return typeof output === "object" && output !== null && output.status === "ok";
   });
 };
 
@@ -147,7 +163,7 @@ export async function startTurn(options: TurnLoopOptions): Promise<TurnLoop> {
     model: options.model,
     messages: modelMessages,
     tools: options.tools,
-    stopWhen: [stepCountIs(maxSteps), buildFailedStop],
+    stopWhen: [stepCountIs(maxSteps), buildFailedStop, askedUserStop],
     maxOutputTokens: options.context?.maxOutputTokens,
     // ENG-252 loadout: restrict what the model may pick to the current loadout.
     // `prepareStep` re-reads it each step so a tool loaded via

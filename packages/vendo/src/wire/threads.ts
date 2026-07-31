@@ -27,8 +27,10 @@ export const threadRoutes: RouteEntry[] = [
     // downstream (liveness, abort, the client) can tell which ran.
     //
     // Only a host that NAMED a harness is routed here. `deps.harness` unset means
-    // today's path, unchanged — see PARKED.md P3 for the rails the harness path
-    // still owes before it can be the default.
+    // today's path, unchanged. The harness path now carries the same four
+    // discovery rails (`find_tools`, the connection-scoped loadout, the curated
+    // menu, capability-miss detection), so this default is a wave-1 ruling —
+    // existing hosts see no behaviour change — not an outstanding debt.
     const runTurn = deps.harness ?? deps.agent;
     const turn = await runTurn.stream({
       ...(body["threadId"] === undefined ? {} : { threadId: string(body["threadId"], "threadId") }),

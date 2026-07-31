@@ -53,17 +53,6 @@ export interface VendoHarnessDeps {
    * (`assembleSystemPrompt` in @vendoai/agent) and handed in here.
    */
   system?: string | (() => string | undefined | Promise<string | undefined>);
-  /**
-   * Argument schemas for the equipped tools.
-   *
-   * SEAM NOTE: `ToolListing` (contract §1.1) carries name/title/description/risk
-   * but no `inputSchema`, and an in-process harness must give its model real
-   * argument schemas or it degrades badly. Rather than diverge from the frozen
-   * shape, the descriptor catalog — which is OURS, not thinking — arrives by
-   * factory closure. Execution still goes through `turn.tools.call()` only, so
-   * there is no unguarded path.
-   */
-  descriptors?: () => Promise<ToolDescriptor[]>;
   maxSteps?: number;
   /**
    * Called once per hired specialist. Defaults to the runtime's own
@@ -80,20 +69,44 @@ export interface VendoHarnessDeps {
   }) => void;
 }
 
-/** A tool the model may call whose execution is `turn.tools.call` and nothing else. */
-function equippedTools(turn: Turn<unknown>, descriptors: ToolDescriptor[]): ToolSet {
-  const tools: ToolSet = {};
-  for (const descriptor of descriptors) {
-    tools[descriptor.name] = tool({
-      description: descriptor.description,
-      inputSchema: jsonSchema(descriptor.inputSchema as Parameters<typeof jsonSchema>[0]),
+/** A tool with no declared input still needs a schema the provider will accept. */
+const NO_INPUT_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
+
+/**
+ * Refresh the live toolset from `turn.tools.list()` — the ONE discovery surface
+ * (contract §1.1: "currently-equipped tools, post-curation"). Returns the names
+ * the model may pick this step.
+ *
+ * Two things make this the whole discovery rail. The set is re-read rather than
+ * captured once, so a tool searched in mid-turn through `find_tools` is offered on
+ * the next step; and `tools` is MUTATED in place rather than rebuilt, because
+ * `streamText` re-reads the same object each step, so a newly listed tool is
+ * genuinely callable without restarting the turn.
+ */
+async function refreshEquipped(
+  turn: Turn<unknown>,
+  tools: ToolSet,
+  /** Re-read the listing after every call. A `find_tools` call is what changes
+   *  the equipped set, and `prepareStep` reads the snapshot synchronously, so the
+   *  re-read has to happen while we are still inside the call that changed it. */
+  afterCall: () => Promise<void>,
+): Promise<string[]> {
+  const listings = await turn.tools.list();
+  for (const listing of listings) {
+    tools[listing.name] ??= tool({
+      description: listing.description,
+      inputSchema: jsonSchema((listing.inputSchema ?? NO_INPUT_SCHEMA) as Parameters<typeof jsonSchema>[0]),
       // The whole safety story in one line: the guard, the audit row, the view
       // channel, the transcript mirror and §1.4's approval block all live behind
       // `call()`.
-      execute: async (input: unknown) => turn.tools.call(descriptor.name, input as Json),
+      execute: async (input: unknown) => {
+        const result = await turn.tools.call(listing.name, input as Json);
+        await afterCall();
+        return result;
+      },
     });
   }
-  return tools;
+  return listings.map((listing) => listing.name);
 }
 
 interface SubagentReport {
@@ -153,12 +166,21 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
       const model = turn.options?.model ?? turn.models.default;
       const system = (typeof deps.system === "function" ? await deps.system() : deps.system) ?? "";
 
-      const descriptors = (await deps.descriptors?.()) ?? [];
-      const hostTools = equippedTools(turn, descriptors);
+      // The LIVE surface the model picks from, and the snapshot `prepareStep`
+      // reads each step. `turn.tools.list()` is the only source for both: it is
+      // the curated, equipped set, and re-reading it is how a tool searched in
+      // through `find_tools` becomes callable in the SAME turn. One object, never
+      // a copy — `streamText` re-reads it per step, so a copy would freeze the
+      // toolset at step one and strand every discovery.
+      const residentTools: ToolSet = {};
+      let equipped: string[] = [];
+      const refresh = async (): Promise<void> => {
+        equipped = await refreshEquipped(turn, residentTools, refresh);
+      };
+      await refresh();
       /** Subagent tokens, drained onto the turn's usage after the stream ends. */
       const hiredUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
-      const residentTools: ToolSet = {
-        ...hostTools,
+      Object.assign(residentTools, {
         [HIRE_SUBAGENT]: tool({
           description:
             "Hire a specialist for one big job (building or editing an app, a long research pass). "
@@ -169,8 +191,11 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
           }),
           execute: async (input) => {
             try {
-              // The specialist gets the same hands, minus the hiring tool.
-              const report = await runSubagent(turn, model, input, hostTools);
+              // The specialist gets the same hands as the resident has RIGHT NOW —
+              // searched-in tools included — minus the hiring tool, so depth is
+              // bounded at one and a helper cannot spawn a tree.
+              const { [HIRE_SUBAGENT]: _hiring, ...hands } = residentTools;
+              const report = await runSubagent(turn, model, input, hands);
               hiredUsage.push(report.usage);
               (deps.onHire ?? reportHire)({
                 purpose: input.instructions,
@@ -189,7 +214,7 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
             }
           },
         }),
-      };
+      });
 
       let loop: Awaited<ReturnType<typeof startTurn>>;
       try {
@@ -201,6 +226,16 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
           messages: [...turn.messages],
           tools: residentTools,
           signal: turn.signal,
+          // The loadout, in the shipped loop's own vocabulary: `prepareStep`
+          // re-reads this each step and restricts what the model may PICK, so a
+          // tool the runtime equipped mid-turn is choosable on the next step and a
+          // curated-off tool never is. `attach` is a no-op because the runtime —
+          // not the harness — owns `find_tools`: that is the dividing line, and it
+          // is what gives a third-party harness the same rail for free.
+          toolSearch: {
+            activeToolNames: () => [...equipped, HIRE_SUBAGENT],
+            attach: () => {},
+          },
           ...(turn.options?.maxSteps ?? deps.maxSteps) === undefined
             ? {}
             : { context: { maxSteps: turn.options?.maxSteps ?? deps.maxSteps } },

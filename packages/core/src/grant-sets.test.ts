@@ -5,6 +5,7 @@ import {
   isBundleEligible,
   mechanicalRisk,
   projectableForRun,
+  VENUES,
   type AppIntent,
   type ToolDescriptor,
 } from "./index.js";
@@ -121,10 +122,15 @@ describe("THE LAW: destructive and external actions are never unattended (§12)"
   });
 
   // The predicate is PRESENCE, never the venue label (§12 clarification
-  // 2026-07-31). These two tests are the pair that pins it: away is withheld in
-  // EVERY venue, and a present human sees everything even in the automation
-  // venue. Either one alone can be satisfied by the wrong predicate.
-  it.each(["chat", "app", "automation", "mcp"] as const)(
+  // 2026-07-31). Both halves sweep EVERY venue, and the venue list is derived
+  // from core's own `VENUES` rather than written out here — a fifth venue is
+  // added in one place and is swept by both halves the moment it exists.
+  //
+  // Both halves are load-bearing, and the AWAY half alone is not a lock: every
+  // away case already satisfies a presence-only predicate, so `presence ===
+  // "away" || venue === "<anything>"` leaves it green. The PRESENT half is the
+  // one behavioural difference a venue clause makes, which is why it sweeps too.
+  it.each(VENUES)(
     "withholds destructive tools from an away run in venue %s — relabelling the venue cannot regain projection",
     (venue) => {
       const projected = projectableForRun(tools, { venue, presence: "away" });
@@ -132,19 +138,23 @@ describe("THE LAW: destructive and external actions are never unattended (§12)"
     },
   );
 
-  it("projects destructive tools into a PRESENT-time automation ceremony — the enable card must see what it asks about", () => {
-    // `{ venue: "automation", presence: "present" }` is the enable/capture flow
-    // and the "allow this while you're away" approval card: a human is right
-    // there clicking. Filtering here made the ceremony unable to ask about the
-    // very tools it exists to ask about ("unknown tool in automation").
-    const projected = projectableForRun(tools, { venue: "automation", presence: "present" });
+  it.each(VENUES)(
+    "projects destructive tools to a PRESENT person in venue %s — a ceremony must see what it asks about",
+    (venue) => {
+      // `{ venue: "automation", presence: "present" }` is the enable/capture
+      // flow and the "allow this while you're away" approval card: a human is
+      // right there clicking. Filtering here made the ceremony unable to ask
+      // about the very tools it exists to ask about ("unknown tool in
+      // automation"). No other venue may acquire that bug either.
+      const projected = projectableForRun(tools, { venue, presence: "present" });
 
-    expect(projected.map((t) => t.name)).toEqual([
-      "maple_invoices_list",
-      "maple_invoice_update",
-      "maple_payments_send",
-    ]);
-  });
+      expect(projected.map((t) => t.name)).toEqual([
+        "maple_invoices_list",
+        "maple_invoice_update",
+        "maple_payments_send",
+      ]);
+    },
+  );
 });
 
 describe("bundles are proposed, never blank (§12)", () => {

@@ -1,7 +1,7 @@
 import { canonicalJson } from "./jcs.js";
 import { sha256Hex } from "./sha256.js";
 import type { Json } from "./ids.js";
-import type { RiskLabel, ToolDescriptor } from "./tools.js";
+import { ASK_USER_TOOL, type RiskLabel, type ToolDescriptor } from "./tools.js";
 import type { RunContext } from "./run-context.js";
 
 /** Build contract §7 — a grant set is per person, bound to an app's INTENT
@@ -132,6 +132,17 @@ function trailingToken(name: string): string | undefined {
  * read-shaped name (a POST that calls itself `get` is not a read).
  */
 export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
+  // A QUESTION is not an action. The heuristic below is calibrated for extracted
+  // host API names, which are `noun_verb`; `ask_user` is Vendo's own
+  // hand-authored door and reads the other way round, so the trailing token is
+  // the noun `user`, the read short-circuit misses, and the fail-closed default
+  // calls asking a question a `write`. Downstream, a `write` IS a mutating call:
+  // a host policy matching `{ risk: "write" }` would card the user to ask them
+  // something, and the guard would write an effect-ledger row for it — against
+  // §12's "reads are silent, always". There is no second opinion to take here
+  // either: this label was written in this repo, not assigned by extraction.
+  if (descriptor.name === ASK_USER_TOOL) return "read";
+
   const rawMethod = (descriptor as { method?: unknown }).method;
   const method = typeof rawMethod === "string" ? rawMethod.toUpperCase() : undefined;
   if (method === "DELETE") return "destructive";

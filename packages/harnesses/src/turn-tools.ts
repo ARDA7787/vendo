@@ -11,6 +11,7 @@ import type {
   TurnTools,
 } from "@vendoai/core";
 import { guardedCall, previewApproval, type ToolBridgeOptions } from "@vendoai/agent/internal";
+import type { DiscoveryRails } from "./discovery.js";
 
 /**
  * Build contract §1.4 — the frozen bound on an interactive approval wait. A
@@ -44,6 +45,11 @@ export interface TurnToolsOptions {
    *  go to, `toolOutputCap`, `preflight`, the per-turn `connectCards` dedupe set,
    *  and the capability-miss `onCall` hook. */
   bridge?: Omit<ToolBridgeOptions, "registry" | "ctx" | "guard">;
+  /** The shipped discovery rails: the loadout that makes `list()` the CURATED
+   *  surface, and `find_tools` / the capability-miss reporter as callable
+   *  meta-tools. Unset means every projected tool is equipped and neither
+   *  meta-tool exists — the pre-rails behaviour. */
+  discovery?: DiscoveryRails;
   /** Test seam only — production always uses {@link APPROVAL_WAIT_MS}. */
   approvalWaitMs?: number;
 }
@@ -175,8 +181,23 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
       // which the harness then offered its model — and the refusal only arrived
       // at call time. "Not projected into an automation run at all" has to mean
       // not projected.
-      const descriptors = await options.registry.descriptors(options.ctx);
-      return descriptors.map((descriptor) => ({
+      const projected = await options.registry.descriptors(options.ctx);
+      // Contract §1.1: this is the "currently-equipped (post-curation)" surface,
+      // which is why it is ALSO the discovery surface. A tool searched in through
+      // `find_tools` joins the equipped set, so the harness sees it by re-reading
+      // this listing on its next step — no second API, and the harness never
+      // learns how curation works.
+      //
+      // Curation is ours, not the harness's (the dividing line): the
+      // connection-scoped seed, the host's `surfaces.agent` menu and the
+      // uncurated-loadout cap all decide this set, and every one of them binds
+      // here rather than at any one branch.
+      const equipped = options.discovery?.activeToolNames?.();
+      const offered = equipped === undefined ? undefined : new Set(equipped);
+      const descriptors = offered === undefined
+        ? projected
+        : projected.filter((descriptor) => offered.has(descriptor.name));
+      const listings: ToolListing[] = descriptors.map((descriptor) => ({
         name: descriptor.name,
         // `title` is presentation-only and optional; absent it the surfaces that
         // show a tool to a person fall back to the name (core tools.ts).
@@ -190,6 +211,12 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
         // descriptor catalog by closure.
         ...(descriptor.inputSchema === undefined ? {} : { inputSchema: descriptor.inputSchema }),
       }));
+      // The meta-tools ride the same listing, so a harness offers `find_tools`
+      // exactly the way it offers everything else. They are never loadout-gated:
+      // gating discovery out of the loadout would make the long tail unreachable,
+      // which is the whole point of having a loadout.
+      for (const tool of options.discovery?.meta.values() ?? []) listings.push(tool.listing);
+      return listings;
     },
 
     async call(name, args): Promise<ToolResult> {
@@ -201,6 +228,22 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
       };
 
       try {
+        // Discovery first, and NOT through the guard — the same place the shipped
+        // path puts it. Neither meta-tool reaches the world: `find_tools` reads
+        // descriptors and equips names, and the miss reporter writes a telemetry
+        // row. Every tool they lead the model TO is guard-bound, and search can
+        // only equip a name the ctx already projects, so there is no path back to
+        // a withheld tool. They are still mirrored and audited like any call.
+        const metaTool = options.discovery?.meta.get(name);
+        if (metaTool !== undefined) {
+          const outcome = await metaTool.execute(args);
+          return finish(
+            outcome.status === "pending-approval"
+              ? { status: "denied", reason: "This still needs approval." }
+              : toToolResult(outcome),
+          );
+        }
+
         const descriptor = await descriptorFor(name);
         if (descriptor === undefined) {
           return finish({

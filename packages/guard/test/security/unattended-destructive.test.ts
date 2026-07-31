@@ -1,4 +1,4 @@
-import { UNATTENDED_DESTRUCTIVE_REASON } from "@vendoai/core";
+import { UNATTENDED_DESTRUCTIVE_REASON, VENUES } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { createGuard } from "../../src/index.js";
 import { createMemoryStore } from "../fixtures/memory-store.js";
@@ -129,10 +129,22 @@ describe("THE LAW: unattended destructive calls are refused at the guard", () =>
     expect(tools.executions).toHaveLength(1);
   });
 
-  it("refuses an away destructive call in the APP venue — schedules fire as venue app, so presence is what matters", async () => {
-    // `packages/apps/src/schedules.ts` fires real unattended work with
-    // `{ venue: "app", presence: "away" }`. If the predicate keyed off the
-    // venue label, every scheduled app fn would sit outside the law.
+  // The predicate is PRESENCE, never the venue label (§12 clarification
+  // 2026-07-31), and the venue list is derived from core's own `VENUES` so a
+  // fifth venue is swept the moment it exists rather than quietly skipped.
+  //
+  // The AWAY sweep alone is not a lock — every away case already satisfies a
+  // presence-only predicate, so `presence === "away" || venue === "<anything>"`
+  // leaves it green. The PRESENT sweep is the one behavioural difference a venue
+  // clause makes: the enable flow and the "allow this while you're away" card
+  // both resolve a present human, and they ask about the very destructive tools
+  // an ORed venue would hide from them.
+  //
+  // The away sweep also covers the real callers the venue label would have let
+  // out: `packages/apps/src/schedules.ts` fires genuine unattended work as
+  // `{ venue: "app", presence: "away" }`, so a venue-keyed predicate would put
+  // every scheduled app fn outside the law.
+  it.each(VENUES)("refuses an away destructive call in venue %s", async (venue) => {
     const store = createMemoryStore();
     const send = descriptor("destructive", { name: "maple_payments_send" });
     await seedGrant(store, { descriptor: send, appId: "app_1", source: "automation" });
@@ -141,26 +153,26 @@ describe("THE LAW: unattended destructive calls are refused at the guard", () =>
 
     const outcome = await bound.execute(
       call(send.name, { amount: 5000 }),
-      context({ venue: "app", presence: "away", appId: "app_1" }),
+      context({ venue, presence: "away", appId: "app_1" }),
     );
 
     expect(outcome).toEqual({ status: "blocked", reason: UNATTENDED_DESTRUCTIVE_REASON });
     expect(tools.executions).toHaveLength(0);
   });
 
-  it("PROJECTS destructive tools into a present-time automation ceremony — enable/capture must see them", async () => {
-    // The enable flow and the "allow this while you're away" card both resolve
-    // `{ venue: "automation", presence: "present" }`. They ask a human about the
-    // destructive tools, so the guard must show them the destructive tools.
-    const store = createMemoryStore();
-    const send = descriptor("destructive", { name: "maple_payments_send" });
-    const list = descriptor("read", { name: "maple_invoices_list" });
-    const bound = createGuard({ store }).bind(new FixtureTools([list, send]));
+  it.each(VENUES)(
+    "PROJECTS destructive tools to a present person in venue %s — a ceremony must see them",
+    async (venue) => {
+      const store = createMemoryStore();
+      const send = descriptor("destructive", { name: "maple_payments_send" });
+      const list = descriptor("read", { name: "maple_invoices_list" });
+      const bound = createGuard({ store }).bind(new FixtureTools([list, send]));
 
-    const projected = await bound.descriptors({ venue: "automation", presence: "present" });
+      const projected = await bound.descriptors({ venue, presence: "present" });
 
-    expect(projected.map((d) => d.name)).toEqual(["maple_invoices_list", "maple_payments_send"]);
-  });
+      expect(projected.map((d) => d.name)).toEqual(["maple_invoices_list", "maple_payments_send"]);
+    },
+  );
 
   it("records the refusal in the audit trail, so a run history can explain itself", async () => {
     const store = createMemoryStore();

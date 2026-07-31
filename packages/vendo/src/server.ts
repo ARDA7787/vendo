@@ -12,15 +12,13 @@ import {
   type OverridesFile,
   type ServerActionHandler,
 } from "@vendoai/actions";
-import { createAgent, vendoVerbsRegistry, VENDO_TOOL_PACK_PREFIX, type VendoAgent } from "@vendoai/agent";
+import { askUserRegistry, createAgent, vendoVerbsRegistry, VENDO_TOOL_PACK_PREFIX, type CapabilityMissConfig, type ToolSearchConfig, type VendoAgent } from "@vendoai/agent";
 import { assembleSystemPrompt } from "@vendoai/agent/internal";
 // Architecture §3 — the harness runtime and the default thinker. `vendo()` is
 // composed HERE (not by the host) when `harness:` is unset, because its system
 // prompt and descriptor catalog need the turn's ctx.
 import { assertHarnessComposable, vendo } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
-import { askUserTools, type AskUserCollector } from "./ask-user.js";
-export type { AskUserCollector } from "./ask-user.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -263,9 +261,10 @@ export interface Vendo {
   store: VendoStore;
   /** Architecture §3 — turns served through the composed `Harness` (`harness:`,
       or `vendo()`). `POST /threads` routes here when the host named a harness;
-      otherwise it stays on `agent.stream`, which still carries rails the harness
-      path does not (see PARKED.md P3). Exposed so a host — and the live proofs —
-      can drive a harness turn directly either way. */
+      otherwise it stays on `agent.stream`. Both paths now carry the same four
+      discovery rails, so the split is a wave-1 ruling (zero behaviour change for
+      existing hosts) rather than a capability gap. Exposed so a host — and the
+      live proofs — can drive a harness turn directly either way. */
   harness: HarnessTurns;
 }
 
@@ -335,12 +334,6 @@ export interface CreateVendoConfig {
       forever behind deleted rows, so the resolution has exactly one home. */
   files?: FilesAdapter;
   sandbox?: SandboxAdapter;
-  /** Design §4 — the surface that puts an `ask_user` question to a person and
-      waits for their reply. Wired, the `ask_user` tool works end to end; unwired,
-      the tool exists (the building-apps skill teaches it by name) and reports
-      honestly that nothing here can ask. It is never available to an unattended
-      run at all — a question with nobody to answer it is not a question. */
-  askUser?: AskUserCollector;
   /** Architecture §3 / §10 — WHO THINKS. Any `Harness`: the built-in `vendo()`,
       a spawned driver, or the host's own via `defineHarness`. Unset means
       `vendo()` — today's loop, on the contract.
@@ -2025,11 +2018,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // The building-apps skill teaches `validate` BY NAME, and a skill body is
   // copied to a harness verbatim rather than translated, so this name has to
   // resolve or the skill points the model at a tool that does not exist.
-  // Design §4's one door for questions, on the same registry as everything else.
-  // Its thread is bound PER TURN (ask-user.ts) — a model-chosen thread id would be
-  // a write into someone else's conversation, and the transcript is what the next
-  // turn reads, so that is agent steering rather than mere defacement.
-  actions.add(askUserTools(store, config.askUser));
+  // Design §4's one door for questions, on the same registry as everything else,
+  // so the guard, the audit trail and `find_tools` see it like any host tool. A
+  // question is TURN-ENDING (build contract §8 cuts steering): the door records
+  // the question, the loop stops, and the answer arrives as the next turn's
+  // message — so it needs no thread binding, no answer door and no surface.
+  actions.add(askUserRegistry());
   actions.add(vendoVerbsRegistry({
     // The ctx is the CALLER's, handed down by the registry's own `execute` — not
     // assembled here and never read off the model's input. Both app-touching
@@ -2120,6 +2114,52 @@ export function createVendo(config: CreateVendoConfig): Vendo {
         ...(hostInstructions ? { instructions: hostInstructions } : {}),
       }
     : undefined;
+  // ONE definition of each discovery rail, driven by BOTH thinkers: `createAgent`
+  // below and the harness runtime after it. Written twice, they would drift — and
+  // a rail that exists on one path and not the other is exactly why `POST /threads`
+  // could not be pointed at the harness by default.
+  const capabilityMiss: CapabilityMissConfig = {
+    hostId: missCapture.hostId,
+    surface: () => missSurface().then(({ hash }) => ({ format: "vendo/tools@1" as const, hash })),
+    emit: (event) => missCapture.record(event),
+  };
+  // ENG-252: the agent starts with a bounded loadout and discovers the rest via
+  // `find_tools`. The search seam is the SAME guard-bound registry the
+  // agent executes through — a searched-in tool has no unguarded path.
+  const toolSearch: ToolSearchConfig = {
+    // Annotate results the subject cannot run yet. The tool description and the
+    // system prompt both promise this, and the connect-card flow depends on it;
+    // same predicate the connect gate executes against, so the annotation and
+    // the refusal can never disagree.
+    connectRequired: async (toolkit, toolkitCtx) => !(await subjectHasToolkit(toolkit, toolkitCtx)),
+    // A curated agent menu has to hold at BOTH doors into the toolset: the
+    // per-turn seed below and search, which materializes hits into the live
+    // toolset mid-turn. Filtering only the seed would let the model search
+    // its way back to an off-menu tool. The expansion cap (discovery
+    // discipline) rides the same call: it bounds how many lazy toolkits one
+    // query may pull in before the menu filter runs.
+    search: async (query, options) => onAgentMenu(
+      await actions.search(query, {
+        ...options,
+        ...(config.agent?.maxSearchExpansions === undefined ? {} : { maxExpansions: config.agent.maxSearchExpansions }),
+      }),
+      (match) => match.name,
+    ),
+    // Connection-scoped loadout seed (spec 2026-07-20): each turn starts
+    // with host tools + the principal's connected toolkits — never an
+    // alphabetical slice of a lazy catalog. `connections` is declared below
+    // this composition; turns only run after createVendo returns, so the
+    // closure reference is safe.
+    seed: (ctx) => loadoutSeedFor(ctx),
+    // The curated agent menu also binds an explicit `agent.loadout`: host
+    // config chooses WITHIN the menu, it does not escape it.
+    menu: async () => {
+      const menu = await agentMenu();
+      return menu === undefined ? undefined : [...menu];
+    },
+    ...(config.agent?.maxInitialTools === undefined ? {} : { maxInitialTools: config.agent.maxInitialTools }),
+    ...(config.agent?.loadout === undefined ? {} : { loadout: config.agent.loadout }),
+  };
   const agent = createAgent({
     model: inference.agent.model,
     tools: boundTools,
@@ -2132,48 +2172,8 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       ...(config.agent?.historyWindow === undefined ? {} : { historyWindow: config.agent.historyWindow }),
       ...(config.agent?.maxSteps === undefined ? {} : { maxSteps: config.agent.maxSteps }),
     },
-    capabilityMiss: {
-      hostId: missCapture.hostId,
-      surface: () => missSurface().then(({ hash }) => ({ format: "vendo/tools@1" as const, hash })),
-      emit: (event) => missCapture.record(event),
-    },
-    // ENG-252: the agent starts with a bounded loadout and discovers the rest via
-    // `find_tools`. The search seam is the SAME guard-bound registry the
-    // agent executes through — a searched-in tool has no unguarded path.
-    toolSearch: {
-      // Annotate results the subject cannot run yet. The tool description and the
-      // system prompt both promise this, and the connect-card flow depends on it;
-      // same predicate the connect gate executes against, so the annotation and
-      // the refusal can never disagree.
-      connectRequired: async (toolkit, toolkitCtx) => !(await subjectHasToolkit(toolkit, toolkitCtx)),
-      // A curated agent menu has to hold at BOTH doors into the toolset: the
-      // per-turn seed below and search, which materializes hits into the live
-      // toolset mid-turn. Filtering only the seed would let the model search
-      // its way back to an off-menu tool. The expansion cap (discovery
-      // discipline) rides the same call: it bounds how many lazy toolkits one
-      // query may pull in before the menu filter runs.
-      search: async (query, options) => onAgentMenu(
-        await actions.search(query, {
-          ...options,
-          ...(config.agent?.maxSearchExpansions === undefined ? {} : { maxExpansions: config.agent.maxSearchExpansions }),
-        }),
-        (match) => match.name,
-      ),
-      // Connection-scoped loadout seed (spec 2026-07-20): each turn starts
-      // with host tools + the principal's connected toolkits — never an
-      // alphabetical slice of a lazy catalog. `connections` is declared below
-      // this composition; turns only run after createVendo returns, so the
-      // closure reference is safe.
-      seed: (ctx) => loadoutSeedFor(ctx),
-      // The curated agent menu also binds an explicit `agent.loadout`: host
-      // config chooses WITHIN the menu, it does not escape it.
-      menu: async () => {
-        const menu = await agentMenu();
-        return menu === undefined ? undefined : [...menu];
-      },
-      ...(config.agent?.maxInitialTools === undefined ? {} : { maxInitialTools: config.agent.maxInitialTools }),
-      ...(config.agent?.loadout === undefined ? {} : { loadout: config.agent.loadout }),
-    },
+    capabilityMiss,
+    toolSearch,
     // Discovery-discipline: the same connect check the gate-wrapped registry
     // runs, exposed so needsApproval never mints an approval for a call the
     // gate will refuse with a connect card.
@@ -2205,15 +2205,19 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       guard,
       ctx,
       system,
-      // The capability-miss and find_tools prompt sections are `createAgent`'s
-      // rails; the harness path carries neither yet, so the prompt must not
-      // promise them. See PARKED.md P3.
-      false,
-      false,
+      // Both rails now reach the harness path (`createDiscoveryRails`), so the
+      // prompt may promise them — and must, or the model is handed `find_tools`
+      // and the miss reporter with no instructions about when to use either.
+      true,
+      true,
     ),
     // Projected for THIS ctx, so THE LAW's unattended filter (design §12) decides
     // what the model is even shown — not just what it is allowed to run.
     descriptors: (ctx) => boundTools.descriptors(ctx),
+    // THE SAME rail values `createAgent` above was handed, so the two thinkers
+    // cannot diverge on discovery, curation, or honest refusal.
+    toolSearch,
+    capabilityMiss,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
   });
@@ -2499,10 +2503,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     telemetry: telemetryClient(config.telemetry),
     agent,
     // Only a host that NAMED a harness gets the wire's chat turn routed through
-    // it. Defaulting the ROUTE (rather than the harness value) would silently
-    // drop `find_tools`, the connection-scoped loadout, the curated agent menu
-    // and capability-miss detection, none of which the harness path carries yet
-    // — PARKED.md P3 states the gap and the one-line flip that closes it.
+    // it. The four rails this used to be waiting on — `find_tools`, the
+    // connection-scoped loadout, the curated agent menu, capability-miss
+    // detection — now reach the harness path too (`createDiscoveryRails`), so
+    // parity is no longer the blocker. The default stays as it is by ruling for
+    // wave 1: existing hosts see zero behaviour change, and which thinker should
+    // be the resident is a BENCH question (design §16), not a wiring one.
+    // Flipping it is this one line.
     ...(config.harness === undefined ? {} : { harness: harnessTurns }),
     guard,
     apps,

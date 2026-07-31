@@ -1,6 +1,16 @@
-import type { RunContext } from "@vendoai/core";
+import { ASK_USER_TOOL, type RunContext, type ToolRegistry } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
-import { ASK_USER_TOOL, askUserRegistry } from "./ask-user.js";
+import { askUserRegistry } from "./ask-user.js";
+import { createAgent } from "./index.js";
+import {
+  ctx as agentCtx,
+  readSse,
+  scriptedModel,
+  testGuard,
+  textTurn,
+  toolCallTurn,
+  userMessage,
+} from "./test-helpers.js";
 
 const ctx = (overrides: Partial<RunContext> = {}): RunContext => ({
   principal: { kind: "user", subject: "user_alice" },
@@ -12,83 +22,53 @@ const ctx = (overrides: Partial<RunContext> = {}): RunContext => ({
 
 const call = (args: unknown) => ({ id: "call_1", tool: ASK_USER_TOOL, args: args as never });
 
-const ports = (overrides: Partial<Parameters<typeof askUserRegistry>[0]> = {}) => ({
-  threadId: "thr_1",
-  record: async () => undefined,
-  collect: async () => ({ text: "the savings one" }),
-  ...overrides,
-});
-
 describe("ask_user — questions as a tool, one door, any seat (design §4)", () => {
   it("is named ask_user and is a read: asking costs no grant", async () => {
-    const [descriptor] = await askUserRegistry(ports()).descriptors();
+    const [descriptor] = await askUserRegistry().descriptors();
     expect(descriptor?.name).toBe("ask_user");
     expect(descriptor?.risk).toBe("read");
   });
 
-  it("records the answer against the asking principal and hands it back", async () => {
-    const recorded: unknown[] = [];
-    const registry = askUserRegistry(ports({
-      record: async (principal, answer) => { recorded.push({ subject: principal.subject, answer }); },
-    }));
-
-    const outcome = await registry.execute(call({ question: "Which account?" }), ctx());
-
-    expect(outcome).toEqual({ status: "ok", output: { answer: { text: "the savings one" } } });
-    expect(recorded).toEqual([{
-      subject: "user_alice",
-      answer: {
-        threadId: "thr_1",
-        // Server-minted: the model cannot name the row its answer lands in.
-        questionId: expect.stringMatching(/^q_session_1_/) as unknown as string,
-        answer: { text: "the savings one" },
-      },
-    }]);
-  });
-
-  it("IGNORES a model-supplied questionId (finding 5)", async () => {
-    // Accepting one let the model reuse an id, which made the store drop the
-    // user's real answer while an earlier one stood as theirs.
-    const seen: string[] = [];
-    const registry = askUserRegistry(ports({
-      record: async (_principal, answer) => { seen.push(answer.questionId); },
-    }));
-
-    await registry.execute(call({ question: "Which?", questionId: "q_reused" }), ctx());
-    await registry.execute(call({ question: "Which?", questionId: "q_reused" }), ctx());
-
-    expect(seen).not.toContain("q_reused");
-    expect(seen[0]).not.toBe(seen[1]);
-  });
-
-  it("gives the MODEL no way to choose which thread an answer lands in", async () => {
-    // The security review of the store gate showed why this matters: a
-    // caller-chosen thread id is an attempt to write into someone else's
-    // conversation, and the transcript is what the next turn reads. The thread is
-    // bound per turn by the caller, so a smuggled id is simply ignored.
-    const recorded: Array<{ threadId: string }> = [];
-    const registry = askUserRegistry(ports({
-      record: async (_principal, answer) => { recorded.push({ threadId: answer.threadId }); },
-    }));
-
-    await registry.execute(
-      call({ question: "Which account?", questionId: "q_1", threadId: "thr_victim" }),
+  it("records the question and tells the model to ask it and stop", async () => {
+    // The record IS the mirrored tool call plus the audit row — there is no
+    // pending-question registry and no answer door. So the observable contract is
+    // that the question comes back in the output, where the transcript keeps it.
+    const outcome = await askUserRegistry().execute(
+      call({ question: "  Which account?  ", choices: ["savings", "joint"] }),
       ctx(),
     );
 
-    expect(recorded).toEqual([{ threadId: "thr_1" }]);
+    expect(outcome.status).toBe("ok");
+    expect(outcome).toMatchObject({
+      output: { asked: "Which account?", choices: ["savings", "joint"] },
+    });
+    // The model is told the turn is over. Without this it guesses an answer and
+    // carries on, which is the one thing this tool exists to prevent.
+    expect(JSON.stringify(outcome)).toMatch(/final message/);
+  });
+
+  it("takes NOTHING from the model but the question — no thread, no answer, no id", async () => {
+    // A caller-chosen thread id used to be the danger here: the transcript is what
+    // the next turn reads, so writing into someone else's conversation would be
+    // agent steering, not just defacement. The door now writes nowhere at all, so
+    // there is no id to smuggle and no row to aim at.
+    const outcome = await askUserRegistry().execute(
+      call({ question: "Which?", threadId: "thr_victim", questionId: "q_reused", answer: "spoofed" }),
+      ctx(),
+    );
+
+    expect(outcome.status).toBe("ok");
+    const serialized = JSON.stringify(outcome);
+    expect(serialized).not.toContain("thr_victim");
+    expect(serialized).not.toContain("q_reused");
+    expect(serialized).not.toContain("spoofed");
   });
 
   it("REFUSES in an unattended run — there is nobody there to ask", async () => {
     // A question with no one to answer it is not a question. An automation that
     // needs an answer must fail with a card, not hang and not invent one.
-    const registry = askUserRegistry(ports({
-      record: async () => { throw new Error("must not record"); },
-      collect: async () => { throw new Error("must not collect"); },
-    }));
-
-    const outcome = await registry.execute(
-      call({ question: "Which account?", questionId: "q_1" }),
+    const outcome = await askUserRegistry().execute(
+      call({ question: "Which account?" }),
       ctx({ venue: "automation", presence: "away" }),
     );
 
@@ -96,42 +76,84 @@ describe("ask_user — questions as a tool, one door, any seat (design §4)", ()
   });
 
   it("is not projected into an unattended run at all", async () => {
-    const projected = await askUserRegistry(ports()).descriptors({ venue: "automation", presence: "away" });
+    const projected = await askUserRegistry().descriptors({ venue: "automation", presence: "away" });
     expect(projected).toEqual([]);
   });
 
-  it("rejects a blank question rather than showing an empty card", async () => {
-    const outcome = await askUserRegistry(ports()).execute(
-      call({ question: "  ", questionId: "q_1" }),
-      ctx(),
-    );
+  it("rejects a blank question rather than registering an empty one", async () => {
+    const outcome = await askUserRegistry().execute(call({ question: "  " }), ctx());
     expect(outcome.status).toBe("error");
   });
+});
 
-  it("surfaces a refused answer write as an error, never as a fabricated answer", async () => {
-    // If the store's subject gate ever fires here, the model must NOT be handed
-    // text it can treat as the user's own words.
-    const registry = askUserRegistry(ports({
-      record: async () => { throw new Error("thread does not belong to this subject"); },
-      collect: async () => ({ text: "spoofed" }),
-    }));
+describe("a question ENDS the turn (design §6, build contract §8)", () => {
+  /**
+   * The REAL registry is handed to `createAgent` as its toolset, not a
+   * `boundRegistry` double. That is load-bearing: the double wraps whatever its
+   * implementation returns in `{ status: "ok", output: ... }`, so every outcome —
+   * a refusal included — reads as ok to a stop condition. `guardedCall` returns
+   * the registry's `ToolOutcome` verbatim as the tool output, which is the shape
+   * `askedUserStop` actually sees in production.
+   */
+  const counted = (): { tools: ToolRegistry; calls: () => number } => {
+    const inner = askUserRegistry();
+    let calls = 0;
+    return {
+      calls: () => calls,
+      tools: {
+        descriptors: (runCtx) => inner.descriptors?.(runCtx) ?? Promise.resolve([]),
+        execute: async (toolCall, runCtx) => {
+          calls += 1;
+          return inner.execute(toolCall, runCtx);
+        },
+      },
+    };
+  };
 
-    const outcome = await registry.execute(call({ question: "Which?", questionId: "q_1" }), ctx());
+  it("stops after the question instead of taking another step", async () => {
+    const registry = counted();
+    // ONE scripted turn. If the loop asked the model for a second step after the
+    // question, the scripted model would throw ("scripted model exhausted") and
+    // the stream would carry an error part — so a clean [DONE] IS the stop.
+    const model = scriptedModel([
+      toolCallTurn(ASK_USER_TOOL, { question: "Which account?" }, "call_ask_1"),
+    ]);
+    const agent = createAgent({ model, tools: registry.tools, guard: testGuard({}) });
 
-    expect(outcome.status).toBe("error");
-    expect(JSON.stringify(outcome)).not.toContain("spoofed");
+    const response = await agent.stream({
+      threadId: "thr_asked",
+      message: userMessage("user_asked", "move some money"),
+      ctx: agentCtx(),
+    });
+    const { parts } = await readSse(response);
+
+    expect(parts.filter((part) => part.type === "error")).toEqual([]);
+    expect(registry.calls()).toBe(1);
+    // The question really is in the mirrored tool output — that IS the record,
+    // there is no question row anywhere else.
+    expect(JSON.stringify(parts)).toContain("Which account?");
   });
 
-  it("mints a questionId when the model omits one, so two questions never collide", async () => {
-    const seen: string[] = [];
-    const registry = askUserRegistry(ports({
-      record: async (_principal, answer) => { seen.push(answer.questionId); },
-    }));
+  it("does NOT stop on a refused question — the model still finishes what it can", async () => {
+    // A blank or unattended question is not an answer pending; ending the turn on
+    // it would strand work the model could still do.
+    const registry = counted();
+    const model = scriptedModel([
+      // A blank question → `error`, so the loop must continue...
+      toolCallTurn(ASK_USER_TOOL, { question: "   " }, "call_ask_blank"),
+      // ...and this SECOND scripted turn is only reached if it did.
+      textTurn("I could not ask, so here is what I know."),
+    ]);
+    const agent = createAgent({ model, tools: registry.tools, guard: testGuard({}) });
 
-    await registry.execute(call({ question: "First?" }), ctx());
-    await registry.execute(call({ question: "Second?" }), ctx());
+    const response = await agent.stream({
+      threadId: "thr_asked_blank",
+      message: userMessage("user_asked_blank", "do something"),
+      ctx: agentCtx(),
+    });
+    const { parts } = await readSse(response);
 
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).not.toBe(seen[1]);
+    expect(parts.filter((part) => part.type === "error")).toEqual([]);
+    expect(parts.some((part) => JSON.stringify(part).includes("here is what I know"))).toBe(true);
   });
 });
