@@ -111,6 +111,7 @@ import { bindVendoModelSlots, vendoModel } from "#dev-creds/model";
 // argument means `vendo` semantics (per-rung defaults); a name passes through
 // VERBATIM to the resolved rung. `devModel` stays as the deprecated alias.
 export { devModel, vendoModel, type DevModelOptions, type VendoModelOptions, type VendoModelSlot } from "#dev-creds/model";
+import { withUniqueToolTitles } from "./duplicate-titles.js";
 import { resolveModels } from "./models-config.js";
 export { type ModelsConfig } from "./models-config.js";
 import type { ModelsConfig, ResolveModelsInput } from "./models-config.js";
@@ -1574,7 +1575,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // same tool-call event (with connectorAccount enrichment) itself.
     report: (event) => guard.report(event),
   });
-  const boundTools = connectGate.bind(guard.bind(actions));
+  // Design §12: a deployment where two tools share a `title` cannot render an
+  // honest consent card, so it must not serve. Composition installs the check
+  // here — the one place the deployment's whole registry is assembled — and it
+  // fires the instant the descriptor set first resolves, which is the earliest
+  // this is knowable (createVendo is synchronous; descriptors are not).
+  const boundTools = withUniqueToolTitles(connectGate.bind(guard.bind(actions)));
   // 04 §6: compound steps route through the guard binding — grants, approvals,
   // breakers, and audit see every real call; there is no second
   // execution path. createActions reads invokeTool at execution time (same
