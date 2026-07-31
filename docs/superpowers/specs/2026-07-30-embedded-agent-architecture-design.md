@@ -1,8 +1,7 @@
 # Vendo — the embedded agent layer
 
 **2026-07-30.** The final architecture, designed with Yousef; brainstorm ongoing —
-guard details, the automations pack, and the run_code↔guard bridge are still open
-(§12). Nothing builds before his go.
+the items in §15 are still open. Nothing builds before his go.
 
 ## 1. The mission
 
@@ -77,8 +76,9 @@ export const acmeHarness = defineHarness({
     // turn.skills    pack skills — listed cheap, load(name) for full text
     // turn.state     the harness's own persisted state — opaque to us
     // turn.options   resolved knobs, incl. per-turn overrides
+    // turn.models   the resolved model seats (§10)
     // turn.signal    abort
-    yield { type: "text", delta: "…" };   // yields are narrative only
+    yield { type: "text", delta: "…" };   // closed vocabulary, §3 mirroring
   },
 });
 ```
@@ -86,15 +86,28 @@ export const acmeHarness = defineHarness({
 - **Tool calls are safe by construction.** Calls through `turn.tools` pass the
   guard, land in the audit trail, and mirror into the transcript — a harness
   author cannot forget the safety story.
-- **Approvals wait or fail — they never suspend a run.** User present: the
-  guarded call simply blocks until the card is tapped (seconds; the harness
-  never knows). User away or timeout: the call returns `denied-needs-approval`,
-  the run **fails loudly** with an actionable card ("needs approval for X —
-  Grant & re-run"); the grant persists, re-run starts clean. Park/suspend is
-  never extended to new surfaces (the automations engine's internal
-  step-resume stays as shipped implementation detail). Consent is collected
-  upfront (§11.4), so a mid-run missing grant is the rare exception, not the
-  flow.
+- **Approvals wait or fail — they never suspend a run.** A live human
+  (presence proven by an open stream/heartbeat, not merely by a request
+  arriving): the guarded call blocks until the card is tapped, with a short
+  timeout (≤90s), a per-subject cap on concurrent waits, and no sandbox lease
+  held while waiting. Away, or heartbeat lost, or timeout: the call resolves
+  as denied-needs-approval and the run **fails loudly** with an actionable
+  card ("needs approval for X — Grant & re-run"); the grant persists, and
+  re-run is a *fresh run against live data* — nothing is replayed from the
+  failed one. Park/suspend is never extended to new surfaces (the automations
+  engine's shipped internal step-resume stays as an implementation detail).
+  Consent is collected upfront (§12), so a mid-run missing grant is the
+  rare exception, not the flow.
+- **Re-runs are safe because effects are ledgered.** Every executed guarded
+  mutating call writes an idempotency key (run/turn id + tool + exact input
+  hash) alongside its audit row; on re-run a call whose key already succeeded
+  returns the recorded outcome instead of executing. Without the ledger a
+  re-run would repeat completed side effects — the ledger is what makes
+  fail-and-re-run correct.
+- **Failure cards have a home**: the app's own surface, a badge count in the
+  launcher, and one host-side notification hook the host wires to its
+  existing channels. One card per missing grant per app, carrying a
+  skipped-run count — never one per failed firing.
 - **Options are declared, then overridable per turn.** Adapters declare their
   knobs (typed schema); hosts forward what they choose to end users (model
   picker etc.); the wire forwards nothing by default. Host-side dependencies
@@ -140,19 +153,32 @@ to an end user. Three anchors: surfaces render tool *titles and verbs*
 ("Checked your invoices"), never names — rendering-layer law; every skill and
 prompt carries the register (plain language, no paths, no jargon); the
 reviewer rubric makes user-visible technical jargon a finding. Errors follow
-it too: plain-language, no internals.
+it too: plain-language, no internals. **Friendly is not vague:** the render
+always carries the material arguments — "Sent $1,400 to Acme Utilities",
+never "Sent a payment" — and an argument-free description of a mutating
+action is a reviewer finding like jargon is. Consent surfaces carry the
+§12 completeness carve-out; tool titles are unique per deployment (boot
+error on collision) so two different actions can never read identically.
 
 ## 4. Tools
 
 Defined once, neutral (`name / description / zod input / risk / execute`),
-projected everywhere — every harness, the MCP door, `search_tools`. Execution is
+projected everywhere — every harness, the MCP door, `find_tools`. Execution is
 always on our side; the guard wraps every harness identically.
 
-Five families: **host** (extracted API, as the signed-in user) · **workspace**
+Four families: **host** (extracted API, as the signed-in user) · **workspace**
 (read/write/edit/ls/grep) · **vendo verbs** (`records_list/put/delete`,
-`schedule`, `find_tools`, `search_components`, `validate`) · **capability**
-(run_code, serve) · **ask_user** (questions + approvals, one door, any seat,
-park-and-resume).
+`schedule`, `find_tools`, `search_components`, `validate`) · **ask_user**
+(questions, one door, any seat).
+
+There is deliberately **no code-execution or app-serving tool**. Bash-native
+harnesses already run code in their own sandbox; machine-less harnesses get
+in-process bash over the workspace (§8) and computed values for math. A
+`run_code`-style tool would drag in a declaration bridge, run-scoped grants,
+declaration scopes, and egress rules for a capability nothing has asked for —
+if a host ever needs it, it returns as its own scoped decision. Layer-3
+served apps stay as they ship today (experimental, off by default), not as a
+harness-facing tool.
 
 Naming and projection law for the families:
 
@@ -168,10 +194,6 @@ Naming and projection law for the families:
   live toolset mid-turn. No separate search_connectors — results include
   unconnected connector tools annotated connect-required, feeding the
   existing connect-card flow.
-- **`run_code` is projected only to machine-less harnesses** — bash-native
-  harnesses just run code; the hands table is the router. **`serve` projects
-  to everyone**: serving is platform lifecycle (registered URL, wake/sleep,
-  keepalive, egress approvals), not "a server in my box".
 - **`validate` is also projected into the sandbox as a CLI shim**
   (`vendo validate <file>` on the box PATH, calling back through the bridge)
   so bash-native harnesses use it in their natural edit-check-fix rhythm.
@@ -186,8 +208,8 @@ with:
 | Harness | Hands | File work | Arbitrary code |
 |---|---|---|---|
 | bash-native (Claude Code, Codex) | a real shell; workspace materialized in the session sandbox | grep/sed/editor/python — the whole CLI long tail, co-training intact | native |
-| in-process (vendo(), Pi-based, custom) | workspace tools against the store façade | `edit(file, old, new)` — the v2 verb | rented: `run_code`, if a sandbox is wired |
-| hosted (Managed Agents) | callbacks — tools execute our side | same, over a longer wire | rented, same |
+| in-process (vendo(), Pi-based, custom) | workspace tools + in-process bash (§8) | `edit(file, old, new)` — the v2 verb | no |
+| hosted (Managed Agents) | callbacks — tools execute our side | same, over a longer wire | no |
 
 Bash beats workspace tools wherever a machine exists — wrapping a bash-native
 harness in `workspace_*` tools would confiscate the hands we chose it for.
@@ -199,8 +221,7 @@ host calls, records, ask_user need the user's identity and the guard, and
 the sandbox holds no credentials — there is no file to bash. Hand-quality
 changes what a harness can do to files, never what it can do to the world.
 
-Curation: a small top-level list; the long tail reachable via `search_tools`
-and callable from inside `run_code`.
+Curation: a small top-level list; the long tail reachable via `find_tools`.
 
 **Documents are files; records are tables.** App source, memory, skills,
 uploads, generated reports — file-shaped, in the workspace. Data rows —
@@ -233,7 +254,7 @@ export const complianceReports = definePack({
   wrapping, no reaching into other packs.
 - `apps()` and `automations()` are built on this exact interface — no
   privileged internal API — with one honest carve-out: **triggers and
-  scheduling are platform lifecycle** (core runtime, like `serve`), not pack
+  scheduling are platform lifecycle** (core runtime), not pack
   content; the automations pack contributes tools/skills/checks/components
   *over* that lifecycle. Third-party packs wanting recurring behavior create
   automations through the normal guarded path.
@@ -303,7 +324,11 @@ The harness-independent floor. Swap any harness; the floor doesn't move.
   blast radius: org-shared/automation apps get the full test-drive, personal
   quick edits rubric-only. **Failure protocol:** FAIL → the commit lands as a
   flagged version (the previous version keeps serving), one bounded fix
-  round, then surface honestly. Reviewer traffic runs under its own breaker
+  round, then a plain-language card on the app ("Your change didn't pass a
+  safety check: <reason>. Fix it / keep the current version"). An `owner`
+  may accept a flagged version, with the override recorded in the audit
+  trail — **except** host-check failures, which only the host can waive via
+  its own policy config. Reviewer traffic runs under its own breaker
   context, never the user's budget.
 - **host checks** — plugged in via packs, same guarantee: they fire whether or
   not the builder feels like it.
@@ -316,7 +341,8 @@ disk only when a sandbox needs one. Backed by `store` (small files) + `files`
 `IFileSystem`** (Vercel, Apache-2.0): we implement it over the store and get
 an in-process bash surface (grep/sed/awk/jq, read-only mounts) for
 machine-less harnesses — no sandbox needed for file work. Versioning is a
-revision column + history rows (per-file CAS at commit), not git.
+revision column + history rows, not git; commit rules are per mount (§9:
+compare-and-swap for `/orgs/`, last-write-wins for `/user/`).
 
 Mounts — one per membership, permissions derived from role:
 
@@ -340,7 +366,9 @@ finance-dashboard:  org:acme → viewer · team:finance → editor · dana → o
 ```
 
 - The level vocabulary is closed and ships with us: `viewer` (see + use) ·
-  `editor` (edit) · `owner` (edit + share + delete). Assignments are fully
+  `editor` (edit) · `owner` (edit + share + delete). A viewer who asks for a
+  change gets a consumer-voice fork offer ("I can't change the team's copy,
+  but I can make you your own"), never a bare refusal. Assignments are fully
   flexible; *defining new level types* is not a surface (`operator` for
   automations is deferred to the guard brainstorm). Effective access = max of
   your grants; org admins are implicit owners.
@@ -389,57 +417,41 @@ app needs nothing new: app storage is already subject-partitioned.
 
 Store write law: **O(messages + tool calls + files changed), never O(tokens).**
 Deltas buffer in memory; the UI streams from the wire, not the DB. A turn
-lands as ~15 rows.
+lands as ~15 rows. Transcripts store **one row per message** (accepted
+migration, wave-1 store lane — replaces today's whole-transcript row
+rewritten per turn, which honored the row count but not the bytes; touches
+the store contract and the erase cascade, done deliberately).
 
 ## 9. Sandboxes
 
-There is no placement layer. `run_code` and `serve` are tools; the harness
-decides when (that judgment is thinking), the guard governs the calls, the
-adapter supplies machines:
+A sandbox exists for one reason: **a spawned-CLI harness needs a machine to
+live on.** No placement layer, no capability tools, no ladder.
 
-- **One machine concept.** `sandbox.acquire(workspace)` — a session that
-  needs a machine (first run_code, a served app, a spawned-CLI harness's cwd)
-  lazily acquires one sandbox, reuses it for the session, idle-TTL disposes
-  it. No job/session split; warm pools and per-call ephemerality are adapter
-  internals, adopted if a bench ever says so.
-- Materialize workspace mounts in (ro mounts as read-only binds), sync
-  changed files out at turn/job end — **except designated hot paths (the app
-  and plan files), which sync mid-turn** so the skeleton renders the moment
-  the plan file exists, whoever wrote it (the in-box `vendo validate` shim
+- **One machine per session.** `sandbox.acquire(workspace)` — acquired when a
+  spawned harness starts, reused across its turns, idle-TTL disposed. Warm
+  pools and ephemerality are adapter internals, adopted only if a bench says
+  so.
+- Materialize workspace mounts in (ro mounts as read-only binds); sync
+  changed files out at turn end — **except designated hot paths (the app and
+  plan files), which sync mid-turn** so the skeleton renders the moment the
+  plan file exists, whoever wrote it (the in-box `vendo validate` shim
   doubles as a sync point); O(files changed) preserved. Commit is per-file
   compare-and-swap for `/orgs/` (stale base → a conflict outcome the harness
-  resolves — resolving is thinking); last-write-wins may stand for `/user/`.
-  The store never stops being the truth.
-  The box holds a workspace copy and a turn-scoped token, nothing else —
-  credentials never enter; authority calls bridge back out through the guard.
-- **Spawned-CLI harnesses run in the session sandbox by default** — `claudeCode()`
+  resolves — resolving is thinking); last-write-wins for `/user/`. The store
+  never stops being the truth.
+- **The box holds a workspace copy and a turn-scoped token, nothing else** —
+  authority calls come back out through the guard; a compromised box holds
+  files its user could already see. (Today's box injects real secret values
+  and the inference key — a deliberate v0 exception; reconciliation is parked
+  to the secrets brainstorm, §12, recorded so the contradiction is decided,
+  not silent. The inference endpoint is a named standing egress exception:
+  a boxed harness must reach a model to think.)
+- **Spawned-CLI harnesses run in the sandbox by default** — `claudeCode()`
   without a sandbox adapter is a boot error; running the CLI on the host's own
   server is the explicit opt-in `machine: "local"`.
-- **The run_code ↔ guard bridge: authority before execution** (the automations
-  pattern applied to code). `run_code({ code, tools: [...] })` declares its
-  toolset up front; the guard resolves the human ask *before any machine
-  spins* — reads auto-grant per policy, mutating declarations become one
-  approval card; approved grants are run-scoped and die with the run.
-  **Mutating declarations carry scopes** — pinned/constrained args (payee,
-  max amount, max calls), rendered on the card, enforced per call by the
-  bridge; approving a bare name for code written after the approval is not a
-  thing. The bridge enforces the declaration as an allowlist (undeclared
-  call → denied, fail closed → script errors → harness re-declares honestly)
-  and the mechanical arg gates (capability-substitution class) still inspect
-  every actual argument at runtime. **Box egress is bridge-only by default**;
-  anything else is a declared domain allowlist through the existing
-  egress-approval machinery — the sandbox adapter must expose egress policy.
-  `ask_user` does not exist inside code — questions precede the script. No
-  mid-run parking, no idle machines, ever. (Today's box injects real secret
-  values + the inference key — a deliberate v0 exception to §9's credential
-  law; the reconciliation [handles vs scoped values, gating the inference
-  key] is parked to the secrets-model brainstorm, recorded here so the
-  contradiction is decided, not silent.)
-- No adapter wired → capability tools aren't projected → the honest
-  cannot-path. The adapter slot is the switch; no capability booleans.
-- Escalation doctrine (prefer files and tools over code; job over session)
-  lives in tool descriptions and the reviewer's rubric — prompts and checks,
-  not machinery.
+- No adapter wired → spawned harnesses are unavailable (boot error), and
+  machine-less harnesses lose nothing: they have in-process bash over the
+  workspace (§8). The adapter slot is the switch; no capability booleans.
 - Durable Objects and friends appear **behind** seams (a Cloud adapter),
   never **in** them.
 
@@ -449,7 +461,7 @@ adapter supplies machines:
 createVendo({
   auth: fromSession(getUser),
   tools: hostTools,                                  // vendo init / sync
-  harness: claudeCode({ model: "claude-fable-5" }),    // default: vendo()
+  harness: claudeCode(),                             // default: vendo()
   packs: [apps(), automations(), complianceReports], // default: apps()
   models: { default: anthropic("claude-fable-5"),    // optional; resolution:
             reviewer: openai("gpt-5.6") },           // seat → default → borrow
@@ -488,73 +500,123 @@ placement, the model gateway = Cloud — same code, another principal, another
 adapter, lit by key + meter. DO-backed store/sandbox/automations adapters are
 Cloud implementation details behind OSS seams.
 
-## 11.4 Consent: permissions upfront, popups only for the irreversible
+## 12. Consent: permissions upfront, popups only for the irreversible
 
 - **Apps and automations get their permissions beforehand, in one honest
   card** generated from their declared tools (the plan declares them; the
   automations enable flow already works this way — grant sets, one decision).
-  Approved once → the app runs silently.
-- **Destructive/external actions (money, messages to humans, deletes) are
-  excluded from upfront bundles by law** — they always pop a live Vendo
-  approval card in the moment, real arguments shown. What the human saw is
-  what runs.
+  The build turn itself needs no card: reads are silent by law, so building
+  and filling run legally, and the card is generated when the plan lands,
+  gating the app's first *write*. Approved once → that app runs silently.
+- **Grants are per-person.** A shared app shows each member their own card on
+  first write-bearing use; a creator's approval is never anyone else's.
+- **Every grant minted from a declared set carries scopes, or it is not
+  standing.** Scopes are field-bound constraints on the tool's own input
+  schema (`equals` / `oneOf` / `max` / `maxCalls`), authored on the card by
+  picking fields, rendered on it, and enforced **inside the guard's scope
+  match** — one choke point, shared by app bundles, automation enable, and
+  chat "remember". An unscoped mutating declaration mints session/task
+  duration only. A declared set that is not bundle-eligible (any member
+  mutating and unscoped) falls back to per-call cards. Whole-registry
+  declarations are rejected, not bundled.
+- **The grant set is bound to the app's intent, not just tool names.** An
+  app-intent hash (declared toolset + scopes + trigger + run body + the
+  user-visible name) rides the set; any change invalidates it and re-asks
+  **the delta only** — reusing the existing invalidated-grant + stale-hash
+  audit path. An edit by anyone other than the sponsor invalidates
+  sponsorship (§13 adoption fires on the *edit* event, not only on
+  departure). Promote re-mints the set; copy paths strip grant sets by field
+  whitelist, exactly as approval state is stripped today.
+- **Destructive/external actions (money, messages to humans, deletes)** need
+  *either* a live card in the moment with real arguments shown, *or* a prior
+  **scoped** grant whose constraints pin the material arguments. A bare
+  "may send payments" grant is never sufficient — that is what makes
+  unattended runs (§13) honest without breaking "what the human saw is what
+  runs". Bundle eligibility never rests on the AI-assigned risk label alone:
+  a second mechanical vote (HTTP method + verb shape) must agree, and
+  disagreement demotes to a per-call card.
 - **Reads are silent, always.** Ad-hoc chat asks (no app, no bundle) keep
   ask-once-with-remember.
-- **Conditions: the third answer on any grant card** — free text ("only if
-  below $1,000"), stored on the grant, human-authored. At fire time the judge
-  answers one narrow question — do these actual arguments satisfy the
-  sentence? — with schema and args in view; satisfied → run (condition +
-  rationale in the audit row); unmet or ambiguous → the run fails with the
-  card ("$1,400 exceeds your limit — approve this one / raise the limit").
-  The human writes policy; the model only interprets it. No predicate DSL.
+- **Conditions are field-bound comparisons, evaluated in code.** The card
+  offers the numeric/enum fields from the tool's input schema; the human
+  picks a field and a bound ("amount ≤ $1,000"), so the common case never
+  calls a model — no injection channel, no unit confusion, and the bound
+  field is named on every card and audit row. A condition is a *scope kind*
+  in the discriminated union (old readers fail the parse and fail closed —
+  never an optional field a stale process ignores), evaluated inside the
+  grant branch: unmet → **deny**, never fallthrough to a laxer stage. Free
+  text survives only as the residue: the judge must name the field it bound
+  and sees a typed projection of just those fields, values separated from
+  string content; it cannot name a field → ambiguous → fail. A failure card
+  never offers a one-tap limit raise from an unattended run — raises happen
+  in settings, in daylight, rate-limited and audited as loosenings (the same
+  ratchet the judgment channel already uses). Repeated condition failures
+  disable the grant rather than re-asking forever.
+- **Cards say what will happen, completely.** Consent surfaces are the one
+  carve-out from the voice law's no-internals rule: plain language, but one
+  line per mutating step with its scope (never a single summary line for a
+  compound), a mechanically-derived risk line the model cannot author, and
+  the exact tool name and arguments one tap away. Tool `title` joins the
+  descriptorHash preimage, so a retitle invalidates grants like a rename.
+- **Enable is atomic with its grant set**: an app or automation is never armed
+  with pending permissions. One set per app keyed by (app, tool);
+  re-declaration may only add, and an addition cards only the delta.
 
-## 11.5 Automation authority: sponsorship
+## 13. Automation authority: sponsorship
 
 An automation always runs as a named person — its **sponsor** (creator by
-default). The sponsor's grants-as-approval are the 2am authority: the guard
-answers "do I hold this exact permission slip?", parks otherwise. When the
-sponsor leaves or their grants invalidate, the automation parks loudly and
-asks the app's editors+ to **adopt** — re-approving its grants as themselves
-through the normal approval flow. The automation's card labels its window
-("runs with Dana's access"); honesty, not hidden authority. No non-human
-principal ever acts; org service authority stays off the table unless the
-market forces it — addable later as an explicit admin-created thing without
-touching this model.
+default, and required to be an app `owner`). The sponsor's scoped grants are
+the 2am authority: the guard answers "do I hold this permission slip, and do
+these arguments satisfy its scope?", and **fails the run with a card**
+otherwise (§3 — no parking). Sponsorship is invalidated by the sponsor
+leaving, their grants invalidating, **or anyone else editing the app** (the
+app-intent hash, §12); the automation then stops and asks the app's editors+
+to **adopt** — re-approving its grants as themselves through the normal flow.
+The automation's card labels its window ("runs with Dana's access"), and names
+the wider editor set when one exists ("4 people can edit it") — honesty, not
+hidden authority. Satisfied unattended runs are visible to the sponsor in a
+consumer-voice run history rendered from the audit rows (which decision, which
+condition, which field) — a render, not new machinery. No non-human principal
+ever acts; org service authority stays off the table unless the market forces
+it — addable later as an explicit admin-created thing without touching this
+model.
 
-## 11.6 Guard policy — carried forward, plus the org layer
+## 14. Guard policy — carried forward, plus the org layer
 
 Existing machinery survives untouched: host policy config + the judgment
 channel (`tools.json < judgments.json < overrides.json`), the judge, approvals
-— gaining two designed callers (run_code declarations, sponsorship adoption).
+— gaining scoped grants (§12) and sponsorship adoption as callers.
 New: **org-admin policy** (Cloud) — a policy layer org admins set over their
 members' agents ("finance may not approve host_transferMoney above $10k"),
 living as a policy file in the org workspace, managed via the console,
 evaluated by the same guard between host policy and user approvals. Host
 policy always wins over org policy; org policy tightens, never loosens.
 
-## 12. Open — next brainstorms
+## 15. Open — next brainstorms
 - **Secrets reconciliation** (parked from the review): handles vs scoped real
   values in the box; gating the inference key. Owns the §9-vs-box-env
   contradiction.
-- **Transcript storage migration**: the O(messages) write law implies
-  message-level rows (today: one thread row rewritten per turn — O(thread)
-  bytes); recommended accept, awaiting Yousef's word (touches the frozen
-  store contract + erase cascade).
 - **The automations pack**: grants-as-approval + the logbook reshaped over
   the platform trigger lifecycle (§5 carve-out).
 - **Display & remix**: the launcher (ordering, admin-featured), pins as the
   second render mode (feature bundles grafted into host screens), what a
   member sees when a pinned remix targets their screen. Design-skill work,
-  with mockups.
+  with mockups. Architecture already committed above and *not* deferred: the
+  failure-card home + notification hook (§3), consent card completeness
+  (§12), and the consumer run history (§13) — the design pass styles
+  them, it does not decide whether they exist.
 - **Benches**: default resident harness (vendo() vs Claude Code + skill on the
   simple-ask corpus) · reviewer depth dial · fill worker weight/tier/
   concurrency · time-to-skeleton gates (≤5s typical stands until re-measured).
 
-## 13. What this supersedes
+## 16. What this supersedes
 
 The 2026-07-28 generation-pipeline-v2 spec's *mechanics* survive inside the
 apps pack (plan text, groups, workers' blinkers, edit-like-a-file, computed
 values, honest cannot-path); its pipeline framing is absorbed by §2/§3 — the
 harness owns the loop, v2's harness seat is the resident harness, the fast path is
-`instant()`. The v0 contracts' seams (store, guard.bind, LanguageModel,
-subject partitioning) carry forward unchanged.
+`instant()`. Of the v0 contracts' seams, `guard.bind`, `LanguageModel`, and
+subject partitioning carry forward unchanged; the **store** seam changes
+deliberately in two places — one row per message for transcripts (§8) and the
+new workspace tables — and `GrantScope` gains a constraints/condition member
+(§12), a discriminated-union addition that fails closed on old readers.
