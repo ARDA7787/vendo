@@ -1,0 +1,21 @@
+=== build ===
+
+ Tasks:    24 successful, 24 total
+Cached:    15 cached, 24 total
+  Time:    27.636s 
+
+=== typecheck ===
+
+ Tasks:    43 successful, 43 total
+Cached:    33 cached, 43 total
+  Time:    8.586s 
+
+=== lint ===
+demo-template:lint: cache hit, replaying logs 3794ae29c6a8e2b7
+demo-template:lint: $ eslint
+demo-bank:lint: $ eslint
+
+ Tasks:    6 successful, 6 total
+Cached:    5 cached, 6 total
+  Time:    3.403s 
+

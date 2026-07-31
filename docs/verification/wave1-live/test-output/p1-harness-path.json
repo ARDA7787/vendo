@@ -1,0 +1,23 @@
+{
+  "legacyWire": {
+    "systemPromptChars": 2068,
+    "hasHostVoice": true,
+    "hasGuardDirections": true,
+    "hasFindTools": true,
+    "firstLine": "You are Vendo's agent."
+  },
+  "namedHarnessWire": {
+    "systemPromptChars": 0,
+    "hasHostVoice": false,
+    "hasGuardDirections": false,
+    "hasFindTools": false,
+    "firstLine": ""
+  },
+  "composedHarnessDoor": {
+    "systemPromptChars": 2068,
+    "hasHostVoice": true,
+    "hasGuardDirections": true,
+    "hasFindTools": true,
+    "firstLine": "You are Vendo's agent."
+  }
+}

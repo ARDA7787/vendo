@@ -1,0 +1,9 @@
+path	ask	seconds	http	view_parts	build_failed	text_deltas	tools_called
+harness	1a	3.5	200	0	0	3	none
+harness	1b	2.9	200	0	0	2	none
+harness	2	6.2	200	0	0	5	none
+harness	3	13.6	200	0	1	0	vendo_apps_create
+legacy	1a	16.6	500	0	0	0	none
+legacy	1b	4.6	200	0	0	2	none
+legacy	2	3.8	200	0	0	5	none
+legacy	3	16.0	200	0	1	0	vendo_apps_create
