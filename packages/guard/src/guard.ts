@@ -146,10 +146,23 @@ function exactInputHash(args: unknown): string {
  *  Scoping is load-bearing in both directions: narrower (per call id) would never
  *  dedupe a re-run at all, and broader (per subject) would make a daily
  *  automation fire once and then never again. */
-function effectKey(ctx: RunContext, call: ToolCall): string | undefined {
+function effectBaseKey(ctx: RunContext, call: ToolCall): string | undefined {
   const runId = ctx.trigger?.runId;
   if (runId === undefined) return undefined;
-  return `sha256:${sha256Hex(canonicalJson([runId, call.tool, exactInputHash(call.args)]))}`;
+  return canonicalJson([runId, call.tool, exactInputHash(call.args)]);
+}
+
+/** Build contract §7 (amended 2026-07-30) — the key includes an ORDINAL counting
+ *  prior identical calls in the same run.
+ *
+ *  Without it, "pay $10 twice" — two deliberate, separately-authorized calls with
+ *  identical arguments — collapsed into one payment while both reported success.
+ *  The ordinal is assigned per CALL ID, so the two intents get 0 and 1 and both
+ *  execute, while a genuine re-run of an already-completed call reuses its own
+ *  ordinal and is still deduped. That is the whole distinction the ledger has to
+ *  draw: same intent repeated, versus one intent retried. */
+function effectKeyOf(base: string, ordinal: number): string {
+  return `sha256:${sha256Hex(canonicalJson([base, ordinal]))}`;
 }
 
 function inputPreview(call: ToolCall): string {
@@ -264,6 +277,13 @@ function normalizeRememberedScope(scope: GrantScope, request: ApprovalRequest): 
 
 class GuardImplementation implements VendoGuard {
   readonly #store: StoreAdapter;
+  /** Per (run, tool, exact input): which ordinal each CALL ID was assigned.
+   *  Keyed by call id so a replay of one call reuses its ordinal (and dedupes)
+   *  while a second, separately-intended identical call gets the next one. */
+  readonly #effectOrdinals = new Map<string, Map<string, number>>();
+  /** In-flight execution per effect key, so concurrent identical calls share one
+   *  execution instead of both racing past an empty ledger (finding 14). */
+  readonly #effectsInFlight = new Map<string, Promise<ToolOutcome>>();
   readonly #config: CreateGuardConfig;
   readonly #policyConfig: PolicyConfigObject | undefined;
   readonly #policy: PolicyResolver;
@@ -508,29 +528,63 @@ class GuardImplementation implements VendoGuard {
           // here, after the guard has said run and before the registry is
           // touched, because that is the only point where skipping is both safe
           // (authority was still checked) and effective (the effect is avoided).
-          const mutating = completed.descriptor.risk === "write"
-            || completed.descriptor.risk === "destructive";
-          const key = mutating ? effectKey(ctx, call) : undefined;
+          //
+          // `resolvedRisk`, not the declared label: gating on what the model said
+          // left the most dangerous class — a destructive tool mislabelled
+          // `read` — with no ledger protection at all.
+          const resolved = resolvedRisk(completed.descriptor);
+          const mutating = resolved === "write" || resolved === "destructive";
+          const base = mutating ? effectBaseKey(ctx, call) : undefined;
+          const key = base === undefined ? undefined : effectKeyOf(base, this.#effectOrdinal(base, call.id));
           const recorded = key === undefined ? undefined : await this.#recordedEffect(key);
           if (recorded !== undefined) {
             outcome = recorded;
           } else {
-            try {
-              outcome = await tools.execute(call, executeCtx);
-            } catch (error) {
-              outcome = {
-                status: "error",
-                error: {
-                  code: error instanceof VendoError ? error.code : "error",
-                  message: errorMessage(error),
-                },
-              };
-            }
-            // Only a SUCCESS is ledgered. A failed mutation may not have landed
-            // at all, so recording it would turn a transient upstream error into
-            // a permanent refusal to retry — the opposite of the goal.
-            if (key !== undefined && outcome.status === "ok") {
-              await this.#recordEffect(key, outcome, ctx.principal.subject);
+            // Finding 14 (TOCTOU): two concurrent identical calls both read "no
+            // receipt" and both executed. Share one in-flight execution per key
+            // so the second awaits the first's outcome instead of repeating it.
+            const inFlight = key === undefined ? undefined : this.#effectsInFlight.get(key);
+            if (inFlight !== undefined) {
+              outcome = await inFlight;
+            } else {
+              const run = (async (): Promise<ToolOutcome> => {
+                try {
+                  return await tools.execute(call, executeCtx);
+                } catch (error) {
+                  return {
+                    status: "error",
+                    error: {
+                      code: error instanceof VendoError ? error.code : "error",
+                      message: errorMessage(error),
+                    },
+                  };
+                }
+              })();
+              if (key !== undefined) this.#effectsInFlight.set(key, run);
+              try {
+                outcome = await run;
+              } finally {
+                if (key !== undefined) this.#effectsInFlight.delete(key);
+              }
+              // Only a SUCCESS is ledgered. A failed mutation may not have landed
+              // at all, so recording it would turn a transient upstream error into
+              // a permanent refusal to retry — the opposite of the goal.
+              if (key !== undefined && outcome.status === "ok") {
+                // The mutation ALREADY HAPPENED. A receipt-store failure must
+                // never discard it: throwing here would lose both the caller's
+                // outcome and the audit row for real, completed work. Surface it
+                // loudly and carry on — an unrecorded receipt risks a duplicate
+                // on a later re-run, which is strictly better than losing the
+                // record of a payment that went out.
+                try {
+                  await this.#recordEffect(key, outcome, ctx.principal.subject);
+                } catch (error) {
+                  console.error(
+                    `[vendo] guard: ${call.tool} completed but its effect receipt could not be written `
+                    + `(${errorMessage(error)}). A re-run of this run may repeat the call.`,
+                  );
+                }
+              }
             }
           }
         }
@@ -910,6 +964,22 @@ class GuardImplementation implements VendoGuard {
    *  (actions resolves ActAs against ctx.grant on away calls — 04 §4). Approval
    *  replays carry no grantId; away replays re-match, because deciding a parked
    *  automation approval mints the app-bound grant first (07 §3). */
+  /** The ordinal for this call within its (run, tool, input) group. Stable per
+   *  call id: asking twice for the same call id gives the same number, which is
+   *  what makes a retry dedupe while a second distinct call does not. */
+  #effectOrdinal(base: string, callId: string): number {
+    let byCall = this.#effectOrdinals.get(base);
+    if (byCall === undefined) {
+      byCall = new Map();
+      this.#effectOrdinals.set(base, byCall);
+    }
+    const existing = byCall.get(callId);
+    if (existing !== undefined) return existing;
+    const ordinal = byCall.size;
+    byCall.set(callId, ordinal);
+    return ordinal;
+  }
+
   async #recordedEffect(key: string): Promise<ToolOutcome | undefined> {
     const record = await this.#store.records(EFFECTS_COLLECTION).get(key);
     if (record === null) return undefined;
@@ -920,9 +990,14 @@ class GuardImplementation implements VendoGuard {
     return parsed.success ? parsed.data : undefined;
   }
 
-  /** Write the receipt. `insertIfAbsent` where the adapter offers it, so two
-   *  processes racing the same re-run cannot both believe they were first — the
-   *  loser's write is refused instead of overwriting the recorded truth.
+  /** Write the receipt. `insertIfAbsent` where the adapter offers it, so a racing
+   *  writer cannot overwrite an already-recorded outcome.
+   *
+   *  Note precisely what that does and does not buy: it protects the RECORD, not
+   *  the execution. Nothing is reserved before the call, so two PROCESSES can
+   *  still both execute the same key — `#effectsInFlight` closes that window
+   *  within one process only. Cross-process exclusion needs a reservation row the
+   *  contract does not yet describe; it is reported, not silently implied.
    *
    *  `subject` rides the row (contract amendment 2026-07-30): `outcome` holds
    *  real tool output, so a receipt with no owner is data that would survive an

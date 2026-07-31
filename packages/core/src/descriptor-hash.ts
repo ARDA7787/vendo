@@ -20,9 +20,27 @@ export function descriptorHash(descriptor: ToolDescriptor): string {
   return `sha256:${sha256Hex(canonicalJson(preimage))}`;
 }
 
-/** How a title reads to a person: two actions whose labels differ only by case
- *  or padding are still indistinguishable on a card, so they collide. */
-const titleKey = (title: string): string => title.trim().toLowerCase();
+/** Characters that occupy no visible space on a card, so they cannot be what
+ *  distinguishes two actions: zero-width space/joiner/non-joiner, the BOM, and
+ *  the LTR/RTL marks and embedding controls. */
+const INVISIBLE = /[​-‏‪-‮⁠-⁤﻿]/g;
+
+/**
+ * How a title reads to a PERSON. Two labels that render identically are the same
+ * label, whatever their bytes: the consent card's job is to tell two actions
+ * apart, and a reader cannot see case, padding, a zero-width space, or whether an
+ * accent was composed or decomposed.
+ *
+ * NFKC first (so full-width and other compatibility forms fold together), then
+ * invisibles are dropped, then every whitespace run collapses to one space.
+ */
+const titleKey = (title: string): string =>
+  title
+    .normalize("NFKC")
+    .replace(INVISIBLE, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
 
 /** Embedded-agent design §12 — two actions must never read identically on a
  *  consent card. Returns one entry per colliding title, naming the tools, so the
@@ -34,8 +52,11 @@ export function duplicateToolTitles(
   const byTitle = new Map<string, { title: string; tools: string[] }>();
   for (const descriptor of descriptors) {
     if (descriptor.title === undefined) continue;
+    // A title that normalises to nothing is NOT skipped: two tools whose labels
+    // both render blank are exactly as indistinguishable as two that read the
+    // same, so they belong in the same group. (A single blank title falls back to
+    // the tool name and is merely ugly, not ambiguous, so it never collides.)
     const key = titleKey(descriptor.title);
-    if (key === "") continue;
     const found = byTitle.get(key);
     if (found === undefined) byTitle.set(key, { title: descriptor.title, tools: [descriptor.name] });
     else found.tools.push(descriptor.name);

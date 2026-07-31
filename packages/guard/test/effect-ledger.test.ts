@@ -117,6 +117,105 @@ describe("effect ledger (build contract §7)", () => {
     expect(ledgered.records).toHaveLength(0);
   });
 
+  it("lets a legitimately repeated mutation happen twice in one run (finding 7, contract ordinal)", async () => {
+    // "Pay $10 twice" is a real intent. Keying on (run, tool, input) alone
+    // collapsed it to one payment and reported success for both. The key now
+    // carries an ordinal counting prior identical calls in the same run.
+    const store = createMemoryStore();
+    const write = descriptor("write");
+    await seedGrant(store, { descriptor: write });
+    const tools = new FixtureTools();
+    const bound = createGuard({ store }).bind(tools);
+    const ctx = runCtx();
+
+    await bound.execute(call(write.name, { amount: 10 }, "call_1"), ctx);
+    await bound.execute(call(write.name, { amount: 10 }, "call_2"), ctx);
+
+    expect(tools.executions).toHaveLength(2);
+  });
+
+  it("still dedupes the SAME call replayed after a failure (the point of the ledger)", async () => {
+    // The ordinal counts calls this process has made, so a genuine re-run of an
+    // already-completed call — same call id — must not execute again.
+    const store = createMemoryStore();
+    const write = descriptor("write");
+    await seedGrant(store, { descriptor: write });
+    const tools = new FixtureTools();
+    const bound = createGuard({ store }).bind(tools);
+    const ctx = runCtx();
+    const replayed = call(write.name, { amount: 10 }, "call_same");
+
+    const first = await bound.execute(replayed, ctx);
+    const second = await bound.execute(replayed, ctx);
+
+    expect(tools.executions).toHaveLength(1);
+    expect(second).toEqual(first);
+  });
+
+  it("gates on the RESOLVED risk, so a mislabelled destructive tool is ledgered too", async () => {
+    // Declared `read`, mechanically destructive. Gating on the declared label
+    // left the most dangerous class of call unprotected by the ledger.
+    const store = createMemoryStore();
+    const mislabelled = descriptor("read", { name: "maple_payments_send" });
+    const tools = new FixtureTools([mislabelled]);
+    const bound = createGuard({ store }).bind(tools);
+    const ctx = runCtx();
+    const same = call(mislabelled.name, { amount: 1 }, "call_x");
+
+    await bound.execute(same, ctx);
+    await bound.execute(same, ctx);
+
+    expect(tools.executions).toHaveLength(1);
+  });
+
+  it("never loses a completed mutation's outcome when the receipt store fails", async () => {
+    // A receipt-store failure must not discard work that already happened: the
+    // caller still gets the real outcome, and the audit row still lands.
+    const store = createMemoryStore();
+    const write = descriptor("write");
+    await seedGrant(store, { descriptor: write });
+    const tools = new FixtureTools();
+    tools.setOutcome(write.name, { status: "ok", output: { receipt: "rcp_real" } });
+    // `records(name)` hands back a fresh object each call, so patching one
+    // instance proves nothing — the failure has to be injected at the adapter.
+    const brokenLedger: typeof store = {
+      ...store,
+      records: (name) => {
+        const real = store.records(name);
+        if (name !== "vendo_effects") return real;
+        const fail = async (): Promise<never> => { throw new Error("ledger unavailable"); };
+        return {
+          ...real,
+          put: fail,
+          ...(real.atomic === undefined ? {} : { atomic: { ...real.atomic, insertIfAbsent: fail } }),
+        };
+      },
+    };
+    const guard = createGuard({ store: brokenLedger });
+    const bound = guard.bind(tools);
+
+    const outcome = await bound.execute(call(write.name, { amount: 3 }), runCtx());
+
+    expect(outcome).toEqual({ status: "ok", output: { receipt: "rcp_real" } });
+    expect(tools.executions).toHaveLength(1);
+    const { events } = await guard.audit.query({ principal: alice, limit: 50 });
+    expect(events.some((event) => event.tool === write.name && event.outcome === "ok")).toBe(true);
+  });
+
+  it("does not let two concurrent identical calls BOTH execute (finding 14, TOCTOU)", async () => {
+    const store = createMemoryStore();
+    const write = descriptor("write");
+    await seedGrant(store, { descriptor: write });
+    const tools = new FixtureTools();
+    const bound = createGuard({ store }).bind(tools);
+    const ctx = runCtx();
+    const same = call(write.name, { amount: 99 }, "call_race");
+
+    await Promise.all([bound.execute(same, ctx), bound.execute(same, ctx)]);
+
+    expect(tools.executions).toHaveLength(1);
+  });
+
   it("never ledgers a read: reads are free to repeat", async () => {
     const store = createMemoryStore();
     const read = descriptor("read");

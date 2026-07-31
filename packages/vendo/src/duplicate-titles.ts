@@ -48,5 +48,15 @@ export function withUniqueToolTitles(tools: ToolRegistry): ToolRegistry {
       assertUnique(descriptors);
       return descriptors;
     },
+    // EXECUTION is gated too. Gating only enumeration was a hole, not a
+    // simplification: a caller holding a tool name from anywhere else — a stored
+    // app document, a replayed approval, a compound step — could still perform a
+    // real mutating call on a deployment whose consent cards cannot tell two
+    // actions apart. The card is the only thing standing between the user and an
+    // irreversible action, so if it is ambiguous nothing may run.
+    async execute(call, ctx) {
+      assertUnique(await tools.descriptors());
+      return tools.execute(call, ctx);
+    },
   };
 }
