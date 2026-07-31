@@ -2,7 +2,9 @@ import { readOptionalVendoJson } from "#actions/host-files";
 import {
   VendoError,
   descriptorHash,
+  isVendoAuthored,
   toolDescriptorSchema,
+  vendoAuthored,
   type ActAs,
   type PermissionGrant,
   type Principal,
@@ -344,11 +346,19 @@ function parseExtractedTool(value: unknown, source: string): ExtractedTool {
 }
 
 function parseToolDescriptor(value: unknown, source: string): ToolDescriptor {
+  let parsed: ToolDescriptor;
   try {
-    return toolDescriptorSchema.parse(value);
+    parsed = toolDescriptorSchema.parse(value);
   } catch (cause) {
     throw validationError(source, cause);
   }
+  // Parsing must not LAUNDER provenance. Zod rebuilds the object from its string
+  // keys, which drops the `vendoAuthored` symbol brand — and a Vendo verb that
+  // arrives here unbranded falls back to §12's mechanical vote, which mis-votes
+  // on the names we chose ourselves (core `resolvedRisk`). Carried over from the
+  // SOURCE object, so it stays unforgeable: a descriptor that arrived as data —
+  // a connector catalog, tools.json, the wire — cannot carry a symbol at all.
+  return isVendoAuthored(value as ToolDescriptor) ? vendoAuthored(parsed) : parsed;
 }
 
 function setHeader(headers: Record<string, string>, name: string, value: string): void {

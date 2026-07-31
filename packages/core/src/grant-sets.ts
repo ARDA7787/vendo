@@ -1,7 +1,7 @@
 import { canonicalJson } from "./jcs.js";
 import { sha256Hex } from "./sha256.js";
 import type { Json } from "./ids.js";
-import { ASK_USER_TOOL, type RiskLabel, type ToolDescriptor } from "./tools.js";
+import { isVendoAuthored, type RiskLabel, type ToolDescriptor } from "./tools.js";
 import type { RunContext } from "./run-context.js";
 
 /** Build contract §7 — a grant set is per person, bound to an app's INTENT
@@ -132,17 +132,6 @@ function trailingToken(name: string): string | undefined {
  * read-shaped name (a POST that calls itself `get` is not a read).
  */
 export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
-  // A QUESTION is not an action. The heuristic below is calibrated for extracted
-  // host API names, which are `noun_verb`; `ask_user` is Vendo's own
-  // hand-authored door and reads the other way round, so the trailing token is
-  // the noun `user`, the read short-circuit misses, and the fail-closed default
-  // calls asking a question a `write`. Downstream, a `write` IS a mutating call:
-  // a host policy matching `{ risk: "write" }` would card the user to ask them
-  // something, and the guard would write an effect-ledger row for it — against
-  // §12's "reads are silent, always". There is no second opinion to take here
-  // either: this label was written in this repo, not assigned by extraction.
-  if (descriptor.name === ASK_USER_TOOL) return "read";
-
   const rawMethod = (descriptor as { method?: unknown }).method;
   const method = typeof rawMethod === "string" ? rawMethod.toUpperCase() : undefined;
   if (method === "DELETE") return "destructive";
@@ -176,10 +165,32 @@ export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
 
 const RANK: Record<RiskLabel, number> = { read: 0, write: 1, destructive: 2 };
 
-/** The risk the guard should act on: the RISKIER of the AI-assigned label and
- *  the mechanical vote. §12: "Eligibility never rests on the AI-assigned risk
- *  label alone … disagreement treats the tool as destructive." */
+/**
+ * The risk the guard should act on: the RISKIER of the AI-assigned label and the
+ * mechanical vote. §12: "Eligibility never rests on the AI-assigned risk label
+ * alone … disagreement treats the tool as destructive."
+ *
+ * The vote is scoped to where the label came from (build contract §8,
+ * clarification 2026-07-31). `AI-assigned` is the operative word: the vote is
+ * there to catch an extractor or a connector mislabelling someone ELSE's API. A
+ * Vendo-authored label (`isVendoAuthored`) was hand-written and reviewed in this
+ * repo, so a second opinion has nobody to disagree with — while the vote's
+ * heuristic, calibrated for extracted `noun_verb` host names, mis-votes on the
+ * names we chose ourselves: `ask_user`, `validate` and `search_components` all
+ * end in a noun, so the read short-circuit missed them and the fail-closed
+ * default called a question and two checks `write`. Downstream, a `write` IS a
+ * mutating call — the guard writes it an effect-ledger row, and a re-run of that
+ * call then answers from the receipt instead of re-executing — against §12's
+ * "reads are silent, always".
+ *
+ * Provenance rides the descriptor as a symbol, so it cannot be claimed by
+ * anything that arrived as data, and every laundering path drops it — which
+ * fails closed, back to the vote. Nothing else about this function moves: for
+ * every AI-assigned label the two votes still combine, and disagreement still
+ * resolves against the tool.
+ */
 export function resolvedRisk(descriptor: ToolDescriptor): RiskLabel {
+  if (isVendoAuthored(descriptor)) return descriptor.risk;
   const mechanical = mechanicalRisk(descriptor);
   return RANK[mechanical] > RANK[descriptor.risk] ? mechanical : descriptor.risk;
 }

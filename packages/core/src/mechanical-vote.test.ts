@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ASK_USER_TOOL, mechanicalRisk, projectableForRun, resolvedRisk, type ToolDescriptor } from "./index.js";
+import {
+  ASK_USER_TOOL,
+  mechanicalRisk,
+  projectableForRun,
+  resolvedRisk,
+  vendoAuthored,
+  type ToolDescriptor,
+} from "./index.js";
 
 const tool = (name: string, extra: Partial<ToolDescriptor> = {}): ToolDescriptor => ({
   name,
@@ -36,28 +43,71 @@ describe("a question is not an action (design §4, §12 'reads are silent, alway
   // other way round: the trailing token is `user`, a noun, so the read
   // short-circuit misses it and the fail-closed default calls it a `write`.
   //
-  // A `write` is a MUTATING call to everything downstream of `resolvedRisk`: a
-  // host policy matching `{ risk: "write" }` would raise a consent card for
-  // asking a question, and the guard would write it an effect-ledger row. There
-  // is also nothing for a second opinion to correct here — the label was not
-  // AI-assigned, it was written in this repo.
-  it("votes read on ask_user, so the trailing noun cannot make a question mutating", () => {
-    expect(mechanicalRisk(tool(ASK_USER_TOOL))).toBe("read");
+  // A `write` is a MUTATING call to everything downstream of `resolvedRisk`: the
+  // guard writes it an effect-ledger row, which a re-run then answers from
+  // instead of re-executing.
+  //
+  // What answers that is PROVENANCE, not the name: this label was hand-written in
+  // this repo, so the vote has no second author to check (build contract §8,
+  // clarification 2026-07-31). The vote itself stays honest — it is never told
+  // about names we chose ourselves, which is why it is asserted here unchanged.
+  it("still votes on the shape alone — the vote knows nothing about our own names", () => {
+    expect(mechanicalRisk(tool(ASK_USER_TOOL))).toBe("write");
   });
 
-  it("resolves read even when the declared label is riskier — neither vote invents an action", () => {
-    expect(resolvedRisk(tool(ASK_USER_TOOL))).toBe("read");
-    // `resolvedRisk` takes the RISKIER of the two, so this pins the mechanical
-    // half only: an honest `read` descriptor stays a read.
-    expect(mechanicalRisk(tool(ASK_USER_TOOL, { risk: "write" }))).toBe("read");
+  it("resolves read because the label is Vendo-authored, not because of the name", () => {
+    expect(resolvedRisk(vendoAuthored(tool(ASK_USER_TOOL)))).toBe("read");
   });
 
   it("still projects the question door into an away run — a read is never withheld", () => {
     // Withholding is THE LAW's destructive filter. Asking is not destructive, so
     // the descriptor survives projection; `askUserRegistry` is what refuses to
     // ask a question nobody is there to answer.
-    expect(projectableForRun([tool(ASK_USER_TOOL)], { venue: "automation", presence: "away" }))
+    expect(projectableForRun([vendoAuthored(tool(ASK_USER_TOOL))], { venue: "automation", presence: "away" }))
       .toHaveLength(1);
+  });
+});
+
+describe("provenance scopes the second vote (build contract §8, 2026-07-31)", () => {
+  it("takes a Vendo-authored label as written, in BOTH directions", () => {
+    // Not a downgrade valve: the declared label is authoritative, so a
+    // hand-written `destructive` stays destructive on a read-shaped name too.
+    expect(resolvedRisk(vendoAuthored(tool("validate")))).toBe("read");
+    expect(resolvedRisk(vendoAuthored(tool("search_components")))).toBe("read");
+    expect(resolvedRisk(vendoAuthored(tool("maple_invoices_list", { risk: "destructive" }))))
+      .toBe("destructive");
+  });
+
+  it("leaves every AI-assigned label to the vote, fail-closed", () => {
+    expect(resolvedRisk(tool("maple_account_delete"))).toBe("destructive");
+    expect(resolvedRisk(tool("maple_frobnicate_widget"))).toBe("write");
+    expect(resolvedRisk(tool("validate"))).toBe("write");
+  });
+
+  it("cannot be claimed by DATA: a JSON round trip loses the brand and fails closed", () => {
+    // The whole reason provenance is a symbol. Anything that arrived as data —
+    // `.vendo/tools.json`, a connector catalog, an override, the wire — cannot
+    // carry one, and losing it costs a false positive, never a false negative.
+    const branded = vendoAuthored(tool("validate"));
+    expect(resolvedRisk(branded)).toBe("read");
+    expect(resolvedRisk(JSON.parse(JSON.stringify(branded)) as ToolDescriptor)).toBe("write");
+    expect(resolvedRisk(structuredClone(branded))).toBe("write");
+  });
+
+  it("cannot be claimed by a look-alike FIELD on a destructive tool", () => {
+    const forged = {
+      ...tool("maple_customer_delete_all"),
+      "vendoai.tool.authored": true,
+      authored: "vendo",
+      vendoAuthored: true,
+    } as unknown as ToolDescriptor;
+    expect(resolvedRisk(forged)).toBe("destructive");
+    expect(projectableForRun([forged], { venue: "automation", presence: "away" })).toEqual([]);
+  });
+
+  it("survives an honest copy — the guard re-labels a descriptor by spreading it", () => {
+    const relabelled = { ...vendoAuthored(tool("validate")), risk: "read" as const };
+    expect(resolvedRisk(relabelled)).toBe("read");
   });
 });
 

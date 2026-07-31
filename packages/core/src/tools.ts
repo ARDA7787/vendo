@@ -31,11 +31,52 @@ export const VENDO_APP_BUILD_FAILED_PREFIX = "app build failed";
 
 /** Design §4 — the one question door, any seat.
  *
- *  The name lives in core because three sides read it and a security-relevant
+ *  The name lives in core because two sides read it and a security-relevant
  *  name with two definitions drifts silently (the lesson `DESTRUCTIVE_VERBS`
- *  records): the registry that implements it, the loop that ends a turn on it,
- *  and `mechanicalRisk`, which has to know a question is not an action. */
+ *  records): the registry that implements it, and the loop that ends a turn on
+ *  it. */
 export const ASK_USER_TOOL = "ask_user";
+
+/**
+ * Design §12 / build contract §8 (clarification 2026-07-31) — WHO wrote this
+ * tool's `risk` label, as a mark the tool itself carries.
+ *
+ * The second mechanical vote exists to catch an extractor or a connector
+ * mislabelling someone ELSE's API: eligibility "never rests on the *AI-assigned*
+ * risk label alone". A Vendo-authored tool's label was hand-written and reviewed
+ * in this repo, so there is no second author to disagree with — and the vote,
+ * calibrated for extracted `noun_verb` host names, only guesses wrong about
+ * names it was never calibrated for (`ask_user`, `validate`,
+ * `search_components` all voted `write` because their trailing token is a noun).
+ *
+ * It is a SYMBOL rather than a field, because that is what makes it unforgeable
+ * by data: JSON carries no symbols, so nothing arriving as data — `.vendo/tools.json`,
+ * a connector catalog, an override, the wire — can claim Vendo provenance, and
+ * every laundering path (zod's key rebuild, `structuredClone`, `descriptorOf`'s
+ * field whitelist, the descriptorHash preimage) drops it. Losing it therefore
+ * fails CLOSED, back to the mechanical vote. `Symbol.for` is deliberate: a
+ * bundler that ends up with two copies of this module must still agree on the
+ * brand, or the same descriptor would read as Vendo-authored in one and not the
+ * other. Enumerable (plain assignment) so an honest `{ ...descriptor }` copy —
+ * the guard's dynamic-risk path makes one — keeps it.
+ *
+ * It is not a defence against a host who imports this function and marks their
+ * own registry: a host owns their deployment and their policy already. The
+ * threat it answers is a label nobody in this repo wrote.
+ */
+const VENDO_AUTHORED: unique symbol = Symbol.for("vendoai.tool.authored");
+
+/** Mark a descriptor as carrying a hand-written, in-repo `risk` label. Only
+ *  Vendo's own tool definitions call this — the vendo verbs and `ask_user`. */
+export function vendoAuthored<T extends ToolDescriptor>(descriptor: T): T {
+  return { ...descriptor, [VENDO_AUTHORED]: true };
+}
+
+/** Whether this descriptor's `risk` was written in this repo (`resolvedRisk`
+ *  is the one reader that matters — it is where the two votes combine). */
+export function isVendoAuthored(descriptor: ToolDescriptor): boolean {
+  return (descriptor as { [VENDO_AUTHORED]?: unknown })[VENDO_AUTHORED] === true;
+}
 
 /** 01-core §4 */
 export type RiskLabel = "read" | "write" | "destructive";
