@@ -129,6 +129,39 @@ describe("THE LAW: unattended destructive calls are refused at the guard", () =>
     expect(tools.executions).toHaveLength(1);
   });
 
+  it("refuses an away destructive call in the APP venue — schedules fire as venue app, so presence is what matters", async () => {
+    // `packages/apps/src/schedules.ts` fires real unattended work with
+    // `{ venue: "app", presence: "away" }`. If the predicate keyed off the
+    // venue label, every scheduled app fn would sit outside the law.
+    const store = createMemoryStore();
+    const send = descriptor("destructive", { name: "maple_payments_send" });
+    await seedGrant(store, { descriptor: send, appId: "app_1", source: "automation" });
+    const tools = new FixtureTools([send]);
+    const bound = createGuard({ store }).bind(tools);
+
+    const outcome = await bound.execute(
+      call(send.name, { amount: 5000 }),
+      context({ venue: "app", presence: "away", appId: "app_1" }),
+    );
+
+    expect(outcome).toEqual({ status: "blocked", reason: UNATTENDED_DESTRUCTIVE_REASON });
+    expect(tools.executions).toHaveLength(0);
+  });
+
+  it("PROJECTS destructive tools into a present-time automation ceremony — enable/capture must see them", async () => {
+    // The enable flow and the "allow this while you're away" card both resolve
+    // `{ venue: "automation", presence: "present" }`. They ask a human about the
+    // destructive tools, so the guard must show them the destructive tools.
+    const store = createMemoryStore();
+    const send = descriptor("destructive", { name: "maple_payments_send" });
+    const list = descriptor("read", { name: "maple_invoices_list" });
+    const bound = createGuard({ store }).bind(new FixtureTools([list, send]));
+
+    const projected = await bound.descriptors({ venue: "automation", presence: "present" });
+
+    expect(projected.map((d) => d.name)).toEqual(["maple_invoices_list", "maple_payments_send"]);
+  });
+
   it("records the refusal in the audit trail, so a run history can explain itself", async () => {
     const store = createMemoryStore();
     const send = descriptor("destructive", { name: "maple_payments_send" });
