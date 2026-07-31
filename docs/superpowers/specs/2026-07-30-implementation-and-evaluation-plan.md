@@ -112,7 +112,7 @@ Proven by: E8.
 ## 5. Parallel tracks (never on the critical path)
 
 Display & remix design pass (launcher, pins; mockups first, his taste) ·
-benches (§7) · parked brainstorms (box secrets, automations-pack detail).
+benches (§7 breadth) · parked brainstorms (box secrets, automations-pack detail).
 
 ## 6. Evaluation — done means proven by running the real thing
 
@@ -120,11 +120,19 @@ Real services, real browser, Yousef's Vendo Cloud account. No lane reports
 green on tests alone.
 
 ### E1 — The harness-swap proof (the headline)
-The architecture's central claim. One corpus of ~30 user asks (build, edit,
-act, refuse) run three times: `vendo()`, `instant()`, `claudeCode()`.
-Pass: every ask produces a rendering app or an honest refusal; **guard decisions
-and audit rows are identical across harnesses** for the same ask; swapping the
-harness mid-conversation continues the thread from our transcript.
+The architecture's central claim, proven with **one of each thing, not a
+corpus** — five asks, run on `vendo()`, `instant()`, and `claudeCode()`:
+
+1. a normal app (reads host data, renders)
+2. an edit to that app ("make it blue" → in-place, identity preserved)
+3. an automation (enable → fires → writes → visible in run history)
+4. an action through an external connector (connect flow → guarded call)
+5. an impossible ask (honest refusal, no invention)
+
+Pass: each works on each harness; **guard decisions and audit rows are identical
+across harnesses** for the same ask; swapping the harness mid-conversation
+continues the thread from our transcript. Breadth comes later (§7) — this is
+"does the machine work", not "how good is it".
 
 ### E2 — Consent, in a browser
 Screenshots required. (a) First app: reads only → zero cards; the skeleton
@@ -147,9 +155,9 @@ history. Over-cap file with no `files:` adapter → the error names the fix.
 A deliberately bad app (invented data, a payment tool used as a message
 channel, a dead button) → validate + review catch it, the flagged-version
 protocol runs, the owner-override path works, and a host check fires even when
-the builder skipped self-review. Replay the recorded incident corpus: the
-reviewer must catch what the shipped deterministic gates catch — that is the
-condition for retiring them.
+the builder skipped self-review. (The recorded-incident replay — the condition
+for retiring the shipped deterministic gates — is a §7 breadth run, after the
+machine works.)
 
 ### E5 — Packs are real
 A pack authored *outside* our repo (tools + skill + fact check + judgment rule +
@@ -175,12 +183,17 @@ org-shared app's per-user data stays separate · sponsor offboarded → adoption
 card → adopted → runs continue · a third party edits a sponsored app →
 sponsorship invalidated.
 
-### Benches (measurement, not pass/fail)
-`vendo()` vs `claudeCode()`+skill on the simple-ask corpus (time-to-skeleton,
-cost, failure rate) — sets the default harness · reviewer depth dial ·
-fill worker weight/tier/concurrency.
+## 7. Breadth, after it works
 
-## 7. Lane discipline
+Only once E1–E7 pass. These measure and tune; they never gate a lane:
+
+- the full ask corpus across harnesses (failure rate, latency distribution)
+- the recorded-incident replay — retires the shipped deterministic gates
+- benches: `vendo()` vs `claudeCode()`+skill on simple asks (time-to-skeleton,
+  cost, failure rate) → sets the default harness · reviewer depth dial · fill
+  worker weight/tier/concurrency
+
+## 8. Lane discipline
 
 Each lane gets one handoff contract naming: its build list, the frozen shapes it
 consumes, its acceptance items from §6, its out-of-scope list, and the files it
