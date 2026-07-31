@@ -1194,6 +1194,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
       croner:
         specifier: ^9.0.0
         version: 9.1.0
@@ -1204,6 +1207,12 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
+      ai:
+        specifier: 6.0.28
+        version: 6.0.28(zod@3.25.76)
+      just-bash:
+        specifier: ^3.1.0
+        version: 3.2.0
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -1251,6 +1260,40 @@ importers:
       ai:
         specifier: 6.0.28
         version: 6.0.28(zod@3.25.76)
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.20.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(lightningcss@1.32.0)(terser@5.48.0)
+
+  packages/harnesses:
+    dependencies:
+      '@vendoai/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@vendoai/apps':
+        specifier: workspace:*
+        version: link:../apps
+      '@vendoai/core':
+        specifier: workspace:*
+        version: link:../core
+      '@vendoai/guard':
+        specifier: workspace:*
+        version: link:../guard
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      ai:
+        specifier: 6.0.28
+        version: 6.0.28(zod@3.25.76)
+      just-bash:
+        specifier: ^3.1.0
+        version: 3.2.0
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

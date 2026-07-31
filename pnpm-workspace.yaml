@@ -23,21 +23,17 @@ packages:
 # tree — all allowed, preserving pnpm 9 behavior. workerd is miniflare's
 # runtime for the portability gate (scripts/portability-gate.mjs).
 allowBuilds:
-  # just-bash's optional compression addons (its zstd/xz commands). just-bash is
-  # a devDependency (the workspace's bash tests) and nothing shells out to those
-  # commands, so the native builds are denied rather than compiled. Kept because
-  # the packages are still in the install graph, and strictDepBuilds fails a cold
-  # install that merely ignores them.
+  # zstd + lzma are just-bash's OPTIONAL native backends for its compressed-tar
+  # commands. just-bash is a devDependency (the workspace's bash tests) and
+  # nothing in the tree compresses an archive through it, so the native builds
+  # are denied rather than compiled — running two build scripts would widen the
+  # supply-chain surface for a code path with no caller. Kept rather than
+  # dropped because the packages remain in the install graph and strictDepBuilds
+  # fails a cold install that merely ignores them. Flip to true the day a
+  # bash-native harness needs `tar -z`.
   '@mongodb-js/zstd': false
   # Scarf is install telemetry riding in via @copilotkit/runtime (genui-bench
   # only); its postinstall phones home, so it stays denied.
-  # zstd + lzma are just-bash's OPTIONAL native backends for its compressed-tar
-  # commands (arriving with the workspace filesystem, build contract §3.2).
-  # Denied: nothing in the tree compresses an archive through just-bash — the
-  # workspace uses its filesystem and its in-memory fs only — so running two
-  # native build scripts would widen the supply-chain surface for a code path
-  # with no caller. Flip to true the day a bash-native harness needs `tar -z`.
-  '@mongodb-js/zstd': false
   '@scarf/scarf': false
   cbor-extract: true
   esbuild: true
