@@ -119,10 +119,13 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
       // §1.3: what the harness may remember depends on how the history moved.
       // A prefix truncation is a native rewind, so its session survives; an
       // arbitrary edit means its session no longer describes our conversation.
+      // This snapshot is also what turn-end persistence diffs against — the
+      // runtime writes nothing before then, so one read serves both.
+      let before: readonly UIMessage[] | undefined;
       let carried: string | undefined;
       try {
-        const persisted = await deps.transcript.list(input.ctx.principal, input.threadId);
-        if (classifyHistory(persisted, input.messages) !== "arbitrary-edit") {
+        before = await deps.transcript.list(input.ctx.principal, input.threadId);
+        if (classifyHistory(before, input.messages) !== "arbitrary-edit") {
           carried = await harnessState.get(input.threadId, input.harness.name);
         }
       } catch {
@@ -205,7 +208,7 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
           }
         },
         onFinish: async ({ messages }) => {
-          await persistTurn(deps.transcript, input, messages);
+          await persistTurn(deps.transcript, input, messages, before);
           await saveHarnessState(harnessState, input, state.pending());
           await reportRun(deps.guard, input, { usage, failure });
         },
@@ -232,16 +235,14 @@ async function persistTurn(
   transcript: TranscriptStore,
   input: TurnRunInput<unknown>,
   messages: UIMessage[],
+  before: readonly UIMessage[] | undefined,
 ): Promise<void> {
   try {
-    const before = new Map(
-      (await transcript.list(input.ctx.principal, input.threadId)).map((message) => [
-        message.id,
-        JSON.stringify(message),
-      ]),
+    const unchanged = new Map(
+      (before ?? []).map((message) => [message.id, JSON.stringify(message)]),
     );
     for (const [seq, message] of messages.entries()) {
-      if (before.get(message.id) === JSON.stringify(message)) continue;
+      if (unchanged.get(message.id) === JSON.stringify(message)) continue;
       await transcript.upsert(input.ctx.principal, input.threadId, message, seq);
     }
   } catch (error) {
