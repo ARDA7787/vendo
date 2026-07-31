@@ -233,6 +233,15 @@ describe("a check returning garbage costs its findings, never the build (F9)", (
     });
   });
 
+  it("passes a finding carrying extra properties through as authored", async () => {
+    // Filter, not normalize: the shape is a floor, not a schema, and a host's own
+    // check may carry a field for its own reader.
+    const extra = returning([{ severity: "warn", where: "document", message: "m", hint: { code: 7 } }]);
+
+    expect(await createCheckingLayer({ deps: deps(), checks: [extra] }).run(inputFor(GOOD)))
+      .toEqual([{ severity: "warn", where: "document", message: "m", hint: { code: 7 } }]);
+  });
+
   it("never lets a malformed entry reach a consumer that reads severity", async () => {
     const findings = await createCheckingLayer({ deps: deps(), checks: [returning([undefined])] }).run(inputFor(GOOD));
 

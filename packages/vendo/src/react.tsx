@@ -104,11 +104,14 @@ type ProviderProps = ComponentProps<typeof VendoProvider>;
 /**
  * 09-vendo §1 — the UI provider prewired to the default wire base.
  *
- * `packs` is the CLIENT half of the same list `createVendo({ packs })` gets: a
- * pack module is imported twice, and this is where its components get mounted
- * (design §5). Pass the identical array on both sides — that is what makes
- * installing a pack one line rather than two. The host's own `components` still
- * win a repeated name.
+ * `packs` is the CLIENT half of `createVendo({ packs })`: a pack module is
+ * imported twice, and this is where its components get mounted (design §5).
+ *
+ * Pass the packs that SHIP COMPONENTS — not necessarily the whole server list.
+ * `apps()` in particular belongs only on the server: it value-imports
+ * `@vendoai/apps`, so naming it here would pull the apps block into the client
+ * bundle. It contributes no components, so there is nothing to lose by leaving it
+ * out. The host's own `components` still win a repeated name.
  */
 export function VendoRoot(props: Omit<ProviderProps, "client"> & {
   client?: ProviderProps["client"];

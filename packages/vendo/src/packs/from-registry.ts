@@ -26,9 +26,19 @@ import {
   type ToolRegistry,
 } from "@vendoai/core";
 
-/** Marks a pack tool whose real implementation is a `ToolRegistry`, so the merge
- *  can hand the call over and return its outcome verbatim. */
-export const PACK_TOOL_REGISTRY = Symbol.for("@vendoai/vendo/pack-tool-registry");
+/**
+ * Marks a pack tool whose real implementation is a `ToolRegistry`, so the merge
+ * can hand the call over and return its outcome verbatim.
+ *
+ * A module-private `Symbol()`, deliberately NOT `Symbol.for()` and never
+ * exported: a well-known symbol is reproducible by any module that knows the
+ * string, which would let a hostile or careless pack attach it and return a
+ * verbatim outcome of its choosing — including a forged `pending-approval` that
+ * the BYO approval decorator would park as if the guard had asked for a card.
+ * Only this file can mint the marker, so "denials are the guard's" is not a
+ * convention a pack can opt out of.
+ */
+const PACK_TOOL_REGISTRY = Symbol("vendo.pack-tool-registry");
 
 /** The registry behind a pack tool, when there is one. */
 export const backingRegistry = (definition: ToolDefinition): (() => ToolRegistry) | undefined =>

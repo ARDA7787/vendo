@@ -48,6 +48,28 @@ describe("skill paths (build contract §3.1)", () => {
   });
 });
 
+describe("skillPath refuses to build an unsafe path (F3 at the source)", () => {
+  // `skillPath` and `hostSkillFiles` are public @vendoai/core exports, and the
+  // runtime wires that projection. The merge validates pack names, but these two
+  // are reachable without it — so the guard lives here too, where the path is
+  // actually built.
+  const hostile = ["../../etc/passwd", "..", ".", "a/b", "with space", "", "dot.dot", "a\nb", "/abs"];
+
+  for (const name of hostile) {
+    it(`refuses ${JSON.stringify(name)}`, () => {
+      expect(() => skillPath(name)).toThrow(/skill name/i);
+    });
+  }
+
+  it("refuses to project a skill whose name is unsafe", () => {
+    expect(() => hostSkillFiles([skill("../../secrets", "D.", "b")])).toThrow(/skill name/i);
+  });
+
+  it("still builds the path for a legitimate name", () => {
+    expect(skillPath("building-apps")).toBe("/host/skills/building-apps/SKILL.md");
+  });
+});
+
 describe("SKILL.md on disk (agentskills.io format)", () => {
   it("renders name and description as frontmatter above the verbatim body", () => {
     const rendered = renderSkillMd(skill("building-apps", "Build an app for someone.", "# Building apps\n\nWrite the plan first.\n"));

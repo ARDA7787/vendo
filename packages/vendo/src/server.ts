@@ -107,8 +107,10 @@ import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runti
 import {
   DEFAULT_PACKS,
   hostPackToolCollision,
+  hostToolNamesIn,
   mergePacks,
   missingAppsPackWarning,
+  vendoDirOf,
   type PackContext,
 } from "./packs/index.js";
 import { knowledgeIndexResolver } from "./knowledge-prompt.js";
@@ -992,27 +994,31 @@ function dotVendoFile(name: string, root?: string): string | undefined {
   }
 }
 
+/** A synchronous, throw-free read of one file, for the compose-time gates. */
+function readFileSyncOrUndefined(path: string): string | undefined {
+  try {
+    const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+    const fs = proc?.getBuiltinModule?.("node:fs") as typeof import("node:fs") | undefined;
+    if (fs === undefined) return undefined;
+    return fs.readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The host's own tool names, as far as composition can know them without doing
- * any I/O: the in-memory `profile.tools` piece, else a synchronous read of
- * `.vendo/tools.json` (the same read the catalog does). Used for the boot-time
- * pack/host name collision check.
+ * any I/O beyond one file read: the in-memory `profile.tools` piece, else
+ * `tools.json` from the SAME directory the tool registry resolves it from.
  *
- * Best-effort by design. A malformed or absent file yields no names — the tool
- * registry validates the file for real, and this check exists to say something
- * useful early, never to become a second parser.
+ * `vendoDirOf` is the registry's own rule (`profileDir` may be the host root or
+ * the `.vendo` directory itself). Using anything else here made the gate read a
+ * different file — or no file — and a gate that reads nothing passes everything.
  */
 function hostToolNames(config: CreateVendoConfig): string[] {
   const inMemory = config.profile?.tools;
   if (inMemory !== undefined) return inMemory.map((tool) => tool.name);
-  const raw = dotVendoFile("tools.json", config.profileDir);
-  if (raw === undefined) return [];
-  try {
-    const parsed = JSON.parse(raw) as { tools?: Array<{ name?: unknown }> };
-    return (parsed.tools ?? []).flatMap((tool) => (typeof tool.name === "string" ? [tool.name] : []));
-  } catch {
-    return [];
-  }
+  return hostToolNamesIn(readFileSyncOrUndefined(`${vendoDirOf(config.profileDir ?? ".")}/tools.json`));
 }
 
 /** The compose-time project root for .vendo reads that happen LATER (the
@@ -1714,7 +1720,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       if (appsForPacks === undefined) {
         throw new VendoError("not-implemented", "the apps runtime is not composed yet");
       }
-      return appsForPacks;
+      // A NEW object carrying only what the handle names, not the runtime with a
+      // narrower type on it. `delete`, `publish` and `exportApp` live on the
+      // runtime, and "no reaching into other packs" cannot rest on a type a pack
+      // author is free to cast away — so the reach is closed by construction.
+      return { agentTools: appsForPacks.agentTools.bind(appsForPacks) };
     },
   };
   const packs = mergePacks(config.packs ?? DEFAULT_PACKS, packContext);

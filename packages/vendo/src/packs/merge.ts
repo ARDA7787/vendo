@@ -94,6 +94,33 @@ const requireSafeName = (slot: string, name: string, pack: string): void => {
   }
 };
 
+/**
+ * A check has to be able to do its job.
+ *
+ * A judgment rule is appended verbatim to the REVIEWER's system prompt, so a
+ * missing one would put the line "- undefined" into a safety-relevant prompt and
+ * spend a model call asking it to enforce nothing. A fact check with no `run` is
+ * a check that silently never fires. Both are boot errors, for the same reason
+ * every other slot is validated here.
+ */
+const requireUsableCheck = (check: Check, pack: string): void => {
+  if (check.kind === "judgment") {
+    if (typeof check.rule !== "string" || check.rule.trim() === "") {
+      throw new VendoError(
+        "validation",
+        `pack "${pack}" declares the judgment check "${check.name}" with no rule. A judgment check IS its rule — one sentence, appended to the reviewer's rubric — so it needs a non-empty \`rule\`.`,
+      );
+    }
+    return;
+  }
+  if (typeof check.run !== "function") {
+    throw new VendoError(
+      "validation",
+      `pack "${pack}" declares the check "${check.name}" with no \`run\` function. A fact check is code the floor runs; without it the check would silently never fire (add \`kind: "judgment"\` and a \`rule\` if it was meant to be a rule).`,
+    );
+  }
+};
+
 /** Claim a name in one slot's namespace, validating it on the way in. The slots
  *  are separate namespaces: one pack may call a tool and a skill the same thing. */
 const claimer = (slot: string): ((name: string, pack: string) => void) => {
@@ -211,6 +238,7 @@ export const mergePacks = (
     }
     for (const check of pack.checks ?? []) {
       claimCheck(check.name, pack.name);
+      requireUsableCheck(check, pack.name);
       checks.push(check);
     }
     for (const [name, entry] of Object.entries(pack.components ?? {})) {

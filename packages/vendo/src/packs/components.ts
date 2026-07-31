@@ -31,8 +31,18 @@ const clientContext: PackContext = {
   },
 };
 
-const resolve = (provider: PackProvider<PackContext>): Pack =>
-  (typeof provider === "function" ? provider(clientContext) : provider);
+const resolve = (provider: PackProvider<PackContext>, index: number): Pack => {
+  if (typeof provider === "function") return provider(clientContext);
+  // Named rather than a bare TypeError two frames deep: the likely cause is a
+  // stray comma or a failed import in the host's `packs` array, and the index is
+  // what points at it.
+  if (provider === null || typeof provider !== "object") {
+    throw new Error(
+      `packs[${index}] is ${provider === null ? "null" : typeof provider} rather than a pack. Each entry is either a pack value from definePack(...) or a function returning one — check for a stray comma or an import that did not resolve.`,
+    );
+  }
+  return provider;
+};
 
 /**
  * The components every configured pack contributes, ready to hand to the
@@ -46,8 +56,8 @@ export const packComponents = (
   providers: readonly PackProvider<PackContext>[],
 ): ComponentRegistry => {
   const components: ComponentRegistry = {};
-  for (const provider of providers) {
-    Object.assign(components, resolve(provider).components ?? {});
+  for (const [index, provider] of providers.entries()) {
+    Object.assign(components, resolve(provider, index).components ?? {});
   }
   return components;
 };

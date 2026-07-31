@@ -218,6 +218,10 @@ export interface StackOptions {
    * journey passes a pack authored outside `packages/` through this one key,
    * which is the whole install story. Unset keeps the default `[apps()]`. */
   packs?: readonly PackProvider<PackContext>[];
+  /** `createVendo({ profileDir })` — the `.vendo` config root. Either the host
+   * root or the `.vendo` directory itself; the external-pack journey passes both
+   * forms to prove the boot gates resolve it the way the registry does. */
+  profileDir?: string;
 }
 
 /** The door mounted alongside the wire when `createStack({ mcp: true })`. */
@@ -280,6 +284,7 @@ export async function createStack(options: StackOptions = {}): Promise<Stack> {
     // sandbox is here to exercise the box machinery, so opt in.
     ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox, apps: { experimentalMachines: true } }),
     ...(options.packs === undefined ? {} : { packs: options.packs }),
+    ...(options.profileDir === undefined ? {} : { profileDir: options.profileDir }),
   });
 
   // J6 — the MCP door, composed from the umbrella's OWN parts (the hookup note's

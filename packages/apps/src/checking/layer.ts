@@ -65,6 +65,12 @@ const crashFinding = (check: Check, error: unknown): Finding => warnAbout(
  * `undefined` in the array would kill the build the checks exist to protect.
  * Well-formed findings always survive: a real `block` is never lost to a bad
  * neighbour.
+ *
+ * It FILTERS rather than normalizes, deliberately. A finding carrying extra
+ * properties passes through as authored: the shape is a floor, not a schema, and
+ * stripping unknown fields would silently discard something a host's own check
+ * meant to carry to its own reader. What matters is that the three fields every
+ * consumer reads are the shapes it expects.
  */
 const findingsOf = (check: Check, reported: unknown): Finding[] => {
   if (!Array.isArray(reported)) {

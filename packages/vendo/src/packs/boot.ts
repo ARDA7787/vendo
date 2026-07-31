@@ -9,6 +9,51 @@ import { VendoError } from "@vendoai/core";
 import { APPS_PACK_NAME } from "./apps.js";
 
 /**
+ * The `.vendo` directory a configured `profileDir` means — the SAME rule the tool
+ * registry's own reader uses (`readOptionalVendoJson` in @vendoai/actions):
+ * `dir` may be the host root, in which case `.vendo` is inside it, or the
+ * `.vendo` directory itself.
+ *
+ * Getting this wrong is not a wrong answer, it is NO answer: a gate that always
+ * appended `/.vendo/` read nothing at all when `profileDir` pointed at `.vendo`,
+ * so the boot check silently passed and the collision reverted to the
+ * first-request failure the check exists to prevent.
+ *
+ * String-only on purpose (no `node:path`): this file is reachable from edge
+ * bundles, and the comparison is exact enough — a directory merely ending in the
+ * letters "vendo" is not `.vendo`.
+ */
+export const vendoDirOf = (dir: string): string => {
+  const withoutTrailingSlash = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+  const last = withoutTrailingSlash.slice(withoutTrailingSlash.lastIndexOf("/") + 1);
+  return last === ".vendo" ? dir : `${withoutTrailingSlash}/.vendo`;
+};
+
+/**
+ * The host tool names in a `tools.json` document.
+ *
+ * Best-effort by design: a malformed or absent file yields no names. The registry
+ * is the real parser and reports properly on a bad file; this gate exists to say
+ * something useful early, never to become a second validator that could refuse a
+ * boot the registry would have accepted.
+ */
+export const hostToolNamesIn = (raw: string | undefined): string[] => {
+  if (raw === undefined) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const tools = (parsed as { tools?: unknown }).tools;
+  if (!Array.isArray(tools)) return [];
+  return tools.flatMap((tool) => {
+    const name = (tool as { name?: unknown } | null)?.name;
+    return typeof name === "string" ? [name] : [];
+  });
+};
+
+/**
  * A pack claiming a tool name the HOST's own tools already own.
  *
  * The registry refuses this collision on its own — it throws `conflict` — but
@@ -31,7 +76,11 @@ export const hostPackToolCollision = (
     if (pack !== undefined) {
       return new VendoError(
         "conflict",
-        `the pack "${pack}" declares the tool "${name}", but this deployment's own host tools already claim that name. Tool names are global as authored — nothing is auto-prefixed, because a skill body naming a tool is copied verbatim — so rename it in the pack, or rename or disable the host tool in .vendo/overrides.json.`,
+        // ONE remedy, and it is the one that works. A host cannot rename its own
+        // tool through `.vendo/overrides.json` (ToolOverride carries no `name`),
+        // and disabling it does not help either — a disabled tool still reserves
+        // its name in the registry, so the collision would outlive the fix.
+        `the pack "${pack}" declares the tool "${name}", but this deployment's own host tools already claim that name. Tool names are global as authored — nothing is auto-prefixed, because a skill body naming a tool is copied verbatim — so rename it in the pack.`,
       );
     }
   }

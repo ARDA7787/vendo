@@ -25,8 +25,28 @@ export type { PackSkill };
 /** Build contract §3.1 — host + pack skills, read-only for everyone. */
 export const HOST_SKILLS_MOUNT = "/host/skills";
 
-/** The file one skill lives in. The directory name is the skill's name. */
-export const skillPath = (name: string): string => `${HOST_SKILLS_MOUNT}/${name}/SKILL.md`;
+/**
+ * A skill name is a PATH SEGMENT, so it may only be one. No dots, slashes or
+ * whitespace — nothing that could be spelled as a traversal. Same shape as the
+ * frozen tool-name pattern, deliberately.
+ */
+export const SAFE_SKILL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * The file one skill lives in. The directory name is the skill's name.
+ *
+ * Validated HERE, not only at the pack merge: this and {@link hostSkillFiles} are
+ * public exports, and the runtime builds the `/host` projection through them — so
+ * the guard belongs where the path is built, not only where packs are configured.
+ */
+export const skillPath = (name: string): string => {
+  if (!SAFE_SKILL_NAME.test(name)) {
+    throw new Error(
+      `"${name}" is not a usable skill name: a skill name is a directory under ${HOST_SKILLS_MOUNT} and a model asks for it by name, so it may only use letters, digits, "_" and "-", up to 64 characters.`,
+    );
+  }
+  return `${HOST_SKILLS_MOUNT}/${name}/SKILL.md`;
+};
 
 /**
  * The slice of the workspace filesystem the skills store touches — READS only,

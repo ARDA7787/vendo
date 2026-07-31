@@ -54,6 +54,13 @@ describe("packComponents", () => {
     expect(() => packComponents([badlyWritten])).toThrow(/browser|client/i);
   });
 
+  it("names the offending entry when the list holds something that is not a pack", () => {
+    // A stray comma or a failed import, not a bug in a pack — say which slot.
+    expect(() => packComponents([withBadge, undefined as never])).toThrow(/packs\[1\]/);
+    expect(() => packComponents([null as never])).toThrow(/packs\[0\][\s\S]*null/);
+    expect(() => packComponents(["nope" as never])).toThrow(/packs\[0\]/);
+  });
+
   it("lets the LAST pack win a component name, matching the server's merge order", () => {
     const rival = definePack({
       name: "rival",
