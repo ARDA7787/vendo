@@ -719,23 +719,6 @@
       "srcHash": "sha256:c07f4634f7804ef4ab933f0c77f21c8167c756f70858eba171ba9b6347111f17"
     },
     {
-      "name": "host_proof_list",
-      "description": "GET /api/proof",
-      "inputSchema": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": true
-      },
-      "risk": "write",
-      "binding": {
-        "kind": "route",
-        "method": "GET",
-        "path": "/api/proof",
-        "argsIn": "query"
-      },
-      "srcHash": "sha256:515809a640d53bc88d47a64e5968d09763d2fa1fb0d54cb4e2e2d834c14d7acd"
-    },
-    {
       "name": "host_transferMoney",
       "description": "Send money to a person from the user's checking account. This IRREVERSIBLY MOVES MONEY: it debits checking and appends a transfer. There is no undo.",
       "inputSchema": {

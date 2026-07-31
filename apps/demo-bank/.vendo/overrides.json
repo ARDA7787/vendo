@@ -9,6 +9,10 @@
       "disabled": true,
       "description": "Auth.js endpoint - never agent-callable"
     },
+    "host_proof_list": {
+      "disabled": true,
+      "description": "Wave-1 live-proof endpoint - never agent-callable"
+    },
     "host_listAccounts": { "title": "List your accounts" },
     "host_getAccount": { "title": "Show one account" },
     "host_listTransactions": { "title": "Search transactions" },
