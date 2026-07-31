@@ -329,6 +329,10 @@ order-independent; a check that throws yields one `warn` and never blocks a
 build.
 - Names are **global as authored** — no prefixing. Boot fails on collision,
   naming both packs.
+- **Every boot gate ships a test that proves it can still FAIL** (lesson,
+  2026-07-30): a gate reading the wrong source looks identical to a gate that
+  finds nothing wrong — twice this wave a *fix* was the defect and only a
+  red-green test caught it. A pass-only test is not evidence a gate works.
 - A pack module is imported twice (server + client) and must be import-safe on
   the server.
 
