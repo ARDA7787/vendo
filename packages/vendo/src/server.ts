@@ -19,6 +19,8 @@ import { assembleSystemPrompt } from "@vendoai/agent/internal";
 // prompt and descriptor catalog need the turn's ctx.
 import { assertHarnessComposable, vendo } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
+import { askUserTools, type AskUserCollector } from "./ask-user.js";
+export type { AskUserCollector } from "./ask-user.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -333,6 +335,12 @@ export interface CreateVendoConfig {
       forever behind deleted rows, so the resolution has exactly one home. */
   files?: FilesAdapter;
   sandbox?: SandboxAdapter;
+  /** Design §4 — the surface that puts an `ask_user` question to a person and
+      waits for their reply. Wired, the `ask_user` tool works end to end; unwired,
+      the tool exists (the building-apps skill teaches it by name) and reports
+      honestly that nothing here can ask. It is never available to an unattended
+      run at all — a question with nobody to answer it is not a question. */
+  askUser?: AskUserCollector;
   /** Architecture §3 / §10 — WHO THINKS. Any `Harness`: the built-in `vendo()`,
       a spawned driver, or the host's own via `defineHarness`. Unset means
       `vendo()` — today's loop, on the contract.
@@ -2017,6 +2025,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // The building-apps skill teaches `validate` BY NAME, and a skill body is
   // copied to a harness verbatim rather than translated, so this name has to
   // resolve or the skill points the model at a tool that does not exist.
+  // Design §4's one door for questions, on the same registry as everything else.
+  // Its thread is bound PER TURN (ask-user.ts) — a model-chosen thread id would be
+  // a write into someone else's conversation, and the transcript is what the next
+  // turn reads, so that is agent steering rather than mere defacement.
+  actions.add(askUserTools(store, config.askUser));
   actions.add(vendoVerbsRegistry({
     // The ctx is the CALLER's, handed down by the registry's own `execute` — not
     // assembled here and never read off the model's input. Both app-touching

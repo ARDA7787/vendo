@@ -45,6 +45,7 @@ import {
   type HarnessRuntimeDeps,
 } from "@vendoai/harnesses";
 import type { LanguageModel, UIMessage } from "ai";
+import { withAskUserTurn } from "./ask-user.js";
 
 export interface HarnessTurnsConfig {
   /** The host's chosen harness. Unset means `vendo()` — see {@link resolveHarness}. */
@@ -202,7 +203,11 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
         ...(config.approvalWaitMs === undefined ? {} : { approvalWaitMs: config.approvalWaitMs }),
       });
 
-      const response = await runtime.run<never>({
+      // `ask_user`'s thread, bound for the whole turn (design §4). Everything the
+      // turn awaits — including a tool call several frames deep — sees THIS
+      // thread, so one composed registry serves concurrent turns without ever
+      // recording an answer into someone else's conversation.
+      const response = await withAskUserTurn({ threadId: thread.id }, async () => runtime.run<never>({
         harness: resolveHarness(input.ctx),
         threadId: thread.id,
         messages: thread.messages,
@@ -214,7 +219,7 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
         // await the tap inside `call()`; the rest fail loudly with a standing card.
         interactive: !isUnattended(input.ctx),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
-      });
+      }));
       // A caller may begin without an id; hand the effective one back on every
       // turn, like `createAgent` does, so the wire can register turn liveness.
       response.headers.set(THREAD_ID_HEADER, thread.id);
