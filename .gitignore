@@ -61,6 +61,7 @@ apps/demo-*
 /LANE-REPORT.md
 
 # Vendo demo runtime state (PGlite) — never committed.
+.vendo/data/
 apps/*/.vendo/data/
 apps/*/.vendo/data-*/
 fixtures/*/.vendo/data/

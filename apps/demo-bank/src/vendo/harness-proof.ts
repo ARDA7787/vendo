@@ -6,15 +6,14 @@
  * demo as-shipped would measure the old code. Two opt-ins exist and they are not
  * the same thing:
  *
- * - `MAPLE_HARNESS=named` puts `harness: vendo()` in `createVendo` (server.ts).
- *   That is the literal contract opt-in — and `resolveHarness` in
- *   harness-turn.ts only composes the assembled system prompt when
- *   `config.harness` is UNSET, so a host-named `vendo()` thinks with
- *   `system: ""`. Kept as a probe target, not as the evidence path.
- * - `MAPLE_HARNESS=1` leaves the slot unset (so composition builds `vendo()`
- *   WITH its ctx-shaped system prompt) and routes the wire's chat turn to the
- *   composed `vendo.harness` door here — the door harness-wire.test.ts calls the
- *   one "the host (and the live proofs) can drive a harness turn" through.
+ * - `MAPLE_HARNESS=named` puts `harness: vendo()` in `createVendo` (server.ts) —
+ *   the literal contract opt-in. This is the probe that caught P1: the named
+ *   harness thought with `system: ""` because composition handed the prompt in as
+ *   a construction dep. Fixed — the prompt rides `Turn.system` now, and
+ *   harness-system-prompt.test.ts pins all three paths byte-identical.
+ * - `MAPLE_HARNESS=1` leaves the slot unset and routes the wire's chat turn to
+ *   the composed `vendo.harness` door here — the door harness-wire.test.ts calls
+ *   the one "the host (and the live proofs) can drive a harness turn" through.
  *
  * Off by default: unset `MAPLE_HARNESS` and this file returns null on every
  * request, so the shipped demo is untouched.
