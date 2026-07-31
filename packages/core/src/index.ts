@@ -25,6 +25,7 @@ export * from "./model-seats.js";
 export * from "./kit/index.js";
 export * from "./principal.js";
 export * from "./reshape.js";
+export * from "./product-slug.js";
 export * from "./run-context.js";
 export * from "./semantics.js";
 export * from "./shape.js";
