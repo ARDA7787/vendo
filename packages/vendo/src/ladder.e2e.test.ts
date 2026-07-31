@@ -257,7 +257,7 @@ async function harness(): Promise<{
 }
 
 describe.sequential("Wave 9 rung (a) e2e — the 8am digest rides the automations engine, no machine anywhere", () => {
-  it("edit authors+arms the automation, tick fires it, the digest lands in a store row the tree query shows", async () => {
+  it("edit authors+arms the automation, tick fires it, and THE LAW refuses its unattended email", async () => {
     const { store, guard, apps, automations, emails } = await harness();
 
     // 1. The server-shaped instruction becomes a STEPS automation, in seconds.
@@ -298,26 +298,39 @@ describe.sequential("Wave 9 rung (a) e2e — the 8am digest rides the automation
     const runIds = await automations.tick(FIRES_AT);
     expect(runIds).toHaveLength(1);
 
+    // 3. THE LAW (design §12): destructive and external actions are never
+    //    unattended. `host_send_email` messages a human, so an unattended run
+    //    may not perform it — not with a standing grant, not with the owner's
+    //    approval captured above, not with any limit or override. The run fails
+    //    LOUDLY rather than skipping the step and reporting success.
     const run = await automations.runs.get(runIds[0]!, ctx);
-    expect(run?.status).toBe("ok");
-    expect(run?.steps.map((step) => step.outcome)).toEqual(["ok", "ok", "ok"]);
+    expect(run?.status).toBe("error");
 
-    // 3. The digest email went out and the result landed in the app's declared
-    // records collection (the store rows the tree can query).
-    expect(emails).toEqual([{ subject: "Unpaid invoice digest", body: "1 unpaid invoice" }]);
-    const rowRecord = await store.records(`app:${APP_ID}:digest`).get("latest");
-    expect(rowRecord).not.toBeNull();
-    expect(JSON.stringify(rowRecord?.data)).toContain("1 unpaid invoice");
+    const email = run?.steps.find((step) => step.tool === "host_send_email");
+    expect(email?.outcome).toBe("blocked");
+    expect(email?.detail).toContain("destructive or external");
 
-    // 4. The tree query surfaces it: open() resolves the
-    // vendo_apps_data_list query and the digest summary is in the payload.
-    const surface = await apps.open(APP_ID, ctx);
-    expect(surface.kind).toBe("tree");
-    if (surface.kind !== "tree") throw new Error("expected the tree surface");
-    expect(JSON.stringify(surface.payload)).toContain("1 unpaid invoice");
+    // The read before it still ran — automations are not crippled, only stopped
+    // short of irreversibility.
+    expect(run?.steps.find((step) => step.tool === "host_list_unpaid_invoices")?.outcome).toBe("ok");
 
-    // 5. ZERO sandbox creation: the document never grew a machine (and no
-    // sandbox adapter was configured to begin with).
+    // 4. Nothing was sent. This is the assertion the whole law exists for.
+    expect(emails).toEqual([]);
+
+    // 5. The refusal is in the audit trail, which is what the run history and
+    //    the failure card on the app surface render from (§13 — a render, not
+    //    new machinery). A silent failure would leave the owner with an app
+    //    that quietly stopped working.
+    const { events } = await guard.audit.query({ principal, limit: 100 });
+    expect(events.some((event) =>
+      event.tool === "host_send_email" && event.outcome === "blocked")).toBe(true);
+
+    // 6. ZERO sandbox creation: the document never grew a machine (and no
+    //    sandbox adapter was configured to begin with).
     expect((await apps.get(APP_ID, ctx))?.machine).toBeUndefined();
+
+    // NOTE: prepare-then-human-sends (the outbox that turns this refusal into
+    // "your digest is ready · [Send]") arrives with the automations pack, on its
+    // own track. The wave-1 truth asserted here is the refusal itself.
   });
 });
