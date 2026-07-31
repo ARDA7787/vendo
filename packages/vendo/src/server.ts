@@ -687,7 +687,13 @@ function knowledgeToolOptions(
 ): KnowledgeToolsOptions {
   if (hostConfigured || !knowledgeVerifyEnabled()) return {};
   const model = vendoModel(undefined, { slot: "knowledgeVerifier" });
-  bindVendoModelSlots(model, models);
+  // The seat is spelled `verifier` in the new vocabulary and `knowledgeVerifier`
+  // in the old one; the slot binder only knows the old name, so normalise here.
+  // The new spelling wins, same rule as every other seat.
+  bindVendoModelSlots(model, models === undefined ? undefined : {
+    ...models,
+    ...(models.verifier === undefined ? {} : { knowledgeVerifier: models.verifier }),
+  });
   return { verifier: entailmentVerifier({ model }) };
 }
 

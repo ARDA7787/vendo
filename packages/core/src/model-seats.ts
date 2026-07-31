@@ -1,9 +1,9 @@
 /** Build contract §4 — the four model seats. A seat is a JOB, not a model: the
  *  same model may fill several, and swapping one never renames the others. */
-export type Seat = "default" | "reviewer" | "judge" | "fill";
+export type Seat = "default" | "reviewer" | "judge" | "fill" | "verifier";
 
 /** Iteration order for the seats, so callers never hand-roll the list. */
-export const SEATS: readonly Seat[] = ["default", "reviewer", "judge", "fill"];
+export const SEATS: readonly Seat[] = ["default", "reviewer", "judge", "fill", "verifier"];
 
 /**
  * Build contract §4's `ResolvedModels`: every seat filled.
@@ -29,20 +29,25 @@ export interface LegacyModelsConfig<Model = unknown> {
 
 /**
  * Build contract §4's migration: `agent → default`, `paint → fill`, `judge`
- * unchanged, `knowledgeVerifier` folded into `default`.
+ * unchanged, `knowledgeVerifier → verifier`.
  *
- * `agent` wins over `knowledgeVerifier` when both are set, because both land on
- * `default` and `agent` is the model the host actually chose for the main job —
- * folding must never quietly demote it. Seats already written in the new
- * vocabulary pass straight through, so a half-migrated config still works.
+ * `knowledgeVerifier` is NOT folded into `default` (amendment 2026-07-30). The
+ * fold was premised on it having no independent consumer; that premise was false —
+ * `server.ts` still reads it — so folding silently repointed the model that
+ * ANSWERS USERS whenever a host set only the knowledge check's cheap/fast model.
+ * A documented public knob must never change something else.
+ *
+ * Seats already written in the new vocabulary pass straight through and win over
+ * the legacy spelling, so a half-migrated config still works.
  */
 export function migrateModelSeats<Model = unknown>(
   config: LegacyModelsConfig<Model> & SeatConfig<Model>,
 ): SeatConfig<Model> {
   const seats: SeatConfig<Model> = {};
-  const fallbackDefault = config.knowledgeVerifier ?? config.agent;
-  const chosenDefault = config.default ?? config.agent ?? fallbackDefault;
+  const chosenDefault = config.default ?? config.agent;
   if (chosenDefault !== undefined) seats.default = chosenDefault;
+  const verifier = config.verifier ?? config.knowledgeVerifier;
+  if (verifier !== undefined) seats.verifier = verifier;
   const fill = config.fill ?? config.paint;
   if (fill !== undefined) seats.fill = fill;
   const judge = config.judge;

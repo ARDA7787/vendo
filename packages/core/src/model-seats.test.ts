@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { SEATS, migrateModelSeats, seatConflict, type Seat } from "./index.js";
 
 describe("the seat map (build contract §4)", () => {
-  it("is exactly the four contracted seats", () => {
-    expect(SEATS).toEqual(["default", "reviewer", "judge", "fill"]);
+  it("is exactly the five contracted seats", () => {
+    expect(SEATS).toEqual(["default", "reviewer", "judge", "fill", "verifier"]);
   });
 
   it("migrates today's slot names onto seats", () => {
@@ -14,14 +14,17 @@ describe("the seat map (build contract §4)", () => {
     });
   });
 
-  it("folds knowledgeVerifier into default — it had no independent consumer worth a seat", () => {
-    expect(migrateModelSeats({ knowledgeVerifier: "kv" })).toEqual({ default: "kv" });
+  it("maps knowledgeVerifier to its own `verifier` seat", () => {
+    // This test previously asserted the FOLD into `default`. The contract
+    // amendment retracted it: the fold's premise (no independent consumer) was
+    // false, and it silently repointed the model that answers users whenever a
+    // host set only this knob. Covered in depth in verifier-seat.test.ts.
+    expect(migrateModelSeats({ knowledgeVerifier: "kv" })).toEqual({ verifier: "kv" });
   });
 
-  it("lets an explicit agent win over knowledgeVerifier when both are set", () => {
-    // Both map to `default`; the one that was already the main model wins, so a
-    // migration never quietly demotes the model the host actually chose.
-    expect(migrateModelSeats({ agent: "a", knowledgeVerifier: "kv" })).toEqual({ default: "a" });
+  it("keeps the agent model and the knowledge check independent", () => {
+    expect(migrateModelSeats({ agent: "a", knowledgeVerifier: "kv" }))
+      .toEqual({ default: "a", verifier: "kv" });
   });
 
   it("carries a seat already written in the new vocabulary straight through", () => {
