@@ -51,20 +51,27 @@ describe("createTurnState", () => {
   });
 });
 
-describe("memoryHarnessStateStore — keyed by thread AND harness name", () => {
+describe("memoryHarnessStateStore — one slot per thread, owned by a harness", () => {
   it("round-trips a value", async () => {
     const store = memoryHarnessStateStore();
     await store.set("thr_1", "vendo", "session_1");
     await expect(store.get("thr_1", "vendo")).resolves.toBe("session_1");
   });
 
-  it("a harness swap sees no state — the key is the clearing rule", async () => {
+  it("a harness swap CLEARS the thread's state (§1.3), it does not shadow it", async () => {
     const store = memoryHarnessStateStore();
     await store.set("thr_1", "vendo", "session_1");
     await expect(store.get("thr_1", "claude-code")).resolves.toBeUndefined();
-    // …and the swapped-away harness's state is not clobbered by the newcomer.
-    await store.set("thr_1", "claude-code", "sess_cc");
-    await expect(store.get("thr_1", "vendo")).resolves.toBe("session_1");
+    // The swap DESTROYED it: swapping back must not resurrect a session id for a
+    // conversation that has since moved on without it.
+    await expect(store.get("thr_1", "vendo")).resolves.toBeUndefined();
+  });
+
+  it("clear() drops the thread's state whoever owns it", async () => {
+    const store = memoryHarnessStateStore();
+    await store.set("thr_1", "vendo", "session_1");
+    await store.clear("thr_1");
+    await expect(store.get("thr_1", "vendo")).resolves.toBeUndefined();
   });
 
   it("threads never see each other's state", async () => {

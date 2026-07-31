@@ -31,7 +31,7 @@ import {
   type VendoViewPart,
   type WorkspaceFs,
 } from "@vendoai/core";
-import { skeletonFromPlan } from "@vendoai/apps";
+import { assembleTree, skeletonFromPlan, stripServerAuthoritativeFields } from "@vendoai/apps";
 
 /** §1.6 — the two files that sync mid-turn. Everything else waits for turn end. */
 export const HOT_PATH_FILES = ["app.vendo", "plan.vendo"] as const;
@@ -50,37 +50,6 @@ const hotPathFile = (path: string): (typeof HOT_PATH_FILES)[number] | undefined 
   const match = HOT_PATH.exec(path);
   return match === null ? undefined : (match[2] as (typeof HOT_PATH_FILES)[number]);
 };
-
-/**
- * Relocated from `packages/apps/src/open.ts` (`stripServerAuthoritativeFields`).
- * `inClient` and `pinDrift` are the server's answers, not the app's: echoing an
- * app-authored value back would let a document dictate its own trust level.
- */
-function stripServerAuthoritativeFields<T extends object>(payload: T): T {
-  delete (payload as { inClient?: unknown }).inClient;
-  delete (payload as { pinDrift?: unknown }).pinDrift;
-  return payload;
-}
-
-/**
- * Relocated from `packages/apps/src/runtime.ts` (`assembleTree`): the tree plus
- * its generated component sources, lifted to payload level, which is the shape
- * the client mounts.
- */
-function assembleTree(source: {
-  tree: Tree;
-  components?: Record<string, string>;
-  componentTools?: Record<string, string[]>;
-}): UIPayload {
-  const payload = structuredClone(source.tree) as unknown as UIPayload;
-  if (source.components !== undefined && Object.keys(source.components).length > 0) {
-    payload.components = source.components;
-  }
-  if (source.componentTools !== undefined && Object.keys(source.componentTools).length > 0) {
-    payload.componentTools = source.componentTools;
-  }
-  return stripServerAuthoritativeFields(payload);
-}
 
 /**
  * Did this content parse into something worth putting on screen?
@@ -106,21 +75,23 @@ export interface RenderSeamOptions {
    */
   facts?: () => { tools: readonly string[]; components: readonly string[] };
   /**
-   * Progressive query-resolver fill (§1.6). The resolver lives in
-   * `packages/apps` and needs the app's caller and document, neither of which a
-   * raw file write carries — so composition injects it and the seam calls it.
+   * Progressive query-resolver fill (§1.6). The real resolver is
+   * `createProgressiveQueryResolver` in `packages/apps`, which needs the app's
+   * caller and document — neither of which a committed file carries — so
+   * composition injects it and the seam awaits it. ASYNC on purpose: the shipped
+   * resolver runs real queries, so a synchronous signature could never wire it in.
    * Unwired, the view still renders: the skeleton first, data when the app's own
    * open path resolves it.
    */
-  fillData?: (appId: AppId, payload: UIPayload) => Record<string, Json> | undefined;
+  fillData?: (appId: AppId, payload: UIPayload) => Promise<Record<string, Json> | undefined>;
 }
 
-/** The view a parsing hot-path write produces, or undefined if it does not parse. */
-export function viewForWrite(
+/** The view a parsing hot-path commit produces, or undefined if it does not parse. */
+export async function viewForWrite(
   path: string,
   content: string,
   options: RenderSeamOptions,
-): { streamId: string; part: VendoViewPart } | undefined {
+): Promise<{ streamId: string; part: VendoViewPart } | undefined> {
   const appId = hotPathAppId(path);
   const file = hotPathFile(path);
   if (appId === undefined || file === undefined) return undefined;
@@ -137,7 +108,9 @@ export function viewForWrite(
       return undefined;
     }
     if (!renders(compiled.tree)) return undefined;
-    payload = assembleTree({ tree: compiled.tree, components: compiled.components });
+    payload = stripServerAuthoritativeFields(
+      assembleTree({ tree: compiled.tree, components: compiled.components }),
+    ) as unknown as UIPayload;
   } else {
     const facts = options.facts?.() ?? { tools: [], components: [] };
     const compiled = compilePlan(content, facts);
@@ -145,11 +118,18 @@ export function viewForWrite(
     // The plan format IS the render format: its skeleton is the view.
     const skeleton = skeletonFromPlan(compiled.plan);
     if (!renders(skeleton.tree)) return undefined;
-    payload = assembleTree({ tree: skeleton.tree });
+    payload = stripServerAuthoritativeFields(
+      assembleTree({ tree: skeleton.tree }),
+    ) as unknown as UIPayload;
   }
 
-  const data = options.fillData?.(appId, payload);
+  const data = await options.fillData?.(appId, payload);
   if (data !== undefined) payload.data = data;
+  // `streaming: true`, exactly as the shipped emitter stamps its partial trees
+  // (packages/apps runtime.ts). Without it the renderer treats a mid-build tree as
+  // a FINISHED one and shows "Invalid UI tree" while the app is still growing —
+  // the skeleton experience depends on this flag, not just on the payload.
+  payload.streaming = true;
   // The renderer's own gate decides what reaches the wire — a payload it would
   // reject is not a view, and a half-rendered app is worse than the last good one.
   const parsed = vendoViewPartSchema.safeParse({ type: "data-vendo-view", appId, payload });
@@ -168,7 +148,7 @@ export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSe
       // Read back what the store now holds rather than trusting a remembered
       // argument: append, encoding and any store-side normalization land here.
       const content = await workspace.readFile(path);
-      const view = viewForWrite(path, content, options);
+      const view = await viewForWrite(path, content, options);
       if (view !== undefined) options.emit(view.streamId, view.part);
     } catch {
       // A view is a courtesy on top of a landed commit. It can never fail one.
@@ -176,9 +156,17 @@ export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSe
   };
 
   return new Proxy(workspace, {
-    get(target, property, receiver) {
-      if (property !== "commit") return Reflect.get(target, property, receiver);
-      const original = Reflect.get(target, property, receiver) as
+    // `receiver` is deliberately NOT forwarded to Reflect.get: a method read off
+    // the proxy and then called would run with `this` === proxy, and any real
+    // façade using `#private` fields (lane B's may) throws on the first access.
+    // Binding to the target keeps `this` the real object, which also stops writes
+    // from re-entering this trap.
+    get(target, property) {
+      if (property !== "commit") {
+        const value = Reflect.get(target, property) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      const original = Reflect.get(target, property) as
         | ((opts?: { message?: string }) => Promise<CommitResult>)
         | undefined;
       if (typeof original !== "function") return original;

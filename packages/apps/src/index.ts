@@ -100,6 +100,11 @@ export type {
 // function of the public AppPlan, so demo/harness surfaces can render a plan's
 // skeleton without booting the engine.
 export { skeletonFromPlan, type Skeleton } from "./generation/skeleton.js";
+// The emitted-payload assembly and the field stripping that goes with it, for the
+// same reason: @vendoai/harnesses' render seam must emit the payload shape THIS
+// emitter emits, so it imports these rather than keeping a drifting copy.
+export { assembleTree } from "./runtime.js";
+export { stripServerAuthoritativeFields } from "./open.js";
 export type {
   GeneratedAppDocument,
   GenerationDependencies,

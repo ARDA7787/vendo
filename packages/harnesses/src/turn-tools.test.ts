@@ -85,14 +85,15 @@ describe("turn.tools.call — §1.1 outcome mapping", () => {
         connect: { connector: "composio", toolkit: "gmail", message: "Connect Gmail first." },
       }),
     };
-    const { tools, mirrored } = harness({ registry, guard });
+    const { tools } = harness({ registry, guard });
     const result = await tools.call("gmail_send", {});
     expect(result).toEqual({
       status: "denied",
       reason: "Connect Gmail first.",
       needs: { kind: "connect", toolkit: "gmail" },
     });
-    expect(mirrored.some((event) => event.kind === "connect")).toBe(true);
+    // The `data-vendo-connect` CARD is written by the shipped bridge onto the
+    // writer, not by the mirror — proven in runtime.test.ts, where a writer exists.
   });
 
   it("maps error through with its code and message", async () => {
@@ -172,20 +173,6 @@ describe("turn.tools.call — mirroring", () => {
     expect(new Set(ids).size).toBe(2);
   });
 
-  it("forwards an idempotencyKey onto the call the guard's execute path sees", async () => {
-    const guard = testGuard();
-    const seen: ToolCall[] = [];
-    const registry: ToolRegistry = {
-      descriptors: async () => [readTool("look")],
-      execute: async (call): Promise<ToolOutcome> => {
-        seen.push(call);
-        return { status: "ok", output: 1 };
-      },
-    };
-    const { tools } = harness({ registry, guard });
-    await tools.call("look", {}, { idempotencyKey: "key-1" });
-    expect(seen[0]).toMatchObject({ tool: "look", idempotencyKey: "key-1" });
-  });
 });
 
 describe("turn.tools.call — §1.4 approvals", () => {
@@ -216,23 +203,17 @@ describe("turn.tools.call — §1.4 approvals", () => {
   it("interactive=true: raises the card, awaits the tap, then the call proceeds", async () => {
     const { tools, mirrored } = harness({ registry, guard });
     const promise = tools.call("pay", { amount: 10 });
-    // The card must be on the wire BEFORE the wait begins — otherwise an
-    // interactive user is being asked to tap something she cannot see.
-    await vi.waitFor(() => expect(mirrored.some((event) => event.kind === "approval")).toBe(true));
-    expect(mirrored.find((event) => event.kind === "approval")).toMatchObject({
-      kind: "approval",
-      risk: "destructive",
-    });
-    expect(guard.pending()).toHaveLength(1);
+    // The guard has been PREVIEWED (so the card is up) before the wait begins.
+    await vi.waitFor(() => expect(guard.pending()).toHaveLength(1));
     guard.decide(guard.pending()[0]!.id, true);
     await expect(promise).resolves.toEqual({ status: "ok", output: { sent: true } });
     expect(registry.invocations.pay).toBe(1);
   });
 
   it("interactive=true: a refusal denies the call and never executes it", async () => {
-    const { tools, mirrored } = harness({ registry, guard });
+    const { tools } = harness({ registry, guard });
     const promise = tools.call("pay", { amount: 10 });
-    await vi.waitFor(() => expect(mirrored.some((event) => event.kind === "approval")).toBe(true));
+    await vi.waitFor(() => expect(guard.pending()).toHaveLength(1));
     guard.decide(guard.pending()[0]!.id, false);
     const result = await promise;
     expect(result.status).toBe("denied");
@@ -248,22 +229,24 @@ describe("turn.tools.call — §1.4 approvals", () => {
   });
 
   it("a decision that lands before the wait begins is not lost", async () => {
-    // The decision is delivered synchronously from inside the registry call, i.e.
-    // strictly before call() gets a chance to await anything. Subscribing only
-    // after execute() returned would drop it and hang until the timeout.
+    // The tap is delivered synchronously from inside the guard consult itself —
+    // strictly before call() gets a chance to await the waiter. Subscribing only
+    // after the preview returned would drop it and hang until the timeout.
     const racingGuard = testGuard({ pay: "ask" });
-    let approvalId: ApprovalId | undefined;
-    const racingRegistry: ToolRegistry = {
-      descriptors: async () => [readTool("pay", "destructive")],
-      execute: async (call): Promise<ToolOutcome> => {
-        if (approvalId !== undefined) return { status: "ok", output: { sent: true } };
-        const outcome = await racingGuard.check(call, readTool("pay", "destructive"), ctx());
-        if (outcome.action !== "ask") throw new Error("expected an ask");
-        approvalId = outcome.approval.id;
-        racingGuard.decide(approvalId, true);
-        return { status: "pending-approval", approvalId };
-      },
+    const realCheck = racingGuard.check.bind(racingGuard);
+    let decided = false;
+    racingGuard.check = async (call, descriptor, runCtx) => {
+      const decision = await realCheck(call, descriptor, runCtx);
+      if (decision.action === "ask" && !decided) {
+        decided = true;
+        racingGuard.decide(decision.approval.id, true);
+      }
+      return decision;
     };
+    const racingRegistry = boundRegistry(
+      { pay: { descriptor: readTool("pay", "destructive"), execute: () => ({ sent: true }) } },
+      racingGuard,
+    );
     const { tools } = harness({ registry: racingRegistry, guard: racingGuard, approvalWaitMs: 50 });
     await expect(tools.call("pay", {})).resolves.toEqual({ status: "ok", output: { sent: true } });
   });

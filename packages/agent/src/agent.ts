@@ -222,7 +222,7 @@ function isApprovalResponse(stored: unknown, incoming: unknown): boolean {
 /** AGENT-12: clients may add fresh USER messages and answer approvals — they
  *  may not author assistant content or rewrite history by replaying a known
  *  message id with different parts. */
-function validateUpsert(messages: UIMessage[], message: UIMessage): void {
+export function validateUpsert(messages: UIMessage[], message: UIMessage): void {
   const existing = messages.find((candidate) => candidate.id === message.id);
   if (existing === undefined) {
     if (message.role !== "user") {

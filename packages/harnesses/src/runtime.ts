@@ -9,6 +9,8 @@
  * It decides nothing. Orchestration is thinking, and thinking is the harness's.
  */
 import {
+  VendoError,
+  type ApprovalId,
   type AuditEvent,
   type Guard,
   type Harness,
@@ -22,6 +24,7 @@ import {
   type TurnSkills,
   type WorkspaceFs,
 } from "@vendoai/core";
+import { validateUpsert, type ToolBridgeOptions } from "@vendoai/agent";
 import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from "ai";
 import {
   classifyHistory,
@@ -31,7 +34,22 @@ import {
 } from "./harness-state.js";
 import { wrapWorkspaceForRender, type RenderSeamOptions } from "./render-seam.js";
 import { createTurnTools, type MirrorEvent } from "./turn-tools.js";
-import { TextChannel, writeMirror, writeStatus, writeView } from "./wire.js";
+import { TextChannel, writeError, writeMirror, writeStatus, writeView } from "./wire.js";
+
+/**
+ * `turn.messages` is OURS and read-only (§1). A frozen array still hands out live
+ * part objects, so a harness could rewrite canonical history by mutating
+ * `parts[0].text` — and the runtime would then persist the harness's edit as the
+ * user's own words. Deep-freezing the view closes that; the pristine copy the
+ * runtime diffs against closes it even if a host passes an unfrozen structure.
+ */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 /** Build contract §6 — lane D's `threadMessageStore(store)` return value. Typed
  *  structurally so this package never imports @vendoai/store: the store handle
@@ -55,6 +73,10 @@ export interface HarnessRuntimeDeps {
   /** The render seam's optional halves — plan facts and the progressive
    *  query-resolver fill. The seam emits with or without them. */
   render?: Omit<RenderSeamOptions, "emit">;
+  /** The shipped tool-bridge rails composition owns: `toolOutputCap`, the
+   *  `preflight` connect gate, and the capability-miss `onCall` hook. The writer
+   *  and the per-turn connect-card set are the runtime's to supply. */
+  bridge?: Omit<ToolBridgeOptions, "registry" | "ctx" | "guard" | "writer" | "connectCards">;
   /** Test seam only; production uses the frozen APPROVAL_WAIT_MS. */
   approvalWaitMs?: number;
 }
@@ -125,14 +147,34 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
       let carried: string | undefined;
       try {
         before = await deps.transcript.list(input.ctx.principal, input.threadId);
+        // A client-sourced history is not trusted history. The shipped rule
+        // (`validateUpsert`) is the one that decides what a caller may change:
+        // fresh USER messages, and answering a pending approval. Anything else —
+        // an assistant message the client authored, a rewritten past turn — is a
+        // history-forging attempt and must not reach the model or the store.
+        const persisted = [...before];
+        for (const message of input.messages) {
+          validateUpsert(persisted, message);
+          const at = persisted.findIndex((candidate) => candidate.id === message.id);
+          if (at === -1) persisted.push(message);
+          else persisted[at] = message;
+        }
         if (classifyHistory(before, input.messages) !== "arbitrary-edit") {
           carried = await harnessState.get(input.threadId, input.harness.name);
+        } else {
+          // §1.3: the harness's session no longer describes our conversation.
+          await harnessState.clear(input.threadId);
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof VendoError) throw error;
         // An unreadable history is not a licence to hand over a stale session.
         carried = undefined;
       }
       const state = createTurnState(carried);
+      // What persistence diffs against. Taken BEFORE the harness runs and never
+      // handed out, so a harness cannot make its own edit look like it was
+      // already stored.
+      const pristine = before === undefined ? [] : before.map((message) => structuredClone(message));
 
       const signal = input.signal ?? new AbortController().signal;
       let usage: UsageTotals | undefined;
@@ -142,13 +184,23 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
         originalMessages: input.messages,
         execute: async ({ writer }) => {
           const text = new TextChannel(writer);
-          const mirror = (event: MirrorEvent): void => writeMirror(writer, event);
+          const mirror = (event: MirrorEvent): void => {
+            // Close the open text part first, so a reply that spans tool calls
+            // renders as prose, tool, prose instead of collapsing into one block.
+            if (event.kind === "call") text.break();
+            writeMirror(writer, event);
+          };
           const tools = createTurnTools({
             registry: deps.tools,
             guard: deps.guard,
             ctx: input.ctx,
             interactive: input.interactive,
             mirror,
+            // The shipped bridge's rails ride along: the writer every
+            // `data-vendo-*` part goes to (view, approval, connect, build-failed,
+            // citations), `toolOutputCap`, the connect gate, the capability-miss
+            // hook, and a FRESH per-turn connect-card dedupe set.
+            bridge: { ...deps.bridge, writer, connectCards: new Set<string>() },
             ...(deps.approvalWaitMs === undefined ? {} : { approvalWaitMs: deps.approvalWaitMs }),
           });
 
@@ -179,7 +231,7 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
           const turn: Turn<Options> = {
             // Frozen: ours, read-only. Freezing makes the contract's word true at
             // runtime instead of only at compile time.
-            messages: Object.freeze([...input.messages]),
+            messages: deepFreeze([...input.messages.map((message) => structuredClone(message))]),
             tools: {
               list: () => tools.list(),
               // A workspace tool edit lands the moment it returns, so the
@@ -210,8 +262,13 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
                   break;
                 case "error":
                   failure = { message: event.message, ...(event.code === undefined ? {} : { code: event.code }) };
-                  // Screen + transcript, in the assistant's own voice.
-                  text.delta(event.message);
+                  // The SCREEN's failure affordance — the same ai-SDK error chunk
+                  // `createAgent` raises, so the host renders its banner, its
+                  // Retry and its detail line. Splicing the sentence into the
+                  // assistant's prose instead would read as the agent talking and
+                  // would offer the user nothing to act on.
+                  text.break();
+                  writeError(writer, event.message);
                   break;
                 case "usage":
                   // Audit/metering only — never the screen, never the transcript.
@@ -237,11 +294,16 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             // wire; the stream is closed by the time onFinish runs.
             await commit();
             text.end();
+            // An approval nobody answered would otherwise stay live-but-dead: its
+            // card still on screen, its row still in the pending queue forever.
+            // Resolving them denied at turn end is what today's loop does for the
+            // approvals a fresh user turn supersedes.
+            await abandonUnanswered(deps.guard, input, tools.unansweredApprovals());
             tools.dispose();
           }
         },
         onFinish: async ({ messages }) => {
-          await persistTurn(deps.transcript, input, messages, before);
+          await persistTurn(deps.transcript, input, messages, pristine);
           await saveHarnessState(harnessState, input, state.pending());
           await reportRun(deps.guard, input, { usage, failure });
         },
@@ -336,5 +398,25 @@ async function reportRun(
     await guard.report(event);
   } catch {
     // A reporting failure cannot change a completed turn's result.
+  }
+}
+
+
+/**
+ * Resolve the approvals this turn raised and nobody answered. Best-effort and
+ * idempotent, exactly like the shipped abandonment path: a failed guard write
+ * retries implicitly the next time a turn abandons, and it must never take down a
+ * turn that already has a reply.
+ */
+async function abandonUnanswered(
+  guard: Guard,
+  input: TurnRunInput<unknown>,
+  ids: ApprovalId[],
+): Promise<void> {
+  if (ids.length === 0 || guard.abandonApprovals === undefined) return;
+  try {
+    await guard.abandonApprovals(ids, input.ctx);
+  } catch {
+    // The card is already dead to this turn; queue cleanup retries later.
   }
 }

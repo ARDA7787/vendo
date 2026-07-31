@@ -5,8 +5,13 @@
  * wire format)". Harness adapters contain no wire code; this is the only file
  * that knows what a chunk looks like.
  *
- * ONE addition, and it is deliberately NOT in core's stream-parts.ts: `status`
- * (§1.5) has no existing part, and it must be screen-only. The ai-SDK's own
+ * The `data-vendo-*` parts are NOT written here: the view channel, the approval
+ * card, the connect card, the build-failed banner and the citations part all come
+ * from the shipped bridge (`guardedCall`/`previewApproval` in @vendoai/agent), so
+ * a harness turn produces the identical wire a `createAgent` turn does.
+ *
+ * ONE addition, and deliberately NOT in core's stream-parts.ts: `status` (§1.5)
+ * has no existing part and must be screen-only. The ai-SDK's own
  * `transient: true` data chunk is exactly "delivered to the client, never added
  * to message history", so a transient `data-vendo-status` is the native
  * mechanism rather than a persisted format. See VENDO_STATUS_PART.
@@ -14,10 +19,6 @@
 import {
   toVendoWirePart,
   vendoViewStreamId,
-  type ApprovalId,
-  type ConnectRequired,
-  type Json,
-  type RiskLabel,
   type ToolResult,
   type VendoViewPart,
 } from "@vendoai/core";
@@ -25,34 +26,47 @@ import type { UIMessage, UIMessageStreamWriter } from "ai";
 import type { MirrorEvent } from "./turn-tools.js";
 
 /**
- * The one wire name this lane adds. Transient, so it is screen-only by the
- * SDK's own rule and never lands in a persisted UIMessage — which is what §1.5
- * asks for. It lives here rather than in core because §1.6 freezes
- * stream-parts.ts as unchanged.
+ * The one wire name this lane adds. Transient, so it is screen-only by the SDK's
+ * own rule and never lands in a persisted UIMessage — which is what §1.5 asks
+ * for. It lives here rather than in core because §1.6 freezes stream-parts.ts.
  */
 export const VENDO_STATUS_PART = "data-vendo-status" as const;
 
 type Writer = UIMessageStreamWriter<UIMessage>;
 
-/** Accumulates one assistant text part per turn: many deltas, one row. */
+/**
+ * The assistant's words for one turn. A turn is NOT one text part: a reply that
+ * spans tool calls must render as prose, then tool, then prose — so the channel
+ * closes the current part whenever something else is mirrored and opens a fresh
+ * one on the next delta. Collapsing it into a single part destroys the
+ * interleaving the thread UI renders.
+ */
 export class TextChannel {
-  private started = false;
-  private readonly id = `txt_${globalThis.crypto.randomUUID()}`;
+  private open = false;
+  private index = 0;
+  private id = "";
 
   constructor(private readonly writer: Writer) {}
 
   delta(delta: string): void {
-    if (!this.started) {
-      this.started = true;
+    if (!this.open) {
+      this.index += 1;
+      this.id = `txt_${this.index}_${globalThis.crypto.randomUUID()}`;
+      this.open = true;
       this.writer.write({ type: "text-start", id: this.id });
     }
     this.writer.write({ type: "text-delta", id: this.id, delta });
   }
 
-  end(): void {
-    if (!this.started) return;
-    this.started = false;
+  /** Close the current part, so whatever comes next renders after it. */
+  break(): void {
+    if (!this.open) return;
+    this.open = false;
     this.writer.write({ type: "text-end", id: this.id });
+  }
+
+  end(): void {
+    this.break();
   }
 }
 
@@ -67,55 +81,39 @@ export function writeView(writer: Writer, part: VendoViewPart): void {
 }
 
 /**
+ * §1.5 `error` → the screen's failure affordance. The ai-SDK error chunk is what
+ * the thread UI renders as a banner with Retry and (for a Vendo-shaped message) a
+ * detail line — the same affordance `createAgent`'s `onError` produces, carrying
+ * the same `wireErrorMessage` string, meter-exhausted sentence included.
+ */
+export function writeError(writer: Writer, message: string): void {
+  writer.write({ type: "error", errorText: message });
+}
+
+/**
  * Mirror one tool call onto the wire. Dynamic tools are the right shape: a
  * harness's tool set is resolved at runtime from the registry, exactly like the
- * agent bridge's `dynamicTool` calls today, so hosts render these with the
- * component they already have.
+ * agent bridge's `dynamicTool` calls, so hosts render these with the component
+ * they already have.
  */
 export function writeMirror(writer: Writer, event: MirrorEvent): void {
-  switch (event.kind) {
-    case "call":
-      writer.write({
-        type: "tool-input-start",
-        toolCallId: event.toolCallId,
-        toolName: event.name,
-        dynamic: true,
-      });
-      writer.write({
-        type: "tool-input-available",
-        toolCallId: event.toolCallId,
-        toolName: event.name,
-        input: event.args as unknown,
-        dynamic: true,
-      });
-      return;
-    case "result":
-      writeToolResult(writer, event.toolCallId, event.result);
-      return;
-    case "approval":
-      // Today's flat §16 approval part, beside the tool part, keyed by toolCallId
-      // — the same channel every consent surface already renders.
-      writer.write(
-        toVendoWirePart({
-          type: "data-vendo-approval",
-          toolCallId: event.toolCallId,
-          risk: event.risk,
-          approvalId: event.approvalId,
-        }) as never,
-      );
-      return;
-    case "connect":
-      writer.write(
-        toVendoWirePart({
-          type: "data-vendo-connect",
-          toolCallId: event.toolCallId,
-          connector: event.connect.connector,
-          toolkit: event.connect.toolkit,
-          message: event.connect.message,
-        }) as never,
-      );
-      return;
+  if (event.kind === "call") {
+    writer.write({
+      type: "tool-input-start",
+      toolCallId: event.toolCallId,
+      toolName: event.name,
+      dynamic: true,
+    });
+    writer.write({
+      type: "tool-input-available",
+      toolCallId: event.toolCallId,
+      toolName: event.name,
+      input: event.args as unknown,
+      dynamic: true,
+    });
+    return;
   }
+  writeToolResult(writer, event.toolCallId, event.result);
 }
 
 function writeToolResult(writer: Writer, toolCallId: string, result: ToolResult): void {
@@ -124,13 +122,10 @@ function writeToolResult(writer: Writer, toolCallId: string, result: ToolResult)
     return;
   }
   if (result.status === "denied") {
-    // `denied` is its own affordance on the wire: a refusal is not a failure, and
-    // rendering it as one would tell the user something went wrong when nothing did.
+    // `denied` is its own affordance: a refusal is not a failure, and rendering it
+    // as one would tell the user something went wrong when nothing did.
     writer.write({ type: "tool-output-denied", toolCallId });
     return;
   }
   writer.write({ type: "tool-output-error", toolCallId, errorText: result.error.message, dynamic: true });
 }
-
-/** Re-exported for the runtime's convenience so it never imports `ai` itself. */
-export type { ApprovalId, ConnectRequired, Json, RiskLabel, Writer };

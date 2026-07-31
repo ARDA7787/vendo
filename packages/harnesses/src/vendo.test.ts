@@ -323,6 +323,36 @@ describe("vendo() — subagent hiring (build-list item 4)", () => {
     expect(texts(events)).toContain("couldn't find");
   });
 
+  it("counts the specialist's tokens into the turn's usage (billing, not the story layer)", async () => {
+    const model = scriptedModel([
+      toolCallTurn("hire_subagent", { instructions: "big job" }),
+      // The specialist's own turn spends the bulk of the tokens.
+      textTurn("did the big job", {
+        inputTokens: { total: 90_000, noCache: 90_000, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 4_000, text: 4_000, reasoning: 0 },
+      }),
+      textTurn("All done.", {
+        inputTokens: { total: 1_000, noCache: 1_000, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 100, text: 100, reasoning: 0 },
+      }),
+    ]);
+    const hires: Array<{ usage: { inputTokens: number; outputTokens: number } }> = [];
+    const { events } = await drive({
+      harness: vendo({ onHire: (record) => hires.push(record) }),
+      models: seats(model),
+      skills,
+    });
+    const usage = events.find((event) => event.type === "usage") as
+      | Extract<HarnessEvent, { type: "usage" }>
+      | undefined;
+    // The resident alone would report 1,000/100 — 91% of the spend unmetered.
+    expect(usage?.inputTokens).toBe(91_000);
+    expect(usage?.outputTokens).toBe(4_100);
+    // And the hire itself is reported, so composition can audit that it happened.
+    expect(hires).toHaveLength(1);
+    expect(hires[0]!.usage).toEqual({ inputTokens: 90_000, outputTokens: 4_000 });
+  });
+
   it("a subagent cannot hire a subagent — depth is bounded", async () => {
     const model = scriptedModel([
       toolCallTurn("hire_subagent", { instructions: "outer" }),

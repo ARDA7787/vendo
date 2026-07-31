@@ -1,49 +1,36 @@
 /**
- * `vendo()` — the default harness: today's `@vendoai/agent` loop re-expressed on
- * the frozen contract. Same behaviour, in-process, key-free.
+ * `vendo()` — the default harness. NOT a second loop: it drives `startTurn` from
+ * @vendoai/agent, the same call `createAgent` drives, so every rail in that loop
+ * (the step cap, `buildFailedStop`, the history window, the cache breakpoints, the
+ * tool-search loadout, the step-limit notice) is shared rather than re-derived.
+ * @vendoai/agent's own 134 tests are the specification for it.
  *
- * What changed in the lift, and only this:
- * - tools execute through `turn.tools.call()`, so the guard, the audit row and
- *   the transcript mirror are no longer this file's business (they cannot be
- *   forgotten);
- * - approvals are §1.4's wait-or-fail INSIDE `call()`, so there is no
- *   `needsApproval` hook and no second consent path;
- * - output is the closed `HarnessEvent` vocabulary instead of wire chunks, so
- *   this file contains no persistence and no wire code;
- * - it hires its own subagents for big jobs. Weight and staffing are the
- *   harness's business — that is the dividing line, and orchestration is thinking.
+ * What the lift changes, and only this:
+ * - tools execute through `turn.tools.call()`, which runs the SHIPPED guarded-call
+ *   path — so the guard, the audit row, the view channel and the transcript mirror
+ *   are not this file's business and cannot be forgotten;
+ * - approvals are §1.4's wait-or-fail inside `call()`, so there is no
+ *   `needsApproval` hook here and no second consent path;
+ * - output is the closed `HarnessEvent` vocabulary instead of wire chunks, so this
+ *   file contains no persistence and no wire code;
+ * - it hires its own subagents for big jobs. Weight and staffing are the harness's
+ *   business — that is the dividing line, and orchestration is thinking.
  */
 import { z } from "zod";
-import type { Harness, Json, ToolDescriptor, Turn } from "@vendoai/core";
-import {
-  jsonSchema,
-  stepCountIs,
-  streamText,
-  tool,
-  type LanguageModel,
-  type ModelMessage,
-  type ToolSet,
-  type UIMessage,
-} from "ai";
-import { convertToModelMessages } from "ai";
+import type { Harness, HarnessEvent, Json, ToolDescriptor, Turn } from "@vendoai/core";
+import { startTurn, wireErrorMessage } from "@vendoai/agent";
+import { jsonSchema, stepCountIs, streamText, tool, type LanguageModel, type ToolSet } from "ai";
 import { defineHarness } from "./define.js";
-
-/** Unchanged from today's loop (`DEFAULT_MAX_STEPS`): hosts raise or lower it. */
-const DEFAULT_MAX_STEPS = 20;
 
 /** How many messages a hired subagent may exchange before it must report back.
  *  Bounded so a runaway helper costs a receipt, not a turn. */
 const SUBAGENT_MAX_STEPS = 12;
 
-/** Anthropic prompt-caching breakpoint. `providerOptions.anthropic` is ignored by
- *  every other provider, so marking breakpoints degrades to a no-op. */
-const CACHE_BREAKPOINT = { anthropic: { cacheControl: { type: "ephemeral" } } } as const;
-
 const HIRE_SUBAGENT = "hire_subagent";
 
 /**
- * The per-turn knobs. `model` is here because a host may forward a model picker
- * to its end users (architecture §3, "Options are declared, then overridable per
+ * The per-turn knobs. `model` is here because a host may forward a model picker to
+ * its end users (architecture §3, "Options are declared, then overridable per
  * turn"); everything else defaults.
  */
 const optionsSchema = z.object({
@@ -73,11 +60,28 @@ export interface VendoHarnessDeps {
    * argument schemas or it degrades badly. Rather than diverge from the frozen
    * shape, the descriptor catalog — which is OURS, not thinking — arrives by
    * factory closure. Execution still goes through `turn.tools.call()` only, so
-   * there is no unguarded path. Unset, the model gets names and descriptions and
-   * a permissive object schema.
+   * there is no unguarded path.
    */
   descriptors?: () => Promise<ToolDescriptor[]>;
   maxSteps?: number;
+  /**
+   * Called once per hired specialist, so the hire is not invisible: composition
+   * turns it into an audit row and a consumer-voice receipt line.
+   *
+   * A hire is the harness's own staffing decision, so it does NOT pass through
+   * `turn.tools` and the guard therefore never sees that it happened — only the
+   * specialist's guarded CALLS are audited. That is the honest gap: a `Turn`
+   * carries no guard (harnesses are permission-blind by design) and
+   * `HarnessEvent` is closed with no transcript-only member, so a harness cannot
+   * write either record itself. This hook is the minimum seam that lets
+   * composition write both. ESCALATED: closing it properly needs either a
+   * `HarnessEvent` receipt member or a runtime-level staffing hook.
+   */
+  onHire?: (record: {
+    skill?: string;
+    summary: string;
+    usage: { inputTokens: number; outputTokens: number };
+  }) => void;
 }
 
 /** A tool the model may call whose execution is `turn.tools.call` and nothing else. */
@@ -87,27 +91,34 @@ function equippedTools(turn: Turn<unknown>, descriptors: ToolDescriptor[]): Tool
     tools[descriptor.name] = tool({
       description: descriptor.description,
       inputSchema: jsonSchema(descriptor.inputSchema as Parameters<typeof jsonSchema>[0]),
-      // The whole safety story in one line: the guard, the audit row, the
-      // transcript mirror and §1.4's approval block all live behind `call()`.
+      // The whole safety story in one line: the guard, the audit row, the view
+      // channel, the transcript mirror and §1.4's approval block all live behind
+      // `call()`.
       execute: async (input: unknown) => turn.tools.call(descriptor.name, input as Json),
     });
   }
   return tools;
 }
 
+interface SubagentReport {
+  summary: string;
+  /** Every token a hired specialist spent. Unmetered subagents are the bulk of a
+   *  build turn's inference, so this is not optional bookkeeping. */
+  usage: { inputTokens: number; outputTokens: number };
+}
+
 /**
  * A hired subagent: a fresh, blinkered loop with the same hands and the same
  * guard, whose OWN words never leave this function. The resident keeps only the
- * receipt — which is its private context, not a wire artifact, so the
- * one-assistant law holds without a transcript-only channel (§1.5's routing table
- * has none, deliberately).
+ * receipt — its private context, not a wire artifact, so the one-assistant law
+ * holds without a transcript-only channel (§1.5's routing table has none).
  */
 async function runSubagent(
   turn: Turn<unknown>,
   model: LanguageModel,
   input: { instructions: string; skill?: string },
   tools: ToolSet,
-): Promise<string> {
+): Promise<SubagentReport> {
   let brief = input.instructions;
   if (input.skill !== undefined) {
     // The full SKILL.md body is the job description; loading it is the point of
@@ -126,8 +137,11 @@ async function runSubagent(
     stopWhen: [stepCountIs(SUBAGENT_MAX_STEPS)],
     abortSignal: turn.signal,
   });
-  const text = await result.text;
-  return text.trim() || "The specialist finished without a summary.";
+  const [text, usage] = await Promise.all([result.text, result.totalUsage]);
+  return {
+    summary: text.trim() || "The specialist finished without a summary.",
+    usage: { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 },
+  };
 }
 
 export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions> {
@@ -141,11 +155,12 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
       if (turn.signal.aborted) return;
 
       const model = turn.options?.model ?? turn.models.default;
-      const maxSteps = turn.options?.maxSteps ?? deps.maxSteps ?? DEFAULT_MAX_STEPS;
-      const system = typeof deps.system === "function" ? await deps.system() : deps.system;
+      const system = (typeof deps.system === "function" ? await deps.system() : deps.system) ?? "";
 
       const descriptors = (await deps.descriptors?.()) ?? [];
       const hostTools = equippedTools(turn, descriptors);
+      /** Subagent tokens, drained onto the turn's usage after the stream ends. */
+      const hiredUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
       const residentTools: ToolSet = {
         ...hostTools,
         [HIRE_SUBAGENT]: tool({
@@ -159,10 +174,17 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
           execute: async (input) => {
             try {
               // The specialist gets the same hands, minus the hiring tool.
-              return { summary: await runSubagent(turn, model, input, hostTools) };
+              const report = await runSubagent(turn, model, input, hostTools);
+              hiredUsage.push(report.usage);
+              deps.onHire?.({
+                ...(input.skill === undefined ? {} : { skill: input.skill }),
+                summary: report.summary,
+                usage: report.usage,
+              });
+              return { summary: report.summary };
             } catch (error) {
-              // A failed hire is one tool result the resident can react to — it
-              // is never the turn's death.
+              // A failed hire is one tool result the resident can react to — never
+              // the turn's death.
               console.error("[vendo] harness: subagent failed", {
                 error: error instanceof Error ? error.message : String(error),
               });
@@ -172,38 +194,68 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
         }),
       };
 
-      const modelMessages = await residentHistory(turn.messages, system);
-
-      let capped = false;
+      let loop: Awaited<ReturnType<typeof startTurn>>;
       try {
-        const result = streamText({
+        // THE shipped loop. Every rail lives in it, so this harness cannot drift
+        // from `createAgent` on any of them.
+        loop = await startTurn({
           model,
-          messages: modelMessages,
+          system,
+          messages: [...turn.messages],
           tools: residentTools,
-          stopWhen: [stepCountIs(maxSteps)],
-          abortSignal: turn.signal,
+          signal: turn.signal,
+          ...(turn.options?.maxSteps ?? deps.maxSteps) === undefined
+            ? {}
+            : { context: { maxSteps: turn.options?.maxSteps ?? deps.maxSteps } },
         });
+      } catch (error) {
+        yield { type: "error", message: wireErrorMessage(error), code: "model" };
+        return;
+      }
 
-        for await (const part of result.fullStream) {
+      try {
+        for await (const part of loop.result.fullStream) {
           switch (part.type) {
             case "text-delta":
               yield { type: "text", delta: part.text };
               break;
             case "error":
-              // The model/provider error itself never travels (it can carry
-              // request internals); the operator's terminal gets the truth.
-              console.error("[vendo] harness: model stream error", part.error);
-              yield { type: "error", message: "I ran into a problem answering that.", code: "model" };
+              // `wireErrorMessage` is the SHIPPED formatter: a Vendo-shaped error
+              // keeps its message and code, the Cloud meter's 402 becomes the
+              // sentence with figures, reset date and both exits, and anything
+              // else stays the fixed generic string. Provider internals never
+              // travel; the operator's terminal gets the real error.
+              yield { type: "error", message: wireErrorMessage(part.error), code: "model" };
               break;
+            case "tool-error":
+              // A thrown or malformed tool call is a real failure the user must be
+              // told about — swallowing it left the turn looking finished.
+              // (`tool-input-error` is a UI-stream chunk, not a fullStream part;
+              // the SDK surfaces that class here as `tool-error` too.)
+              yield { type: "error", message: wireErrorMessage(part.error), code: "tool" };
+              break;
+            case "abort":
+              // The caller hung up: stop cleanly, say nothing.
+              return;
             case "finish": {
               // `model` is left unset: the contract's field is optional, and the
               // resolved model id is not on this part — composition, which chose
               // the seat, is the honest place to attribute it.
               const { inputTokens, outputTokens, inputTokenDetails } = part.totalUsage;
+              const hired = hiredUsage.reduce(
+                (total, one) => ({
+                  inputTokens: total.inputTokens + one.inputTokens,
+                  outputTokens: total.outputTokens + one.outputTokens,
+                }),
+                { inputTokens: 0, outputTokens: 0 },
+              );
               yield {
                 type: "usage",
-                inputTokens: inputTokens ?? 0,
-                outputTokens: outputTokens ?? 0,
+                // Subagent tokens are the bulk of a build turn's inference;
+                // billing that counted only the resident would under-report by
+                // most of the spend.
+                inputTokens: (inputTokens ?? 0) + hired.inputTokens,
+                outputTokens: (outputTokens ?? 0) + hired.outputTokens,
                 ...(inputTokenDetails.cacheReadTokens === undefined
                   ? {}
                   : { cacheReadTokens: inputTokenDetails.cacheReadTokens }),
@@ -214,59 +266,24 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
               break;
             }
             default:
-              // Tool chunks are consumed here and dropped: the RUNTIME mirrors
-              // tool calls (§1.5), so echoing them would double every call.
+              // Tool call/result chunks are consumed here and dropped: the RUNTIME
+              // mirrors them (§1.5), so echoing them would double every call.
               break;
           }
         }
-
-        const [finishReason, steps] = await Promise.all([result.finishReason, result.steps]);
-        capped = finishReason === "tool-calls" && steps.length >= maxSteps;
       } catch (error) {
-        console.error("[vendo] harness: turn failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        yield { type: "error", message: "I ran into a problem answering that.", code: "model" };
+        yield { type: "error", message: wireErrorMessage(error), code: "model" };
         return;
       }
 
-      if (capped) {
-        // Exhausting the cap is VISIBLE (today's `data-vendo-step-limit`
-        // banner). `HarnessEvent` is closed and has no member for it, so it goes
-        // out in the assistant's own voice — screen AND transcript, which is what
-        // the banner did.
-        yield {
-          type: "text",
-          delta:
-            `\n\nI stopped after reaching the ${maxSteps}-step limit for one turn. `
-            + "Reply to continue.",
-        };
+      const stepLimit = await loop.stepLimitPart();
+      if (stepLimit !== undefined) {
+        // Exhausting the cap is VISIBLE (today's `data-vendo-step-limit` banner).
+        // `HarnessEvent` is closed and has no member for it, so it goes out in the
+        // assistant's own voice — screen AND transcript, which is what the banner
+        // did. The sentence is the loop's, so both callers say the same thing.
+        yield { type: "text", delta: `\n\n${stepLimit.message}` };
       }
     },
   });
-}
-
-/**
- * The resident's provider history — unchanged from today's loop: the assembled
- * system prompt and the stable history prefix carry cache breakpoints, so
- * Anthropic re-reads the cached prefix instead of re-billing the whole growing
- * thread each turn.
- */
-async function residentHistory(
-  messages: readonly UIMessage[],
-  system: string | undefined,
-): Promise<ModelMessage[]> {
-  const converted = (await convertToModelMessages([...messages])).filter(
-    (message) => message.content.length > 0,
-  );
-  if (converted.length >= 2) {
-    const prefixEnd = converted[converted.length - 2] as ModelMessage;
-    prefixEnd.providerOptions = { ...prefixEnd.providerOptions, ...CACHE_BREAKPOINT };
-  }
-  return [
-    ...(system === undefined || system.length === 0
-      ? []
-      : [{ role: "system" as const, content: system, providerOptions: CACHE_BREAKPOINT }]),
-    ...converted,
-  ];
 }

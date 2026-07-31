@@ -1,17 +1,16 @@
 import type {
   ApprovalId,
-  ConnectRequired,
   Guard,
   Json,
-  RiskLabel,
   RunContext,
-  ToolCall,
+  ToolDescriptor,
   ToolListing,
   ToolOutcome,
   ToolRegistry,
   ToolResult,
   TurnTools,
 } from "@vendoai/core";
+import { guardedCall, previewApproval, type ToolBridgeOptions } from "@vendoai/agent";
 
 /**
  * Build contract §1.4 — the frozen bound on an interactive approval wait. A
@@ -23,14 +22,14 @@ export const APPROVAL_WAIT_MS = 90_000;
 /**
  * What the runtime writes to the transcript and the screen on the harness's
  * behalf (build contract §1.5: "Tool calls are mirrored by the runtime, never
- * yielded"). One seam, so the wire code stays in wire.ts and the guard/approval
- * logic stays here.
+ * yielded"). This is the ai-SDK tool-part mirror ONLY — the `data-vendo-*` parts
+ * (view, approval, connect, build-failed, citations) are written by the SHIPPED
+ * bridge inside `guardedCall`/`previewApproval`, so a harness produces the
+ * identical wire a `createAgent` turn does.
  */
 export type MirrorEvent =
   | { kind: "call"; toolCallId: string; name: string; args: Json }
-  | { kind: "result"; toolCallId: string; name: string; result: ToolResult }
-  | { kind: "approval"; toolCallId: string; approvalId: ApprovalId; risk: RiskLabel }
-  | { kind: "connect"; toolCallId: string; connect: ConnectRequired };
+  | { kind: "result"; toolCallId: string; name: string; result: ToolResult };
 
 export interface TurnToolsOptions {
   /** The GUARD-BOUND registry (`VendoGuard.bind(tools)`) — the one choke point.
@@ -41,29 +40,36 @@ export interface TurnToolsOptions {
   /** §1.4: did the caller prove presence? Decides wait-or-fail, nothing else. */
   interactive: boolean;
   mirror: (event: MirrorEvent) => void;
+  /** The rest of the shipped bridge's rails: the writer the `data-vendo-*` parts
+   *  go to, `toolOutputCap`, `preflight`, the per-turn `connectCards` dedupe set,
+   *  and the capability-miss `onCall` hook. */
+  bridge?: Omit<ToolBridgeOptions, "registry" | "ctx" | "guard">;
   /** Test seam only — production always uses {@link APPROVAL_WAIT_MS}. */
   approvalWaitMs?: number;
 }
 
-/** A tool call the harness asked for, in the id space the wire already uses. */
 let counter = 0;
 const mintToolCallId = (): string => `hcall_${(counter += 1)}_${globalThis.crypto.randomUUID()}`;
 
 /**
- * §1.4's race: the approvalId only exists once `execute()` has returned, but the
- * user's tap can land in that same tick. Subscribing to every decision for the
- * whole turn and buffering the ones nobody is waiting for yet is what makes the
- * wait reliable; a late subscribe would hang until the timeout.
+ * §1.4's race: the approvalId only exists once the guard has been consulted, but
+ * the user's tap can land in that same tick. Subscribing to every decision for
+ * the whole turn and buffering the ones nobody is waiting for yet is what makes
+ * the wait reliable; a late subscribe would hang until the timeout.
  */
 export interface ApprovalWaiter {
   /** Resolves true/false with the decision, or undefined if the bound expired. */
   wait(approvalId: ApprovalId, timeoutMs: number): Promise<boolean | undefined>;
+  /** Approvals this turn raised that nobody answered — the runtime abandons them
+   *  at turn end, so a live-but-dead card cannot accrete in the pending queue. */
+  unanswered(): ApprovalId[];
   dispose(): void;
 }
 
 export function createApprovalWaiter(guard: Guard): ApprovalWaiter {
   const decided = new Map<ApprovalId, boolean>();
   const waiting = new Map<ApprovalId, (approved: boolean) => void>();
+  const raised = new Set<ApprovalId>();
   const unsubscribe = guard.onApprovalDecision((id, approved) => {
     decided.set(id, approved);
     const resolve = waiting.get(id);
@@ -74,6 +80,7 @@ export function createApprovalWaiter(guard: Guard): ApprovalWaiter {
   });
   return {
     async wait(approvalId, timeoutMs) {
+      raised.add(approvalId);
       const already = decided.get(approvalId);
       if (already !== undefined) return already;
       return new Promise<boolean | undefined>((resolve) => {
@@ -87,6 +94,7 @@ export function createApprovalWaiter(guard: Guard): ApprovalWaiter {
         });
       });
     },
+    unanswered: () => [...raised].filter((id) => !decided.has(id)),
     dispose: unsubscribe,
   };
 }
@@ -120,26 +128,27 @@ function toToolResult(outcome: Exclude<ToolOutcome, { status: "pending-approval"
   }
 }
 
-export function createTurnTools(options: TurnToolsOptions): TurnTools & { dispose(): void } {
+export interface RuntimeTurnTools extends TurnTools {
+  /** §1.4 + the orphaned-approval fix: ids this turn raised and nobody answered. */
+  unansweredApprovals(): ApprovalId[];
+  dispose(): void;
+}
+
+export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
   const waiter = createApprovalWaiter(options.guard);
   const approvalWaitMs = options.approvalWaitMs ?? APPROVAL_WAIT_MS;
-
-  const riskOf = async (name: string): Promise<RiskLabel> => {
-    try {
-      const descriptors = await options.registry.descriptors();
-      return descriptors.find((descriptor) => descriptor.name === name)?.risk ?? "write";
-    } catch {
-      // An unreadable catalog must not decide the call; assume the middle risk
-      // for the CARD only — the guard already made the real decision.
-      return "write";
-    }
+  const bridge: ToolBridgeOptions = {
+    ...options.bridge,
+    registry: options.registry,
+    ctx: options.ctx,
+    guard: options.guard,
   };
 
-  const execute = async (call: ToolCall): Promise<ToolOutcome> => {
+  const descriptorFor = async (name: string): Promise<ToolDescriptor | undefined> => {
     try {
-      return await options.registry.execute(call, options.ctx);
+      return (await options.registry.descriptors()).find((descriptor) => descriptor.name === name);
     } catch {
-      return { status: "error", error: { code: "execution", message: "The action could not be completed." } };
+      return undefined;
     }
   };
 
@@ -156,7 +165,7 @@ export function createTurnTools(options: TurnToolsOptions): TurnTools & { dispos
       }));
     },
 
-    async call(name, args, opts): Promise<ToolResult> {
+    async call(name, args): Promise<ToolResult> {
       const toolCallId = mintToolCallId();
       options.mirror({ kind: "call", toolCallId, name, args });
       const finish = (result: ToolResult): ToolResult => {
@@ -165,68 +174,75 @@ export function createTurnTools(options: TurnToolsOptions): TurnTools & { dispos
       };
 
       try {
-        // `idempotencyKey` rides the call so the guard's effect ledger (contract
-        // §7, written inside the guard's execute path) can key on the harness's
-        // own notion of "the same action". `toolCallSchema` is passthrough, so
-        // it survives validation; no wave-1 consumer reads it yet.
-        const call: ToolCall = {
-          id: toolCallId,
-          tool: name,
-          args,
-          ...(opts?.idempotencyKey === undefined ? {} : { idempotencyKey: opts.idempotencyKey }),
-        };
+        const descriptor = await descriptorFor(name);
+        if (descriptor === undefined) {
+          return finish({
+            status: "error",
+            error: { code: "not-found", message: `Unknown tool: ${name}` },
+          });
+        }
 
-        const outcome = await execute(call);
-        if (outcome.status !== "pending-approval") {
-          if (outcome.status === "connect-required") {
-            options.mirror({ kind: "connect", toolCallId, connect: outcome.connect });
+        // §1.4: PREVIEW first, exactly as the ai-SDK path's needsApproval hook
+        // does. A preview never spends the write-budget/call-rate breakers and
+        // never runs the judge a second time, so an approved call is executed
+        // ONCE below rather than executed-then-re-executed.
+        let approvalId: ApprovalId | undefined;
+        const ask = await previewApproval(descriptor, bridge, (id) => {
+          approvalId = id;
+        })(args, { toolCallId });
+
+        if (ask) {
+          if (!options.interactive) {
+            // Nobody is here to tap, so the run fails loudly and the card stands
+            // as the grant "Grant & re-run" will collect.
+            return finish({
+              status: "denied",
+              reason: "This needs your approval, and nobody is here to give it.",
+              ...(approvalId === undefined
+                ? {}
+                : { needs: { kind: "approval" as const, approvalId } }),
+            });
           }
-          return finish(toToolResult(outcome));
+          if (approvalId === undefined) {
+            // The guard failed closed and minted no id to wait on.
+            return finish({
+              status: "denied",
+              reason: "This needs approval, and the check could not run.",
+            });
+          }
+          const approved = await waiter.wait(approvalId, approvalWaitMs);
+          if (approved === undefined) {
+            return finish({
+              status: "denied",
+              reason: "The approval timed out.",
+              needs: { kind: "approval", approvalId },
+            });
+          }
+          if (!approved) return finish({ status: "denied", reason: "You turned this down." });
         }
 
-        // §1.4. The card goes up either way: interactive callers tap it here,
-        // and an unattended run leaves it standing as the failure card's grant.
-        const { approvalId } = outcome;
-        options.mirror({ kind: "approval", toolCallId, approvalId, risk: await riskOf(name) });
-
-        if (!options.interactive) {
-          return finish({
-            status: "denied",
-            reason: "This needs your approval, and nobody is here to give it.",
-            needs: { kind: "approval", approvalId },
-          });
-        }
-
-        const approved = await waiter.wait(approvalId, approvalWaitMs);
-        if (approved === undefined) {
-          return finish({
-            status: "denied",
-            reason: "The approval timed out.",
-            needs: { kind: "approval", approvalId },
-          });
-        }
-        if (!approved) {
-          return finish({ status: "denied", reason: "You turned this down." });
-        }
-        // The tap happened, so the call continues: re-entering the guard-bound
-        // registry is what makes the grant real. No replay, no cached effect.
-        const settled = await execute({ ...call, id: toolCallId });
-        if (settled.status === "pending-approval") {
+        // The SHIPPED guarded-call path: the guard, the audit row, the view
+        // channel (a `vendo_apps_*` tree plus the VENDO_VIEW_STREAM partials),
+        // the connect card, the build-failed banner, the citations part and
+        // `toolOutputCap` all come from here — never a second implementation.
+        const outcome = await guardedCall(descriptor, bridge)(args, { toolCallId });
+        if (outcome.status === "pending-approval") {
           // The guard asked twice for one tap; refusing to loop is the honest
           // answer (a second card for the same call would be a trap).
           return finish({
             status: "denied",
             reason: "This still needs approval.",
-            needs: { kind: "approval", approvalId: settled.approvalId },
+            needs: { kind: "approval", approvalId: outcome.approvalId },
           });
         }
-        return finish(toToolResult(settled));
+        return finish(toToolResult(outcome));
       } catch {
         // §1.1: call() never throws. A bug anywhere above becomes a result.
         return finish(executionError());
       }
     },
 
+    unansweredApprovals: waiter.unanswered,
     dispose: waiter.dispose,
   };
 }

@@ -201,16 +201,21 @@ describe("routing — status → screen ONLY", () => {
 describe("routing — error → screen + transcript + audit", () => {
   const boom: HarnessEvent = { type: "error", message: "I couldn't reach your bank.", code: "upstream" };
 
-  it("reaches the screen", async () => {
+  it("raises today's ai-SDK error chunk — the banner, Retry and detail line", async () => {
     const f = fixture();
     const parts = await f.run(scripted([boom]));
-    expect(JSON.stringify(parts)).toContain("I couldn't reach your bank.");
+    const error = parts.find((part) => part.type === "error");
+    expect(error).toEqual({ type: "error", errorText: "I couldn't reach your bank." });
   });
 
-  it("reaches the transcript", async () => {
+  it("does NOT splice the sentence into the assistant's prose", async () => {
     const f = fixture();
-    await f.run(scripted([boom]));
-    expect(JSON.stringify(await persisted(f))).toContain("I couldn't reach your bank.");
+    const parts = await f.run(scripted([{ type: "text", delta: "Let me look. " }, boom]));
+    const said = parts
+      .filter((part) => part.type === "text-delta")
+      .map((part) => part.delta)
+      .join("");
+    expect(said).toBe("Let me look. ");
   });
 
   it("reaches the audit trail", async () => {
@@ -453,13 +458,27 @@ describe("turn.state across turns (§1.3)", () => {
     const harnessState = memoryHarnessStateStore();
     const f = fixture({ harnessState });
     const seen: Array<string | undefined> = [];
-    await f.run(remembering("vendo", seen));
-    // The first user message comes back rewritten — the harness's session no
-    // longer describes the conversation we hold.
     await f.run(remembering("vendo", seen), {
-      messages: [userMessage("m1", "something entirely different")],
+      messages: [userMessage("m1", "hello"), userMessage("m2", "second")],
+    });
+    const history = await persisted(f);
+    // A message deleted from the MIDDLE: `validateUpsert` permits it (nothing is
+    // rewritten) but the conversation the harness's session describes no longer
+    // exists, so the session must go.
+    await f.run(remembering("vendo", seen), {
+      messages: [history[0]!, ...history.slice(2)],
     });
     expect(seen).toEqual([undefined, undefined]);
+  });
+
+  it("a client that rewrites history is REJECTED, not silently accepted", async () => {
+    const f = fixture();
+    await f.run(scripted([{ type: "text", delta: "hi" }]));
+    // The shipped rule: a caller may add fresh user messages and answer
+    // approvals. Rewriting an existing one is a history-forging attempt.
+    await expect(
+      f.runRaw(scripted([]), { messages: [userMessage("m1", "something entirely different")] }),
+    ).rejects.toThrow(/cannot be rewritten/);
   });
 
   it("a prefix truncation keeps it — the harness rewinds natively", async () => {
