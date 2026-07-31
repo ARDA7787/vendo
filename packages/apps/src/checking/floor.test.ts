@@ -170,6 +170,79 @@ describe("the floor holds regardless of the builder", () => {
   });
 });
 
+describe("a check with no kind is a FACT check and still fires (F1)", () => {
+  // The floor is a safety floor. Anything that is not explicitly a judgment
+  // rule is code we run: a check that quietly stops firing is the worst
+  // failure mode this file has, and a legacy host check predates `kind`.
+  const legacy = {
+    name: "legacy-host-check",
+    run: async () => [{ severity: "block", where: "document", message: "the legacy check fired" }],
+  } as unknown as Check;
+
+  it("runs it and reports its findings", async () => {
+    const layer = createCheckingLayer({ deps: deps(), checks: [legacy] });
+
+    expect(await layer.run(inputFor(GOOD))).toContainEqual({
+      severity: "block",
+      where: "document",
+      message: "the legacy check fired",
+    });
+  });
+
+  it("keeps it out of the rubric — a kind-less check is code, not a rule", () => {
+    expect(createCheckingLayer({ deps: deps(), checks: [legacy] }).rubric).toEqual([]);
+  });
+});
+
+describe("a check returning garbage costs its findings, never the build (F9)", () => {
+  const returning = (value: unknown): Check =>
+    ({ name: "sloppy", run: async () => value } as unknown as Check);
+
+  it("turns a check that returns undefined into one warn", async () => {
+    const findings = await createCheckingLayer({ deps: deps(), checks: [returning(undefined)] }).run(inputFor(GOOD));
+
+    expect(findings).toEqual([{
+      severity: "warn",
+      where: "sloppy",
+      message: 'the check "sloppy" did not report a list of findings, so whatever it would have found is missing from this report',
+    }]);
+  });
+
+  it("turns a check that returns a non-array into one warn", async () => {
+    const findings = await createCheckingLayer({ deps: deps(), checks: [returning({ severity: "block" })] }).run(inputFor(GOOD));
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.severity).toBe("warn");
+  });
+
+  it("keeps the well-formed findings and warns about the malformed ones", async () => {
+    // Never lose a real block to a neighbour's bad entry.
+    const mixed = returning([
+      { severity: "block", where: "document", message: "a real finding" },
+      { severity: "catastrophe", message: "not a severity" },
+      null,
+    ]);
+
+    const findings = await createCheckingLayer({ deps: deps(), checks: [mixed] }).run(inputFor(GOOD));
+
+    expect(findings).toContainEqual({ severity: "block", where: "document", message: "a real finding" });
+    expect(findings).toContainEqual({
+      severity: "warn",
+      where: "sloppy",
+      message: 'the check "sloppy" reported 2 findings in a shape this floor cannot read, so whatever they said is missing from this report',
+    });
+  });
+
+  it("never lets a malformed entry reach a consumer that reads severity", async () => {
+    const findings = await createCheckingLayer({ deps: deps(), checks: [returning([undefined])] }).run(inputFor(GOOD));
+
+    for (const finding of findings) {
+      expect(["block", "warn"]).toContain(finding.severity);
+      expect(typeof finding.message).toBe("string");
+    }
+  });
+});
+
 describe("a broken check costs its findings, never the build", () => {
   it("turns a throwing fact check into exactly one warn and blocks nothing", async () => {
     const layer = createCheckingLayer({

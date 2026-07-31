@@ -27,9 +27,6 @@ const memoryFs = (initial: Record<string, string> = {}): SkillsFs & { paths(): s
       if (content === undefined) throw new Error(`ENOENT: no such file, open '${path}'`);
       return content;
     },
-    async exists(path: string): Promise<boolean> {
-      return files.has(path) || dirs.has(path);
-    },
     getAllPaths(): string[] {
       return [...dirs, ...files.keys()];
     },
@@ -108,6 +105,89 @@ describe("hostSkillFiles — the /host projection, not stored rows", () => {
 
   it("projects nothing for no skills", () => {
     expect(hostSkillFiles([])).toEqual({});
+  });
+});
+
+describe("load() is not an arbitrary-read primitive (F3)", () => {
+  // `load(name)` takes a MODEL-SUPPLIED name and turns it into a path. The
+  // guard is not a pattern here but the mount itself: only a name that really
+  // is a mounted skill directory can be loaded, so no traversal, absolute path,
+  // or dotted segment can name a file — whatever the filesystem does with dots.
+  const escapes = [
+    "../../user/apps/app_1/app.vendo",
+    "..",
+    "./building-apps",
+    "/etc/passwd",
+    "a/../../b",
+    "building-apps/../../../secrets",
+  ];
+
+  for (const name of escapes) {
+    it(`refuses to load ${JSON.stringify(name)}`, async () => {
+      // A filesystem that happily normalizes dots and serves anything asked for
+      // — the hostile case the guard has to hold against.
+      const permissive: SkillsFs = {
+        async readFile() { return "SECRET"; },
+        getAllPaths() { return [skillPath("building-apps")]; },
+      };
+
+      await expect(createTurnSkills(permissive).load(name)).rejects.toThrow(/no skill named/);
+    });
+  }
+
+  it("still loads a legitimately mounted skill", async () => {
+    const fs = mounted(skill("building-apps", "Real.", "body\n"));
+    expect(await createTurnSkills(fs).load("building-apps")).toBe("body\n");
+  });
+
+  it("refuses a name that a permissive fs would resolve but that nothing mounted", async () => {
+    const fs = mounted(skill("building-apps", "Real.", "body\n"));
+    await expect(createTurnSkills(fs).load("house-style")).rejects.toThrow(/house-style/);
+  });
+});
+
+describe("descriptions stay on one frontmatter line (F8)", () => {
+  it("escapes a newline so the YAML frontmatter is still parseable", async () => {
+    const description = "First line.\nSecond line.";
+    const rendered = renderSkillMd(skill("multi", description, "body\n"));
+
+    // Exactly four frontmatter lines: ---, name, description, ---.
+    expect(rendered.split("\n").slice(0, 4)).toEqual([
+      "---",
+      'name: "multi"',
+      'description: "First line.\\nSecond line."',
+      "---",
+    ]);
+  });
+
+  it("reads the description back with its newline intact", async () => {
+    const description = "First line.\nSecond line.";
+    const fs = mounted(skill("multi", description, "body\n"));
+
+    expect(await createTurnSkills(fs).list()).toEqual([{ name: "multi", description }]);
+  });
+
+  it("escapes tabs and carriage returns too", async () => {
+    const description = "a\tb\r\nc";
+    const fs = mounted(skill("ws", description, "body\n"));
+
+    // The frontmatter is still exactly four lines — no raw whitespace escaped in.
+    expect(renderSkillMd(skill("ws", description, "body\n")).split("\n").slice(0, 4)).toEqual([
+      "---",
+      'name: "ws"',
+      'description: "a\\tb\\r\\nc"',
+      "---",
+    ]);
+    expect(await createTurnSkills(fs).list()).toEqual([{ name: "ws", description }]);
+  });
+
+  it("roundtrips a description that carries a literal backslash-n", async () => {
+    // The escape must be reversible, not lossy: "\\n" as TEXT must not come
+    // back as a newline.
+    const description = String.raw`the literal \n, not a newline`;
+    const fs = mounted(skill("literal", description, "body\n"));
+
+    expect(await createTurnSkills(fs).list()).toEqual([{ name: "literal", description }]);
   });
 });
 

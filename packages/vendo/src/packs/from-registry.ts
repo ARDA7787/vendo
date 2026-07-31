@@ -5,12 +5,17 @@
  * through the public `Pack.tools` slot instead of being added to the tool
  * registry by a privileged path. The tools themselves are untouched: the whole
  * call — arguments and anything riding on it, like the app-create view-stream
- * bridge — is handed to the registry exactly as it arrived.
+ * bridge — is handed to the registry exactly as it arrived, and the OUTCOME
+ * comes back exactly as the registry authored it.
  *
- * The one translation is the return: a pack tool answers with output or throws,
- * because the denial statuses belong to the guard that wraps every tool. A
- * registry that produced one anyway would be a bug, so it surfaces as an error
- * naming what happened rather than as a silent success.
+ * That last part is why {@link PACK_TOOL_REGISTRY} exists. A pack tool's own
+ * `execute` answers with output or throws, because the denial statuses belong to
+ * the guard; squeezing a registry's five-status outcome through that channel
+ * flattens `blocked`, `connect-required` and `pending-approval` into errors and
+ * rewrites every error code as "validation". Codes reach the model and the audit
+ * row, so the merge dispatches straight to the backing registry when this marker
+ * is present. `execute` stays implemented as an honest lossy fallback, for any
+ * consumer that reads the definition without knowing about the marker.
  */
 import {
   VendoError,
@@ -20,6 +25,14 @@ import {
   type ToolOutcome,
   type ToolRegistry,
 } from "@vendoai/core";
+
+/** Marks a pack tool whose real implementation is a `ToolRegistry`, so the merge
+ *  can hand the call over and return its outcome verbatim. */
+export const PACK_TOOL_REGISTRY = Symbol.for("@vendoai/vendo/pack-tool-registry");
+
+/** The registry behind a pack tool, when there is one. */
+export const backingRegistry = (definition: ToolDefinition): (() => ToolRegistry) | undefined =>
+  (definition as { [PACK_TOOL_REGISTRY]?: () => ToolRegistry })[PACK_TOOL_REGISTRY];
 
 const unwrap = (name: string, outcome: ToolOutcome): Json => {
   switch (outcome.status) {
@@ -49,5 +62,6 @@ export const toolsFromRegistry = (
   descriptors: readonly ToolDescriptor[],
 ): ToolDefinition[] => descriptors.map((descriptor) => ({
   ...descriptor,
+  [PACK_TOOL_REGISTRY]: registry,
   execute: async (_input, context, call) => unwrap(descriptor.name, await registry().execute(call, context)),
 }));

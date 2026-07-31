@@ -83,9 +83,14 @@ export interface CheckInput {
  * - `fact` — decidable by looking things up, so it is plain code the floor runs.
  * - `judgment` — a rule only a reader can apply, so it is one sentence that
  *   joins the reviewer's rubric as its own line.
+ *
+ * `kind` is OPTIONAL on the fact variant and absence means `"fact"`: checks
+ * predate this field, and the floor is a safety floor. Anything that is not
+ * explicitly a judgment rule is code we run — a check that silently stops
+ * firing is the worst failure this contract could allow.
  */
 export type Check =
-  | { name: string; kind: "fact"; run(input: CheckInput): Promise<Finding[]> }
+  | { name: string; kind?: "fact"; run(input: CheckInput): Promise<Finding[]> }
   | { name: string; kind: "judgment"; rule: string };
 
 export interface Pack {

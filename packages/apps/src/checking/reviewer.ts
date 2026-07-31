@@ -124,12 +124,27 @@ const sampleLines = (samples: Readonly<Record<string, unknown>>): string => {
 };
 
 /**
- * The reviewer, bound to the model it calls with and (when generation resolved
- * them) the query results the app's literals must match.
+ * The host's and packs' judgment rules, appended to the rubric as their own
+ * lines.
+ *
+ * One line per rule, never concatenated: a joined blob reads as a single garbled
+ * rule. They are appended rather than woven in, so a host rule can add a reason
+ * to reject but can never soften the four the reviewer already applies.
+ */
+const rubricSection = (rubric: readonly string[]): string => (rubric.length === 0 ? "" : `
+
+ALSO REJECT anything that breaks one of these rules, which this product's owner set. Judge them exactly like the four above, and quote the rule you applied in your message:
+${rubric.map((rule) => `- ${rule}`).join("\n")}`);
+
+/**
+ * The reviewer, bound to the model it calls with, (when generation resolved them)
+ * the query results the app's literals must match, and the judgment rules the
+ * floor collected from the host and every pack.
  */
 export const reviewerCheck = (
   deps: GenerationDependencies,
   samples?: Readonly<Record<string, unknown>>,
+  rubric: readonly string[] = [],
 ): Check => ({
   name: REVIEWER_CHECK_NAME,
   // `fact` is about WHO RUNS IT, not about how sure it is: the two kinds are
@@ -145,7 +160,7 @@ export const reviewerCheck = (
       REPORT_FINDINGS_TOOL,
       REPORT_FINDINGS_DESCRIPTION,
       REPORT_FINDINGS_SCHEMA,
-      REVIEWER_SYSTEM,
+      `${REVIEWER_SYSTEM}${rubricSection(rubric)}`,
       `USER_REQUEST: ${request}\nAPP (wire markup):\n${printed}${planLines(plan)}${samples === undefined ? "" : sampleLines(samples)}`,
     );
     return reported === undefined ? [] : findingsFrom(reported.findings);

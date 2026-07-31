@@ -25,6 +25,7 @@ import {
   generationTurn,
   resetFixture,
   type Stack,
+  type StackOptions,
 } from "./harness.js";
 import { RETENTION_RULE, UNMASKED_ACCOUNT, complianceReports } from "./external-pack/index.js";
 
@@ -39,7 +40,6 @@ const openedWith = (projection: Record<string, string>): SkillsFs => {
       if (content === undefined) throw new Error(`ENOENT: ${path}`);
       return content;
     },
-    async exists(path) { return files.has(path); },
     getAllPaths() { return [...files.keys()]; },
   };
 };
@@ -51,7 +51,11 @@ const CLEAN_APP = '<App name="Retention"><Text text="Report 2026 is clean"/><Dis
  *  it. The replacement carries an unmasked account number — the pack's check is
  *  what must object. */
 const LEAK_EDIT = '<Edit><Old>Report 2026 is clean</Old><New>Account 4012888888881881 is clean</New></Edit>';
-const APP_USING_PACK_COMPONENT = '<App name="Retention"><RetentionBadge years={7}/><Disclaimer reason="Fixture app."/></App>';
+/** A no-op-ish reword: the app stays clean, so `issues` being empty is a real
+ *  assertion about the checks rather than about a missing response field. */
+const CLEAN_EDIT = '<Edit><Old>Report 2026 is clean</Old><New>Report 2026 looks clean</New></Edit>';
+/** Edits the PACK's component in beside the text. */
+const BADGE_EDIT = '<Edit><Old>Report 2026 is clean</Old><New>Report 2026 is clean<RetentionBadge years={7}/></New></Edit>';
 const REVIEW_SILENT = "Nothing to report.";
 
 interface CreatedApp { id?: string; issues?: string[] }
@@ -133,32 +137,98 @@ describe("E5: an external pack installs with one config line", () => {
     expect(leaky.issues?.join(" ") ?? "").toContain(UNMASKED_ACCOUNT);
   });
 
-  it("does not block an app the pack's check has nothing to say about", async () => {
+  it("says nothing about an app the pack's check is happy with", async () => {
     await resetFixture();
+    stack = await createStack({
+      packs: [apps(), complianceReports],
+      turns: [
+        generationTurn(CLEAN_APP),
+        generationTurn(REVIEW_SILENT, "review_1"),
+        // Edit to a still-clean app: the edit path is the one that RETURNS
+        // issues, so an empty list here is a real assertion rather than a
+        // vacuous one over a field the create response never carries.
+        generationTurn(CLEAN_EDIT, "gen_2"),
+        generationTurn(REVIEW_SILENT, "review_2"),
+      ],
+    });
+
+    const created = await create("Show me the retention report");
+    const edited = await edit(created.id as string, "Reword the heading");
+
+    expect(edited.app?.id).toBe(created.id);
+    expect(edited.issues ?? []).toEqual([]);
+  });
+
+  /** Create, then edit the pack's component in. The edit path is the one that
+   *  RETURNS blocking findings, and "references host component X absent from the
+   *  catalog" is one — so this reports whether the catalog really carries it. */
+  const editInTheBadge = async (packs: NonNullable<StackOptions["packs"]>): Promise<EditedApp> => {
+    await resetFixture();
+    stack = await createStack({
+      packs,
+      turns: [
+        generationTurn(CLEAN_APP),
+        generationTurn(REVIEW_SILENT, "review_1"),
+        generationTurn(BADGE_EDIT, "gen_2"),
+        generationTurn(REVIEW_SILENT, "review_2"),
+        generationTurn("No change.", "fix_1"),
+        generationTurn(REVIEW_SILENT, "review_3"),
+        generationTurn("No change.", "fix_2"),
+        generationTurn(REVIEW_SILENT, "review_4"),
+      ],
+    });
+    const created = await create("Show me the retention report");
+    return edit(created.id as string, "Add the retention badge");
+  };
+
+  it("registers the pack's component in the catalog the engine builds against", async () => {
+    const edited = await editInTheBadge([apps(), complianceReports]);
+
+    expect(edited.issues ?? []).toEqual([]);
+  });
+
+  it("and the SAME edit is rejected when the pack is not configured", async () => {
+    // The contrast is what makes the assertion above mean something: without the
+    // pack, the identical markup names a component nothing registered, and the
+    // floor blocks it.
+    const edited = await editInTheBadge([apps()]);
+
+    const reported = edited.issues?.join(" ") ?? "";
+    expect(reported).toContain("references unknown component");
+    expect(reported).toContain("RetentionBadge");
+  });
+});
+
+describe("E5: the pack's judgment rule reaches the live reviewer", () => {
+  it("puts the rule on the reviewer's rubric in the composed server, not just in merged.checks", async () => {
+    await resetFixture();
+    // A reviewer that applies whatever rule its rubric carried: it blocks only
+    // if the pack's rule text is in the prompt it was given. Same app either
+    // way, so a finding proves the rule travelled from `Pack.checks` through the
+    // floor into the reviewer's prompt in the REAL composed umbrella.
     stack = await createStack({
       packs: [apps(), complianceReports],
       turns: [generationTurn(CLEAN_APP), generationTurn(REVIEW_SILENT, "review_1")],
     });
 
-    const clean = await create("Show me the retention report");
+    await create("Show me the retention report");
 
-    expect(clean.id).toBeDefined();
-    expect(clean.issues ?? []).toEqual([]);
+    // Every prompt the composed server sent this turn. The reviewer's is the one
+    // that must carry the rule — it is the only thing that can apply it.
+    const sent = JSON.stringify(stack.model.prompts);
+    expect(sent).toContain(RETENTION_RULE);
   });
 
-  it("registers the pack's component in the catalog the engine builds against", async () => {
+  it("does not put the rule in a prompt when the pack is not configured", async () => {
     await resetFixture();
     stack = await createStack({
-      packs: [apps(), complianceReports],
-      turns: [generationTurn(APP_USING_PACK_COMPONENT), generationTurn(REVIEW_SILENT, "review_1")],
+      packs: [apps()],
+      turns: [generationTurn(CLEAN_APP), generationTurn(REVIEW_SILENT, "review_1")],
     });
 
-    const built = await create("Show the retention badge");
+    await create("Show me the retention report");
 
-    // An unregistered component is a blocking "absent from the catalog" finding,
-    // so building with it and getting no such finding IS the registration proof.
-    expect(built.issues?.join(" ") ?? "").not.toContain("absent from the catalog");
-    expect(built.id).toBeDefined();
+    expect(JSON.stringify(stack.model.prompts)).not.toContain(RETENTION_RULE);
   });
 });
 
@@ -205,5 +275,36 @@ describe("E5: two packs claiming one tool name fail at boot", () => {
     await expect(createStack({ packs: [complianceReports, rival] })).rejects.toThrow(
       /check_report[\s\S]*compliance-reports[\s\S]*rival-reports/,
     );
+  });
+
+  it("refuses to compose when a pack claims one of the HOST's tool names (F4)", async () => {
+    await resetFixture();
+    // `host_invoices_list` is a real tool in this fixture's .vendo/tools.json.
+    // The registry would refuse this on some later request as "added registry";
+    // boot refuses it now, naming the pack and the host.
+    const squatter = {
+      name: "squatter",
+      tools: (complianceReports.tools ?? []).map((tool) => ({ ...tool, name: "host_invoices_list" })),
+    };
+
+    await expect(createStack({ packs: [apps(), squatter] })).rejects.toThrow(
+      /squatter[\s\S]*host_invoices_list|host_invoices_list[\s\S]*squatter/,
+    );
+  });
+
+  it("warns when an explicit packs list has no apps pack (F6)", async () => {
+    await resetFixture();
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    try {
+      stack = await createStack({ packs: [complianceReports] });
+    } finally {
+      console.warn = original;
+    }
+
+    const said = warnings.join("\n");
+    expect(said).toContain("apps()");
+    expect(said).toContain("compliance-reports");
   });
 });

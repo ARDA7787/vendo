@@ -28,6 +28,18 @@ import {
   type ToolRegistry,
 } from "@vendoai/core";
 import type { AppsRuntime } from "@vendoai/apps";
+import { backingRegistry } from "./from-registry.js";
+
+/**
+ * What the apps pack is allowed to reach on the apps runtime: its tool registry,
+ * and nothing else.
+ *
+ * Narrow on purpose. The runtime's full surface includes `delete`, `publish`, and
+ * the pin machinery, and the pack law is "no reaching into other packs" — our own
+ * boot context must not be the way around it. A pack gets the handle its tools
+ * need, so a later pack cannot quietly grow a reach nobody reviewed.
+ */
+export type AppsPackHandle = Pick<AppsRuntime, "agentTools">;
 
 /**
  * What a pack receives when its tools need a platform handle.
@@ -39,7 +51,7 @@ import type { AppsRuntime } from "@vendoai/apps";
  */
 export interface PackContext {
   /**
-   * The apps runtime the app-generation tools act through.
+   * The apps runtime handle the app-generation tools act through.
    *
    * A thunk, not a value: the merge runs early in composition (its components
    * feed the catalog and its checks feed the floor, both of which the apps
@@ -47,7 +59,7 @@ export interface PackContext {
    * the time a tool runs, because a tool only runs inside a request. This is the
    * same closure the arming seam uses for the automations engine.
    */
-  apps: () => AppsRuntime;
+  apps: () => AppsPackHandle;
 }
 
 export interface MergedPacks {
@@ -59,23 +71,48 @@ export interface MergedPacks {
   components: ComponentRegistry;
   /** The configured pack names, in order — what a boot diagnostic reports. */
   names: string[];
+  /** Which pack declared each tool name, so a collision with the host's own
+   *  tools can be reported naming the pack rather than "added registry". */
+  toolOwners: ReadonlyMap<string, string>;
 }
 
-/** The one collision message shape, so every slot reads the same. */
-const collide = (slot: string, name: string, first: string, second: string): never => {
-  throw new VendoError(
-    "validation",
-    `two packs claim the ${slot} name "${name}": "${first}" and "${second}". Names are global as authored — nothing is auto-prefixed — so rename it in one of them, or configure only one of the packs.`,
-  );
+/**
+ * Every slot name has to be a safe identifier, because names are used as
+ * addresses: a skill name is a PATH SEGMENT (`/host/skills/<name>/SKILL.md`) that
+ * a model later asks for by name, and check and component names key registries.
+ * No dots, no slashes, no whitespace — so nothing can be spelled as a traversal.
+ * Same shape as the frozen tool-name pattern, deliberately.
+ */
+const SAFE_SLOT_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+
+const requireSafeName = (slot: string, name: string, pack: string): void => {
+  if (!SAFE_SLOT_NAME.test(name)) {
+    throw new VendoError(
+      "validation",
+      `pack "${pack}" declares the ${slot} name ${JSON.stringify(name)}, which is not a legal ${slot} name. A ${slot} name addresses something (a skill is a path segment, and a model asks for it by name), so it may only use letters, digits, "_" and "-", up to 64 characters.`,
+    );
+  }
 };
 
-/** Claim a name in one slot's namespace. The slots are separate namespaces: one
- *  pack may call a tool and a skill the same thing. */
+/** Claim a name in one slot's namespace, validating it on the way in. The slots
+ *  are separate namespaces: one pack may call a tool and a skill the same thing. */
 const claimer = (slot: string): ((name: string, pack: string) => void) => {
   const owners = new Map<string, string>();
   return (name: string, pack: string): void => {
+    requireSafeName(slot, name, pack);
     const owner = owners.get(name);
-    if (owner !== undefined) collide(slot, name, owner, pack);
+    if (owner === pack) {
+      throw new VendoError(
+        "validation",
+        `pack "${pack}" declares the ${slot} name "${name}" twice. Declare it once.`,
+      );
+    }
+    if (owner !== undefined) {
+      throw new VendoError(
+        "validation",
+        `two packs claim the ${slot} name "${name}": "${owner}" and "${pack}". Names are global as authored — nothing is auto-prefixed — so rename it in one of them, or configure only one of the packs.`,
+      );
+    }
     owners.set(name, pack);
   };
 };
@@ -99,12 +136,27 @@ const errorOutcome = (error: unknown): ToolOutcome => ({
  */
 const registryOf = (definitions: ReadonlyMap<string, ToolDefinition>): ToolRegistry => ({
   async descriptors() {
-    return [...definitions.values()].map(descriptorOf);
+    // Cloned: these descriptors came from a pack's own module-level value and go
+    // to callers that are free to mutate what they are handed. The shipped
+    // registries clone for the same reason.
+    return structuredClone([...definitions.values()].map(descriptorOf));
   },
   async execute(call, ctx): Promise<ToolOutcome> {
     const definition = definitions.get(call.tool);
     if (definition === undefined) {
       return { status: "error", error: { code: "not-found", message: `Unknown tool: ${call.tool}` } };
+    }
+    // A tool that IS a registry answers for itself, outcome and error code
+    // verbatim. Re-deriving an outcome from a thrown error would flatten every
+    // code to "validation" and turn a denial into a failure, and both of those
+    // reach the model and the audit row.
+    const backing = backingRegistry(definition);
+    if (backing !== undefined) {
+      try {
+        return await backing().execute(call, ctx);
+      } catch (error) {
+        return errorOutcome(error);
+      }
     }
     try {
       return { status: "ok", output: await definition.execute(call.args, ctx, call) };
@@ -128,6 +180,7 @@ export const mergePacks = (
   const claimComponent = claimer("component");
 
   const tools = new Map<string, ToolDefinition>();
+  const toolOwners = new Map<string, string>();
   const skills: PackSkill[] = [];
   const checks: Check[] = [];
   const components: ComponentRegistry = {};
@@ -150,6 +203,7 @@ export const mergePacks = (
       }
       claimTool(tool.name, pack.name);
       tools.set(tool.name, tool);
+      toolOwners.set(tool.name, pack.name);
     }
     for (const skill of pack.skills ?? []) {
       claimSkill(skill.name, pack.name);
@@ -165,5 +219,5 @@ export const mergePacks = (
     }
   }
 
-  return { tools: registryOf(tools), skills, checks, components, names };
+  return { tools: registryOf(tools), skills, checks, components, names, toolOwners };
 };

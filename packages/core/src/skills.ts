@@ -38,7 +38,6 @@ export const skillPath = (name: string): string => `${HOST_SKILLS_MOUNT}/${name}
  */
 export interface SkillsFs {
   readFile(path: string): Promise<string>;
-  exists(path: string): Promise<boolean>;
   getAllPaths(): string[];
 }
 
@@ -54,14 +53,27 @@ export interface SkillListing {
   description: string;
 }
 
-/** A double-quoted YAML scalar, so a description carrying colons, quotes, or
- *  backslashes survives the roundtrip that `list()` reads it back through. */
-const quoted = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+/**
+ * A double-quoted YAML scalar, so a description carrying colons, quotes,
+ * backslashes — or a NEWLINE — survives the roundtrip `list()` reads it back
+ * through.
+ *
+ * Newlines are escaped rather than rejected: the whole value of SKILL.md is that
+ * Claude Code and Pi parse it natively, and a raw newline inside a quoted scalar
+ * would end the frontmatter early and take the parse down with it.
+ */
+const ESCAPES: Record<string, string> = { "\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+const UNESCAPES: Record<string, string> = { n: "\n", r: "\r", t: "\t" };
+
+const quoted = (value: string): string =>
+  `"${value.replace(/[\\"\n\r\t]/g, (char) => ESCAPES[char] as string)}"`;
 
 const unquoted = (value: string): string => {
   const trimmed = value.trim();
   if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || trimmed.length < 2) return trimmed;
-  return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  // One pass, so an escaped backslash is never re-read as an escape character:
+  // `\\n` is a backslash then an "n", not a newline.
+  return trimmed.slice(1, -1).replace(/\\(.)/g, (_match, char: string) => UNESCAPES[char] ?? char);
 };
 
 /** One skill as its SKILL.md text: agentskills.io frontmatter, then the body
@@ -125,11 +137,17 @@ export const createTurnSkills = (fs: SkillsFs): TurnSkills => ({
       description: describe(await fs.readFile(skillPath(name))),
     })));
   },
+  /**
+   * `name` arrives from a MODEL, and it becomes a path. The guard is the mount
+   * itself rather than a pattern: only a name that really is one of the mounted
+   * skill directories can be loaded, so `../../user/apps/…`, `/etc/passwd`, and
+   * `./building-apps` all fail on the way in — whatever the filesystem
+   * underneath would have done with the dots.
+   */
   async load(name: string): Promise<string> {
-    const path = skillPath(name);
-    if (!await fs.exists(path)) {
+    if (!mountedNames(fs).includes(name)) {
       throw new Error(`no skill named "${name}" is mounted at ${HOST_SKILLS_MOUNT}`);
     }
-    return bodyOf(await fs.readFile(path));
+    return bodyOf(await fs.readFile(skillPath(name)));
   },
 });

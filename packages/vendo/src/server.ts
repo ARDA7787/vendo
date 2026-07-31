@@ -104,7 +104,13 @@ import {
   type CapabilitySurfaceSnapshot,
 } from "./capability-misses.js";
 import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson } from "./catalog.js";
-import { DEFAULT_PACKS, mergePacks, type PackContext } from "./packs/index.js";
+import {
+  DEFAULT_PACKS,
+  hostPackToolCollision,
+  mergePacks,
+  missingAppsPackWarning,
+  type PackContext,
+} from "./packs/index.js";
 import { knowledgeIndexResolver } from "./knowledge-prompt.js";
 import { bindVendoModelSlots, vendoModel } from "#dev-creds/model";
 // Models spec 2026-07-22 — `vendoModel(name?)` is the vendo model family
@@ -986,6 +992,29 @@ function dotVendoFile(name: string, root?: string): string | undefined {
   }
 }
 
+/**
+ * The host's own tool names, as far as composition can know them without doing
+ * any I/O: the in-memory `profile.tools` piece, else a synchronous read of
+ * `.vendo/tools.json` (the same read the catalog does). Used for the boot-time
+ * pack/host name collision check.
+ *
+ * Best-effort by design. A malformed or absent file yields no names — the tool
+ * registry validates the file for real, and this check exists to say something
+ * useful early, never to become a second parser.
+ */
+function hostToolNames(config: CreateVendoConfig): string[] {
+  const inMemory = config.profile?.tools;
+  if (inMemory !== undefined) return inMemory.map((tool) => tool.name);
+  const raw = dotVendoFile("tools.json", config.profileDir);
+  if (raw === undefined) return [];
+  try {
+    const parsed = JSON.parse(raw) as { tools?: Array<{ name?: unknown }> };
+    return (parsed.tools ?? []).flatMap((tool) => (typeof tool.name === "string" ? [tool.name] : []));
+  } catch {
+    return [];
+  }
+}
+
 /** The compose-time project root for .vendo reads that happen LATER (the
     per-generation design-rules read): pinning it keeps a host that chdirs
     mid-run reading the same project every other .vendo input came from. */
@@ -1689,6 +1718,17 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     },
   };
   const packs = mergePacks(config.packs ?? DEFAULT_PACKS, packContext);
+  // A pack claiming one of the host's own tool names is a BOOT error, naming both
+  // parties: the tool registry would refuse it anyway, but only on some later
+  // request and only as "added registry". Compared against the host tool names
+  // composition already has in hand — deliberately no I/O, so composing never
+  // reaches the network to find out.
+  const toolCollision = hostPackToolCollision(packs.toolOwners, hostToolNames(config));
+  if (toolCollision !== undefined) throw toolCollision;
+  // An explicit `packs:` without apps() leaves the agent unable to build apps.
+  // Legitimate, but never silent.
+  const noAppsPack = missingAppsPackWarning(config.packs === undefined ? undefined : packs.names);
+  if (noAppsPack !== undefined) console.warn(noAppsPack);
   // Task 15a: an in-memory profile.catalog replaces the DISK leg of the merge
   // (it normalizes through the same validator-building path as the file
   // read); explicit createVendo({ catalog }) registrations still win by name,

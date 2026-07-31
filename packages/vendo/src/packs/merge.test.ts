@@ -9,11 +9,23 @@ import {
   type Json,
   type Pack,
   type RunContext,
+  type ToolCall,
   type ToolDefinition,
+  type ToolDescriptor,
+  type ToolOutcome,
+  type ToolRegistry,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { definePack } from "./define.js";
+import { toolsFromRegistry } from "./from-registry.js";
 import { mergePacks, type PackContext } from "./merge.js";
+
+const descriptorOf = (name: string): ToolDescriptor => ({
+  name,
+  description: `does ${name}`,
+  inputSchema: { type: "object", properties: {} },
+  risk: "read",
+});
 
 const context = {} as PackContext;
 
@@ -130,10 +142,15 @@ describe("names are global as authored — no renaming, ever", () => {
     ])).not.toThrow();
   });
 
-  it("fails at boot when one pack declares the same tool name twice", () => {
-    expect(() => merge([
+  it("fails at boot when one pack declares the same tool name twice, and says so (F12)", () => {
+    const attempt = (): unknown => merge([
       definePack({ name: "sloppy", tools: [tool("check_report"), tool("check_report")] }),
-    ])).toThrow(/check_report/);
+    ]);
+
+    expect(attempt).toThrow(/check_report/);
+    // Not 'two packs claim … "sloppy" and "sloppy"' — one pack, said once.
+    expect(attempt).toThrow(/declares the tool name "check_report" twice/);
+    expect(attempt).not.toThrow(/two packs/);
   });
 
   it("fails at boot when two packs share a pack name", () => {
@@ -142,6 +159,47 @@ describe("names are global as authored — no renaming, ever", () => {
 
   it("rejects a tool name the tool contract does not allow", () => {
     expect(() => merge([definePack({ name: "bad", tools: [tool("not a tool name")] })])).toThrow(VendoError);
+  });
+});
+
+describe("every slot name is a safe identifier (F3)", () => {
+  // A skill name becomes a PATH SEGMENT (/host/skills/<name>/SKILL.md) and a
+  // model asks for skills by name, so an unvalidated name is a traversal
+  // primitive. Check and component names key registries the same way.
+  const hostile = ["../../etc/passwd", "..", "a/b", "with space", "", "dot.dot", "a\nb"];
+
+  for (const name of hostile) {
+    it(`rejects the skill name ${JSON.stringify(name)} at boot`, () => {
+      expect(() => merge([definePack({ name: "bad", skills: [{ name, description: "D.", body: "b" }] })]))
+        .toThrow(VendoError);
+    });
+  }
+
+  it("names the pack and the offending name in the message", () => {
+    const attempt = (): unknown => merge([
+      definePack({ name: "compliance-reports", skills: [{ name: "../../secrets", description: "D.", body: "b" }] }),
+    ]);
+    expect(attempt).toThrow(/compliance-reports/);
+    expect(attempt).toThrow(/\.\.\/\.\.\/secrets/);
+  });
+
+  it("rejects a hostile check name", () => {
+    expect(() => merge([definePack({ name: "bad", checks: [{ name: "../x", kind: "judgment", rule: "R." }] })]))
+      .toThrow(VendoError);
+  });
+
+  it("rejects a hostile component name", () => {
+    expect(() => merge([definePack({ name: "bad", components: { "../x": { component: 1, description: "D." } } })]))
+      .toThrow(VendoError);
+  });
+
+  it("accepts the names real packs actually use", () => {
+    expect(() => merge([definePack({
+      name: "compliance-reports",
+      skills: [{ name: "building-compliance-reports", description: "D.", body: "b" }],
+      checks: [{ name: "no-unmasked-accounts", kind: "judgment", rule: "R." }],
+      components: { RetentionBadge: { component: 1, description: "D." } },
+    })])).not.toThrow();
   });
 });
 
@@ -198,6 +256,16 @@ describe("pack tools reach the one registry, guarded like every other tool", () 
     expect(outcome).toMatchObject({ status: "error", error: { code: "not-found" } });
   });
 
+  it("hands out a fresh descriptor each time, so a caller cannot corrupt the pack (F14)", async () => {
+    const merged = merge([definePack({ name: "one", tools: [tool("a_tool")] })]);
+
+    const [first] = await merged.tools.descriptors();
+    (first as { description: string }).description = "mutated by a careless caller";
+
+    const [second] = await merged.tools.descriptors();
+    expect(second?.description).toBe("does a_tool");
+  });
+
   it("never leaks the execute function into a descriptor", async () => {
     const merged = merge([definePack({ name: "one", tools: [tool("a_tool")] })]);
     const [descriptor] = await merged.tools.descriptors();
@@ -207,6 +275,85 @@ describe("pack tools reach the one registry, guarded like every other tool", () 
       inputSchema: { type: "object", properties: {} },
       risk: "read",
     });
+  });
+});
+
+describe("a re-expressed registry keeps its error codes (F5)", () => {
+  // The code reaches the model and the audit row. Flattening every failure to
+  // "validation" tells the model the wrong thing and makes the audit trail lie.
+  const registryAnswering = (outcome: ToolOutcome): ToolRegistry => ({
+    async descriptors() { return [descriptorOf("relayed")]; },
+    async execute() { return outcome; },
+  });
+
+  const relay = (outcome: ToolOutcome) => merge([definePack({
+    name: "relay",
+    tools: toolsFromRegistry(() => registryAnswering(outcome), [descriptorOf("relayed")]),
+  })]);
+
+  const run = (merged: ReturnType<typeof merge>) =>
+    merged.tools.execute({ id: "call_1", tool: "relayed", args: {} }, runContext);
+
+  it("passes an ok outcome through unchanged", async () => {
+    expect(await run(relay({ status: "ok", output: { done: true } }))).toEqual({
+      status: "ok",
+      output: { done: true },
+    });
+  });
+
+  it("keeps an arbitrary error code verbatim instead of flattening it", async () => {
+    expect(await run(relay({ status: "error", error: { code: "quota-exhausted", message: "out of budget" } }))).toEqual({
+      status: "error",
+      error: { code: "quota-exhausted", message: "out of budget" },
+    });
+  });
+
+  it("keeps the `internal` code the shipped registries use for unexpected failures", async () => {
+    expect(await run(relay({ status: "error", error: { code: "internal", message: "socket hang up" } }))).toEqual({
+      status: "error",
+      error: { code: "internal", message: "socket hang up" },
+    });
+  });
+
+  it("passes a blocked outcome through as blocked, not as an error", async () => {
+    expect(await run(relay({ status: "blocked", reason: "policy says no" }))).toEqual({
+      status: "blocked",
+      reason: "policy says no",
+    });
+  });
+
+  it("passes connect-required through with its connect payload intact", async () => {
+    const connect = { connector: "composio", toolkit: "gmail", message: "connect Gmail first" };
+    expect(await run(relay({ status: "connect-required", connect }))).toEqual({
+      status: "connect-required",
+      connect,
+    });
+  });
+
+  it("passes pending-approval through so the guard's card is not lost", async () => {
+    expect(await run(relay({ status: "pending-approval", approvalId: "apr_1" as never }))).toEqual({
+      status: "pending-approval",
+      approvalId: "apr_1",
+    });
+  });
+
+  it("hands the registry the WHOLE call, so metadata riding on it survives", async () => {
+    const seen: ToolCall[] = [];
+    const spy: ToolRegistry = {
+      async descriptors() { return [descriptorOf("relayed")]; },
+      async execute(call) { seen.push(call); return { status: "ok", output: null as unknown as Json }; },
+    };
+    const merged = merge([definePack({
+      name: "relay",
+      tools: toolsFromRegistry(() => spy, [descriptorOf("relayed")]),
+    })]);
+    const rider = Symbol.for("@vendoai/core/vendo-view-stream");
+    const call = { id: "call_1", tool: "relayed", args: {}, [rider]: () => undefined } as unknown as ToolCall;
+
+    await merged.tools.execute(call, runContext);
+
+    expect(seen[0]).toBe(call);
+    expect((seen[0] as unknown as Record<symbol, unknown>)[rider]).toBeTypeOf("function");
   });
 });
 

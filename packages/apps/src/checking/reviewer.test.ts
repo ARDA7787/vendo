@@ -13,7 +13,7 @@ import {
   type ShapeType,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
-import { createCheckingLayer } from "./layer.js";
+import { createCheckingLayer, judgmentRules } from "./layer.js";
 import { reviewerCheck } from "./reviewer.js";
 import type { CheckInput } from "./types.js";
 import {
@@ -86,6 +86,80 @@ const scheduledPlan = (): AppPlan => ({
   groups: [{ tab: "Overview", leaves: [{ component: "Table", query: "invoices", purpose: "open invoices" }] }],
   server: { kind: "steps", schedule: "every Friday", why: "Chasing overdue invoices happens when nobody has the app open." },
   cannot: [],
+});
+
+describe("host and pack judgment rules reach the reviewer (F2)", () => {
+  const CITE_TOTALS = "Every total on screen has to say which report it came from.";
+  const NO_UNATTENDED = "Scheduled work must never move money, message a person, or delete anything.";
+
+  it("appends each rule to the rubric as its own line, never concatenated", async () => {
+    const calls: ScriptedModelCall[] = [];
+    const model = scriptedLanguageModel((call) => { calls.push(call); return reported([]); });
+
+    await reviewerCheck(deps(model), samples, [CITE_TOTALS, NO_UNATTENDED]).run(inputFor(invoicesApp));
+
+    const system = String(calls[0]?.prompt?.[0]?.content ?? JSON.stringify(calls[0]?.prompt));
+    expect(system).toContain(CITE_TOTALS);
+    expect(system).toContain(NO_UNATTENDED);
+    // Separate lines: a joined blob reads as one garbled rule.
+    expect(system).toContain(`- ${CITE_TOTALS}\n- ${NO_UNATTENDED}`);
+  });
+
+  it("says nothing about extra rules when no pack contributed one", async () => {
+    const calls: ScriptedModelCall[] = [];
+    const model = scriptedLanguageModel((call) => { calls.push(call); return reported([]); });
+
+    await reviewerCheck(deps(model), samples, []).run(inputFor(invoicesApp));
+
+    const system = String(calls[0]?.prompt?.[0]?.content ?? "");
+    expect(system).not.toMatch(/ALSO REJECT/);
+  });
+
+  it("changes the verdict: the SAME app blocks only when the rule is in the prompt", async () => {
+    // A reader that applies the rule it was given. Same app, same data — the
+    // only difference is whether the rubric carried the rule, so a finding here
+    // is the rule doing work rather than a scripted constant.
+    const readerApplying = (rule: string) => scriptedLanguageModel((call) => {
+      const system = String(call.prompt?.[0]?.content ?? "");
+      return system.includes(rule)
+        ? reported([{ severity: "block", where: 'node "n2"', message: "the total does not say which report it came from" }])
+        : reported([]);
+    });
+
+    const withRule = await reviewerCheck(deps(readerApplying(CITE_TOTALS)), samples, [CITE_TOTALS])
+      .run(inputFor(invoicesApp));
+    const withoutRule = await reviewerCheck(deps(readerApplying(CITE_TOTALS)), samples, [])
+      .run(inputFor(invoicesApp));
+
+    expect(withRule).toEqual([{
+      severity: "block",
+      where: 'node "n2"',
+      message: "the total does not say which report it came from",
+    }]);
+    expect(withoutRule).toEqual([]);
+  });
+
+  it("carries the rules a pack contributed through the composed floor, end to end", async () => {
+    // The real wiring: judgment checks go in as `Pack.checks`, the floor hands
+    // the reviewer exactly the rules it derived, and nothing runs them as code.
+    const calls: ScriptedModelCall[] = [];
+    const model = scriptedLanguageModel((call) => { calls.push(call); return reported([]); });
+    const packChecks = [
+      { name: "cite-totals", kind: "judgment" as const, rule: CITE_TOTALS },
+      { name: "unattended-irreversibility", kind: "judgment" as const, rule: NO_UNATTENDED },
+    ];
+    const layer = createCheckingLayer({
+      deps: deps(model),
+      checks: [reviewerCheck(deps(model), samples, judgmentRules(packChecks)), ...packChecks],
+    });
+
+    await layer.run(inputFor(invoicesApp));
+
+    expect(layer.rubric).toEqual([CITE_TOTALS, NO_UNATTENDED]);
+    const system = String(calls[0]?.prompt?.[0]?.content ?? "");
+    expect(system).toContain(CITE_TOTALS);
+    expect(system).toContain(NO_UNATTENDED);
+  });
 });
 
 describe("the AI reviewer", () => {

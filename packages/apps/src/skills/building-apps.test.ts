@@ -17,7 +17,6 @@ const mounted = (): SkillsFs => {
       if (content === undefined) throw new Error(`ENOENT: ${path}`);
       return content;
     },
-    async exists(path) { return files.has(path); },
     getAllPaths() { return [...files.keys()]; },
   };
 };

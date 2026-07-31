@@ -27,7 +27,7 @@ import {
   type TextEdit,
   type Tree,
 } from "@vendoai/core";
-import { createCheckingLayer } from "../checking/layer.js";
+import { createCheckingLayer, judgmentRules } from "../checking/layer.js";
 import { reviewerCheck } from "../checking/reviewer.js";
 import type { Check, CheckingLayer, Finding } from "../checking/types.js";
 import { runBrainTurn, type BrainOutcome, type BrainTurn } from "./brain.js";
@@ -106,10 +106,17 @@ const checkingFor = (
   deps: GenerationDependencies,
   samples: Readonly<Record<string, unknown>>,
   checks: readonly Check[] | undefined,
-): CheckingLayer => createCheckingLayer({
-  deps,
-  checks: [reviewerCheck(deps, samples), ...(checks ?? [])],
-});
+): CheckingLayer => {
+  const plugged = checks ?? [];
+  // The judgment rules the host and every pack contributed are not code — they
+  // are lines on the reviewer's rubric, and the reviewer is the only thing that
+  // can apply them. Derived once, by the same function the layer exposes them
+  // with, so the rubric the reviewer reads and `layer.rubric` can never diverge.
+  return createCheckingLayer({
+    deps,
+    checks: [reviewerCheck(deps, samples, judgmentRules(plugged)), ...plugged],
+  });
+};
 
 const withId = (document: GeneratedAppDocument): AppDocument =>
   ({ ...document, id: UNSTORED_APP_ID } as AppDocument);

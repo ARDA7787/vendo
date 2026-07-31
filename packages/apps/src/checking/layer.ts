@@ -24,24 +24,69 @@ export interface CheckingLayerOptions {
   checks?: readonly Check[];
 }
 
-type FactCheck = Extract<Check, { kind: "fact" }>;
+type FactCheck = Extract<Check, { run: unknown }>;
 
-const crashFinding = (check: Check, error: unknown): Finding => ({
+/** A judgment rule is the only thing the floor does NOT run. `kind` is optional
+ *  on a fact check, so absence means "run it": a safety floor never opts a check
+ *  out by omission. */
+export const isJudgment = (check: Check): check is Extract<Check, { rule: string }> =>
+  check.kind === "judgment";
+
+/** The judgment rules over a set of checks, one sentence each, in registration
+ *  order. Exported because the reviewer is handed exactly this list — the layer
+ *  and the reviewer must never compute it two different ways. */
+export const judgmentRules = (checks: readonly Check[]): string[] =>
+  checks.flatMap((check) => (isJudgment(check) ? [check.rule] : []));
+
+const isFinding = (value: unknown): value is Finding => {
+  if (typeof value !== "object" || value === null) return false;
+  const { severity, message, where } = value as Record<string, unknown>;
+  if (severity !== "block" && severity !== "warn") return false;
+  if (typeof message !== "string") return false;
+  return where === undefined || typeof where === "string";
+};
+
+const warnAbout = (check: Check, message: string): Finding => ({
   severity: "warn",
   where: check.name,
-  message: `the check "${check.name}" failed to run (${error instanceof Error ? error.message : String(error)}), so whatever it would have found is missing from this report`,
+  message,
 });
+
+const crashFinding = (check: Check, error: unknown): Finding => warnAbout(
+  check,
+  `the check "${check.name}" failed to run (${error instanceof Error ? error.message : String(error)}), so whatever it would have found is missing from this report`,
+);
+
+/**
+ * What a check reported, kept to findings this floor can actually read.
+ *
+ * A check is untrusted code, and a malformed entry does not stop at the floor —
+ * downstream readers interpolate `where` and filter on `severity`, so one
+ * `undefined` in the array would kill the build the checks exist to protect.
+ * Well-formed findings always survive: a real `block` is never lost to a bad
+ * neighbour.
+ */
+const findingsOf = (check: Check, reported: unknown): Finding[] => {
+  if (!Array.isArray(reported)) {
+    return [warnAbout(check, `the check "${check.name}" did not report a list of findings, so whatever it would have found is missing from this report`)];
+  }
+  const findings = reported.filter(isFinding);
+  const dropped = reported.length - findings.length;
+  return dropped === 0
+    ? findings
+    : [...findings, warnAbout(check, `the check "${check.name}" reported ${dropped} findings in a shape this floor cannot read, so whatever they said is missing from this report`)];
+};
 
 export const createCheckingLayer = ({ deps, checks = [] }: CheckingLayerOptions): CheckingLayer => {
   const all: Check[] = [...factChecks(deps), ...checks];
-  const facts = all.filter((check): check is FactCheck => check.kind === "fact");
+  const facts = all.filter((check): check is FactCheck => !isJudgment(check));
   return {
     checks: all,
-    rubric: all.flatMap((check) => (check.kind === "judgment" ? [check.rule] : [])),
+    rubric: judgmentRules(all),
     run: async (input: CheckInput): Promise<Finding[]> => {
       const results = await Promise.all(facts.map(async (check) => {
         try {
-          return await check.run(input);
+          return findingsOf(check, await check.run(input));
         } catch (error) {
           return [crashFinding(check, error)];
         }
