@@ -45,14 +45,25 @@ describe("turn.tools.list", () => {
       guard,
     );
     const { tools } = harness({ registry, guard });
+    // `inputSchema` joined the listing with contract §1.1's amendment
+    // 2026-07-30: an in-process harness has to hand its model real argument
+    // schemas, so the listing carries the descriptor's verbatim.
+    const schema = { type: "object", properties: {}, additionalProperties: true };
     await expect(tools.list()).resolves.toEqual([
       {
         name: "maple_invoices_list",
         title: "maple_invoices_list",
         description: "the maple_invoices_list tool",
         risk: "read",
+        inputSchema: schema,
       },
-      { name: "maple_pay", title: "Send a payment", description: "the maple_pay tool", risk: "destructive" },
+      {
+        name: "maple_pay",
+        title: "Send a payment",
+        description: "the maple_pay tool",
+        risk: "destructive",
+        inputSchema: schema,
+      },
     ]);
   });
 });
