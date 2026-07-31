@@ -48,6 +48,17 @@ export interface Turn<Options = unknown> {
   readonly signal: AbortSignal;
   /** Present iff the caller proved presence (a click/message/submit). */
   readonly interactive: boolean;
+  /**
+   * Amendment 2026-07-31: the deployment's assembled system prompt — the product
+   * brief, the host's voice, the guard's directions, the knowledge index, the
+   * discovery rail. Composition assembles it per turn because it needs the
+   * `RunContext` a `Turn` deliberately does not carry, so it cannot be a
+   * construction-time dep of the harness value: a host who writes
+   * `harness: vendo()` builds that value once, at boot, with no ctx in sight.
+   * Carried HERE so every harness — named, defaulted, or a host's own — is told
+   * the same thing. Unset only for a runtime driven without composition.
+   */
+  readonly system?: string;
 }
 
 /** Build contract §1.1 */

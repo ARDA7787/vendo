@@ -137,6 +137,11 @@ export interface TurnRunInput<Options = unknown> {
   options?: Options;
   /** §1.4 — did the caller prove presence (a click/message/submit)? */
   interactive: boolean;
+  /** The assembled system prompt for THIS turn (`Turn.system`). Composition's to
+   *  assemble — it is venue-gated and carries the guard's directions, so it needs
+   *  the ctx — and the runtime's to deliver, which is what puts a NAMED harness on
+   *  the same brief as the default one. */
+  system?: string;
   /** The shipped discovery rails for THIS turn (`createDiscoveryRails`): the
    *  loadout `list()` is curated by, plus `find_tools` and the capability-miss
    *  reporter as callable meta-tools. Per turn, not per runtime, because every
@@ -339,6 +344,7 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             options: input.options as Options,
             signal,
             interactive: input.interactive,
+            ...(input.system === undefined ? {} : { system: input.system }),
           };
 
           try {

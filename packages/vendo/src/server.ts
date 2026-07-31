@@ -15,9 +15,15 @@ import {
 import { askUserRegistry, createAgent, vendoVerbsRegistry, VENDO_TOOL_PACK_PREFIX, type CapabilityMissConfig, type ToolSearchConfig, type VendoAgent } from "@vendoai/agent";
 import { assembleSystemPrompt } from "@vendoai/agent/internal";
 // Architecture §3 — the harness runtime and the default thinker. `vendo()` is
-// composed HERE (not by the host) when `harness:` is unset, because its system
-// prompt and descriptor catalog need the turn's ctx.
+// composed HERE (not by the host) when `harness:` is unset; its prompt and
+// descriptor catalog reach it on the turn, never at construction.
 import { assertHarnessComposable, vendo } from "@vendoai/harnesses";
+// …and re-exported, because §10's one-line opt-in is `harness: vendo()`. Without
+// this, naming the default harness costs a SECOND direct dependency on
+// `@vendoai/harnesses` — a documented one-liner that does not compile from the
+// package the host installed. Alias it at the import when your own composed
+// value is called `vendo` (`import { vendo as vendoHarness }`).
+export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {

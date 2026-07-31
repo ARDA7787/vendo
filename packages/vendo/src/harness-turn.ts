@@ -149,20 +149,22 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
   const hostProjection = (): Record<string, string> => hostSkillFiles(config.packSkills);
 
   /**
-   * Who thinks. `config.harness` if the host chose one, else `vendo()` — built
-   * HERE rather than at boot because its system prompt needs the turn's ctx: it is
-   * venue-gated and carries the guard's directions.
+   * Who thinks. `config.harness` if the host chose one, else `vendo()`.
    *
-   * `vendo()` no longer takes a descriptor catalog. It reads `turn.tools.list()`
-   * like any other harness, which is what puts every harness on the same
-   * discovery rail: the loadout, `find_tools` and the curated menu are the
+   * The system prompt is deliberately NOT a dep here. It used to be, and that is
+   * exactly what made the documented `harness: vendo()` opt-in think with an empty
+   * prompt: a named harness is constructed by the HOST, at boot, so composition
+   * has no seam to hand it anything. It rides `Turn.system` instead (core §1
+   * amendment), which the runtime delivers to every harness — named, defaulted, or
+   * a host's own — off ONE assembly.
+   *
+   * `vendo()` no longer takes a descriptor catalog either. It reads
+   * `turn.tools.list()` like any other harness, which is what puts every harness on
+   * the same discovery rail: the loadout, `find_tools` and the curated menu are the
    * RUNTIME's, so a host's own thinker gets them without asking.
    */
-  const resolveHarness = (ctx: RunContext): Harness<never> =>
-    config.harness ?? (vendo({
-      system: () => config.system(ctx),
-      onHire: reportHire,
-    }) as unknown as Harness<never>);
+  const defaultHarness = vendo({ onHire: reportHire }) as unknown as Harness<never>;
+  const resolveHarness = (): Harness<never> => config.harness ?? defaultHarness;
 
   /**
    * The per-THREAD searched-in set, exactly as `createAgent` keeps one: a tool
@@ -297,13 +299,18 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
       });
 
       const discovery = await discoveryFor(input.ctx, thread.id, thread.messages);
+      // Assembled once, per turn, for WHOEVER thinks. The venue gate and the
+      // guard's directions live in here, which is why it is composition's job and
+      // not the harness's.
+      const system = await config.system(input.ctx);
       const response = await runtime.run<never>({
-        harness: resolveHarness(input.ctx),
+        harness: resolveHarness(),
         threadId: thread.id,
         messages: thread.messages,
         ctx: input.ctx,
         workspace,
         models: config.models,
+        ...(system === undefined ? {} : { system }),
         ...(discovery === undefined ? {} : { discovery }),
         // §1.4 — presence is proof, and `isUnattended` is the one predicate that
         // decides it. Interactive turns await the tap inside `call()`; the rest

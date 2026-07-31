@@ -47,10 +47,12 @@ export interface VendoHarnessOptions {
 
 export interface VendoHarnessDeps {
   /**
-   * The pre-assembled system prompt. A `Turn` deliberately carries no
-   * RunContext — harnesses are permission-blind — so the guard-directions and
-   * venue-gated half of the prompt is assembled by composition
-   * (`assembleSystemPrompt` in @vendoai/agent) and handed in here.
+   * An explicit system prompt, for a host driving this harness outside our
+   * composition. Set, it WINS over `turn.system`; unset — the normal case, and
+   * what `harness: vendo()` builds — the deployment's assembled prompt arrives on
+   * the turn instead. It cannot arrive here: this value is constructed once at
+   * boot, and the prompt is venue-gated and carries the guard's directions, so it
+   * needs the turn's `RunContext`.
    */
   system?: string | (() => string | undefined | Promise<string | undefined>);
   maxSteps?: number;
@@ -164,7 +166,10 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
       if (turn.signal.aborted) return;
 
       const model = turn.options?.model ?? turn.models.default;
-      const system = (typeof deps.system === "function" ? await deps.system() : deps.system) ?? "";
+      const system =
+        (typeof deps.system === "function" ? await deps.system() : deps.system)
+        ?? turn.system
+        ?? "";
 
       // The LIVE surface the model picks from, and the snapshot `prepareStep`
       // reads each step. `turn.tools.list()` is the only source for both: it is
