@@ -19,7 +19,6 @@
  * path, which commits without ever calling `writeFile` on this façade.
  */
 import {
-  VENDO_TREE_FORMAT,
   compilePlan,
   compileWire,
   vendoViewPartSchema,
@@ -194,6 +193,3 @@ export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSe
     },
   });
 }
-
-/** Re-exported so callers building a payload by hand agree with the seam. */
-export { VENDO_TREE_FORMAT };
