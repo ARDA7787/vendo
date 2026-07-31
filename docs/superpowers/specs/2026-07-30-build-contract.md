@@ -429,6 +429,17 @@ need).
 Wave-1 `can()` is exactly today's rule: a path under `/user/` belongs to its
 subject, `/host/` is read-only for everyone. Nothing more.
 
+**The mechanical second vote applies where the label is AI-ASSIGNED**
+(clarification 2026-07-31): design §12 says eligibility "never rests on the
+*AI-assigned* risk label alone" — the second vote exists to catch an extractor
+or connector mislabelling someone else's API. **Vendo-authored tools** (the
+vendo verbs, `ask_user`, workspace tools) carry a hand-written, reviewed
+`risk`, so their declared label is authoritative and the vote adds only false
+positives: `ask_user`, `validate`, and `search_components` all voted `write`
+purely because their trailing token is a noun, which would let a host policy
+card a *question* and write it an effect-ledger row. Fail-closed stays the rule
+for every AI-assigned label.
+
 **THE LAW's predicate is PRESENCE, never the venue label** (clarification
 2026-07-31, found at integration): "unattended" means *nobody acted* —
 `presence === "away"`. A `venue: "automation"` context with
