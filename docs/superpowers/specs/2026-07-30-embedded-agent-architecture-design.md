@@ -43,8 +43,8 @@ drivers as subpaths with their SDKs as optional peers
 
 - **v1:** `vendo()` (default, in-process, key-free — today's `@vendoai/agent`
   reshaped onto the contract, gaining workspace+skills, subagent hiring, and
-  steering) · `instant()` (the non-agentic ≤5s specialist — today's engine;
-  authored in apps, re-exported here) · `claudeCode()` (new; Agent SDK;
+  steering) · `instant()` (the non-agentic ≤5s specialist, authored in apps
+  and re-exported here) · `claudeCode()` (new; Agent SDK;
   proves session sandbox, `turn.state`, MCP projection, native permission
   hook).
 - **Fast-follow, in order:** `codex()` (reuses the spawned-CLI path) ·
@@ -170,14 +170,10 @@ Four families: **host** (extracted API, as the signed-in user) · **workspace**
 `schedule`, `find_tools`, `search_components`, `validate`) · **ask_user**
 (questions, one door, any seat).
 
-There is deliberately **no code-execution or app-serving tool**. Bash-native
-harnesses already run code in their own sandbox; machine-less harnesses get
-in-process bash over the workspace (§8) and computed values for math. A
-`run_code`-style tool would drag in a declaration bridge, run-scoped grants,
-declaration scopes, and egress rules for a capability nothing has asked for —
-if a host ever needs it, it returns as its own scoped decision. Layer-3
-served apps stay as they ship today (experimental, off by default), not as a
-harness-facing tool.
+There is deliberately **no code-execution tool**: bash-native harnesses run
+code in their own sandbox, and machine-less harnesses have in-process bash over
+the workspace (§8) plus computed values for math. Layer-3 served apps stay as
+they ship today, not as a harness-facing tool.
 
 Naming and projection law for the families:
 
@@ -207,7 +203,7 @@ with:
 | Harness | Hands | File work | Arbitrary code |
 |---|---|---|---|
 | bash-native (Claude Code, Codex) | a real shell; workspace materialized in the session sandbox | grep/sed/editor/python — the whole CLI long tail, co-training intact | native |
-| in-process (vendo(), Pi-based, custom) | workspace tools + in-process bash (§8) | `edit(file, old, new)` — the v2 verb | no |
+| in-process (vendo(), Pi-based, custom) | workspace tools + in-process bash (§8) | `edit(file, old, new)` | no |
 | hosted (Managed Agents) | callbacks — tools execute our side | same, over a longer wire | no |
 
 Bash beats workspace tools wherever a machine exists — wrapping a bash-native
@@ -247,8 +243,7 @@ export const complianceReports = definePack({
   workspace mounts, projected per harness layout (on-disk format =
   agentskills.io SKILL.md — Pi and Claude Code read it natively, so projection
   is a copy, not a translation); checks → the floor; components → the catalog.
-  (A records/storage slot was considered and cut — packs that need rows use
-  the existing records machinery; the slot returns if a real pack demands it.)
+  Packs needing rows use the existing records machinery.
 - Packs contribute to existing slots **only** — no config surface, no guard
   wrapping, no reaching into other packs.
 - `apps()` and `automations()` are built on this exact interface — no
@@ -316,8 +311,8 @@ The harness-independent floor. Swap any harness; the floor doesn't move.
   test-drive; guard-clipped — no writes, no ask_user). **No shared context
   with the builder** — independence is free, not machinery. The builder's
   skill may also advise self-review mid-build (its business); the hook is
-  the guarantee — host judgment rules fire regardless, and the D5-gate
-  deletion condition (reviewer always runs) holds. `instant()` keeps its
+  the guarantee — host judgment rules fire regardless, and the shipped
+  deterministic security gates can only retire while review always runs. `instant()` keeps its
   internal reviewer. `models.reviewer` overrides the seat; depth
   (rubric-only single call vs full test-drive) is a host dial, defaulting by
   blast radius: org-shared/automation apps get the full test-drive, personal
@@ -530,8 +525,7 @@ Cloud implementation details behind OSS seams.
   The honest pattern replaces them: the automation *prepares*, the human
   *sends* — "your 12 reminders are ready · [Send all]" in the morning, one
   tap, real arguments visible. Unattended work, attended irreversibility.
-  This deletes 2am cards, fire-time conditions, and the whole class of
-  unattended-authority risk instead of mitigating it. Eligibility never rests
+  Eligibility never rests
   on the AI-assigned risk label alone: a second mechanical vote (HTTP method +
   verb shape) must agree, and disagreement treats the tool as destructive.
 - **Interactively, destructive actions are a normal confirm.** She clicked, so
@@ -540,12 +534,9 @@ Cloud implementation details behind OSS seams.
   judge at decision time, no free-text policy language anywhere.
 - **Reads are silent, always.** Ad-hoc chat asks (no app, no bundle) keep
   ask-once-with-remember.
-- **Adding unattended destructive actions later is a predicate, not a
-  subsystem.** The guard already asks "is this tool allowed here?" on every
-  call; a future host opt-in answers that one question differently, on the
-  path every call already takes. Scope constraints, conditions, and fire-time
-  judging can return as additive union members (old readers fail closed) if a
-  real host ever pays for them. Nothing is built twice by waiting.
+- **Widening this later is a predicate, not a subsystem.** The guard already
+  asks "is this tool allowed here?" on every call; a future host opt-in answers
+  that one question differently, on the path every call already takes.
 - **Cards say what will happen, completely.** Consent surfaces are the one
   carve-out from the voice law's no-internals rule: plain language, but one
   line per mutating step (never a single summary line for a compound), a
@@ -607,8 +598,8 @@ four slots, a tool is a name and a schema.
 - **Secrets reconciliation** (parked from the review): handles vs scoped real
   values in the box; gating the inference key. Owns the §9-vs-box-env
   contradiction.
-- **The automations pack**: grants-as-approval + the logbook reshaped over
-  the platform trigger lifecycle (§5 carve-out).
+- **The automations pack**: grants-as-approval + the run history, reshaped over
+  the platform trigger lifecycle (§5).
 - **Display & remix**: the launcher (ordering, admin-featured), pins as the
   second render mode (feature bundles grafted into host screens), what a
   member sees when a pinned remix targets their screen. Design-skill work,
@@ -622,12 +613,10 @@ four slots, a tool is a name and a schema.
 
 ## 17. What this supersedes
 
-The 2026-07-28 generation-pipeline-v2 spec's *mechanics* survive inside the
-apps pack (plan text, groups, workers' blinkers, edit-like-a-file, computed
-values, honest cannot-path); its pipeline framing is absorbed by §2/§3 — the
-harness owns the loop, v2's harness seat is the resident harness, the fast path is
-`instant()`. Of the v0 contracts' seams, `guard.bind`, `LanguageModel`, and
-subject partitioning carry forward unchanged; the **store** seam changes
-deliberately in two places — one row per message for transcripts (§8) and the
-new workspace tables — and `GrantScope` gains a constraints/condition member
-(§12), a discriminated-union addition that fails closed on old readers.
+The 2026-07-28 generation-pipeline-v2 spec's mechanics survive inside the apps
+pack (plan text, groups, worker blinkers, edit-like-a-file, computed values, the
+honest cannot-path); its pipeline framing is absorbed by §2/§3.
+
+Of the frozen v0 seams, `guard.bind`, `LanguageModel`, and subject partitioning
+carry forward unchanged. The **store** seam changes deliberately, in two places:
+one row per message for transcripts (§8), and the new workspace tables.
