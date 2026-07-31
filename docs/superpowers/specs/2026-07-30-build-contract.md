@@ -312,8 +312,11 @@ export interface PackSkill { name: string; description: string; body: string; }
 
 ```ts
 export type Check =
-  | { name: string; kind: "fact"; run(input: CheckInput): Promise<Finding[]> }
+  | { name: string; kind?: "fact"; run(input: CheckInput): Promise<Finding[]> }
   | { name: string; kind: "judgment"; rule: string };   // joins the reviewer rubric
+// amendment 2026-07-30: `kind` is optional on the fact variant and the floor
+// runs anything NOT explicitly "judgment" — a safety floor never opts a check
+// out by omission (a kind-less legacy host check must keep firing).
 
 export interface CheckInput { document: AppDocument; request: string; plan?: AppPlan; }
 export interface Finding { severity: "block" | "warn"; where?: string; message: string; }
