@@ -1,4 +1,4 @@
-import { vendoAuthored, type Json, type RunContext, type ToolDescriptor, type ToolRegistry } from "@vendoai/core";
+import { VENDO_TOOL_TITLES, vendoAuthored, type Json, type RunContext, type ToolDescriptor, type ToolRegistry } from "@vendoai/core";
 
 /**
  * Design §4's vendo-verb family, projected as ordinary tools on the one
@@ -50,7 +50,7 @@ export interface VendoVerbPorts {
 const DESCRIPTORS: ToolDescriptor[] = ([
   {
     name: "validate",
-    title: "Check the app for mistakes",
+    title: VENDO_TOOL_TITLES.validate,
     description:
       "Check an app document against the component catalog and the host's schemas: does it parse, do the "
       + "tools/components/fields/schedules it references exist, do the types fit. Returns findings to fix. "
@@ -67,7 +67,7 @@ const DESCRIPTORS: ToolDescriptor[] = ([
   },
   {
     name: "search_components",
-    title: "Look up available components",
+    title: VENDO_TOOL_TITLES.search_components,
     description:
       "Search the component catalog by intent to find what you can render. Returns each component's name, "
       + "description, and props. Use it instead of guessing a component name.",
@@ -84,7 +84,7 @@ const DESCRIPTORS: ToolDescriptor[] = ([
   },
   {
     name: "schedule",
-    title: "Set when this runs",
+    title: VENDO_TOOL_TITLES.schedule,
     // A write, not a read: arming a schedule changes what happens later, without
     // a person present at the moment it fires.
     description:

@@ -21,6 +21,71 @@ export const VENDO_APPS_TOOL_PREFIX = "vendo_apps_";
  *  partial views through the VENDO_VIEW_STREAM bridge seam (stream-parts). */
 export const VENDO_APPS_CREATE_TOOL = "vendo_apps_create";
 
+/**
+ * The consumer-voice titles for the tools VENDO ITSELF projects (design §3:
+ * "surfaces render tool titles and verbs, never names — rendering-layer law").
+ *
+ * ONE table, because two sides must say the same words and neither can read the
+ * other's copy. Server-side, each descriptor authors its `title` from here, so
+ * `ToolListing.title` stops falling back to the identifier and the model is
+ * never handed `vendo_apps_edit` as a tool's human label. Client-side, the
+ * render layer has no descriptor at all for a progress chip or an activity row —
+ * the wire tool part carries only a name — so it reads the same table rather
+ * than prettifying our own namespace into "Vendo apps edit…" (wave-1 live proof
+ * E1-5).
+ *
+ * Host tools are NOT here: a host authors its own titles (sync enrichment,
+ * `.vendo/overrides.json`), and inventing labels for someone else's API would be
+ * a guess. This table covers only what Vendo ships.
+ */
+export const VENDO_TOOL_TITLES: Readonly<Record<string, string>> = {
+  vendo_apps_create: "Build an app",
+  vendo_apps_edit: "Update the app",
+  vendo_apps_open: "Open the app",
+  vendo_apps_rebase_pin: "Refresh a remixed piece",
+  vendo_apps_data_list: "Read the app's saved items",
+  vendo_apps_data_put: "Save an item in the app",
+  vendo_apps_data_delete: "Remove an item from the app",
+  vendo_knowledge_search: "Look it up in the docs",
+  // The verbs and `ask_user` authored these titles inline first; they moved here
+  // verbatim so the CLIENT can say them too. A live browser proof caught the gap:
+  // `search_components` narrated "Search components…" — its identifier
+  // prettified — while its descriptor carried "Look up available components".
+  validate: "Check the app for mistakes",
+  search_components: "Look up available components",
+  schedule: "Set when this runs",
+  ask_user: "Ask you a question",
+  // Meta-tools: ai-SDK `dynamicTool`s with no descriptor at all, so the table is
+  // their ONLY title. The reporter fires on the honest-refusal path — the very
+  // turn the §3 leak was photographed on — and read "Vendo report capability
+  // miss…".
+  find_tools: "Look for the right tool",
+  vendo_report_capability_miss: "Note what I can't do",
+};
+
+/**
+ * The description a MODEL is given for one tool: its human title first, then the
+ * operational text.
+ *
+ * §3's voice law is a rendering-layer law, and a model is the surface that writes
+ * a refusal or an explanation — it can only say a title it was told. Handed only
+ * `description`, the identifier is the sole proper noun in its context, which is
+ * how a live refusal reached a user reading `` `host_transferMoney` `` (wave-1
+ * proof E1-5). The identifier stays the CALL name; this is the one place the
+ * human label enters the model's vocabulary.
+ *
+ * A title equal to the name adds nothing (`ToolListing.title` falls back to the
+ * name) and would teach exactly the wrong vocabulary, so it is dropped.
+ */
+export function modelToolDescription(
+  tool: { name: string; title?: string; description: string },
+): string {
+  const title = tool.title?.trim();
+  return title === undefined || title === "" || title === tool.name
+    ? tool.description
+    : `${title} — ${tool.description}`;
+}
+
 /** 0.4.4 cert defect B — the message prefix the apps runtime stamps on a
  *  terminally failed BUILD's error ("app build failed: <classified reason>").
  *  The agent loop reads it to end the turn and raise the failed-build banner;

@@ -1,5 +1,6 @@
 import {
   VENDO_APPS_CREATE_TOOL,
+  VENDO_TOOL_TITLES,
   VENDO_VIEW_STREAM,
   VendoError,
   vendoViewStreamId,
@@ -19,8 +20,13 @@ import type { AppsRuntime } from "./runtime.js";
 const DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 
 /** Exported so the apps PACK can declare exactly these tools through the public
- *  `Pack.tools` slot rather than a privileged path into the registry. */
-export const agentToolDescriptors: ToolDescriptor[] = [
+ *  `Pack.tools` slot rather than a privileged path into the registry.
+ *
+ *  Titles are applied in ONE place below, from core's shared table, rather than
+ *  authored per entry: `ToolListing.title` falls back to the identifier, so a
+ *  tool that forgets its title hands the model `vendo_apps_edit` as its human
+ *  label — which is how it reached a live refusal message (wave-1 proof E1-5). */
+const descriptors = [
   {
     // The agent's streaming-view bridge keys on this exact core-defined name.
     name: VENDO_APPS_CREATE_TOOL,
@@ -140,7 +146,15 @@ export const agentToolDescriptors: ToolDescriptor[] = [
     },
     risk: "write",
   },
-];
+] satisfies ToolDescriptor[];
+
+export const agentToolDescriptors: ToolDescriptor[] = descriptors.map((descriptor) => {
+  // Deliberately NOT `?? descriptor.name`: a silent fallback to the identifier is
+  // the defect itself. A tool missing from the table stays titleless and
+  // `agent-tools.test.ts` fails, which is the loud outcome.
+  const title = VENDO_TOOL_TITLES[descriptor.name];
+  return title === undefined ? descriptor : { ...descriptor, title };
+});
 
 const input = (
   value: Json,

@@ -1,10 +1,12 @@
 import {
   TOOL_NAME_PATTERN,
+  VENDO_TOOL_TITLES,
   toolDescriptorSchema,
   type RunContext,
   type ToolRegistry,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
+import { agentToolDescriptors } from "./agent-tools.js";
 import { createApps } from "./index.js";
 import {
   bindTools,
@@ -303,5 +305,20 @@ describe("apps agent tools", () => {
       status: "error",
       error: { code: "not-found", message: `app not found: ${created.id}` },
     });
+  });
+});
+
+describe("§3 consumer voice — every apps tool carries a title", () => {
+  // Wave-1 live proof E1-5: `title: descriptor.title ?? descriptor.name` means a
+  // titleless tool hands the model its own identifier AS its human label, and
+  // the model then says `vendo_apps_edit` to a person. Four of Vendo's twelve
+  // projected tools had titles; these were the ones that did not.
+  it("titles each descriptor from the shared table, in the consumer voice", () => {
+    for (const descriptor of agentToolDescriptors) {
+      expect(descriptor.title, descriptor.name).toBe(VENDO_TOOL_TITLES[descriptor.name]);
+      expect(descriptor.title, descriptor.name).toBeTruthy();
+      // The title is what a person reads; it must not be the identifier again.
+      expect(descriptor.title, descriptor.name).not.toMatch(/vendo|_/i);
+    }
   });
 });

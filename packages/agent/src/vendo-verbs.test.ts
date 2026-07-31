@@ -1,4 +1,4 @@
-import type { RunContext } from "@vendoai/core";
+import { VENDO_TOOL_TITLES, type RunContext } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { VENDO_VERB_TOOLS, vendoVerbsRegistry } from "./vendo-verbs.js";
 
@@ -128,5 +128,24 @@ describe("the vendo verbs are projected as ordinary tools (design §4)", () => {
     // destructive and external work.
     const projected = await vendoVerbsRegistry(ports()).descriptors({ venue: "automation", presence: "away" });
     expect(projected.map((d) => d.name).sort()).toEqual([...VENDO_VERB_TOOLS].sort());
+  });
+});
+
+describe("§3 consumer voice — the verbs' titles are the shared table's", () => {
+  // A live browser proof caught the residual: `search_components` narrated
+  // "Search components…" (its identifier prettified) because the CLIENT has no
+  // descriptor, while the descriptor itself said "Look up available components".
+  // One table, so the two surfaces cannot disagree.
+  it("reads each title from core, and none of them is an identifier", async () => {
+    const descriptors = await vendoVerbsRegistry(ports()).descriptors();
+    expect(descriptors.map((d) => d.title)).toEqual([
+      VENDO_TOOL_TITLES.validate,
+      VENDO_TOOL_TITLES.search_components,
+      VENDO_TOOL_TITLES.schedule,
+    ]);
+    for (const descriptor of descriptors) {
+      expect(descriptor.title, descriptor.name).toBeTruthy();
+      expect(descriptor.title, descriptor.name).not.toContain("_");
+    }
   });
 });

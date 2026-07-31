@@ -1,6 +1,7 @@
 import {
   ASK_USER_TOOL,
   isUnattended,
+  VENDO_TOOL_TITLES,
   vendoAuthored,
   type RunContext,
   type ToolDescriptor,
@@ -35,7 +36,7 @@ export { ASK_USER_TOOL };
  */
 const DESCRIPTOR: ToolDescriptor = vendoAuthored({
   name: ASK_USER_TOOL,
-  title: "Ask you a question",
+  title: VENDO_TOOL_TITLES[ASK_USER_TOOL],
   description:
     "Ask the user a question when you genuinely cannot proceed without something only they know — "
     + "never to confirm work you can simply do, and never to guess out loud. This ENDS your turn: "

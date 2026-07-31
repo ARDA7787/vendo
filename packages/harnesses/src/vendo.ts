@@ -17,7 +17,7 @@
  *   business — that is the dividing line, and orchestration is thinking.
  */
 import { z } from "zod";
-import type { Harness, HarnessEvent, Json, ToolDescriptor, Turn } from "@vendoai/core";
+import { modelToolDescription, type Harness, type HarnessEvent, type Json, type ToolDescriptor, type Turn } from "@vendoai/core";
 import { startTurn, wireErrorMessage } from "@vendoai/agent/internal";
 import { reportHire } from "./runtime.js";
 import { jsonSchema, stepCountIs, streamText, tool, type LanguageModel, type ToolSet } from "ai";
@@ -96,7 +96,10 @@ async function refreshEquipped(
   const listings = await turn.tools.list();
   for (const listing of listings) {
     tools[listing.name] ??= tool({
-      description: listing.description,
+      // Title-first, so the model has a human label to speak (§3): its own
+      // refusals and explanations are user-visible surfaces, and `title` is
+      // otherwise the one field of the listing this harness never reads.
+      description: modelToolDescription(listing),
       inputSchema: jsonSchema((listing.inputSchema ?? NO_INPUT_SCHEMA) as Parameters<typeof jsonSchema>[0]),
       // The whole safety story in one line: the guard, the audit row, the view
       // channel, the transcript mirror and §1.4's approval block all live behind

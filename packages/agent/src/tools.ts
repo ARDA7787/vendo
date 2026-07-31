@@ -4,6 +4,7 @@ import {
   VENDO_APPS_TOOL_PREFIX,
   VENDO_KNOWLEDGE_RESULT_KIND,
   VENDO_VIEW_STREAM,
+  modelToolDescription,
   toVendoWirePart,
   vendoCitationsPartSchema,
   vendoKnowledgeCitationSchema,
@@ -356,7 +357,9 @@ export function addAgentTool(tools: ToolSet, descriptor: ToolDescriptor, options
   const needsApproval = options.guard ? previewApproval(descriptor, options) : undefined;
 
   tools[descriptor.name] = dynamicTool({
-    description: descriptor.description,
+    // Title-first, so the model has a human label to speak (§3): its own
+    // refusals and explanations are user-visible surfaces.
+    description: modelToolDescription(descriptor),
     inputSchema: jsonSchema(descriptor.inputSchema as Parameters<typeof jsonSchema>[0]),
     execute: guardedCall(descriptor, options),
     ...(needsApproval ? { needsApproval } : {}),

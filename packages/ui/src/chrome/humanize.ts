@@ -6,7 +6,7 @@
     site: a host-supplied `ToolMeta` (VendoProvider `tools` prop) wins, and when
     it is absent these pure fallbacks prettify the raw id and args so end users
     never read a raw slug, a lifecycle string, or raw JSON. */
-import { declaredMoneyUnit, type Json, type JsonSchema } from "@vendoai/core";
+import { declaredMoneyUnit, VENDO_TOOL_TITLES, type Json, type JsonSchema } from "@vendoai/core";
 import { currencyMinorUnits, formatMoney, getKitIntl } from "../kit/format.js";
 
 /** Optional host-supplied friendly metadata for one tool (08-ui provider seam).
@@ -50,13 +50,20 @@ export function humanizeToolName(raw: string): string {
  * in-code `ToolMeta.label`, then the descriptor's authored `title` (written by
  * sync's enrichment into `.vendo/tools.json`, correctable in
  * `.vendo/overrides.json` — the same label the MCP door puts on the wire), then
- * the prettified id. A raw slug is never shown.
+ * Vendo's own title for its own tools, then the prettified id.
+ *
+ * That third step exists because most surfaces have NO descriptor: the wire tool
+ * part carries only a name, so a progress chip or an activity row prettified
+ * `vendo_apps_edit` into "Vendo apps edit" — our namespace read out as words, the
+ * §3 leak wave-1 proof E1-5 caught. The table is core's, the same one the
+ * descriptors author from, so the two can never disagree.
  */
 export function toolTitle(name: string, meta?: ToolMeta, descriptorTitle?: string): string {
   const label = meta?.label?.trim();
   if (label) return label;
   const authored = descriptorTitle?.trim();
-  return authored ? authored : humanizeToolName(name);
+  if (authored) return authored;
+  return VENDO_TOOL_TITLES[name] ?? humanizeToolName(name);
 }
 
 /** Well-known toolkit slugs whose display name is not just proper-casing
