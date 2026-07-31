@@ -1,20 +1,24 @@
-import { canonicalJson, sha256Hex, type ApprovalDecision, type ApprovalRequest } from "@vendoai/core";
+import { canonicalJson, sha256Hex, type ApprovalDecision, type ApprovalRequest, type JsonSchema } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
+import { argProperties, argValue } from "./humanize.js";
 import { toolPresentation } from "./build-beat.js";
 import { ChromeRoot } from "./chrome-root.js";
 
 /** Flat, primitive-valued args render as aligned field rows; anything nested
-    falls back to the raw JSON preview (real inputs, always). */
-function flatFields(args: unknown): Array<[string, string]> | undefined {
+    falls back to the raw JSON preview (real inputs, always). Values go through
+    `argValue`, so a declared money amount reads as money and never as the raw
+    integer a person misreads by 100×. */
+function flatFields(args: unknown, inputSchema: JsonSchema | undefined): Array<[string, string]> | undefined {
   if (typeof args !== "object" || args === null || Array.isArray(args)) return undefined;
   const entries = Object.entries(args as Record<string, unknown>);
   if (entries.length === 0 || entries.length > 8) return undefined;
+  const properties = argProperties(inputSchema);
   const rows: Array<[string, string]> = [];
   for (const [key, value] of entries) {
     if (value !== null && typeof value === "object") return undefined;
-    rows.push([key, String(value)]);
+    rows.push([key, argValue(key, value, properties)]);
   }
   return rows;
 }
@@ -75,7 +79,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   );
   const title = presentation.title;
   const description = (presentation.description ?? approval.descriptor.description).trim();
-  const fields = flatFields(approval.call.args);
+  const fields = flatFields(approval.call.args, approval.descriptor.inputSchema);
   // Lane pick 1-A — consequence-first: when the presentation can truthfully
   // say what approving does in one sentence, that sentence leads and the raw
   // fields fold behind a "Details" disclosure (still the same real inputs,
