@@ -75,12 +75,16 @@ for (const backend of backends()) {
       await seed(made.store, owner, "/user/apps/app_drop/app.vendo", ["drop me", "still drop me"]);
       await seed(made.store, owner, "/user/apps/app_keep/app.vendo", ["keep me"]);
 
+      // A user file that merely reads like an app path must survive.
+      await seed(made.store, owner, "/user/files/apps/app_drop/notes.md", ["not a document"]);
+
       const report = await eraseStore(made.store).byApp("app_drop");
       expect(report.vendo_workspace_files).toBe(1);
       expect(report.vendo_workspace_history).toBe(1);
 
       expect(await count("vendo_workspace_files", "path LIKE '/user/apps/app_drop/%'", [])).toBe(0);
       expect(await count("vendo_workspace_files", "path LIKE '/user/apps/app_keep/%'", [])).toBe(1);
+      expect(await count("vendo_workspace_files", "path = '/user/files/apps/app_drop/notes.md'", [])).toBe(1);
     });
 
     it("adopts an anonymous session's workspace into the signed-in subject", async () => {

@@ -154,10 +154,13 @@ export function eraseStore(store: VendoStore): {
       // An app's knowledge corpus (docs + their chunks) goes with the app.
       await del(report, "vendo_knowledge_docs", "refs @> $1::jsonb", [appRef]);
       await del(report, "vendo_knowledge_chunks", "refs @> $1::jsonb", [appRef]);
-      // The app's workspace files: `<mount>/apps/<appId>/…` is the frozen path
-      // layout (build contract §3.1), with the app id verbatim, so the app's
-      // documents are addressable without knowing whose workspace holds them.
-      const appPaths = `%/apps/${escapeLike(appId)}/%`;
+      // The app's workspace documents. `/user/apps/<appId>/…` is the frozen
+      // path layout (build contract §3.1) with the app id verbatim, so they are
+      // addressable without knowing whose workspace holds them. Anchored at the
+      // mount, so a user file that merely happens to live under a path like
+      // `/user/files/apps/<appId>/` is not swept up with the app. (`/orgs`
+      // mounts are wave 3 and deliberately not matched here.)
+      const appPaths = `/user/apps/${escapeLike(appId)}/%`;
       await del(report, "vendo_workspace_files", "path LIKE $1 ESCAPE '\\'", [appPaths]);
       await del(report, "vendo_workspace_history", "path LIKE $1 ESCAPE '\\'", [appPaths]);
       return report;
