@@ -429,6 +429,18 @@ need).
 Wave-1 `can()` is exactly today's rule: a path under `/user/` belongs to its
 subject, `/host/` is read-only for everyone. Nothing more.
 
+**THE LAW's predicate is PRESENCE, never the venue label** (clarification
+2026-07-31, found at integration): "unattended" means *nobody acted* —
+`presence === "away"`. A `venue: "automation"` context with
+`presence: "present"` is a **ceremony**, not a run: the enable/capture flow and
+the "allow this while you're away" approval card both run with a human right
+there, and they must see the very tools they exist to ask about. An
+implementation that ORs the venue into the predicate breaks the law's own
+prescribed prepare-then-human-sends path — it reported a registered host tool
+as "unknown tool in automation" at enable time. Every real firing passes
+`presence: "away"` (automations engine, schedules, server), so presence alone
+both fails closed and keeps ceremonies working.
+
 Amendments 2026-07-30 (lane D ratifications): the design's `records_*` verbs
 ARE the shipped `vendo_apps_data_list/put/delete` — no rename; the names are
 referenced inside stored app documents, and invalidating live apps for
