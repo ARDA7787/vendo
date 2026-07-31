@@ -1,7 +1,7 @@
 # Vendo — the embedded agent layer
 
 **2026-07-30.** The final architecture, designed with Yousef; brainstorm ongoing —
-the items in §15 are still open. Nothing builds before his go.
+the items in §16 are still open. Nothing builds before his go.
 
 ## 1. The mission
 
@@ -86,28 +86,27 @@ export const acmeHarness = defineHarness({
 - **Tool calls are safe by construction.** Calls through `turn.tools` pass the
   guard, land in the audit trail, and mirror into the transcript — a harness
   author cannot forget the safety story.
-- **Approvals wait or fail — they never suspend a run.** A live human
-  (presence proven by an open stream/heartbeat, not merely by a request
-  arriving): the guarded call blocks until the card is tapped, with a short
-  timeout (≤90s), a per-subject cap on concurrent waits, and no sandbox lease
-  held while waiting. Away, or heartbeat lost, or timeout: the call resolves
-  as denied-needs-approval and the run **fails loudly** with an actionable
-  card ("needs approval for X — Grant & re-run"); the grant persists, and
-  re-run is a *fresh run against live data* — nothing is replayed from the
-  failed one. Park/suspend is never extended to new surfaces (the automations
+- **Approvals wait or fail — they never suspend a run.** **She acted** (a
+  click, a message, a submit — the action itself is the proof she's there):
+  the guarded call blocks and a popup appears in the flow, exactly like any
+  confirm dialog; she taps, the call continues. **Nobody acted** (an
+  automation, a background run): no popup is possible, so the run **fails
+  loudly** with an actionable card ("needs approval for X — Grant &
+  re-run"); the grant persists, and re-run is a *fresh run against live data*
+  — nothing is replayed. Two guards on the waiting case, no doctrine: a short
+  timeout (≤90s, for the closed-tab case) and no sandbox lease held while
+  waiting. Park/suspend is never extended to new surfaces (the automations
   engine's shipped internal step-resume stays as an implementation detail).
-  Consent is collected upfront (§12), so a mid-run missing grant is the
-  rare exception, not the flow.
-- **Re-runs are safe because effects are ledgered.** Every executed guarded
-  mutating call writes an idempotency key (run/turn id + tool + exact input
-  hash) alongside its audit row; on re-run a call whose key already succeeded
-  returns the recorded outcome instead of executing. Without the ledger a
-  re-run would repeat completed side effects — the ledger is what makes
-  fail-and-re-run correct.
 - **Failure cards have a home**: the app's own surface, a badge count in the
   launcher, and one host-side notification hook the host wires to its
   existing channels. One card per missing grant per app, carrying a
   skipped-run count — never one per failed firing.
+- **Re-runs are safe because effects are ledgered.** Every executed guarded
+  mutating call writes an idempotency key (run/turn id + tool + exact input
+  hash) beside its audit row; on re-run, a call whose key already succeeded
+  returns the recorded outcome instead of executing. Duplicate records are
+  ugly even when they aren't dangerous — the ledger is what makes
+  fail-and-re-run correct everywhere.
 - **Options are declared, then overridable per turn.** Adapters declare their
   knobs (typed schema); hosts forward what they choose to end users (model
   picker etc.); the wire forwards nothing by default. Host-side dependencies
@@ -510,15 +509,12 @@ Cloud implementation details behind OSS seams.
   gating the app's first *write*. Approved once → that app runs silently.
 - **Grants are per-person.** A shared app shows each member their own card on
   first write-bearing use; a creator's approval is never anyone else's.
-- **Every grant minted from a declared set carries scopes, or it is not
-  standing.** Scopes are field-bound constraints on the tool's own input
-  schema (`equals` / `oneOf` / `max` / `maxCalls`), authored on the card by
-  picking fields, rendered on it, and enforced **inside the guard's scope
-  match** — one choke point, shared by app bundles, automation enable, and
-  chat "remember". An unscoped mutating declaration mints session/task
-  duration only. A declared set that is not bundle-eligible (any member
-  mutating and unscoped) falls back to per-call cards. Whole-registry
-  declarations are rejected, not bundled.
+- **Bundles are proposed, never blank.** A card never asks the user to fill a
+  form: everything is pre-filled from what the app declares (and, where a
+  limit is sensible, a proposed one), so the normal case is a single tap and
+  editing is optional. Whole-registry declarations are rejected, not bundled;
+  a declared set is bundle-eligible only if every member is a read or a
+  non-destructive write.
 - **The grant set is bound to the app's intent, not just tool names.** An
   app-intent hash (declared toolset + scopes + trigger + run body + the
   user-visible name) rides the set; any change invalidates it and re-asks
@@ -527,37 +523,35 @@ Cloud implementation details behind OSS seams.
   sponsorship (§13 adoption fires on the *edit* event, not only on
   departure). Promote re-mints the set; copy paths strip grant sets by field
   whitelist, exactly as approval state is stripped today.
-- **Destructive/external actions (money, messages to humans, deletes)** need
-  *either* a live card in the moment with real arguments shown, *or* a prior
-  **scoped** grant whose constraints pin the material arguments. A bare
-  "may send payments" grant is never sufficient — that is what makes
-  unattended runs (§13) honest without breaking "what the human saw is what
-  runs". Bundle eligibility never rests on the AI-assigned risk label alone:
-  a second mechanical vote (HTTP method + verb shape) must agree, and
-  disagreement demotes to a per-call card.
+- **THE LAW: destructive and external actions are never unattended.**
+  Automations may read and write; they may **not** move money, message
+  humans, or delete — those tools are not projected into an automation run at
+  all. Not with a limit, not with a condition, not with an admin override.
+  The honest pattern replaces them: the automation *prepares*, the human
+  *sends* — "your 12 reminders are ready · [Send all]" in the morning, one
+  tap, real arguments visible. Unattended work, attended irreversibility.
+  This deletes 2am cards, fire-time conditions, and the whole class of
+  unattended-authority risk instead of mitigating it. Eligibility never rests
+  on the AI-assigned risk label alone: a second mechanical vote (HTTP method +
+  verb shape) must agree, and disagreement treats the tool as destructive.
+- **Interactively, destructive actions are a normal confirm.** She clicked, so
+  she is there: the popup appears in the flow with real amounts and
+  recipients, she taps, the call proceeds (§3). No conditions machinery, no
+  judge at decision time, no free-text policy language anywhere.
 - **Reads are silent, always.** Ad-hoc chat asks (no app, no bundle) keep
   ask-once-with-remember.
-- **Conditions are field-bound comparisons, evaluated in code.** The card
-  offers the numeric/enum fields from the tool's input schema; the human
-  picks a field and a bound ("amount ≤ $1,000"), so the common case never
-  calls a model — no injection channel, no unit confusion, and the bound
-  field is named on every card and audit row. A condition is a *scope kind*
-  in the discriminated union (old readers fail the parse and fail closed —
-  never an optional field a stale process ignores), evaluated inside the
-  grant branch: unmet → **deny**, never fallthrough to a laxer stage. Free
-  text survives only as the residue: the judge must name the field it bound
-  and sees a typed projection of just those fields, values separated from
-  string content; it cannot name a field → ambiguous → fail. A failure card
-  never offers a one-tap limit raise from an unattended run — raises happen
-  in settings, in daylight, rate-limited and audited as loosenings (the same
-  ratchet the judgment channel already uses). Repeated condition failures
-  disable the grant rather than re-asking forever.
+- **Adding unattended destructive actions later is a predicate, not a
+  subsystem.** The guard already asks "is this tool allowed here?" on every
+  call; a future host opt-in answers that one question differently, on the
+  path every call already takes. Scope constraints, conditions, and fire-time
+  judging can return as additive union members (old readers fail closed) if a
+  real host ever pays for them. Nothing is built twice by waiting.
 - **Cards say what will happen, completely.** Consent surfaces are the one
   carve-out from the voice law's no-internals rule: plain language, but one
-  line per mutating step with its scope (never a single summary line for a
-  compound), a mechanically-derived risk line the model cannot author, and
-  the exact tool name and arguments one tap away. Tool `title` joins the
-  descriptorHash preimage, so a retitle invalidates grants like a rename.
+  line per mutating step (never a single summary line for a compound), a
+  mechanically-derived risk line the model cannot author, and the exact tool
+  name and arguments one tap away. Tool `title` joins the descriptorHash
+  preimage, so a retitle invalidates grants like a rename.
 - **Enable is atomic with its grant set**: an app or automation is never armed
   with pending permissions. One set per app keyed by (app, tool);
   re-declaration may only add, and an addition cards only the delta.
@@ -565,21 +559,16 @@ Cloud implementation details behind OSS seams.
 ## 13. Automation authority: sponsorship
 
 An automation always runs as a named person — its **sponsor** (creator by
-default, and required to be an app `owner`). The sponsor's scoped grants are
-the 2am authority: the guard answers "do I hold this permission slip, and do
-these arguments satisfy its scope?", and **fails the run with a card**
-otherwise (§3 — no parking). Sponsorship is invalidated by the sponsor
-leaving, their grants invalidating, **or anyone else editing the app** (the
-app-intent hash, §12); the automation then stops and asks the app's editors+
-to **adopt** — re-approving its grants as themselves through the normal flow.
-The automation's card labels its window ("runs with Dana's access"), and names
-the wider editor set when one exists ("4 people can edit it") — honesty, not
-hidden authority. Satisfied unattended runs are visible to the sponsor in a
-consumer-voice run history rendered from the audit rows (which decision, which
-condition, which field) — a render, not new machinery. No non-human principal
-ever acts; org service authority stays off the table unless the market forces
-it — addable later as an explicit admin-created thing without touching this
-model.
+default, an app `owner`). Because automations can only read and write (§12),
+sponsorship is a light ceremony, not a security perimeter: the sponsor's
+grants are the authority, and a missing one fails the run with a card (§3).
+Sponsorship is invalidated by the sponsor leaving, their grants invalidating,
+**or anyone else editing the app** (the app-intent hash, §12); the automation
+stops and asks the app's editors+ to **adopt** — approving its reads and
+writes as themselves, one card. The automation labels its window ("runs with
+Dana's access") and names a wider editor set when one exists. Runs are visible
+in a consumer-voice history rendered from the audit rows — a render, not new
+machinery. No non-human principal ever acts.
 
 ## 14. Guard policy — carried forward, plus the org layer
 
@@ -592,7 +581,29 @@ living as a policy file in the org workspace, managed via the console,
 evaluated by the same guard between host policy and user approvals. Host
 policy always wins over org policy; org policy tightens, never loosens.
 
-## 15. Open — next brainstorms
+## 15. Structure — modular and clean, as law
+
+The same shape repeats at every level, and that repetition is the design:
+a harness is one function, an adapter is one interface with one job, a pack is
+four slots, a tool is a name and a schema.
+
+- **One concept per package, one job per file.** No package reaches sideways
+  (the dependency guard enforces it between blocks; new packages declare their
+  place). Nothing with a single caller survives as an abstraction — that rule
+  is what deleted the placement layer, the job/session split, and the
+  code-execution family.
+- **The workspace layout is product, not implementation.** Paths are
+  predictable and readable by humans and agents alike
+  (`/user/apps/<app>/…`, `/host/skills/<name>/SKILL.md`); there is no `misc`,
+  no dumping ground, no path whose meaning depends on who wrote it. The
+  layout is fixed in the build contract, not discovered per lane.
+- **Additive by construction.** Every persisted or wire-crossing shape is a
+  tagged union or a format-tagged document, so tomorrow's variant is a new
+  member and yesterday's reader fails closed. This is what makes deferring
+  features (unattended destructive actions, code execution, conditions) cost
+  nothing: the extension points are the same ones already carrying traffic.
+
+## 16. Open — next brainstorms
 - **Secrets reconciliation** (parked from the review): handles vs scoped real
   values in the box; gating the inference key. Owns the §9-vs-box-env
   contradiction.
@@ -609,7 +620,7 @@ policy always wins over org policy; org policy tightens, never loosens.
   simple-ask corpus) · reviewer depth dial · fill worker weight/tier/
   concurrency · time-to-skeleton gates (≤5s typical stands until re-measured).
 
-## 16. What this supersedes
+## 17. What this supersedes
 
 The 2026-07-28 generation-pipeline-v2 spec's *mechanics* survive inside the
 apps pack (plan text, groups, workers' blinkers, edit-like-a-file, computed
