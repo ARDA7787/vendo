@@ -65,6 +65,9 @@ export type DeniedNeeds =
 
 export interface ToolListing {
   name: string; title: string; description: string; risk: "read" | "write" | "destructive";
+  /** Amendment 2026-07-30: JSON Schema for the tool's input — every in-process
+   *  harness must hand schemas to its model; JSON Schema is the interchange. */
+  inputSchema?: JsonSchema;
 }
 ```
 
@@ -124,6 +127,12 @@ Routing (frozen): `text` → screen + transcript · `status` → screen only ·
 `error` → screen + transcript + audit · `usage` → audit/metering only. Tool
 calls are mirrored by the runtime, never yielded. Adding a member later is a
 breaking change for host renderers — this list is closed for v1.
+
+Amendment 2026-07-30: `status` rides a **transient** `data-vendo-status` wire
+part owned by `@vendoai/harnesses` (never persisted, never in
+`stream-parts.ts` — core stays untouched). `error`'s host-observable
+affordance must match today's agent behavior exactly (whatever chunk/part the
+shipped loop raises today, the runtime raises — no new failure UX in wave 1).
 
 ### 1.6 Who runs a harness
 
