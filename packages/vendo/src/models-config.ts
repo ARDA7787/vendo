@@ -1,5 +1,5 @@
 import type { LanguageModel } from "ai";
-import { migrateModelSeats, seatConflict, VendoError } from "@vendoai/core";
+import { migrateModelSeats, seatConflict, VendoError, type ResolvedModels } from "@vendoai/core";
 import { vendoModel, type VendoModelOptions } from "#dev-creds/model";
 
 /**
@@ -62,6 +62,12 @@ export interface ComposedModelSlots {
   /** The knowledge check's cheap/fast model (contract amendment 2026-07-30 — its
    *  own seat, never the agent's). Undefined = the family fast pick. */
   verifier: { model: LanguageModel } | undefined;
+  /** Build contract §4's `ResolvedModels` — every seat filled, which is what a
+   *  `Turn` carries. Same resolution order as the slots above, stated once: an
+   *  explicit seat, else `default`. Borrowing `default` is the contract's own
+   *  fallback ("seat → default → the env credential ladder"), and `default`
+   *  itself already rode the ladder, so no seat can be unfilled. */
+  seats: ResolvedModels<LanguageModel>;
 }
 
 type MakeModel = (name?: string, options?: VendoModelOptions) => LanguageModel;
@@ -163,5 +169,33 @@ export function resolveModels(config: ResolveModelsInput, makeModel: MakeModel =
           : verifierConfigured,
       };
 
-  return { agent, paint, verifier };
+  // Build contract §4's seat record, resolved from the SAME values above so the
+  // model a seat names can never disagree with the model the matching slot got.
+  // A seat nobody set borrows `default`; that is the contract's fallback, not a
+  // guess, and it is why every seat is non-optional.
+  const seat = (
+    configured: string | LanguageModel | undefined,
+    options?: VendoModelOptions,
+  ): LanguageModel =>
+    configured === undefined
+      ? agent.model
+      : typeof configured === "string"
+        ? makeModel(configured, options)
+        : configured;
+
+  const resolvedSeats: ResolvedModels<LanguageModel> = {
+    default: agent.model,
+    // `fill` already has its own precedence (including the family fast pick when
+    // the default rides the ladder), so take the resolved value rather than
+    // re-deriving it and risking two answers for one seat.
+    fill: paintModel ?? agent.model,
+    verifier: verifier?.model ?? agent.model,
+    // No `slot` for the reviewer: the ladder's slots are the ones with an env pin
+    // and a Cloud family name, and `reviewer` has neither yet — so a reviewer
+    // model named as a string rides `inferSlot`, exactly like any other name.
+    reviewer: seat(seats.reviewer),
+    judge: seat(seats.judge, { slot: "judge" }),
+  };
+
+  return { agent, paint, verifier, seats: resolvedSeats };
 }

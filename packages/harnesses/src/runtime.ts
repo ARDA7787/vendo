@@ -32,7 +32,7 @@ import {
   validateUpsert,
   type ToolBridgeOptions,
 } from "@vendoai/agent/internal";
-import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from "ai";
+import { createUIMessageStream, createUIMessageStreamResponse, type LanguageModel, type UIMessage } from "ai";
 import {
   classifyHistory,
   createTurnState,
@@ -131,7 +131,8 @@ export interface TurnRunInput<Options = unknown> {
   messages: UIMessage[];
   ctx: RunContext;
   workspace: WorkspaceFs;
-  models: ResolvedModels;
+  /** The resolved seats, as `Turn.models` carries them (contract §4). */
+  models: ResolvedModels<LanguageModel>;
   options?: Options;
   /** §1.4 — did the caller prove presence (a click/message/submit)? */
   interactive: boolean;

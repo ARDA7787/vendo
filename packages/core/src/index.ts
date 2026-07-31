@@ -94,7 +94,14 @@ export type {
   TurnTools,
 } from "./harness.js";
 export type { CommitResult, WorkspaceFs } from "./workspace.js";
-export type { ResolvedModels, Seat } from "./models.js";
+// `Seat` / `ResolvedModels` come from `./model-seats.js` through the star export
+// above. They were ALSO re-exported here from a second, lane-A copy in
+// `./models.ts` — four seats instead of five, non-generic, and typed against the
+// ai-SDK's `LanguageModel`, which put an `ai` import in core for one type. The
+// explicit re-export won over the star, so core's public `Seat` was silently
+// missing `verifier` and `Turn.models` could not describe the verifier seat.
+// Lane A's own file said "if lane D's version differs, lane D's wins"; it does,
+// so the copy is gone and there is one definition.
 
 // Deprecated aliases from the pre-de-versioning naming (0.4.x). Remove next minor.
 /** @deprecated Use compileWire. */

@@ -14,6 +14,7 @@ import type { SubjectMergeReport, VendoStore } from "@vendoai/store";
 import type { Telemetry } from "@vendoai/telemetry";
 import type { VendoAgent } from "@vendoai/agent";
 import type { ByoApprovalResolution } from "../byo-approvals.js";
+import type { HarnessTurns } from "../harness-turn.js";
 import type { ConnectionsService } from "../connections.js";
 import type { RuntimeCaptureHandler } from "../runtime-capture.js";
 
@@ -53,6 +54,12 @@ export interface WireDeps {
   store: VendoStore;
   telemetry?: Telemetry;
   agent: VendoAgent;
+  /** Architecture §3 — turns through the composed `Harness`. Present only when
+      the host NAMED a harness: `POST /threads` then routes here instead of
+      `agent.stream`. Unset keeps today's path byte for byte, because the harness
+      path does not yet carry `find_tools`, the connection-scoped loadout, the
+      curated agent menu or capability-miss detection (PARKED.md P3). */
+  harness?: Pick<HarnessTurns, "stream">;
   guard: VendoGuard;
   apps: AppsRuntime;
   /** execution-v2 Lane C — the guard-bound registry (the SAME binding chat and

@@ -13,6 +13,12 @@ import {
   type ServerActionHandler,
 } from "@vendoai/actions";
 import { createAgent, VENDO_TOOL_PACK_PREFIX, type VendoAgent } from "@vendoai/agent";
+import { assembleSystemPrompt } from "@vendoai/agent/internal";
+// Architecture §3 — the harness runtime and the default thinker. `vendo()` is
+// composed HERE (not by the host) when `harness:` is unset, because its system
+// prompt and descriptor catalog need the turn's ctx.
+import { assertHarnessComposable, vendo } from "@vendoai/harnesses";
+import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -37,6 +43,8 @@ import {
   type AppDocument,
   type ComponentCatalog,
   type ComponentRegistry,
+  type FilesAdapter,
+  type Harness,
   type Json,
   type KnowledgeAdapter,
   type PackProvider,
@@ -250,6 +258,12 @@ export interface Vendo {
   actions: ActionsRegistry;
   connections: ConnectionsService;
   store: VendoStore;
+  /** Architecture §3 — turns served through the composed `Harness` (`harness:`,
+      or `vendo()`). `POST /threads` routes here when the host named a harness;
+      otherwise it stays on `agent.stream`, which still carries rails the harness
+      path does not (see PARKED.md P3). Exposed so a host — and the live proofs —
+      can drive a harness turn directly either way. */
+  harness: HarnessTurns;
 }
 
 // Task 15a — the profile piece types, named from THIS entry so they sit
@@ -306,7 +320,25 @@ export interface CreateVendoConfig {
       over the file; blank falls through. */
   brief?: string;
   store?: VendoStore;
+  /** Build contract §3.4 / architecture §10 — where workspace file CONTENT
+      lives once it outgrows a database row. Unset, the store's own `vendo_blobs`
+      backs it up to `FILES_STORE_MAX_BYTES` (5 MiB) and the first over-cap write
+      fails naming this key; `s3({ bucket, … })` is the shipped implementation
+      and covers S3/R2/Supabase/MinIO.
+
+      Resolved ONCE, inside `selectStore`, and handed to every consumer from
+      there — the workspace that writes blobs, and the erase/adoption/sweep
+      cascade that must delete the same ones. Two adapters would leak objects
+      forever behind deleted rows, so the resolution has exactly one home. */
+  files?: FilesAdapter;
   sandbox?: SandboxAdapter;
+  /** Architecture §3 / §10 — WHO THINKS. Any `Harness`: the built-in `vendo()`,
+      a spawned driver, or the host's own via `defineHarness`. Unset means
+      `vendo()` — today's loop, on the contract.
+
+      A harness declaring `requires: { sandbox: true }` with no `sandbox`
+      adapter is a BOOT error, never a turn that dies in front of a user. */
+  harness?: Harness<never>;
   /** Knowledge K1 — the product knowledge base seam (core's KnowledgeAdapter).
       Configured, it composes the `vendo_knowledge_search` agent tool; unset,
       the tool does not exist (precedence: selectKnowledge). */
@@ -811,14 +843,12 @@ interface SessionOps {
   sweep(idleMs: number, now: number): Promise<string[]>;
 }
 
-function localSessionOps(store: VendoStore): SessionOps {
-  // Both doors erase workspace content, so both need the files adapter that
-  // holds it (build contract §3.4). The store-backed one is named EXPLICITLY
-  // here rather than defaulted inside the store, because a host that wires
-  // `files:` must have this become their adapter — the erase would otherwise
-  // drop the rows and leave the objects. INTEGRATION: when the `files:` config
-  // slot lands, resolve it once (beside selectStore) and pass it here.
-  const files = storeFiles(store);
+/** Both doors erase workspace content, so both need the SAME files adapter the
+    workspace wrote it with (build contract §3.4) — an erase against a different
+    adapter drops the rows and leaves the objects, which is the blob-leak class
+    lane B spent three rounds killing. `files` is therefore a required argument
+    here, resolved once in {@link selectStore} and never defaulted locally. */
+function localSessionOps(store: VendoStore, files: FilesAdapter): SessionOps {
   return {
     register: (subject, now) => registerEphemeralSubject(store, subject, now),
     adopt: (from, to) => adoptEphemeralSubject(store, from, to, { files }),
@@ -943,28 +973,58 @@ function isHostedStore(store: VendoStore): store is HostedStore {
          unencrypted (the data dir is gitignored) while production secret
          writes fail closed with instructions).
     The adapters themselves never read the environment. */
-function selectStore(configured: VendoStore | undefined, touchDebounceMs: number): {
+/** ADAPTER RULE, files seam (build contract §3.4): the one place a
+    `FilesAdapter` is chosen. Explicit `files:` wins (BYO — s3/R2/Supabase/MinIO
+    via `s3()`, or the host's own); unset, the store's `vendo_blobs` backs it up
+    to `FILES_STORE_MAX_BYTES`, and the over-cap error names `files:` by name.
+
+    Deliberately NOT defaulted at each call site. The workspace writes blobs and
+    the erase cascade deletes them, and if those two ever resolve separately, a
+    host who wires `files:` gets rows deleted and objects left behind forever.
+    One resolution, returned beside the store it may be backed by, so every
+    consumer is handed the same instance. */
+function selectFiles(configured: FilesAdapter | undefined, store: VendoStore): FilesAdapter {
+  if (configured !== undefined) return configured;
+  // Deferred to first use, not built at compose: `storeFiles` resolves a blob
+  // handle off the store, and `createVendo` must stay I/O-free at module init
+  // (the portability gate — Workers forbids work in global scope). Memoized, so
+  // every consumer still shares ONE adapter, which is the whole point.
+  let backing: FilesAdapter | undefined;
+  const blobs = (): FilesAdapter => (backing ??= storeFiles(store));
+  return {
+    put: (key, bytes, meta) => blobs().put(key, bytes, meta),
+    get: (key) => blobs().get(key),
+    delete: (key) => blobs().delete(key),
+  };
+}
+
+function selectStore(
+  configured: VendoStore | undefined,
+  touchDebounceMs: number,
+  configuredFiles: FilesAdapter | undefined,
+): {
   store: VendoStore;
   sessions: SessionOps;
+  /** THE files adapter for this deployment. Every consumer takes it from here. */
+  files: FilesAdapter;
 } {
-  if (configured !== undefined) {
-    return {
-      store: configured,
-      sessions: isHostedStore(configured)
-        ? hostedSessionOps(configured, touchDebounceMs)
-        : localSessionOps(configured),
-    };
-  }
-  const cloud = cloudKeyOptions();
-  if (cloud !== undefined) {
-    const hosted = hostedStore(cloud);
-    return { store: hosted, sessions: hostedSessionOps(hosted, touchDebounceMs) };
-  }
-  const encryptionKey = environment("VENDO_STORE_ENCRYPTION_KEY");
-  const local = createStore(encryptionKey === undefined
-    ? { allowUnencryptedSecrets: environment("NODE_ENV") !== "production" }
-    : { encryption: { key: encryptionKey } });
-  return { store: local, sessions: localSessionOps(local) };
+  const selected = ((): VendoStore => {
+    if (configured !== undefined) return configured;
+    const cloud = cloudKeyOptions();
+    if (cloud !== undefined) return hostedStore(cloud);
+    const encryptionKey = environment("VENDO_STORE_ENCRYPTION_KEY");
+    return createStore(encryptionKey === undefined
+      ? { allowUnencryptedSecrets: environment("NODE_ENV") !== "production" }
+      : { encryption: { key: encryptionKey } });
+  })();
+  const files = selectFiles(configuredFiles, selected);
+  return {
+    store: selected,
+    files,
+    sessions: isHostedStore(selected)
+      ? hostedSessionOps(selected, touchDebounceMs)
+      : localSessionOps(selected, files),
+  };
 }
 
 /** ADAPTER RULE, secrets seam (cloned from selectConnections): generated-app
@@ -1328,12 +1388,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // safety margin. ttlMs 0 disables the sweep entirely (runSweep), so the
   // zero window it produces (every touch rides the wire) is merely
   // conservative, never wrong.
-  const { store, sessions: sessionOps } = selectStore(
+  const { store, sessions: sessionOps, files } = selectStore(
     config.store,
     Math.min(
       Math.floor(sessionsConfig.sweepIntervalMs / 2),
       Math.floor(sessionsConfig.ttlMs / 4),
     ),
+    config.files,
   );
   const sandbox = selectSandbox(config.sandbox);
   // Secrets, selected by the adapter rule at this composition seam
@@ -2078,6 +2139,44 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // gate will refuse with a connect card.
     preflight: (call, ctx) => connectGate.check(call, ctx),
   });
+  // Architecture §3 — WHO THINKS, composed. `assertHarnessComposable` is the
+  // BOOT gate: a harness that needs a machine to live on and has none is a wiring
+  // mistake the host hears about here, not a turn that dies in front of a user.
+  // Checked against the resolved harness (`vendo()` when the host chose nothing)
+  // because a default is still a choice that has to hold.
+  const harness = (config.harness ?? vendo()) as Harness;
+  assertHarnessComposable(harness, sandbox.adapter === undefined ? {} : { sandbox: sandbox.adapter });
+  // The harness runtime, wired to everything a turn needs: the store handle (its
+  // transcript and its workspace), the ONE guard-bound registry, the merged pack
+  // skills projected into `/host/skills`, and the resolved model seats. The
+  // per-turn halves it cannot know (thread, workspace, ctx-shaped prompt and
+  // descriptor catalog) are resolved in harness-turn.ts.
+  const harnessTurns = createHarnessTurns({
+    ...(config.harness === undefined ? {} : { harness: config.harness }),
+    store,
+    // The SAME adapter the erase cascade deletes through (selectStore) — the
+    // whole point of resolving it once.
+    files,
+    guard,
+    tools: boundTools,
+    packSkills: packs.skills,
+    models: inference.seats,
+    system: async (ctx) => assembleSystemPrompt(
+      guard,
+      ctx,
+      system,
+      // The capability-miss and find_tools prompt sections are `createAgent`'s
+      // rails; the harness path carries neither yet, so the prompt must not
+      // promise them. See PARKED.md P3.
+      false,
+      false,
+    ),
+    // Projected for THIS ctx, so THE LAW's unattended filter (design §12) decides
+    // what the model is even shown — not just what it is allowed to run.
+    descriptors: (ctx) => boundTools.descriptors(ctx),
+    bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
+      preflight: (call, ctx) => connectGate.check(call, ctx) }),
+  });
   // Per-subject connected-toolkit lookups are cached briefly so a turn never
   // pays a broker round-trip it doesn't need; failures degrade to host tools
   // only (warn, never the turn). Bounded so long-lived deployments don't grow.
@@ -2359,6 +2458,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     store,
     telemetry: telemetryClient(config.telemetry),
     agent,
+    // Only a host that NAMED a harness gets the wire's chat turn routed through
+    // it. Defaulting the ROUTE (rather than the harness value) would silently
+    // drop `find_tools`, the connection-scoped loadout, the curated agent menu
+    // and capability-miss detection, none of which the harness path carries yet
+    // — PARKED.md P3 states the gap and the one-line flip that closes it.
+    ...(config.harness === undefined ? {} : { harness: harnessTurns }),
     guard,
     apps,
     // execution-v2 Lane C — the /box surfaces: tool calls through the SAME
@@ -2429,6 +2534,19 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // internal composition detail (see selectedConnections above).
     connections: selectedConnections,
     store,
+    harness: {
+      // The same `ready()` latch every other composed door arms: a harness turn
+      // reads the transcript and writes workspace rows, so the schema has to be
+      // there first.
+      stream: async (input) => {
+        await ready();
+        return harnessTurns.stream(input);
+      },
+      workspace: async (principal, opts) => {
+        await ready();
+        return harnessTurns.workspace(principal, opts);
+      },
+    },
   };
 }
 

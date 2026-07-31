@@ -32,7 +32,11 @@ import {
 } from "./capability-miss.js";
 import { createToolSearchSession, type ToolSearchConfig } from "./tool-search.js";
 
-const THREAD_ID_HEADER = "x-vendo-thread-id";
+/** The effective thread id every turn response carries (03 §1), so a caller
+ *  that began without one can adopt it. Exported through `@vendoai/agent/internal`
+ *  because a composition serving turns through the harness runtime must stamp the
+ *  SAME header — the wire reads it to register turn liveness. */
+export const THREAD_ID_HEADER = "x-vendo-thread-id";
 
 // ENG-309: backoff between persist attempts after a completed stream. Short and
 // bounded — long waits would hold the response open for nothing (the user
@@ -162,7 +166,7 @@ function validateConfig(config: AgentConfig): void {
 
 // System-role messages are rejected: the system prompt is assembled server-side
 // (03 §3); accepting one from the client would be a prompt-injection channel.
-function validateMessage(message: UIMessage | undefined): asserts message is UIMessage {
+export function validateMessage(message: UIMessage | undefined): asserts message is UIMessage {
   if (!message
     || typeof message.id !== "string"
     || message.id.length === 0
@@ -172,7 +176,7 @@ function validateMessage(message: UIMessage | undefined): asserts message is UIM
   }
 }
 
-function upsertMessage(messages: UIMessage[], message: UIMessage): void {
+export function upsertMessage(messages: UIMessage[], message: UIMessage): void {
   const index = messages.findIndex((candidate) => candidate.id === message.id);
   if (index === -1) messages.push(message);
   else messages[index] = message;

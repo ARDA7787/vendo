@@ -21,7 +21,16 @@ export const threadRoutes: RouteEntry[] = [
     const turnAbort = new AbortController();
     if (request.signal.aborted) turnAbort.abort();
     else request.signal.addEventListener("abort", () => turnAbort.abort(), { once: true });
-    const turn = await deps.agent.stream({
+    // Architecture §3 — one turn, two possible thinkers, ONE request shape. The
+    // harness path takes the same `{ threadId?, message, ctx, signal }` and
+    // returns the same SSE `Response` with the same thread-id header, so nothing
+    // downstream (liveness, abort, the client) can tell which ran.
+    //
+    // Only a host that NAMED a harness is routed here. `deps.harness` unset means
+    // today's path, unchanged — see PARKED.md P3 for the rails the harness path
+    // still owes before it can be the default.
+    const runTurn = deps.harness ?? deps.agent;
+    const turn = await runTurn.stream({
       ...(body["threadId"] === undefined ? {} : { threadId: string(body["threadId"], "threadId") }),
       message: body["message"] as never,
       ctx,
