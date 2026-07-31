@@ -53,8 +53,16 @@ drivers as subpaths with their SDKs as optional peers
   vendo()'s bench rival) · `managedAgents()` (proves the callback dialect) ·
   `opencode()` demand-driven · hosts' own via `defineHarness` from day one.
 - vendo() is built on our existing runner + AI SDK — never on Pi (transcript/
-  schema friction at the core, 0.x foundation risk); Pi's steering queues and
-  event granularity are borrowed as design.
+  schema friction at the core, 0.x foundation risk); Pi's steering queues,
+  event granularity, and non-destructive compaction are borrowed as design.
+- **claudeCode() specifics (settled):** its own permission system is
+  repurposed, not trusted — auto-allow inside the box (the box is the
+  permission: copies only, no credentials; reality happens at commit), and
+  our guard's asks are delivered through its native permission hook so the
+  co-trained pause-and-explain behavior serves our cards. The ~250MB Agent
+  SDK ships inside the sandbox image, never in the host's node_modules —
+  `@vendoai/harnesses/claude-code` is a thin spawner. v1 options: `model`,
+  `effort`, `maxTurns`, `machine: "local"`; nothing else until asked.
 
 ### The contract
 
@@ -78,9 +86,15 @@ export const acmeHarness = defineHarness({
 - **Tool calls are safe by construction.** Calls through `turn.tools` pass the
   guard, land in the audit trail, and mirror into the transcript — a harness
   author cannot forget the safety story.
-- **Park is an outcome, not an exception.** A guarded call may return
-  `pending-approval`; the harness returns; the runtime resumes with the
-  resolution next turn. Approval flow works in harnesses that never heard of it.
+- **Approvals wait or fail — they never suspend a run.** User present: the
+  guarded call simply blocks until the card is tapped (seconds; the harness
+  never knows). User away or timeout: the call returns `denied-needs-approval`,
+  the run **fails loudly** with an actionable card ("needs approval for X —
+  Grant & re-run"); the grant persists, re-run starts clean. Park/suspend is
+  never extended to new surfaces (the automations engine's internal
+  step-resume stays as shipped implementation detail). Consent is collected
+  upfront (§11.4), so a mid-run missing grant is the rare exception, not the
+  flow.
 - **Options are declared, then overridable per turn.** Adapters declare their
   knobs (typed schema); hosts forward what they choose to end users (model
   picker etc.); the wire forwards nothing by default. Host-side dependencies
@@ -104,10 +118,29 @@ Three-part state, three owners:
 | Harness state | `turn.state` — e.g. a session id | the harness; opaque, persisted by us, disposable |
 
 Session-owning harnesses (Claude Code, Codex) keep their native session via
-`turn.state` and get their co-trained compaction/caching. If canonical history
-is edited, `turn.state` is cleared and the next turn re-seeds from our
-transcript. Correctness never depends on the harness's copy. Harnesses can swap
-mid-session because the truth is ours.
+`turn.state` and get their co-trained compaction/caching. The native session
+file is treated as one more workspace file: synced out at turn end, re-
+materialized on acquire — an idle-TTL'd sandbox never costs a re-seed. Prefix
+truncations (retry an edited message) use the harness's native rewind; only
+arbitrary history edits or a harness swap clear `turn.state`, and a re-seed
+feeds a compact summary + recent turns, never the raw transcript. Correctness
+never depends on the harness's copy; the truth is ours.
+
+**Mirroring — what goes where.** Yield vocabulary is closed: `text · status ·
+error · usage`. Routing: text → screen + transcript; status → screen only
+(ephemeral); in-box bash/file ops → nowhere but the commit diff (audit);
+subagents → one transcript receipt line, never the screen (one-assistant law);
+guarded calls → transcript + audit rows; usage → audit/metering only.
+Invariant: **audit ⊇ transcript** — billing and reconciliation never depend
+on the story layer. The write law's "~15 rows/turn" holds because in-box ops
+don't mirror.
+
+**The consumer voice law.** The agent never talks about code, tools, or files
+to an end user. Three anchors: surfaces render tool *titles and verbs*
+("Checked your invoices"), never names — rendering-layer law; every skill and
+prompt carries the register (plain language, no paths, no jargon); the
+reviewer rubric makes user-visible technical jargon a finding. Errors follow
+it too: plain-language, no internals.
 
 ## 4. Tools
 
@@ -197,15 +230,29 @@ export const complianceReports = definePack({
   (A records/storage slot was considered and cut — packs that need rows use
   the existing records machinery; the slot returns if a real pack demands it.)
 - Packs contribute to existing slots **only** — no config surface, no guard
-  wrapping, no reaching into other packs. Namespacing is automatic; conflicts
-  fail at boot.
+  wrapping, no reaching into other packs.
 - `apps()` and `automations()` are built on this exact interface — no
-  privileged internal API.
+  privileged internal API — with one honest carve-out: **triggers and
+  scheduling are platform lifecycle** (core runtime, like `serve`), not pack
+  content; the automations pack contributes tools/skills/checks/components
+  *over* that lifecycle. Third-party packs wanting recurring behavior create
+  automations through the normal guarded path.
+- **Packs are isomorphic modules passed twice** — the same import to
+  `createVendo({packs})` (server reads tools/checks/skills, ignores render)
+  and to the client root (mounts render). Pack modules must be import-safe
+  on the server. Harness/pack contract types live in core (the established
+  layering fix).
+- **No renaming, ever.** Tool names are global as authored — a skill body
+  says `check_report` and projection is a copy, so a prefixed name would
+  point the model at a tool that doesn't exist. Collisions fail at boot
+  naming both packs; boot-collision IS the namespacing. Pack tool renames
+  invalidate grants same as host renames.
 - **Packs export downward**: the portable subset (tools + skills) compiles to
   the industry formats — an MCP server, an agentskills.io skill folder, a
   Claude Code plugin (`vendo pack export`). Author once in the rich format
-  (checks, components, records have no downstream equivalent — they're the
-  differentiated half), project to the poor ones.
+  (checks have no downstream equivalent anywhere; components get at most a
+  degraded export via MCP Apps' declared UI — the guarded/checked half stays
+  export-less and is the differentiation), project to the poor ones.
 - **Skills teach, checks enforce.** A skill is a job description; the harness
   hires its own staff to execute it; if the harness ignores it, the checks floor
   holds anyway.
@@ -252,7 +299,12 @@ The harness-independent floor. Swap any harness; the floor doesn't move.
   the guarantee — host judgment rules fire regardless, and the D5-gate
   deletion condition (reviewer always runs) holds. `instant()` keeps its
   internal reviewer. `models.reviewer` overrides the seat; depth
-  (rubric-only single call vs full test-drive) is a host dial, bench-set.
+  (rubric-only single call vs full test-drive) is a host dial, defaulting by
+  blast radius: org-shared/automation apps get the full test-drive, personal
+  quick edits rubric-only. **Failure protocol:** FAIL → the commit lands as a
+  flagged version (the previous version keeps serving), one bounded fix
+  round, then surface honestly. Reviewer traffic runs under its own breaker
+  context, never the user's budget.
 - **host checks** — plugged in via packs, same guarantee: they fire whether or
   not the builder feels like it.
 
@@ -260,7 +312,11 @@ The harness-independent floor. Swap any harness; the floor doesn't move.
 
 The agent's filesystem — a façade over the store, materialized onto a real
 disk only when a sandbox needs one. Backed by `store` (small files) + `files`
-(blobs, size-threshold cutover).
+(blobs, size-threshold cutover). The fs interface is **`just-bash`'s
+`IFileSystem`** (Vercel, Apache-2.0): we implement it over the store and get
+an in-process bash surface (grep/sed/awk/jq, read-only mounts) for
+machine-less harnesses — no sandbox needed for file work. Versioning is a
+revision column + history rows (per-file CAS at commit), not git.
 
 Mounts — one per membership, permissions derived from role:
 
@@ -318,6 +374,11 @@ finance-dashboard:  org:acme → viewer · team:finance → editor · dana → o
   session already saw (reads age gracefully, like a Docs revoke); they bite
   at next checkout — and writes never sneak through, because commit always
   checks live rows.
+- **Served org apps are a wire door, not a snapshot with viewers.** The
+  registered URL checks `can(viewer, app)` per request against live rows;
+  served processes get a read-only workspace and reach per-user data through
+  tools; file writes from a served app are a job with a commit; the reviewer
+  rubric checks nothing private is baked into the served snapshot.
 
 Sharing is two verbs: **fork** (copy into your workspace, fresh ids,
 `forkedFrom` provenance — take-and-adapt, registry import) and **promote**
@@ -342,7 +403,13 @@ adapter supplies machines:
   it. No job/session split; warm pools and per-call ephemerality are adapter
   internals, adopted if a bench ever says so.
 - Materialize workspace mounts in (ro mounts as read-only binds), sync
-  changed files out at turn/job end; the store never stops being the truth.
+  changed files out at turn/job end — **except designated hot paths (the app
+  and plan files), which sync mid-turn** so the skeleton renders the moment
+  the plan file exists, whoever wrote it (the in-box `vendo validate` shim
+  doubles as a sync point); O(files changed) preserved. Commit is per-file
+  compare-and-swap for `/orgs/` (stale base → a conflict outcome the harness
+  resolves — resolving is thinking); last-write-wins may stand for `/user/`.
+  The store never stops being the truth.
   The box holds a workspace copy and a turn-scoped token, nothing else —
   credentials never enter; authority calls bridge back out through the guard.
 - **Spawned-CLI harnesses run in the session sandbox by default** — `claudeCode()`
@@ -352,12 +419,22 @@ adapter supplies machines:
   pattern applied to code). `run_code({ code, tools: [...] })` declares its
   toolset up front; the guard resolves the human ask *before any machine
   spins* — reads auto-grant per policy, mutating declarations become one
-  approval card; approved grants are run-scoped and die with the run. The
-  bridge enforces the declaration as an allowlist (undeclared call → denied,
-  fail closed → script errors → harness re-declares honestly) and the
-  mechanical per-call checks (provenance gates) still inspect every actual
-  argument at runtime. `ask_user` does not exist inside code — questions
-  precede the script. No mid-run parking, no idle machines, ever.
+  approval card; approved grants are run-scoped and die with the run.
+  **Mutating declarations carry scopes** — pinned/constrained args (payee,
+  max amount, max calls), rendered on the card, enforced per call by the
+  bridge; approving a bare name for code written after the approval is not a
+  thing. The bridge enforces the declaration as an allowlist (undeclared
+  call → denied, fail closed → script errors → harness re-declares honestly)
+  and the mechanical arg gates (capability-substitution class) still inspect
+  every actual argument at runtime. **Box egress is bridge-only by default**;
+  anything else is a declared domain allowlist through the existing
+  egress-approval machinery — the sandbox adapter must expose egress policy.
+  `ask_user` does not exist inside code — questions precede the script. No
+  mid-run parking, no idle machines, ever. (Today's box injects real secret
+  values + the inference key — a deliberate v0 exception to §9's credential
+  law; the reconciliation [handles vs scoped values, gating the inference
+  key] is parked to the secrets-model brainstorm, recorded here so the
+  contradiction is decided, not silent.)
 - No adapter wired → capability tools aren't projected → the honest
   cannot-path. The adapter slot is the switch; no capability booleans.
 - Escalation doctrine (prefer files and tools over code; job over session)
@@ -384,10 +461,24 @@ createVendo({
 });
 ```
 
-Six slots + `packs`, `defineHarness`, `definePack`, per-turn options. Day one is
-two keys (`auth`, `tools`); everything else defaults or degrades honestly.
-Composition rules are boot-time errors ("Claude Code needs a sandbox adapter"),
-never runtime surprises.
+Six slots + `packs`, `defineHarness`, `definePack`, per-turn options. Day one
+is one key: `vendo init` writes `.vendo/`, `createVendo({auth})` reads it —
+`tools:` is the explicit override, not the quickstart. Everything else
+defaults or degrades honestly. Composition rules are boot-time errors
+("Claude Code needs a sandbox adapter"), never runtime surprises.
+
+- **One model-resolution order, one place:** a harness reads its seat
+  (`models.default` resolved: seat → env ladder → Cloud gateway → first-use
+  error); setting both `harness: claudeCode({model})` and `models.default`
+  for the same seat is a boot error, not a precedence puzzle. The seat map is
+  closed and typed (default / reviewer / judge / fill).
+- **`files` unset is a documented default, not a gap**: blobs live in the
+  store up to a size cap; the first over-cap write fails naming the fix.
+- The build produces a **29→6 migration table** — every current
+  `createVendoConfig` key gets a stated destination (folded into a slot, a
+  pack option, a harness option, or deleted); no key vanishes silently.
+- Roadmap: `vendo sync` emits typed host-tool declarations
+  (`.vendo/tools.d.ts`) so host code gets typed names and args.
 
 ## 11. The Cloud line
 
@@ -396,6 +487,26 @@ single-player. Org workspaces, sharing, registry, hosted automations, hosted
 placement, the model gateway = Cloud — same code, another principal, another
 adapter, lit by key + meter. DO-backed store/sandbox/automations adapters are
 Cloud implementation details behind OSS seams.
+
+## 11.4 Consent: permissions upfront, popups only for the irreversible
+
+- **Apps and automations get their permissions beforehand, in one honest
+  card** generated from their declared tools (the plan declares them; the
+  automations enable flow already works this way — grant sets, one decision).
+  Approved once → the app runs silently.
+- **Destructive/external actions (money, messages to humans, deletes) are
+  excluded from upfront bundles by law** — they always pop a live Vendo
+  approval card in the moment, real arguments shown. What the human saw is
+  what runs.
+- **Reads are silent, always.** Ad-hoc chat asks (no app, no bundle) keep
+  ask-once-with-remember.
+- **Conditions: the third answer on any grant card** — free text ("only if
+  below $1,000"), stored on the grant, human-authored. At fire time the judge
+  answers one narrow question — do these actual arguments satisfy the
+  sentence? — with schema and args in view; satisfied → run (condition +
+  rationale in the audit row); unmet or ambiguous → the run fails with the
+  card ("$1,400 exceeds your limit — approve this one / raise the limit").
+  The human writes policy; the model only interprets it. No predicate DSL.
 
 ## 11.5 Automation authority: sponsorship
 
@@ -422,8 +533,15 @@ evaluated by the same guard between host policy and user approvals. Host
 policy always wins over org policy; org policy tightens, never loosens.
 
 ## 12. Open — next brainstorms
-- **The automations pack**: triggers, grants-as-approval, the logbook —
-  reshaped as the second pack.
+- **Secrets reconciliation** (parked from the review): handles vs scoped real
+  values in the box; gating the inference key. Owns the §9-vs-box-env
+  contradiction.
+- **Transcript storage migration**: the O(messages) write law implies
+  message-level rows (today: one thread row rewritten per turn — O(thread)
+  bytes); recommended accept, awaiting Yousef's word (touches the frozen
+  store contract + erase cascade).
+- **The automations pack**: grants-as-approval + the logbook reshaped over
+  the platform trigger lifecycle (§5 carve-out).
 - **Display & remix**: the launcher (ordering, admin-featured), pins as the
   second render mode (feature bundles grafted into host screens), what a
   member sees when a pinned remix targets their screen. Design-skill work,
