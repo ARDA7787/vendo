@@ -1,4 +1,4 @@
-import type { Json, RunContext, ToolDescriptor, ToolRegistry } from "@vendoai/core";
+import { vendoAuthored, type Json, type RunContext, type ToolDescriptor, type ToolRegistry } from "@vendoai/core";
 
 /**
  * Design §4's vendo-verb family, projected as ordinary tools on the one
@@ -39,7 +39,15 @@ export interface VendoVerbPorts {
   schedule(input: { appId: string; cron: string }, ctx: RunContext): Promise<Json>;
 }
 
-const DESCRIPTORS: ToolDescriptor[] = [
+/** Every label here is hand-written and reviewed in this repo, which is what
+ *  `vendoAuthored` records: §12's second mechanical vote is for AI-ASSIGNED
+ *  labels (build contract §8, clarification 2026-07-31), and its verb-shape
+ *  heuristic is calibrated for extracted `noun_verb` host names. `validate` and
+ *  `search_components` end in a noun, so it read them as unrecognisable and
+ *  fail-closed both checks to `write` — which makes every call a MUTATION
+ *  downstream, with an effect-ledger row a re-run then answers from instead of
+ *  re-executing (a retried automation run re-validating nothing). */
+const DESCRIPTORS: ToolDescriptor[] = ([
   {
     name: "validate",
     title: "Check the app for mistakes",
@@ -93,7 +101,7 @@ const DESCRIPTORS: ToolDescriptor[] = [
     },
     risk: "write",
   },
-];
+] satisfies ToolDescriptor[]).map((descriptor) => vendoAuthored(descriptor));
 
 const fail = (code: string, message: string) => ({ status: "error" as const, error: { code, message } });
 
