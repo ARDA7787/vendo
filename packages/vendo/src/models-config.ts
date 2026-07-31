@@ -1,5 +1,5 @@
 import type { LanguageModel } from "ai";
-import { VendoError } from "@vendoai/core";
+import { migrateModelSeats, seatConflict, VendoError } from "@vendoai/core";
 import { vendoModel, type VendoModelOptions } from "#dev-creds/model";
 
 /**
@@ -14,7 +14,18 @@ import { vendoModel, type VendoModelOptions } from "#dev-creds/model";
  * string, i.e. vendoAutoJudge({ model: vendoModel("vendo-judge") }).
  */
 export interface ModelsConfig {
+  /** Build contract §4's seat vocabulary. A seat is a JOB, not a model. These
+   *  are additive: the legacy slot names below keep working for one minor, and
+   *  `migrateModelSeats` (core) maps them on, so a half-migrated config still
+   *  composes. Where both name one seat, the SEAT wins — a host mid-migration
+   *  should get the new key they just wrote, not the old one they forgot to
+   *  delete. */
+  default?: string | LanguageModel;
+  reviewer?: string | LanguageModel;
+  fill?: string | LanguageModel;
+  /** @deprecated superseded by `default` (still functional for one minor). */
   agent?: string | LanguageModel;
+  /** @deprecated superseded by `fill` (still functional for one minor). */
   paint?: string | LanguageModel;
   judge?: string | LanguageModel;
   /** K15 — the knowledge tool's evidence check (a cheap/fast model reading the
@@ -32,6 +43,10 @@ export interface ResolveModelsInput {
   /** @deprecated model half superseded by models.paint; `disabled` stays. */
   paint?: { model?: LanguageModel; disabled?: boolean };
   models?: ModelsConfig;
+  /** A model named by a harness's own options. Build contract §4 makes it a BOOT
+   *  ERROR for this and `models.default` to both be set: two places naming the
+   *  model that thinks is ambiguous, and guessing would silently ignore one. */
+  harnessOptionModel?: string | LanguageModel;
 }
 
 export interface ResolvedModels {
@@ -63,12 +78,24 @@ function validateSlot(slot: string, value: string | LanguageModel | undefined): 
  *  fast model on BYO rungs); when the host passed an explicit agent model,
  *  paint falls back to that model exactly as before. */
 export function resolveModels(config: ResolveModelsInput, makeModel: MakeModel = vendoModel): ResolvedModels {
+  validateSlot("default", config.models?.default);
+  validateSlot("reviewer", config.models?.reviewer);
+  validateSlot("fill", config.models?.fill);
   validateSlot("agent", config.models?.agent);
   validateSlot("paint", config.models?.paint);
   validateSlot("judge", config.models?.judge);
   validateSlot("knowledgeVerifier", config.models?.knowledgeVerifier);
 
-  const agentConfigured = config.models?.agent ?? config.model;
+  // Collapse both vocabularies onto seats once, here, so the precedence below
+  // never has to know which spelling a host used.
+  const seats = migrateModelSeats<LanguageModel>(config.models ?? {});
+  const conflict = seatConflict<LanguageModel>({
+    ...(config.harnessOptionModel === undefined ? {} : { harnessOptionModel: config.harnessOptionModel }),
+    seats,
+  });
+  if (conflict !== undefined) throw new VendoError("validation", conflict);
+
+  const agentConfigured = seats.default ?? config.model;
   const agent: ResolvedModels["agent"] = agentConfigured === undefined
     ? { model: makeModel(undefined, { slot: "agent" }), venue: "ladder" }
     : typeof agentConfigured === "string"
@@ -76,7 +103,7 @@ export function resolveModels(config: ResolveModelsInput, makeModel: MakeModel =
       : { model: agentConfigured, venue: "custom" };
 
   const disabled = config.paint?.disabled;
-  const paintConfigured = config.models?.paint ?? config.paint?.model;
+  const paintConfigured = seats.fill ?? config.paint?.model;
   const paintModel = disabled === true
     ? undefined // no model behind a disabled lane
     : typeof paintConfigured === "string"
