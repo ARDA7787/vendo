@@ -97,6 +97,32 @@ export interface ToolDescriptor {
    *  `name`. Sync's AI enrichment proposes it; `.vendo/overrides.json`
    *  corrects it. */
   title?: string;
+  /**
+   * Design §12's second mechanical vote, METHOD axis: the risk this tool's
+   * EXECUTION SHAPE implies on its own — a DELETE route, a tRPC/GraphQL
+   * mutation, a server action — read without its name and without its declared
+   * `risk`.
+   *
+   * DERIVED wherever a binding exists: the actions registry computes it from
+   * `binding` while minting the descriptor (`descriptorOf`), so nothing a host
+   * authors in `.vendo/tools.json` or `overrides.json` — the files that can LOWER
+   * a declared `risk`, which is what the vote is the backstop for — decides it. A
+   * source with no binding at all (a connector, an MCP server, a hand-written
+   * `actions.add` registry) may state it, and that is safe for the reason below.
+   *
+   * It is a distilled label rather than the raw HTTP method for two reasons: a
+   * connector, an MCP server, or a workspace tool has no method at all, and —
+   * the reason it matters — there is deliberately NO `"read"` value, so nothing
+   * that arrives as data can use this field to make a tool look SAFER than its
+   * name. Absent means "no mutating evidence", which is exactly how the vote
+   * behaved before the field existed, so the only direction it can move a
+   * verdict is up.
+   *
+   * It is not in the {@link descriptorHash} preimage: it is a restatement of the
+   * binding, not something a person approved on a card, and hashing it would
+   * invalidate every grant minted before it existed.
+   */
+  bindingRisk?: "write" | "destructive";
   /** The connectable toolkit this tool belongs to (04-actions §3), present
    *  only on connector tools whose usefulness is gated by a per-user connected
    *  account (e.g. Composio's gmail/slack). Composition seams read it to skip
@@ -115,6 +141,10 @@ export const toolDescriptorSchema = z.object({
   risk: riskLabelSchema,
   critical: z.boolean().optional(),
   title: z.string().optional(),
+  // Declared so the only values that can travel are the two that ESCALATE. A
+  // source that sends anything else — `"read"` above all — fails validation
+  // loudly instead of passing through unchecked.
+  bindingRisk: z.enum(["write", "destructive"]).optional(),
   toolkit: z.string().optional(),
 }).passthrough() satisfies z.ZodType<ToolDescriptor>;
 

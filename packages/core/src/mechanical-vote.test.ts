@@ -206,19 +206,33 @@ describe("destructive NOUNS must not withhold a read (verifier finding 12)", () 
 });
 
 describe("the HTTP method is the axis the name cannot fake", () => {
+  // `bindingRisk` is that axis, distilled: `"destructive"` is what the actions
+  // registry derives from a DELETE, `"write"` from any other mutating shape
+  // (POST/PUT/PATCH, a tRPC or GraphQL mutation, a server action), and absent
+  // from a read shape. There is no value meaning "read", so the axis can only
+  // ever escalate.
+  //
+  // These are the UNIT assertions. The axis was dead in production until
+  // 2026-07-31 while this block passed — the vote read a raw `method` field that
+  // `descriptorOf`'s whitelist dropped, so no host tool ever carried one and only
+  // a hand-built fixture like this could see it. The real-path proof therefore
+  // lives at the composed path, over actual route bindings, in
+  // `packages/vendo/src/law-binding-method.e2e.test.ts`; this block must never
+  // again be the only place the method axis is exercised.
   it("reads DELETE as destructive whatever the name says", () => {
-    expect(mechanicalRisk(tool("maple_thing_update", { method: "DELETE" } as Partial<ToolDescriptor>)))
+    expect(mechanicalRisk(tool("maple_thing_update", { bindingRisk: "destructive" })))
       .toBe("destructive");
   });
 
-  it("does not let a GET method downgrade a destructive verb", () => {
-    // A destructive action exposed over GET is still destructive.
-    expect(mechanicalRisk(tool("maple_account_delete", { method: "GET" } as Partial<ToolDescriptor>)))
-      .toBe("destructive");
+  it("does not let a read binding downgrade a destructive verb", () => {
+    // A destructive action exposed over GET is still destructive — and a GET
+    // carries no `bindingRisk` at all, which is what makes downgrading
+    // unexpressible rather than merely unimplemented.
+    expect(mechanicalRisk(tool("maple_account_delete"))).toBe("destructive");
   });
 
   it("treats a write method with a read-shaped name as a write, not a read", () => {
-    expect(mechanicalRisk(tool("maple_report_get", { method: "POST" } as Partial<ToolDescriptor>)))
+    expect(mechanicalRisk(tool("maple_report_get", { bindingRisk: "write" })))
       .toBe("write");
   });
 });

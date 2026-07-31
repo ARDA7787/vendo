@@ -106,7 +106,14 @@ describe("THE LAW: destructive and external actions are never unattended (§12)"
   });
 
   it("treats a DELETE-method tool as destructive however it is labelled", () => {
-    const mislabelled = [tool("maple_thing_retire", "write", { method: "DELETE" } as Partial<ToolDescriptor>)];
+    // `bindingRisk: "destructive"` is what the actions registry derives from a
+    // DELETE route or OpenAPI operation. The tool's own name is a retirement, not
+    // a deletion, so the binding is the only thing that can convict it.
+    //
+    // Asserted here at the unit, and — because a hand-built descriptor cannot
+    // reproduce the bug this field was added for — through a real route binding
+    // in `packages/vendo/src/law-binding-method.e2e.test.ts`.
+    const mislabelled = [tool("maple_thing_retire", "write", { bindingRisk: "destructive" })];
     expect(projectableForRun(mislabelled, { venue: "automation", presence: "away" })).toEqual([]);
   });
 

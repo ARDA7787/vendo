@@ -130,14 +130,26 @@ function trailingToken(name: string): string | undefined {
  * Order matters: a destructive verb beats a permissive method (a deletion
  * exposed over GET is still a deletion), and a mutating method beats a
  * read-shaped name (a POST that calls itself `get` is not a read).
+ *
+ * The method axis reads {@link ToolDescriptor.bindingRisk} — the distilled fact
+ * the actions registry derives from a tool's execution binding. It read a raw
+ * `method` field off the descriptor until 2026-07-31, which meant it never fired
+ * in production at all: host-extracted descriptors are minted by `descriptorOf`,
+ * a field whitelist that dropped `binding.method`, so a DELETE-bound tool an
+ * extractor or an override labelled `write` resolved `write` and was projected
+ * into unattended runs. Half a vote, dark on exactly the AI-assigned labels the
+ * vote exists to check.
  */
 export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
-  const rawMethod = (descriptor as { method?: unknown }).method;
-  const method = typeof rawMethod === "string" ? rawMethod.toUpperCase() : undefined;
-  if (method === "DELETE") return "destructive";
+  // A deletion is a deletion whatever the tool calls itself, so the binding is
+  // read before the name is looked at.
+  if (descriptor.bindingRisk === "destructive") return "destructive";
+  // Any other mutating shape (POST/PUT/PATCH, a tRPC or GraphQL mutation, a
+  // server action) is not by itself destructive — §12 says automations may read
+  // and write — but it does disqualify the read short-circuit below.
+  const mutating = descriptor.bindingRisk !== undefined;
 
   const trailing = trailingToken(descriptor.name);
-  const readMethod = method === undefined || method === "GET" || method === "HEAD" || method === "OPTIONS";
 
   // A TRAILING read verb settles it, and it is checked FIRST on purpose. In
   // `subject_verb` naming the trailing token IS the action, so everything before
@@ -145,7 +157,7 @@ export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
   // read and not a deletion. The method still has to agree: a POST that calls
   // itself `get` is not a read. This short-circuit is the whole noun-vs-verb
   // discrimination; it must run before the destructive scan below.
-  if (trailing !== undefined && READ_VERBS.has(trailing) && readMethod) return "read";
+  if (trailing !== undefined && READ_VERBS.has(trailing) && !mutating) return "read";
 
   // Not read-shaped, so a destructive verb ANYWHERE in the name decides. Match
   // anywhere, not just at the ends: `maple_customer_delete_all` and
