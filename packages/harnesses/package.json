@@ -1,18 +1,18 @@
 {
-  "name": "@vendoai/core",
+  "name": "@vendoai/harnesses",
   "version": "0.5.0",
-  "description": "The shapes everything speaks: Vendo v0 contracts — types, zod schemas, format constants, pure validators, descriptor hashing, and seam conformance kits.",
+  "description": "The harness runtime: runs any Harness safely, and vendo() — the default in-process thinker.",
   "keywords": [
     "ai",
     "agent",
-    "genui",
+    "harness",
     "vendo"
   ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/runvendo/vendo.git",
-    "directory": "packages/core"
+    "directory": "packages/harnesses"
   },
   "homepage": "https://vendo.run",
   "bugs": "https://github.com/runvendo/vendo/issues",
@@ -29,13 +29,7 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "require": "./dist/cjs/index.js",
       "default": "./dist/index.js"
-    },
-    "./conformance": {
-      "types": "./dist/conformance/index.d.ts",
-      "require": "./dist/cjs/conformance/index.js",
-      "default": "./dist/conformance/index.js"
     }
   },
   "files": [
@@ -43,28 +37,21 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e \"require('node:fs').writeFileSync('dist/cjs/package.json', JSON.stringify({ type: 'commonjs' }) + '\\n')\"",
-    "conformance": "vitest run src/contract-coverage.e2e.test.ts",
+    "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@standard-schema/spec": "^1.1.0",
-    "croner": "^9.0.0",
+    "@vendoai/agent": "workspace:*",
+    "@vendoai/apps": "workspace:*",
+    "@vendoai/core": "workspace:*",
+    "@vendoai/guard": "workspace:*",
     "zod": "^3.25.0"
   },
   "peerDependencies": {
     "ai": ">=6.0.0 <7",
-    "just-bash": "^3.1.0"
-  },
-  "peerDependenciesMeta": {
-    "ai": {
-      "optional": true
-    },
-    "just-bash": {
-      "optional": true
-    }
+    "zod": ">=3.25.0 <5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

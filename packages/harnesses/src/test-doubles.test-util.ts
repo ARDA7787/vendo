@@ -1,0 +1,240 @@
+/**
+ * The minimum doubles this package's suites need for the seams siblings own.
+ *
+ * NOTE for the orchestrator: `packages/agent/src/test-helpers.ts` already holds
+ * equivalent `testGuard` / `boundRegistry` / `ctx` doubles, but @vendoai/agent's
+ * exports map has no subpath for them, so they are unreachable from another
+ * package. Rather than edit a manifest this lane does not own, lane A carries
+ * the slice it needs. A `"./test-helpers"` subpath on @vendoai/agent (the idiom
+ * @vendoai/core/conformance and @vendoai/apps/adapter-conformance already set)
+ * would let every lane share one copy.
+ */
+import type {
+  ApprovalId,
+  ApprovalRequest,
+  AuditEvent,
+  CommitResult,
+  Guard,
+  GuardDecision,
+  Json,
+  Principal,
+  ResolvedModels,
+  RunContext,
+  SkillListing,
+  ThreadId,
+  ToolDescriptor,
+  ToolOutcome,
+  ToolRegistry,
+  WorkspaceFs,
+} from "@vendoai/core";
+import type { UIMessage } from "ai";
+import { InMemoryFs } from "just-bash";
+
+export function ctx(overrides: Partial<RunContext> = {}): RunContext {
+  return {
+    principal: { kind: "user", subject: "u1" },
+    venue: "chat",
+    presence: "present",
+    sessionId: "s1",
+    ...overrides,
+  };
+}
+
+export function userMessage(id: string, text: string): UIMessage {
+  return { id, role: "user", parts: [{ type: "text", text }] };
+}
+
+export type TestGuard = Guard & {
+  events: AuditEvent[];
+  /** Resolve a pending approval and notify subscribers, as the real guard does. */
+  decide(approvalId: ApprovalId, approved: boolean): void;
+  pending(): ApprovalRequest[];
+};
+
+/** `policy` maps a tool name to the guard's verdict; unlisted tools run. */
+export function testGuard(policy: Record<string, "run" | "ask" | "block"> = {}): TestGuard {
+  const approvalsByCall = new Map<string, ApprovalRequest>();
+  const decisions = new Map<ApprovalId, boolean>();
+  const subscribers = new Set<(id: ApprovalId, approved: boolean) => void>();
+  const events: AuditEvent[] = [];
+
+  const guard: TestGuard = {
+    events,
+    async check(call, descriptor, runCtx): Promise<GuardDecision> {
+      const action = policy[call.tool] ?? "run";
+      if (action === "run") return { action: "run", decidedBy: "default" };
+      if (action === "block") return { action: "block", reason: "blocked", decidedBy: "rule" };
+      let approval = approvalsByCall.get(call.id);
+      if (approval === undefined) {
+        approval = {
+          id: `apr_${call.id}`,
+          call: structuredClone(call),
+          descriptor: structuredClone(descriptor),
+          inputPreview: JSON.stringify(call.args),
+          ctx: {
+            principal: structuredClone(runCtx.principal),
+            venue: runCtx.venue,
+            presence: runCtx.presence,
+          },
+          createdAt: new Date().toISOString(),
+        };
+        approvalsByCall.set(call.id, approval);
+      }
+      const approved = decisions.get(approval.id);
+      if (approved === true) return { action: "run", decidedBy: "default" };
+      if (approved === false) return { action: "block", reason: "denied", decidedBy: "rule" };
+      return { action: "ask", approval, decidedBy: "rule" };
+    },
+    async report(event) {
+      events.push(structuredClone(event));
+    },
+    async directions() {
+      return [];
+    },
+    onApprovalDecision(callback) {
+      subscribers.add(callback);
+      return () => subscribers.delete(callback);
+    },
+    decide(approvalId, approved) {
+      decisions.set(approvalId, approved);
+      for (const subscriber of subscribers) subscriber(approvalId, approved);
+    },
+    pending() {
+      return [...approvalsByCall.values()].filter((approval) => !decisions.has(approval.id));
+    },
+  };
+  return guard;
+}
+
+export interface TestTool {
+  descriptor: ToolDescriptor;
+  execute(args: Json, ctx: RunContext): Json | Promise<Json>;
+}
+
+export type BoundRegistry = ToolRegistry & { invocations: Record<string, number> };
+
+/** The guard-bound registry shape `VendoGuard.bind(tools)` returns: the one
+ *  choke point every harness's calls pass through. */
+export function boundRegistry(tools: Record<string, TestTool>, guard: Guard): BoundRegistry {
+  const invocations: Record<string, number> = {};
+  return {
+    invocations,
+    async descriptors() {
+      return Object.values(tools).map(({ descriptor }) => structuredClone(descriptor));
+    },
+    async execute(call, runCtx) {
+      const tool = tools[call.tool];
+      if (tool === undefined) {
+        return { status: "error", error: { code: "not-found", message: `Unknown tool: ${call.tool}` } };
+      }
+      const decision = await guard.check(call, tool.descriptor, runCtx);
+      let outcome: ToolOutcome;
+      if (decision.action === "block") {
+        outcome = { status: "blocked", reason: decision.reason };
+      } else if (decision.action === "ask") {
+        outcome = { status: "pending-approval", approvalId: decision.approval.id };
+      } else {
+        invocations[call.tool] = (invocations[call.tool] ?? 0) + 1;
+        try {
+          outcome = { status: "ok", output: await tool.execute(call.args, runCtx) };
+        } catch (error) {
+          outcome = {
+            status: "error",
+            error: { code: "execution", message: error instanceof Error ? error.message : String(error) },
+          };
+        }
+      }
+      await guard.report({
+        id: `aud_${call.id}`,
+        at: new Date().toISOString(),
+        kind: "tool-call",
+        principal: structuredClone(runCtx.principal),
+        venue: runCtx.venue,
+        presence: runCtx.presence,
+        tool: call.tool,
+        outcome: outcome.status,
+        decidedBy: decision.decidedBy,
+      });
+      return outcome;
+    },
+  };
+}
+
+export function readTool(name: string, risk: ToolDescriptor["risk"] = "read"): ToolDescriptor {
+  return {
+    name,
+    description: `the ${name} tool`,
+    inputSchema: { type: "object", properties: {}, additionalProperties: true },
+    risk,
+  };
+}
+
+/** just-bash's real in-memory filesystem plus the §3.2 commit method — never a
+ *  home-rolled stub, so the WorkspaceFs surface under test is the real one. */
+export type TestWorkspace = WorkspaceFs & { commits: Array<{ message?: string }> };
+
+export function testWorkspace(files: Record<string, string> = {}): TestWorkspace {
+  const fs = new InMemoryFs(files);
+  const commits: Array<{ message?: string }> = [];
+  const workspace = fs as unknown as TestWorkspace;
+  workspace.commits = commits;
+  workspace.commit = async (opts?: { message?: string }): Promise<CommitResult> => {
+    commits.push({ ...(opts?.message === undefined ? {} : { message: opts.message }) });
+    return { status: "ok", changed: [] };
+  };
+  return workspace;
+}
+
+export function testSkills(entries: Array<SkillListing & { body: string }> = []) {
+  return {
+    async list(): Promise<SkillListing[]> {
+      return entries.map(({ name, description }) => ({ name, description }));
+    },
+    async load(name: string): Promise<string> {
+      const entry = entries.find((candidate) => candidate.name === name);
+      if (entry === undefined) throw new Error(`no such skill: ${name}`);
+      return entry.body;
+    },
+  };
+}
+
+/** Lane D's `threadMessageStore(store)` return value, in memory: one row per
+ *  message, reassembled by seq. */
+export function testTranscript() {
+  const rows = new Map<string, Array<{ id: string; seq: number; message: UIMessage }>>();
+  return {
+    rows,
+    async upsert(_principal: Principal, threadId: ThreadId, message: UIMessage, seq: number): Promise<void> {
+      const thread = rows.get(threadId) ?? [];
+      const existing = thread.findIndex((row) => row.id === message.id);
+      const row = { id: message.id, seq, message: structuredClone(message) };
+      if (existing === -1) thread.push(row);
+      else thread[existing] = row;
+      rows.set(threadId, thread);
+    },
+    async list(_principal: Principal, threadId: ThreadId): Promise<UIMessage[]> {
+      return [...(rows.get(threadId) ?? [])]
+        .sort((left, right) => left.seq - right.seq)
+        .map((row) => structuredClone(row.message));
+    },
+  };
+}
+
+/** A `ResolvedModels` whose seats are never actually called — for the runtime
+ *  suites, where the harness under test is scripted rather than a real loop. */
+export function unusedModels(): ResolvedModels {
+  const unreachable = new Proxy({}, {
+    get() {
+      throw new Error("the model seat was not expected to be used by this test");
+    },
+  });
+  return { default: unreachable, reviewer: unreachable, judge: unreachable, fill: unreachable } as ResolvedModels;
+}
+
+export async function readSse(response: Response): Promise<Array<Record<string, unknown>>> {
+  const raw = await response.text();
+  const blocks = raw.slice(0, -2).split("\n\n");
+  return blocks
+    .filter((block) => block.startsWith("data: ") && block !== "data: [DONE]")
+    .map((block) => JSON.parse(block.slice("data: ".length)) as Record<string, unknown>);
+}

@@ -70,6 +70,25 @@ export {
   type PlanServer,
 } from "./genui/plan/types.js";
 
+// The harness contract (build contract 2026-07-30 §1) plus the two seams it is
+// typed against: the workspace filesystem (§3.2, lane B) and the model seats
+// (§4, lane D). Type-only by design — `defineHarness` and the runtime live in
+// @vendoai/harnesses (§2), so core stays the shapes every block may speak.
+export type {
+  DeniedNeeds,
+  Harness,
+  HarnessEvent,
+  SkillListing,
+  ToolListing,
+  ToolResult,
+  Turn,
+  TurnSkills,
+  TurnState,
+  TurnTools,
+} from "./harness.js";
+export type { CommitResult, WorkspaceFs } from "./workspace.js";
+export type { ResolvedModels, Seat } from "./models.js";
+
 // Deprecated aliases from the pre-de-versioning naming (0.4.x). Remove next minor.
 /** @deprecated Use compileWire. */
 export { compileWire as compileWireV2 } from "./genui/wire/compile.js";
