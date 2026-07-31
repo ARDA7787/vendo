@@ -4,6 +4,11 @@
  * `data-vendo-view` part — same payload, same stable per-app stream id. An
  * unparseable write emits NOTHING and the last good view stays on screen.
  * Harnesses never yield view events; only this seam emits them.
+ *
+ * The store-write moment is `commit()`, not `writeFile` (orchestrator seam answer
+ * after lane B landed): the façade stages writes in memory and
+ * `CommitResult.changed` names exactly what reached the store. So every case here
+ * writes AND commits, which is what the runtime makes happen for the harness.
  */
 import { vendoViewPartSchema, vendoViewStreamId, type VendoViewPart } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
@@ -21,11 +26,17 @@ const GOOD_APP = `<App name="Invoices">
 </App>`;
 
 function seam(files: Record<string, string> = {}) {
+  const inner = testWorkspace(files);
   const emitted: Array<{ id: string; part: VendoViewPart }> = [];
-  const workspace = wrapWorkspaceForRender(testWorkspace(files), {
+  const workspace = wrapWorkspaceForRender(inner, {
     emit: (id, part) => emitted.push({ id, part }),
   });
-  return { workspace, emitted };
+  /** Write then commit — what the runtime does for every in-process edit. */
+  const save = async (path: string, content: string): Promise<void> => {
+    await workspace.writeFile(path, content);
+    await workspace.commit();
+  };
+  return { workspace, inner, emitted, save };
 }
 
 describe("hot paths", () => {
@@ -47,10 +58,50 @@ describe("hot paths", () => {
   });
 });
 
-describe("a parsing write to app.vendo", () => {
-  it("emits data-vendo-view on the stable per-app stream id", async () => {
+describe("commit is the store-write moment", () => {
+  it("a staged write alone emits nothing — nothing has landed yet", async () => {
     const { workspace, emitted } = seam();
     await workspace.writeFile(APP_VENDO, GOOD_APP);
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("the commit that lands it is what emits", async () => {
+    const { workspace, emitted } = seam();
+    await workspace.writeFile(APP_VENDO, GOOD_APP);
+    await workspace.commit();
+    expect(emitted).toHaveLength(1);
+  });
+
+  it("a conflicted commit emits nothing — the last good view stays on screen", async () => {
+    const { workspace, inner, emitted } = seam();
+    await workspace.writeFile(APP_VENDO, GOOD_APP);
+    inner.conflictOn = [APP_VENDO];
+    await expect(workspace.commit()).resolves.toEqual({ status: "conflict", paths: [APP_VENDO] });
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("emits only for the hot paths in `changed`, not for every path committed", async () => {
+    const { workspace, emitted } = seam();
+    await workspace.writeFile("/user/memory/notes.md", "some notes");
+    await workspace.writeFile(APP_VENDO, GOOD_APP);
+    const result = await workspace.commit();
+    expect(result).toMatchObject({ status: "ok" });
+    expect((result as { changed: string[] }).changed).toHaveLength(2);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.part.appId).toBe(APP);
+  });
+
+  it("a commit with nothing staged is a no-op", async () => {
+    const { workspace, emitted } = seam();
+    await workspace.commit();
+    expect(emitted).toHaveLength(0);
+  });
+});
+
+describe("a parsing save to app.vendo", () => {
+  it("emits data-vendo-view on the stable per-app stream id", async () => {
+    const { emitted, save } = seam();
+    await save(APP_VENDO, GOOD_APP);
     expect(emitted).toHaveLength(1);
     expect(emitted[0]!.id).toBe(vendoViewStreamId(APP));
     expect(emitted[0]!.part.type).toBe("data-vendo-view");
@@ -58,8 +109,8 @@ describe("a parsing write to app.vendo", () => {
   });
 
   it("emits a payload today's renderer accepts (assembled tree)", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile(APP_VENDO, GOOD_APP);
+    const { emitted, save } = seam();
+    await save(APP_VENDO, GOOD_APP);
     const parsed = vendoViewPartSchema.safeParse(emitted[0]!.part);
     expect(parsed.success).toBe(true);
     const payload = emitted[0]!.part.payload as { root: string; nodes: unknown[] };
@@ -68,66 +119,69 @@ describe("a parsing write to app.vendo", () => {
   });
 
   it("strips the server-authoritative fields the client must never be told", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile(APP_VENDO, GOOD_APP);
+    const { emitted, save } = seam();
+    await save(APP_VENDO, GOOD_APP);
     const serialized = JSON.stringify(emitted[0]!.part.payload);
     expect(serialized).not.toContain("inClient");
     expect(serialized).not.toContain("pinDrift");
   });
 
   it("emits again on every save — granularity is per file save", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile(APP_VENDO, GOOD_APP);
-    await workspace.writeFile(APP_VENDO, GOOD_APP.replace("Hello", "Goodbye"));
+    const { emitted, save } = seam();
+    await save(APP_VENDO, GOOD_APP);
+    await save(APP_VENDO, GOOD_APP.replace("Hello", "Goodbye"));
     expect(emitted).toHaveLength(2);
     expect(emitted.every((entry) => entry.id === vendoViewStreamId(APP))).toBe(true);
   });
 
-  it("emits for appendFile too — the seam is the write, not the method", async () => {
+  it("emits for appendFile too — the seam is the commit, not the write method", async () => {
     const { workspace, emitted } = seam({ [APP_VENDO]: "" });
     await workspace.appendFile(APP_VENDO, GOOD_APP);
+    await workspace.commit();
     expect(emitted).toHaveLength(1);
   });
 });
 
-describe("a non-parsing write", () => {
+describe("a non-parsing save", () => {
   it("emits nothing, so the last good view stays on screen", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile(APP_VENDO, GOOD_APP);
+    const { emitted, save } = seam();
+    await save(APP_VENDO, GOOD_APP);
     expect(emitted).toHaveLength(1);
     // Not wire markup at all: the brokenness reaches the harness through
     // `validate`, never the user.
-    await workspace.writeFile(APP_VENDO, "just some prose, no elements at all");
+    await save(APP_VENDO, "just some prose, no elements at all");
     expect(emitted).toHaveLength(1);
   });
 
   it("emits nothing for an empty file", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile(APP_VENDO, "");
+    const { emitted, save } = seam();
+    await save(APP_VENDO, "");
     expect(emitted).toHaveLength(0);
   });
 
-  it("still performs the write — the seam never swallows a store write", async () => {
-    const { workspace } = seam();
-    await workspace.writeFile(APP_VENDO, "not markup");
+  it("still lands the write — the seam never swallows a store write", async () => {
+    const { workspace, inner, save } = seam();
+    await save(APP_VENDO, "not markup");
     await expect(workspace.readFile(APP_VENDO)).resolves.toBe("not markup");
+    expect(inner.commits.at(-1)?.changed).toEqual([APP_VENDO]);
   });
 
-  it("a failing emit never fails the write", async () => {
+  it("a failing emit never fails the commit", async () => {
     const workspace = wrapWorkspaceForRender(testWorkspace(), {
       emit: () => {
         throw new Error("the writer is gone");
       },
     });
-    await expect(workspace.writeFile(APP_VENDO, GOOD_APP)).resolves.toBeUndefined();
+    await workspace.writeFile(APP_VENDO, GOOD_APP);
+    await expect(workspace.commit()).resolves.toMatchObject({ status: "ok" });
     await expect(workspace.readFile(APP_VENDO)).resolves.toBe(GOOD_APP);
   });
 });
 
-describe("a write to plan.vendo", () => {
+describe("a save to plan.vendo", () => {
   it("emits the skeleton so it renders the moment the plan file exists", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile(
+    const { emitted, save } = seam();
+    await save(
       PLAN_VENDO,
       `<Plan name="Invoices">
   <Group title="Unpaid">
@@ -142,18 +196,18 @@ describe("a write to plan.vendo", () => {
   });
 
   it("emits nothing for a plan that does not parse", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile(PLAN_VENDO, "there is no plan document here");
+    const { emitted, save } = seam();
+    await save(PLAN_VENDO, "there is no plan document here");
     expect(emitted).toHaveLength(0);
   });
 });
 
-describe("writes that are not hot paths", () => {
+describe("saves that are not hot paths", () => {
   it("emit nothing", async () => {
-    const { workspace, emitted } = seam();
-    await workspace.writeFile("/user/memory/notes.md", GOOD_APP);
-    await workspace.writeFile(`/user/apps/${APP}/README.md`, GOOD_APP);
-    await workspace.writeFile("/user/scratch/draft.vendo", GOOD_APP);
+    const { emitted, save } = seam();
+    await save("/user/memory/notes.md", GOOD_APP);
+    await save(`/user/apps/${APP}/README.md`, GOOD_APP);
+    await save("/user/scratch/draft.vendo", GOOD_APP);
     expect(emitted).toHaveLength(0);
   });
 });
@@ -174,6 +228,6 @@ describe("the wrapper", () => {
       status: "ok",
       changed: [],
     });
-    expect(inner.commits).toEqual([{ message: "made the chart blue" }]);
+    expect(inner.commits).toEqual([{ message: "made the chart blue", changed: [] }]);
   });
 });

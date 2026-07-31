@@ -152,18 +152,46 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             ...(deps.approvalWaitMs === undefined ? {} : { approvalWaitMs: deps.approvalWaitMs }),
           });
 
+          // Every commit that lands a hot-path file goes on screen (§1.6),
+          // whichever hands wrote it.
+          const workspace = wrapWorkspaceForRender(input.workspace, {
+            ...deps.render,
+            emit: (_streamId, part) => writeView(writer, part),
+          });
+
+          /** For in-process hands, write IS commit: the façade stages writes, so
+           *  nothing is durable — or on screen — until this runs. `/user` is
+           *  last-write-wins, and a commit with nothing staged is a no-op, so
+           *  calling it liberally is cheap. */
+          const commit = async (): Promise<void> => {
+            try {
+              await workspace.commit();
+            } catch (error) {
+              // A failed commit is the harness's to notice through its next read;
+              // it must never take down a turn that already has a reply.
+              console.error("[vendo] harness runtime: workspace commit failed", {
+                threadId: input.threadId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           const turn: Turn<Options> = {
             // Frozen: ours, read-only. Freezing makes the contract's word true at
             // runtime instead of only at compile time.
             messages: Object.freeze([...input.messages]),
-            tools,
+            tools: {
+              list: () => tools.list(),
+              // A workspace tool edit lands the moment it returns, so the
+              // skeleton appears on save rather than at turn end.
+              call: async (name, args, opts) => {
+                const result = await tools.call(name, args, opts);
+                await commit();
+                return result;
+              },
+            },
             skills: deps.skills,
-            // Every hot-path write the harness makes goes on screen (§1.6),
-            // whichever hands it used.
-            workspace: wrapWorkspaceForRender(input.workspace, {
-              ...deps.render,
-              emit: (_streamId, part) => writeView(writer, part),
-            }),
+            workspace,
             models: input.models,
             state,
             options: input.options as Options,
@@ -203,6 +231,11 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             failure = { message: HARNESS_FAILED, code: "harness" };
             text.delta(HARNESS_FAILED);
           } finally {
+            // Turn end lands everything the harness staged and never committed —
+            // memory notes, uploads, a plan written straight to the workspace.
+            // Inside `execute`, so a view from this commit can still reach the
+            // wire; the stream is closed by the time onFinish runs.
+            await commit();
             text.end();
             tools.dispose();
           }

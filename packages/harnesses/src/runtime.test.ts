@@ -507,6 +507,63 @@ describe("the render seam is wired into the turn's workspace (§1.6)", () => {
   });
 });
 
+describe("write = commit for in-process hands (§3.5 + the commit-cadence seam)", () => {
+  const PLAN = `<Plan name="Invoices"><Group title="Unpaid"><Leaf component="Table" /></Group></Plan>`;
+
+  it("a workspace tool edit lands on its own call, not at turn end", async () => {
+    const workspace = testWorkspace();
+    // Stands in for lane D's workspace_write: the tool stages, the runtime lands it.
+    const f = fixture({
+      tools: {
+        workspace_write: {
+          descriptor: readTool("workspace_write", "write"),
+          execute: () => {
+            void workspace.writeFile("/user/apps/app_9/plan.vendo", PLAN);
+            return { written: true };
+          },
+        },
+      },
+    });
+    const harness = defineHarness({
+      name: "editor",
+      async *run(turn) {
+        await turn.tools.call("workspace_write", {});
+        // The commit already happened, so the view is on the wire BEFORE the
+        // harness says anything.
+        expect(workspace.commits).toHaveLength(1);
+        expect(workspace.commits[0]!.changed).toEqual(["/user/apps/app_9/plan.vendo"]);
+        yield { type: "text", delta: "Done." };
+      },
+    });
+    const parts = await f.run(harness, { workspace });
+    expect(parts.some((part) => part.type === "data-vendo-view")).toBe(true);
+  });
+
+  it("turn end lands whatever the harness staged and never committed", async () => {
+    const workspace = testWorkspace();
+    const f = fixture();
+    const harness = defineHarness({
+      name: "note-taker",
+      async *run(turn) {
+        await turn.workspace.writeFile("/user/memory/what-i-learned.md", "she prefers weekly digests");
+        yield { type: "text", delta: "Noted." };
+      },
+    });
+    await f.run(harness, { workspace });
+    expect(workspace.commits.at(-1)?.changed).toEqual(["/user/memory/what-i-learned.md"]);
+  });
+
+  it("a commit that fails does not take the turn down with it", async () => {
+    const workspace = testWorkspace();
+    workspace.commit = async () => {
+      throw new Error("the store is unreachable");
+    };
+    const f = fixture();
+    const parts = await f.run(scripted([{ type: "text", delta: "delivered anyway" }]), { workspace });
+    expect(JSON.stringify(parts)).toContain("delivered anyway");
+  });
+});
+
 describe("the runtime never lets a harness reach the wire itself", () => {
   it("cleans up its approval subscription even when the harness throws", async () => {
     const guard = testGuard();

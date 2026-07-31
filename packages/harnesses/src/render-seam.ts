@@ -11,8 +11,12 @@
  *
  * `HarnessEvent` stays closed — a harness cannot yield a view, by construction.
  *
- * The interception point is the workspace façade, because that is what a façade
- * tool edit, in-process bash, and a sandbox mid-turn sync all funnel through.
+ * The interception point is **`commit()`** (orchestrator seam answer, 2026-07-30,
+ * after lane B landed): the workspace façade STAGES writes in memory, so a
+ * `writeFile` is not a store write — `commit()` is, and `CommitResult.changed`
+ * names exactly the paths that reached the store. Hooking the write instead would
+ * emit views for content that never landed, and would miss the sandbox sync-back
+ * path, which commits without ever calling `writeFile` on this façade.
  */
 import {
   VENDO_TREE_FORMAT,
@@ -21,6 +25,7 @@ import {
   vendoViewPartSchema,
   vendoViewStreamId,
   type AppId,
+  type CommitResult,
   type Json,
   type Tree,
   type UIPayload,
@@ -154,35 +159,37 @@ export function viewForWrite(
 }
 
 /**
- * Wrap a workspace so hot-path writes emit views. Every other operation passes
- * straight through — including `commit`, so the result is still a `WorkspaceFs`.
+ * Wrap a workspace so a commit that lands a hot-path file emits its view. Every
+ * other operation passes straight through, so the result is still a `WorkspaceFs`.
  */
 export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSeamOptions): WorkspaceFs {
   const emitFor = async (path: string): Promise<void> => {
     if (hotPathAppId(path) === undefined) return;
     try {
-      // Read back what the store now holds rather than trusting the argument:
-      // append, encoding, and any store-side normalization all land here.
+      // Read back what the store now holds rather than trusting a remembered
+      // argument: append, encoding and any store-side normalization land here.
       const content = await workspace.readFile(path);
       const view = viewForWrite(path, content, options);
       if (view !== undefined) options.emit(view.streamId, view.part);
     } catch {
-      // A view is a courtesy on top of a completed write. It can never fail one.
+      // A view is a courtesy on top of a landed commit. It can never fail one.
     }
   };
 
   return new Proxy(workspace, {
     get(target, property, receiver) {
-      if (property !== "writeFile" && property !== "appendFile") {
-        return Reflect.get(target, property, receiver);
-      }
+      if (property !== "commit") return Reflect.get(target, property, receiver);
       const original = Reflect.get(target, property, receiver) as
-        | ((...args: unknown[]) => Promise<void>)
+        | ((opts?: { message?: string }) => Promise<CommitResult>)
         | undefined;
       if (typeof original !== "function") return original;
-      return async (...args: unknown[]): Promise<void> => {
-        await original.apply(target, args);
-        await emitFor(args[0] as string);
+      return async (opts?: { message?: string }): Promise<CommitResult> => {
+        const result = await original.call(target, opts);
+        // A conflict means nothing landed — the harness re-reads and re-applies,
+        // and the last good view stays on screen until something actually does.
+        if (result.status !== "ok") return result;
+        for (const path of result.changed) await emitFor(path);
+        return result;
       };
     },
   });

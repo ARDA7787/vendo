@@ -170,18 +170,43 @@ export function readTool(name: string, risk: ToolDescriptor["risk"] = "read"): T
   };
 }
 
-/** just-bash's real in-memory filesystem plus the §3.2 commit method — never a
- *  home-rolled stub, so the WorkspaceFs surface under test is the real one. */
-export type TestWorkspace = WorkspaceFs & { commits: Array<{ message?: string }> };
+/**
+ * just-bash's real in-memory filesystem plus the §3.2 `commit`, STAGING writes
+ * the way lane B's façade does: a write is visible to the façade's own reads
+ * immediately but does not reach the store until `commit()`, which reports
+ * exactly the changed paths. Never a home-rolled filesystem — the surface under
+ * test is the real `IFileSystem`.
+ */
+export type TestWorkspace = WorkspaceFs & {
+  commits: Array<{ message?: string; changed: string[] }>;
+  /** Force the next commit to answer `conflict` for these paths (a stale base). */
+  conflictOn?: string[];
+};
 
 export function testWorkspace(files: Record<string, string> = {}): TestWorkspace {
   const fs = new InMemoryFs(files);
-  const commits: Array<{ message?: string }> = [];
   const workspace = fs as unknown as TestWorkspace;
-  workspace.commits = commits;
+  const staged = new Set<string>();
+  workspace.commits = [];
+
+  for (const method of ["writeFile", "appendFile"] as const) {
+    const original = workspace[method].bind(workspace) as (...args: unknown[]) => Promise<void>;
+    (workspace as unknown as Record<string, unknown>)[method] = async (...args: unknown[]) => {
+      await original(...args);
+      staged.add(args[0] as string);
+    };
+  }
+
   workspace.commit = async (opts?: { message?: string }): Promise<CommitResult> => {
-    commits.push({ ...(opts?.message === undefined ? {} : { message: opts.message }) });
-    return { status: "ok", changed: [] };
+    const changed = [...staged];
+    if (workspace.conflictOn !== undefined && workspace.conflictOn.length > 0) {
+      const paths = workspace.conflictOn;
+      workspace.conflictOn = [];
+      return { status: "conflict", paths };
+    }
+    staged.clear();
+    workspace.commits.push({ ...(opts?.message === undefined ? {} : { message: opts.message }), changed });
+    return { status: "ok", changed };
   };
   return workspace;
 }
