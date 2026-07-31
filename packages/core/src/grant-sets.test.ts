@@ -119,6 +119,32 @@ describe("THE LAW: destructive and external actions are never unattended (§12)"
     // "message humans" is in the law alongside money and deletion.
     expect(mechanicalRisk(tool("maple_email_send", "write"))).toBe("destructive");
   });
+
+  // The predicate is PRESENCE, never the venue label (§12 clarification
+  // 2026-07-31). These two tests are the pair that pins it: away is withheld in
+  // EVERY venue, and a present human sees everything even in the automation
+  // venue. Either one alone can be satisfied by the wrong predicate.
+  it.each(["chat", "app", "automation", "mcp"] as const)(
+    "withholds destructive tools from an away run in venue %s — relabelling the venue cannot regain projection",
+    (venue) => {
+      const projected = projectableForRun(tools, { venue, presence: "away" });
+      expect(projected.map((t) => t.name)).toEqual(["maple_invoices_list", "maple_invoice_update"]);
+    },
+  );
+
+  it("projects destructive tools into a PRESENT-time automation ceremony — the enable card must see what it asks about", () => {
+    // `{ venue: "automation", presence: "present" }` is the enable/capture flow
+    // and the "allow this while you're away" approval card: a human is right
+    // there clicking. Filtering here made the ceremony unable to ask about the
+    // very tools it exists to ask about ("unknown tool in automation").
+    const projected = projectableForRun(tools, { venue: "automation", presence: "present" });
+
+    expect(projected.map((t) => t.name)).toEqual([
+      "maple_invoices_list",
+      "maple_invoice_update",
+      "maple_payments_send",
+    ]);
+  });
 });
 
 describe("bundles are proposed, never blank (§12)", () => {

@@ -178,9 +178,30 @@ export const UNATTENDED_DESTRUCTIVE_REASON =
   "This action is destructive or external, so it is never available without a person present. "
   + "Prepare it instead and let someone send it.";
 
-/** Is a person there to see this? Unattended means nobody clicked. */
-export function isUnattended(ctx: Pick<RunContext, "venue" | "presence">): boolean {
-  return ctx.presence === "away" || ctx.venue === "automation";
+/** Is a person there to see this? Unattended means NOBODY ACTED — so the
+ *  predicate is `presence`, and only `presence`.
+ *
+ *  The venue is deliberately NOT part of this. `venue` says which door a
+ *  request came through; `presence` says whether a human is behind it, and only
+ *  the second question is the law's. The two come apart in both directions:
+ *   - `{ venue: "app", presence: "away" }` is a real unattended firing — that is
+ *     the shape a scheduled app fn fires with (`apps/src/schedules.ts`), so a
+ *     venue-based predicate would let every schedule out from under the law.
+ *   - `{ venue: "automation", presence: "present" }` is a CEREMONY, not a run:
+ *     the enable/capture flow and the "allow this while you're away" approval
+ *     card both run with a human right there clicking, and they must SEE the
+ *     destructive tools they exist to ask permission about. ORing the venue in
+ *     filtered those tools out of the ceremony's own descriptor lookup, so
+ *     enabling an automation reported a registered host tool as "unknown tool
+ *     in automation" — the law breaking its own prescribed
+ *     prepare-then-human-sends path.
+ *
+ *  `presence` is a required field (`"present" | "away"`), so this fails closed:
+ *  there is no absent-value case that reads as attended. Every real firing
+ *  passes `presence: "away"` (automations engine, schedules, agent runner,
+ *  server), which is what makes presence alone both safe and sufficient. */
+export function isUnattended(ctx: Pick<RunContext, "presence">): boolean {
+  return ctx.presence === "away";
 }
 
 /**
