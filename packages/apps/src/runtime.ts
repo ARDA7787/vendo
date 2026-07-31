@@ -3,6 +3,7 @@ import {
   VENDO_TREE_FORMAT,
   VendoError,
   checkBindingShapes,
+  compileWire,
   deriveShapeCard,
   effectiveBuildWatchdogMs,
   safeErrorMessage,
@@ -65,6 +66,12 @@ import {
   type ServerFunction,
 } from "./generation/lanes.js";
 import type { Finding } from "./checking/types.js";
+// The `validate` verb IS the shipped floor plus the shipped create validation,
+// called rather than re-derived — so the verb and generation can never disagree
+// about whether a document is sound.
+import { createCheckingLayer } from "./checking/layer.js";
+import { validateCompiledCreate } from "./generation/validation/validate.js";
+import { wireCompileOptionsFor } from "./generation/wire-options.js";
 import type { BrainTurn } from "./generation/brain.js";
 import { createAppHistory } from "./history.js";
 import { createInClientApprovals, type InClientVerdict } from "./inclient.js";
@@ -516,6 +523,41 @@ export interface AppsRuntime {
   /** Contextual policy projection for Vendo-owned agent tools. Undefined means
    * the static descriptor remains authoritative. */
   agentToolRisk(call: ToolCall, ctx: RunContext): Promise<RiskLabel | undefined>;
+  /**
+   * Design §4's `validate` verb, as a door rather than a generation internal.
+   *
+   * The checking floor already exists and already runs inside create/edit; the
+   * verb is the same floor, callable. That matters because the building-apps
+   * skill teaches the model to `validate` after every edit — "it is faster and
+   * surer than re-reading your own work" — so the loop is validate → fix, and
+   * without this door the tool had nothing behind it.
+   *
+   * Findings, never a throw: an error reads to a model as "the tool is broken"
+   * and findings read as "your document is wrong". Only the second one gets
+   * fixed. Give `appId` to check what is stored, or `document` to check wire
+   * text before committing it.
+   */
+  validate(
+    input: { appId?: AppId; document?: string },
+    ctx: RunContext,
+  ): Promise<{ ok: boolean; findings: Finding[] }>;
+  /**
+   * Design §4's `schedule` verb: set or change WHEN an app's automation runs.
+   *
+   * Only a cron change, and only on an app that already declares a schedule
+   * trigger — authoring a trigger from nothing is `edit`'s job, because it needs
+   * a run model. Re-arms through the composed automations engine afterwards, so
+   * the 07 §3 grant-capture flow runs and any missing standing grants come back
+   * on `missing` rather than failing silently at the first firing.
+   *
+   * `write`, not `read`: arming future unattended behaviour is a write (build
+   * contract §8's lane-D ratification).
+   */
+  schedule(
+    appId: AppId,
+    cron: string,
+    ctx: RunContext,
+  ): Promise<{ appId: AppId; cron: string; enabled: boolean; missing: number }>;
   /**
    * execution-v2 skin contract (Lane C) — the box door the wire's fn proxy
    * route rides: wake the app's machine on demand and proxy ONE HTTP request
@@ -1925,6 +1967,76 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
      */
     async agentToolRisk() {
       return undefined;
+    },
+
+    async validate(input, ctx) {
+      if (config.model === undefined) {
+        // The floor's fact checks read the generation dependencies, which are
+        // built around a model. Nothing to hide behind: say so.
+        throw new VendoError("not-implemented", "validate requires a model");
+      }
+      const deps = generationDependencies(config, config.model, await generationToolContext(ctx));
+
+      if (typeof input.document === "string") {
+        // Wire text, not a stored app: compile it in the PRODUCTION dialect (the
+        // one every other compile of model wire uses — a compile that lacked
+        // these options once failed every app built on inline tool references),
+        // then run the shipped create validation. Its issues are already the
+        // sentences a model can act on.
+        const compiled = compileWire(
+          input.document,
+          wireCompileOptionsFor(deps, deps.catalog.map(({ name }) => name)),
+        );
+        const { issues } = await validateCompiledCreate(compiled, deps);
+        return {
+          ok: issues.length === 0,
+          findings: issues.map((message) => ({ severity: "block" as const, message })),
+        };
+      }
+
+      if (input.appId === undefined) {
+        throw new VendoError("validation", "validate needs an appId or a document to check");
+      }
+      // Owner-scoped, like every app surface: validating someone else's app would
+      // leak its shape.
+      const document = await requireOwned(input.appId, ctx.principal.subject);
+      // The SAME floor create and edit run, with the host's and every pack's
+      // plugged checks. `request` is empty because a verb call carries no user
+      // text — the checks that read it treat that as "no carve-out", which is the
+      // conservative direction.
+      const findings = await createCheckingLayer({
+        deps,
+        ...(config.checks === undefined ? {} : { checks: config.checks }),
+      }).run({ document, request: "" });
+      return { ok: !findings.some(({ severity }) => severity === "block"), findings };
+    },
+
+    async schedule(appId, cron, ctx) {
+      const previous = await requireOwned(appId, ctx.principal.subject);
+      const trigger = previous.trigger;
+      if (trigger === undefined || trigger.on.kind !== "schedule") {
+        throw new VendoError(
+          "validation",
+          `app ${appId} has no schedule to change. Ask for the automation itself first — a schedule needs `
+          + "something to run, and that is an edit, not a cron.",
+          { appId },
+        );
+      }
+      // Exactly one of cron/every/at may be set (core `triggerSchema`), so
+      // choosing a cron REPLACES whichever the app carried. The cron string
+      // itself is validated by the arming leg below, which is the one place that
+      // knows the parser.
+      await updateAppDocument(appId, (document) => ({
+        ...document,
+        trigger: { ...trigger, on: { kind: "schedule", cron } },
+      }));
+      if (config.armAutomation === undefined) {
+        // No automations engine composed: the cron is stored, and saying it is
+        // armed would be a lie.
+        return { appId, cron, enabled: false, missing: 0 };
+      }
+      const armed = await config.armAutomation(appId, ctx);
+      return { appId, cron, enabled: armed.enabled, missing: armed.missing.length };
     },
 
     async edit(appId, instruction, ctx) {

@@ -21,13 +21,22 @@ export interface VendoVerbFinding {
 
 export interface VendoVerbPorts {
   /** Check a document against our catalog and the host's schemas. Returns
-   *  findings; it does not throw on a bad document. */
-  validate(input: { appId?: string; document?: string }): Promise<{ ok: boolean; findings: VendoVerbFinding[] }>;
+   *  findings; it does not throw on a bad document.
+   *
+   *  `ctx` is the CALLER's, handed down from `execute` — never assembled by the
+   *  port and never taken from the model's input. Both of the app-touching verbs
+   *  are owner-scoped behind it, so a model naming someone else's appId gets a
+   *  not-found rather than a look at their app. */
+  validate(
+    input: { appId?: string; document?: string },
+    ctx: RunContext,
+  ): Promise<{ ok: boolean; findings: VendoVerbFinding[] }>;
   /** Search the component catalog. Returns the SHIPPED catalog vocabulary
-   *  (`{ component, description, props?, examples?, remixable? }`). */
+   *  (`{ component, description, props?, examples?, remixable? }`). No ctx: the
+   *  catalog is the deployment's, identical for everyone. */
   searchComponents(query: string, limit?: number): Promise<Json>;
-  /** Arm or change an app's schedule. */
-  schedule(input: { appId: string; cron: string }): Promise<Json>;
+  /** Arm or change an app's schedule. Owner-scoped through `ctx`. */
+  schedule(input: { appId: string; cron: string }, ctx: RunContext): Promise<Json>;
 }
 
 const DESCRIPTORS: ToolDescriptor[] = [
@@ -97,7 +106,7 @@ export function vendoVerbsRegistry(ports: VendoVerbPorts): ToolRegistry {
       return DESCRIPTORS;
     },
 
-    async execute(call, _ctx: RunContext) {
+    async execute(call, ctx: RunContext) {
       const args = (call.args ?? {}) as Record<string, unknown>;
       try {
         switch (call.tool) {
@@ -116,7 +125,7 @@ export function vendoVerbsRegistry(ports: VendoVerbPorts): ToolRegistry {
             const result = await ports.validate({
               ...(appId === undefined ? {} : { appId }),
               ...(document === undefined ? {} : { document }),
-            });
+            }, ctx);
             return { status: "ok", output: { ok: result.ok, findings: result.findings } as unknown as Json };
           }
           case "search_components": {
@@ -134,7 +143,7 @@ export function vendoVerbsRegistry(ports: VendoVerbPorts): ToolRegistry {
             if (appId === "" || cron === "") {
               return fail("validation", "schedule needs both an appId and a cron expression");
             }
-            return { status: "ok", output: await ports.schedule({ appId, cron }) };
+            return { status: "ok", output: await ports.schedule({ appId, cron }, ctx) };
           }
           default:
             return fail("not-found", `${call.tool} is not a Vendo verb`);

@@ -12,7 +12,7 @@ import {
   type OverridesFile,
   type ServerActionHandler,
 } from "@vendoai/actions";
-import { createAgent, VENDO_TOOL_PACK_PREFIX, type VendoAgent } from "@vendoai/agent";
+import { createAgent, vendoVerbsRegistry, VENDO_TOOL_PACK_PREFIX, type VendoAgent } from "@vendoai/agent";
 import { assembleSystemPrompt } from "@vendoai/agent/internal";
 // Architecture §3 — the harness runtime and the default thinker. `vendo()` is
 // composed HERE (not by the host) when `harness:` is unset, because its system
@@ -41,6 +41,7 @@ import {
   vendoThemeSchema,
   type ActAs,
   type AppDocument,
+  type AppId,
   type ComponentCatalog,
   type ComponentRegistry,
   type FilesAdapter,
@@ -112,7 +113,7 @@ import {
   createCapabilityMissCapture,
   type CapabilitySurfaceSnapshot,
 } from "./capability-misses.js";
-import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson } from "./catalog.js";
+import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson, searchRuntimeCatalog } from "./catalog.js";
 import {
   DEFAULT_PACKS,
   hostPackToolCollision,
@@ -2006,6 +2007,32 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // projected identically. `apps()` is in `packs` by default, which is why
   // `apps.agentTools()` is no longer added by name: it comes in as a pack.
   actions.add(packs.tools);
+  // Design §4's vendo verbs, projected onto the SAME registry as everything else
+  // — guarded, audited, and searchable by `find_tools`, with no privileged side
+  // door. `records_list/put/delete` are deliberately absent: they already ship as
+  // `vendo_apps_data_*` through the apps pack, and those names are written inside
+  // stored app documents (contract §8's lane-D ratification — renaming would
+  // invalidate live apps for cosmetics).
+  //
+  // The building-apps skill teaches `validate` BY NAME, and a skill body is
+  // copied to a harness verbatim rather than translated, so this name has to
+  // resolve or the skill points the model at a tool that does not exist.
+  actions.add(vendoVerbsRegistry({
+    // The ctx is the CALLER's, handed down by the registry's own `execute` — not
+    // assembled here and never read off the model's input. Both app-touching
+    // verbs are owner-scoped behind it.
+    validate: (input, ctx) => apps.validate(
+      {
+        ...(input.appId === undefined ? {} : { appId: input.appId as AppId }),
+        ...(input.document === undefined ? {} : { document: input.document }),
+      },
+      ctx,
+    ),
+    searchComponents: async (query, limit) =>
+      searchRuntimeCatalog(catalog, query, limit) as unknown as Json,
+    schedule: async ({ appId, cron }, ctx) =>
+      await apps.schedule(appId as AppId, cron, ctx) as unknown as Json,
+  }));
   // Knowledge K1 — the tool exists exactly when an adapter is configured;
   // no adapter, no `vendo_knowledge_search` in any descriptor surface.
   const knowledge = selectKnowledge(config.knowledge, store);
