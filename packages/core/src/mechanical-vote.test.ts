@@ -70,7 +70,12 @@ describe("a destructive verb in the MIDDLE of a long name is still destructive (
     "maple_account_close_now",
     "maple_subscription_cancel_immediately",
     "maple_records_purge_all",
-    "maple_payout_submit_now",
+    // Destructive verb at index >=2 with a non-verb tail, and NOTHING
+    // destructive in the old leading-two/trailing window — so this genuinely
+    // fails under the pre-fix rule (verifier caught the earlier fixture,
+    // maple_payout_submit_now, passing under both fixed and reverted code
+    // because `payout` sat at index 1, inside the old window).
+    "maple_vendor_payout_now",
   ]) {
     it(`treats ${name} as destructive`, () => {
       expect(mechanicalRisk(tool(name))).toBe("destructive");
