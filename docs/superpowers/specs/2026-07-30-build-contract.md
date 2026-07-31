@@ -429,6 +429,21 @@ need).
 Wave-1 `can()` is exactly today's rule: a path under `/user/` belongs to its
 subject, `/host/` is read-only for everyone. Nothing more.
 
+**The method axis escalates by shape, and DELETE is the destructive line**
+(clarification 2026-07-31, ratified after a builder pushed back on an
+over-broad brief): the binding's shape is *derived* into
+`ToolDescriptor.bindingRisk` — `DELETE` → `destructive`; any other mutating
+shape (POST/PUT/PATCH, a tRPC/GraphQL mutation, a server action) → `write`; a
+read shape → absent. It is derived, never host-authored, carries no `"read"`
+member so a risk can never be *lowered* through it, and stays out of the
+`descriptorHash` preimage so no grant is invalidated. Treating POST/PATCH as
+destructive was rejected with evidence: 12 of 39 extracted demo-host tools are
+POST-bound and 8 are hand-declared `write`, so it would mean no automation
+could ever write anything — contradicting §12's "Automations may read and
+write" and deleting the law's own prepare-then-human-sends path. `write` still
+escalates: it disqualifies the read short-circuit, which is what moved
+`maple_records_purge_list` from offered-to-every-automation to withheld.
+
 **The mechanical second vote applies where the label is AI-ASSIGNED**
 (clarification 2026-07-31): design §12 says eligibility "never rests on the
 *AI-assigned* risk label alone" — the second vote exists to catch an extractor
