@@ -47,7 +47,7 @@ export {
 } from "./sessions.js";
 export { envSecrets, secretStore, storeSecrets } from "./secrets.js";
 export { appStore, type AppRow } from "./helpers/apps.js";
-export { threadStore, type ThreadRow } from "./helpers/threads.js";
+export { threadStore, type AskUserAnswer, type ThreadRow } from "./helpers/threads.js";
 export { threadMessageStore, type ThreadMessageLike } from "./helpers/thread-messages.js";
 export { grantStore } from "./helpers/grants.js";
 export { auditStore, type AuditQuery } from "./helpers/audit.js";

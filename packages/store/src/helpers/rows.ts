@@ -62,7 +62,15 @@ export async function putAppRow(
  *  Interpolated, not parameterized, because it names a correlated alias rather
  *  than carrying a value — there is no user input anywhere in it. */
 export const THREAD_MESSAGES_AGGREGATE = (alias: string): string =>
-  `COALESCE((SELECT jsonb_agg(m.message ORDER BY m.seq)
+  // `m.id` is the tie-break, and it is load-bearing rather than tidy: `seq` is
+  // assigned as max(seq)+1 with no unique constraint, so two concurrent writers
+  // to one thread can land on the same seq. Ordering by seq ALONE would then
+  // leave the reassembled transcript in an undefined order — and the transcript
+  // is what the next turn reads, so "undefined" means a conversation that reads
+  // differently on each load. (A UNIQUE (thread_id, seq) constraint would be the
+  // stronger fix, but it would make `replaceThreadMessages` fail mid-statement
+  // whenever an edit reorders two messages; noted in the lane report.)
+  `COALESCE((SELECT jsonb_agg(m.message ORDER BY m.seq, m.id)
              FROM vendo_thread_messages m WHERE m.thread_id = ${alias}.id), '[]'::jsonb)`;
 
 /** Land this thread's transcript as rows: array index becomes `seq`, an unchanged
