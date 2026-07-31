@@ -136,15 +136,23 @@ for (const backend of backends()) {
       expect((first?.messages as Array<{ id: string }>).map((m) => m.id)).toEqual(["m_a", "m_b"]);
     });
 
-    it("is idempotent per question: answering twice does not duplicate the message", async () => {
+    it("refuses a second answer to the same question, and does not duplicate the row", async () => {
+      // This test previously asserted that answering twice SILENTLY succeeded,
+      // treating it as idempotency. The independent verifier showed that is the
+      // data-loss bug: the second answer is a different answer, so swallowing it
+      // discards the user's words and leaves the first standing as theirs. The
+      // no-duplicate-row half was right and still holds; the silence was not.
       const threads = threadStore(made.store);
       await threads.put(alice, { id: "thr_ask_twice", messages: [] });
 
       await threads.recordAnswer(alice, { threadId: "thr_ask_twice", questionId: "q_7", answer: { text: "yes" } });
-      await threads.recordAnswer(alice, { threadId: "thr_ask_twice", questionId: "q_7", answer: { text: "yes" } });
+      await expect(
+        threads.recordAnswer(alice, { threadId: "thr_ask_twice", questionId: "q_7", answer: { text: "no" } }),
+      ).rejects.toMatchObject<VendoError>({ code: "conflict" });
 
       const after = await threads.get(alice, "thr_ask_twice");
       expect(after?.messages).toHaveLength(1);
+      expect(JSON.stringify(after?.messages)).toContain("yes");
     });
   });
 }

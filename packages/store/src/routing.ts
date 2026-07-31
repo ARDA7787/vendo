@@ -19,6 +19,7 @@ import {
   putGrantRow,
   putRunRow,
   putStateRow,
+  duplicateThreadMessageId,
   putThreadRow,
   replaceThreadMessages,
   runFromRow,
@@ -365,6 +366,13 @@ function configFor(db: Db, collection: ReservedCollection): RoutedConfig {
           async insertIfAbsent(record) {
             requireRecordId(record.id);
             const data = parseThreadData(record.data, record.id);
+            // Same door guard as putThreadRow: a transcript that repeats a
+            // message id cannot be expressed by one ON CONFLICT statement, so
+            // refuse it with a typed error instead of a raw driver 21000.
+            const duplicate = duplicateThreadMessageId(data.messages);
+            if (duplicate !== undefined) {
+              invalid(`thread ${record.id} carries two messages with the id ${JSON.stringify(duplicate)}; message ids must be unique within a thread`);
+            }
             const now = new Date().toISOString();
             const result = await db.query(
               `INSERT INTO vendo_threads (id, subject, title, created_at, updated_at, revision)
@@ -382,6 +390,13 @@ function configFor(db: Db, collection: ReservedCollection): RoutedConfig {
             requireRecordId(record.id);
             requireRevision(expectedRevision);
             const data = parseThreadData(record.data, record.id);
+            // Same door guard as putThreadRow: a transcript that repeats a
+            // message id cannot be expressed by one ON CONFLICT statement, so
+            // refuse it with a typed error instead of a raw driver 21000.
+            const duplicate = duplicateThreadMessageId(data.messages);
+            if (duplicate !== undefined) {
+              invalid(`thread ${record.id} carries two messages with the id ${JSON.stringify(duplicate)}; message ids must be unique within a thread`);
+            }
             const now = new Date().toISOString();
             const result = await db.query(
               `UPDATE vendo_threads

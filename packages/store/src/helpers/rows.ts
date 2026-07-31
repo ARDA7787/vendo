@@ -73,9 +73,37 @@ export const THREAD_MESSAGES_AGGREGATE = (alias: string): string =>
   `COALESCE((SELECT jsonb_agg(m.message ORDER BY m.seq, m.id)
              FROM vendo_thread_messages m WHERE m.thread_id = ${alias}.id), '[]'::jsonb)`;
 
+/** Every row id this transcript will occupy, in array order.
+ *
+ *  Split out because it is also the DOOR's validation: `ON CONFLICT` cannot be
+ *  given the same key twice in one statement (Postgres raises a bare 21000
+ *  cardinality violation), so a transcript carrying two messages with one id used
+ *  to fail with a raw driver error and lose the whole write. Callers check here
+ *  first and refuse with a typed error that names the offender. */
+export function threadMessageRowIds(messages: Json[]): string[] {
+  return messages.map((message, index) => {
+    const id = (message as { id?: unknown } | null)?.id;
+    return typeof id === "string" && id !== "" ? id : `msg_${index}`;
+  });
+}
+
+/** The first row id that appears more than once, or undefined if all are unique. */
+export function duplicateThreadMessageId(messages: Json[]): string | undefined {
+  const seen = new Set<string>();
+  for (const id of threadMessageRowIds(messages)) {
+    if (seen.has(id)) return id;
+    seen.add(id);
+  }
+  return undefined;
+}
+
 /** Land this thread's transcript as rows: array index becomes `seq`, an unchanged
  *  message keeps its revision, and a message that left the array loses its row.
- *  Two statements, each set-based — never one round trip per message. */
+ *  Two statements, each set-based — never one round trip per message.
+ *
+ *  Requires ids to be unique already (`duplicateThreadMessageId`); the door
+ *  enforces that, because this statement cannot express a collision without
+ *  dropping one side. */
 export async function replaceThreadMessages(
   db: Db,
   threadId: string,
@@ -133,6 +161,16 @@ export async function putThreadRow(
   // no row is written, RETURNING is empty, and we refuse the cross-subject flip.
   // This closes the TOCTOU window that a resolve()-time pre-check alone cannot
   // (a foreign row can appear during a long streaming turn, before persist runs).
+  // Refuse a colliding transcript BEFORE writing the thread row, so a rejected
+  // write leaves nothing behind. Client-minted ids are not unique by
+  // construction, so this is a real input, not a defensive check.
+  const duplicate = duplicateThreadMessageId(input.messages);
+  if (duplicate !== undefined) {
+    throw new VendoError(
+      "validation",
+      `thread ${input.id} carries two messages with the id ${JSON.stringify(duplicate)}; message ids must be unique within a thread`,
+    );
+  }
   const result = await db.query(
     `INSERT INTO vendo_threads (id, subject, title, created_at, updated_at, revision)
      VALUES ($1, $2, $3, $4, $4, 1)

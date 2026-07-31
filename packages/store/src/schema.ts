@@ -253,8 +253,18 @@ const DATA_BACKFILL = [
 //
 // `seq` comes from WITH ORDINALITY (1-based) shifted to 0-based, so the stored
 // array order — the only order a legacy row carries — becomes the ordering
-// authority. A legacy message with no `id` still gets a row under a derived
-// positional id rather than being dropped: this migration never loses a message.
+// authority.
+//
+// It never loses a message, and that takes real work rather than a comment. Two
+// ways a candidate id collides, both found in the wild by the verifier:
+//   1. a legacy array simply repeats an `id` (the client minted it, so nothing
+//      ever enforced uniqueness inside the array);
+//   2. a message with NO id derives `msg_<index>`, which can equal a real
+//      message's literal id (`msg_0`).
+// `ON CONFLICT DO NOTHING` silently dropped the loser in both cases. Instead a
+// window function numbers the candidates per (thread, id) in array order and
+// suffixes every duplicate after the first with its index — deterministic, so a
+// re-run produces the same ids, and lossless, so nobody's words disappear.
 const DATA_BACKFILL_V6 = [
   `DO $$
    BEGIN
@@ -263,15 +273,24 @@ const DATA_BACKFILL_V6 = [
        WHERE table_name = 'vendo_threads' AND column_name = 'messages'
      ) THEN
        INSERT INTO vendo_thread_messages (thread_id, id, seq, message, created_at, updated_at)
-       SELECT t.id,
-              COALESCE(elem->>'id', 'msg_' || (ordinality - 1)::text),
-              (ordinality - 1)::integer,
-              elem,
-              t.created_at,
-              t.updated_at
-       FROM vendo_threads t
-       CROSS JOIN LATERAL jsonb_array_elements(t.messages) WITH ORDINALITY AS a(elem, ordinality)
-       WHERE jsonb_typeof(t.messages) = 'array'
+       SELECT thread_id,
+              CASE WHEN dup = 1 THEN candidate_id
+                   ELSE candidate_id || '#' || seq::text END,
+              seq, message, created_at, updated_at
+       FROM (
+         SELECT t.id AS thread_id,
+                COALESCE(a.elem->>'id', 'msg_' || (a.ordinality - 1)::text) AS candidate_id,
+                (a.ordinality - 1)::integer AS seq,
+                a.elem AS message,
+                t.created_at, t.updated_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY t.id, COALESCE(a.elem->>'id', 'msg_' || (a.ordinality - 1)::text)
+                  ORDER BY a.ordinality
+                ) AS dup
+         FROM vendo_threads t
+         CROSS JOIN LATERAL jsonb_array_elements(t.messages) WITH ORDINALITY AS a(elem, ordinality)
+         WHERE jsonb_typeof(t.messages) = 'array'
+       ) numbered
        ON CONFLICT (thread_id, id) DO NOTHING;
 
        ALTER TABLE vendo_threads DROP COLUMN messages;

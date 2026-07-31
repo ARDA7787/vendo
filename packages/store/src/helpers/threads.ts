@@ -90,11 +90,16 @@ export function threadStore(store: VendoStore): {
      * The row id is `ans_<questionId>`, NOT the bare `questionId`. The prefix is
      * a namespace, and the in-lane security review is why it exists: the bare id
      * shared a primary key with every other message in the thread, so an answer
-     * whose id happened to match an ordinary assistant message hit
-     * `ON CONFLICT DO NOTHING`, wrote nothing, and still reported success —
-     * silently losing the answer. Namespaced, a conflict can only mean a genuine
-     * re-answer to the same question, which is exactly what idempotency should
-     * cover.
+     * whose id happened to match an ordinary assistant message wrote nothing and
+     * still reported success.
+     *
+     * It requires a WRITE RECEIPT. Returning quietly on an empty RETURNING was
+     * the worst version of the same bug (verifier finding 5): a reused
+     * `questionId` discarded the user's real answer and left an earlier one
+     * standing as though it were theirs, with success reported to the model.
+     * There is no safe way to treat that as idempotent, because the two answers
+     * are not the same answer — so a reused id is refused, loudly, and the caller
+     * mints a fresh one.
      */
     async recordAnswer(principal, { threadId, questionId, answer }) {
       const now = new Date().toISOString();
@@ -114,10 +119,11 @@ export function threadStore(store: VendoStore): {
          RETURNING thread_id`,
         [threadId, rowId, JSON.stringify(message), principal.subject, now],
       );
+      // A receipt is REQUIRED. Anything else means nothing was written, and this
+      // function must never report success for an answer that does not exist.
       if (result.rows[0] !== undefined) return;
-      // Empty RETURNING is ambiguous between "not yours / absent" and "already
-      // answered". Distinguish them by asking whether the thread is ours at all,
-      // so an idempotent re-answer is not reported as a permission failure.
+      // Empty RETURNING has two causes and they need different words: the thread
+      // is not ours (or absent), or this questionId was already answered.
       const owned = await db.query(
         "SELECT 1 FROM vendo_threads WHERE id = $1 AND subject = $2",
         [threadId, principal.subject],
@@ -125,6 +131,11 @@ export function threadStore(store: VendoStore): {
       if (owned.rows[0] === undefined) {
         throw new VendoError("conflict", `thread ${threadId} does not belong to this subject`);
       }
+      throw new VendoError(
+        "conflict",
+        `question ${JSON.stringify(questionId)} in thread ${threadId} was already answered; `
+        + "an answer is never overwritten, so mint a fresh questionId for a new question",
+      );
     },
   };
 }
