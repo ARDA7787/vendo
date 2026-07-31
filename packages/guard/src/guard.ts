@@ -129,19 +129,27 @@ function exactInputHash(args: unknown): string {
 }
 
 /** Build contract §7's key: sha256 over the run, the tool, and the exact input.
+ *  `undefined` means this call is not ledger-eligible at all.
  *
  *  The contract writes the preimage as `runId|turnId`. There is no turn id
- *  anywhere in this codebase, so the run component reuses the guard's existing
- *  run key — `ctx.trigger?.runId ?? ctx.sessionId`, the same value the write
- *  breaker and `task`-duration grants are keyed by — rather than inventing a
- *  second, divergent notion of "this run". Noted in the lane report.
+ *  anywhere in this codebase, so the run component is `ctx.trigger.runId`.
  *
- *  Scoping to the run is load-bearing in both directions: narrower (per call id)
- *  would never dedupe a re-run, and broader (per subject) would make a daily
- *  automation fire exactly once and then never again. */
-function effectKey(ctx: RunContext, call: ToolCall): string {
-  const runKey = ctx.trigger?.runId ?? ctx.sessionId;
-  return `sha256:${sha256Hex(canonicalJson([runKey, call.tool, exactInputHash(call.args)]))}`;
+ *  It deliberately does NOT fall back to `ctx.sessionId`, even though the write
+ *  breaker and `task`-duration grants do. The ledger exists to make
+ *  fail-and-RE-RUN correct, and a re-run is a property of a run: an unattended
+ *  run that failed halfway is retried with the same runId, which is exactly what
+ *  must not double-charge. A chat session has no such identity — it spans many
+ *  turns — so keying on it made "pay this invoice" asked twice in one
+ *  conversation execute once and replay the first receipt. That was a real bug
+ *  (caught by vendo's compound e2e), not a theoretical one.
+ *
+ *  Scoping is load-bearing in both directions: narrower (per call id) would never
+ *  dedupe a re-run at all, and broader (per subject) would make a daily
+ *  automation fire once and then never again. */
+function effectKey(ctx: RunContext, call: ToolCall): string | undefined {
+  const runId = ctx.trigger?.runId;
+  if (runId === undefined) return undefined;
+  return `sha256:${sha256Hex(canonicalJson([runId, call.tool, exactInputHash(call.args)]))}`;
 }
 
 function inputPreview(call: ToolCall): string {

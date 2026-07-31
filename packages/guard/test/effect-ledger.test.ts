@@ -81,6 +81,27 @@ describe("effect ledger (build contract §7)", () => {
     expect(tools.executions).toHaveLength(2);
   });
 
+  it("never ledgers a CHAT call: the same action asked for twice happens twice", async () => {
+    // Regression (found by vendo's compound e2e). A chat session spans many
+    // turns, so keying the ledger on sessionId made "pay this invoice" asked
+    // twice in one conversation execute once and silently replay the first
+    // receipt. There is no "re-run" without a run, so there is nothing to
+    // deduplicate: the ledger applies only where ctx.trigger.runId exists.
+    const store = createMemoryStore();
+    const write = descriptor("write");
+    await seedGrant(store, { descriptor: write });
+    const tools = new FixtureTools();
+    const bound = createGuard({ store }).bind(tools);
+    const chat = context({ venue: "chat", presence: "present" });
+
+    await bound.execute(call(write.name, { amount: 100 }, "call_1"), chat);
+    await bound.execute(call(write.name, { amount: 100 }, "call_2"), chat);
+
+    expect(tools.executions).toHaveLength(2);
+    const ledgered = await store.records("vendo_effects").list({});
+    expect(ledgered.records).toHaveLength(0);
+  });
+
   it("never ledgers a read: reads are free to repeat", async () => {
     const store = createMemoryStore();
     const read = descriptor("read");
