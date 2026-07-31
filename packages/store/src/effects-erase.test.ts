@@ -1,7 +1,7 @@
 import type { Principal } from "@vendoai/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backends, type MadeBackend } from "./backends.test-util.js";
-import { adoptEphemeralSubject, eraseStore } from "./index.js";
+import { adoptEphemeralSubject, eraseStore, storeFiles } from "./index.js";
 
 /**
  * Build-contract amendment 2026-07-30 — `vendo_effects.outcome` holds real tool
@@ -47,7 +47,7 @@ for (const backend of backends()) {
       await seedEffect(made, "eff_alice_2", alice.subject);
       await seedEffect(made, "eff_bystander", "user_bystander");
 
-      const report = await eraseStore(made.store).bySubject(alice.subject);
+      const report = await eraseStore(made.store, { files: storeFiles(made.store) }).bySubject(alice.subject);
 
       expect(report.vendo_effects).toBe(2);
       const left = await made.sql("SELECT key FROM vendo_effects ORDER BY key");
@@ -64,7 +64,7 @@ for (const backend of backends()) {
         [anon.subject],
       );
 
-      const report = await adoptEphemeralSubject(made.store, anon.subject, "user_signed_in");
+      const report = await adoptEphemeralSubject(made.store, anon.subject, "user_signed_in", { files: storeFiles(made.store) });
 
       expect(report?.effects).toBe(1);
       const rows = await made.sql("SELECT subject FROM vendo_effects WHERE key = 'eff_anon_1'");

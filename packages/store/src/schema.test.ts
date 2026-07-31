@@ -109,7 +109,7 @@ for (const backend of backends()) {
       await made.sql("DELETE FROM vendo_records WHERE collection = 'vendo_state' AND id = 'app_live:subject_live'");
     });
 
-    it("creates all 18 contract tables with every contracted key column", async () => {
+    it("creates all 20 contract tables with every contracted key column", async () => {
       const rows = await made.sql(
         "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name LIKE 'vendo_%'",
       );
@@ -120,7 +120,11 @@ for (const backend of backends()) {
         columns.add(String(row.column_name));
         actual.set(table, columns);
       }
-      expect(actual.size).toBe(18);
+      // 20 at wave-1 integration: 16 shipped + lane D's vendo_thread_messages
+      // and vendo_effects + lane B's vendo_workspace_files and
+      // vendo_workspace_history. Each lane asserted 18 counting only its own
+      // pair; the merged v6 carries all four.
+      expect(actual.size).toBe(20);
       for (const [table, columns] of Object.entries(CONTRACT_COLUMNS)) {
         expect(actual.has(table), table).toBe(true);
         for (const column of columns) expect(actual.get(table)?.has(column), `${table}.${column}`).toBe(true);

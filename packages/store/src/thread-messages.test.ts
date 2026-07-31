@@ -2,7 +2,7 @@ import { VendoError, type Principal } from "@vendoai/core";
 import type { UIMessage } from "ai";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backends, type MadeBackend } from "./backends.test-util.js";
-import { eraseStore, threadMessageStore, threadStore } from "./index.js";
+import { eraseStore, storeFiles, threadMessageStore, threadStore } from "./index.js";
 
 const alice: Principal = { kind: "user", subject: "user_alice" };
 const bob: Principal = { kind: "user", subject: "user_bob" };
@@ -84,7 +84,7 @@ for (const backend of backends()) {
       await messages.upsert(carol, id, message("m_1", "private"), 0);
       await messages.upsert(carol, id, message("m_2", "also private"), 1);
 
-      const report = await eraseStore(made.store).bySubject(carol.subject);
+      const report = await eraseStore(made.store, { files: storeFiles(made.store) }).bySubject(carol.subject);
 
       expect(report.vendo_thread_messages).toBeGreaterThanOrEqual(2);
       const left = await made.sql(
