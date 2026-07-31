@@ -27,7 +27,8 @@ import type {
   ToolRegistry,
   WorkspaceFs,
 } from "@vendoai/core";
-import type { UIMessage } from "ai";
+import type { LanguageModel, UIMessage } from "ai";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { InMemoryFs } from "just-bash";
 
 export function ctx(overrides: Partial<RunContext> = {}): RunContext {
@@ -229,6 +230,59 @@ export function unusedModels(): ResolvedModels {
     },
   });
   return { default: unreachable, reviewer: unreachable, judge: unreachable, fill: unreachable } as ResolvedModels;
+}
+
+type StreamPart = Awaited<ReturnType<MockLanguageModelV3["doStream"]>>["stream"] extends ReadableStream<
+  infer Part
+>
+  ? Part
+  : never;
+
+export const ZERO_USAGE = {
+  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 0, text: 0, reasoning: 0 },
+} as const;
+
+export function textTurn(text: string, usage: typeof ZERO_USAGE = ZERO_USAGE): StreamPart[] {
+  return [
+    { type: "text-start", id: "t1" },
+    { type: "text-delta", id: "t1", delta: text },
+    { type: "text-end", id: "t1" },
+    { type: "finish", usage, finishReason: { unified: "stop", raw: undefined } },
+  ];
+}
+
+export function toolCallTurn(toolName: string, input: unknown, toolCallId = "call_1"): StreamPart[] {
+  return [
+    { type: "tool-call", toolCallId, toolName, input: JSON.stringify(input) },
+    { type: "finish", usage: ZERO_USAGE, finishReason: { unified: "tool-calls", raw: undefined } },
+  ];
+}
+
+export type ScriptedModel = LanguageModel & { toolNamesPerCall: string[][]; calls: number };
+
+/** A model that replays scripted provider chunks — so the harness's loop, not a
+ *  real model, is what the suite measures. */
+export function scriptedModel(turns: StreamPart[][]): ScriptedModel {
+  const remaining = turns.map((turn) => [...turn]);
+  const toolNamesPerCall: string[][] = [];
+  const model = new MockLanguageModelV3({
+    doStream: async (request) => {
+      toolNamesPerCall.push((request.tools ?? []).map((tool) => tool.name));
+      (model as ScriptedModel).calls += 1;
+      const chunks = remaining.shift();
+      if (chunks === undefined) throw new Error("scripted model exhausted");
+      return { stream: simulateReadableStream({ chunks }) };
+    },
+  }) as unknown as ScriptedModel;
+  model.toolNamesPerCall = toolNamesPerCall;
+  model.calls = 0;
+  return model;
+}
+
+/** `ResolvedModels` whose every seat is one scripted model. */
+export function seats(model: LanguageModel): ResolvedModels {
+  return { default: model, reviewer: model, judge: model, fill: model };
 }
 
 export async function readSse(response: Response): Promise<Array<Record<string, unknown>>> {
