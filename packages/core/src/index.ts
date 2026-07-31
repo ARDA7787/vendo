@@ -8,6 +8,7 @@ export * from "./descriptor-hash.js";
 export * from "./errors.js";
 export * from "./formats.js";
 export * from "./grants.js";
+export * from "./grant-sets.js";
 export * from "./guard.js";
 export * from "./fetch.js";
 export * from "./heartbeat.js";

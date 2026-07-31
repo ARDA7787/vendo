@@ -1,8 +1,13 @@
 import {
   canonicalJson,
   descriptorHash,
+  isUnattended,
+  mechanicalRisk,
+  projectableForRun,
+  resolvedRisk,
   sha256Hex,
   toolOutcomeSchema,
+  UNATTENDED_DESTRUCTIVE_REASON,
   VendoError,
 } from "@vendoai/core";
 import type {
@@ -406,7 +411,15 @@ class GuardImplementation implements VendoGuard {
 
   bind(tools: ToolRegistry): ToolRegistry {
     return {
-      descriptors: () => tools.descriptors(),
+      // THE LAW (design §12), primary mechanism: a destructive or external tool
+      // is NOT PROJECTED into an unattended run at all. A tool the model cannot
+      // see is one it cannot be talked into using; a tool it can see but is
+      // refused becomes something it retries and works around. Callers that pass
+      // no context get the full set, exactly as before.
+      descriptors: async (ctx?: Pick<RunContext, "venue" | "presence">) => {
+        const all = await tools.descriptors();
+        return ctx === undefined ? all : projectableForRun(all, ctx);
+      },
       execute: async (call, ctx) => {
         const descriptors = await tools.descriptors();
         const descriptor = descriptors.find((candidate) => candidate.name === call.tool);
@@ -431,6 +444,45 @@ class GuardImplementation implements VendoGuard {
         const completed = await this.#checkWithMetadata(call, descriptor, ctx);
         const { decision } = completed;
         let outcome: ToolOutcome;
+
+        // THE LAW (design §12), defence in depth. `projectableForRun` above is
+        // the primary mechanism; this refuses whatever still got through.
+        //
+        // It sits AFTER the pipeline, not before, because two outcomes the law
+        // explicitly wants must survive it:
+        //  - `ask` parks the call and shows a person the real arguments. That IS
+        //    the law's replacement pattern — the automation prepares, the human
+        //    sends. Refusing ahead of the pipeline would delete it.
+        //  - an approved REPLAY (run/"grant" with no grantId — see
+        //    #grantForExecution) means a human already tapped this exact call
+        //    with these exact arguments. That is attended irreversibility, which
+        //    is precisely what the law asks for.
+        // What it does refuse is a standing grant, rule, judge, or default
+        // authorizing an irreversible action with nobody watching. No limit and
+        // no override reaches past this.
+        const replayApproved = decision.action === "run"
+          && decision.decidedBy === "grant" && decision.grantId === undefined;
+        if (
+          decision.action === "run" && !replayApproved
+          && isUnattended(ctx) && resolvedRisk(completed.descriptor) === "destructive"
+        ) {
+          const refused: ToolOutcome = { status: "blocked", reason: UNATTENDED_DESTRUCTIVE_REASON };
+          await this.report(
+            eventFromContext(ctx, {
+              kind: "policy-decision",
+              tool: call.tool,
+              inputPreview: preview,
+              outcome: refused.status,
+              decidedBy: "rule",
+              detail: {
+                reason: "unattended-destructive",
+                declaredRisk: completed.descriptor.risk,
+                mechanicalRisk: mechanicalRisk(completed.descriptor),
+              },
+            }),
+          );
+          return refused;
+        }
 
         if (decision.action === "block") {
           outcome = { status: "blocked", reason: decision.reason };
