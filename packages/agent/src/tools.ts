@@ -150,7 +150,10 @@ function capOutcome(outcome: ToolOutcome, cap: number | undefined): ToolOutcome 
 
 /** 03-agent §2 */
 export async function buildAgentTools(options: ToolBridgeOptions): Promise<ToolSet> {
-  const descriptors = await options.registry.descriptors();
+  // Pass the turn's context so THE LAW's projection actually applies (design
+  // §12): an unattended turn is never handed a destructive or external tool.
+  // Without this the guard's withholding is computed and then discarded.
+  const descriptors = await options.registry.descriptors(options.ctx);
   const tools: ToolSet = {};
   for (const descriptor of descriptors) addAgentTool(tools, descriptor, options);
   return tools;

@@ -511,14 +511,18 @@ export function createAgent(config: AgentConfig): VendoAgent {
             ? undefined
             : createToolSearchSession({
                 config: config.toolSearch,
-                descriptors: await config.tools.descriptors(),
+                // THE LAW's projection (design §12): an unattended turn is
+                // never even offered a destructive or external tool.
+                descriptors: await config.tools.descriptors(input.ctx),
                 loaded: loadedFor(thread.id),
                 ...(seedNames === undefined ? {} : { seedNames }),
                 ...(menuNames === undefined ? {} : { menuNames }),
                 // Search hits expanded mid-turn resolve to full descriptors and
                 // materialize into the LIVE toolset — prepareStep re-reads the
                 // active names each step, so they are callable next step.
-                resolve: async (names) => (await config.tools.descriptors()).filter((d) => names.includes(d.name)),
+                // Search must not be a way back to a withheld tool, so the
+                // same projection applies to what it can resolve.
+                resolve: async (names) => (await config.tools.descriptors(input.ctx)).filter((d) => names.includes(d.name)),
                 materialize: (descriptor) => addAgentTool(tools, descriptor, bridgeOptions),
               });
           toolSearch?.attach(tools);

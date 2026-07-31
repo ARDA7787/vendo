@@ -1268,7 +1268,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
   const generationToolContext = async (
     ctx: RunContext,
   ): Promise<Pick<GenerationDependencies, "tools" | "toolShapes">> => {
-    const descriptors = await config.tools.descriptors().catch(() => []);
+    const descriptors = await config.tools.descriptors(ctx).catch(() => []);
     const candidates = descriptors.filter((descriptor) =>
       descriptor.risk === "read" && !requiresInput(descriptor) && !settledSamples.has(descriptor.name)
       && !connectSettled(ctx.principal.subject, descriptor.name));

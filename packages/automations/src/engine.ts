@@ -399,8 +399,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     });
   };
 
-  const descriptors = async (): Promise<Map<string, ToolDescriptor>> =>
-    new Map((await config.tools.descriptors()).map((descriptor) => [descriptor.name, descriptor]));
+  // `ctx` rides through so the projection seam (design §12) is not silently
+  // dropped here. Both callers — enable and dryRun — are PRESENT-time
+  // ceremonies, so nothing is withheld: the owner must still see and grant
+  // everything the automation declares, and dryRun must still explain it.
+  const descriptors = async (ctx?: RunContext): Promise<Map<string, ToolDescriptor>> =>
+    new Map((await config.tools.descriptors(ctx)).map((descriptor) => [descriptor.name, descriptor]));
 
   const liveGrant = async (
     subject: string,
@@ -1065,7 +1069,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     const found = await ownedApp(appId, ctx.principal.subject);
     if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
     const trigger = validateTrigger(found.row.doc.trigger);
-    const byName = await descriptors();
+    const byName = await descriptors(ctx);
     const surface = trigger.run.kind === "steps"
       ? [...new Set(trigger.run.steps.map((step) => step.tool).filter((tool) => !tool.startsWith("fn:")))]
       // PR flag: without a model seat, agentic capture conservatively exposes every bound descriptor.
@@ -1417,7 +1421,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     const found = await ownedApp(appId, ctx.principal.subject);
     if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
     const trigger = validateTrigger(found.row.doc.trigger);
-    const byName = await descriptors();
+    const byName = await descriptors(ctx);
     const plan: RunPlan = { steps: [], grantsMissing: [] };
     const add = async (stepId: string, tool: string): Promise<void> => {
       if (tool.startsWith("fn:")) {
