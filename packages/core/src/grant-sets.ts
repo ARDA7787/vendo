@@ -54,23 +54,40 @@ export function grantSetDelta(
   };
 }
 
-/** Verbs that move money, message a human, or destroy something. This is the
- *  mechanical half of §12's two-vote rule, so it is deliberately blunt and
- *  deliberately over-inclusive: a false "destructive" costs one confirmation,
- *  a false "write" costs an unattended irreversible action.
+/** ACTION verbs that move money, message a human, or destroy something.
+ *
+ *  Matched only in a verb POSITION (see `actionTokens`), never anywhere in the
+ *  name. Matching everywhere made `gmail_message_get` look destructive, and
+ *  over-withholding is not a safe default: it silently breaks automations that
+ *  only ever read, which trains people to widen permissions.
  *
  *  `packages/actions/src/sync/common.ts` carries an equivalent list for
- *  build-time extraction. The duplication is real and flagged in the lane
- *  report — actions cannot be imported from core (layering), and converging
- *  them means editing a file this lane does not own. */
-const DESTRUCTIVE_WORDS: ReadonlySet<string> = new Set([
-  "delete", "remove", "destroy", "cancel", "close", "reset", "revoke", "purge", "wipe", "archive",
-  "unpause", "transfer", "send", "invite", "pay", "charge", "refund", "withdraw", "email", "message",
-  "notify", "text", "call", "post", "publish", "share",
+ *  build-time extraction. The duplication is flagged in the lane report — core
+ *  cannot import actions (layering) — and this list is now the broader of the
+ *  two. */
+const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
+  // destroy
+  "delete", "remove", "destroy", "purge", "wipe", "erase", "truncate", "drop", "clear",
+  // retire / revoke
+  "cancel", "close", "reset", "revoke", "terminate", "deactivate", "disable", "suspend",
+  "ban", "block", "expire", "unsubscribe", "archive", "void", "reject", "decline",
+  // move money
+  "pay", "payout", "charge", "refund", "withdraw", "transfer", "wire", "remit",
+  "disburse", "settle", "capture", "chargeback",
+  // reach a human
+  "send", "email", "notify", "text", "sms", "message", "dm", "invite", "publish",
+  "post", "share", "broadcast", "announce", "dispatch", "page", "call",
+  // start something irreversible
+  "initiate", "submit", "execute", "launch", "trigger", "fire", "unpause", "release",
+  "approve", "confirm", "finalize", "commit", "merge", "deploy",
 ]);
 
-const READ_WORDS: ReadonlySet<string> = new Set([
-  "get", "list", "fetch", "search", "find", "read", "show", "query", "describe", "count",
+/** Verbs that only ever read. A name ENDING in one of these is a read: the
+ *  trailing token is the action in `noun_verb` naming, so nouns before it are
+ *  just the subject being read. */
+const READ_VERBS: ReadonlySet<string> = new Set([
+  "get", "list", "fetch", "read", "show", "query", "describe", "count", "search",
+  "find", "lookup", "view", "peek", "head", "exists", "check", "preview", "export",
 ]);
 
 function words(value: string): string[] {
@@ -82,21 +99,67 @@ function words(value: string): string[] {
     .filter(Boolean);
 }
 
-function containsWord(value: string, vocabulary: ReadonlySet<string>): boolean {
-  return words(value).some((word) => vocabulary.has(word));
+/**
+ * The tokens that can plausibly be the ACTION, rather than the subject.
+ *
+ * This is the part that makes the vote a second opinion instead of a rerun of
+ * the same guess: it reads name STRUCTURE, not just membership. Tool names come
+ * in two shapes — `subject_verb` (`invoices_list`, `payments_send`) and
+ * `verb_subject` (`send_email`, `list_invoices`) — so the action lives at one of
+ * the ends. Middle tokens are the subject, which is why a destructive noun there
+ * no longer withholds a read.
+ *
+ * A single-token name is its own verb. A leading vendor/product prefix
+ * (`maple_`, `gmail_`) occupies the first slot, so the token after it is also
+ * treated as a candidate — otherwise `maple_send_email` would hide its verb.
+ */
+function actionTokens(name: string): { leading: string[]; trailing: string | undefined } {
+  const parts = words(name);
+  if (parts.length === 0) return { leading: [], trailing: undefined };
+  if (parts.length === 1) return { leading: [parts[0]!], trailing: parts[0] };
+  // First token, and the one after it (a prefix consumes the first slot).
+  const leading = parts.slice(0, 2);
+  return { leading, trailing: parts[parts.length - 1] };
 }
 
-/** §12's SECOND MECHANICAL VOTE: the risk a tool's HTTP method and verb shape
- *  imply, computed without asking a model anything.
+/**
+ * §12's SECOND MECHANICAL VOTE: the risk a tool's HTTP method and verb shape
+ * imply, computed WITHOUT consulting the AI-assigned label.
  *
- *  Read the result as a floor, not an opinion. `resolved` below combines it with
- *  the descriptor's own label, and disagreement resolves against the tool. */
+ * Not reading `descriptor.risk` is the whole point — a vote that consults the
+ * label is not a second opinion, it is the label wearing a hat. `resolvedRisk`
+ * is where the two are combined, and disagreement resolves against the tool.
+ *
+ * Order matters: a destructive verb beats a permissive method (a deletion
+ * exposed over GET is still a deletion), and a mutating method beats a
+ * read-shaped name (a POST that calls itself `get` is not a read).
+ */
 export function mechanicalRisk(descriptor: ToolDescriptor): RiskLabel {
-  const method = (descriptor as { method?: unknown }).method;
-  if (typeof method === "string" && method.toUpperCase() === "DELETE") return "destructive";
-  if (containsWord(descriptor.name, DESTRUCTIVE_WORDS)) return "destructive";
-  if (descriptor.risk === "read" && containsWord(descriptor.name, READ_WORDS)) return "read";
-  if (descriptor.risk === "read") return "read";
+  const rawMethod = (descriptor as { method?: unknown }).method;
+  const method = typeof rawMethod === "string" ? rawMethod.toUpperCase() : undefined;
+  if (method === "DELETE") return "destructive";
+
+  const { leading, trailing } = actionTokens(descriptor.name);
+  const readMethod = method === undefined || method === "GET" || method === "HEAD" || method === "OPTIONS";
+
+  // A TRAILING read verb settles it, and it is checked first on purpose. In
+  // `subject_verb` naming the trailing token IS the action, so everything before
+  // it is the subject being read — which is exactly why `gmail_message_get` is a
+  // read and not a deletion. The method still has to agree: a POST that calls
+  // itself `get` is not a read.
+  if (trailing !== undefined && READ_VERBS.has(trailing) && readMethod) return "read";
+
+  // Otherwise a destructive verb in either action position decides. `subject_verb`
+  // puts it last (`payments_send`), `verb_subject` puts it first
+  // (`delete_customer`), and a product prefix can push it to the second slot
+  // (`maple_send_email`).
+  const isDestructive = leading.some((token) => DESTRUCTIVE_VERBS.has(token))
+    || (trailing !== undefined && DESTRUCTIVE_VERBS.has(trailing));
+  if (isDestructive) return "destructive";
+
+  // Everything else is a write: fail-closed, because an unrecognised verb is not
+  // evidence of safety — but not `destructive`, because withholding every
+  // unknown tool from every automation would make them useless.
   return "write";
 }
 
