@@ -88,6 +88,15 @@ export interface GenerationDependencies {
 export type GeneratedAppDocument = Omit<AppDocument, "id">;
 
 /**
+ * A placeholder id for a document that is being generated and has not been
+ * stored yet. Nothing keys off it — it exists because `AppDocument` carries an
+ * id, the checks floor takes a whole `AppDocument` (build contract §5), and a
+ * freshly generated app has no id until the runtime mints one. Named once here
+ * so the mid-fill checks and the finished-app checks use the same one.
+ */
+export const UNSTORED_APP_ID = "app_conducted";
+
+/**
  * A stored document's `tree` (the open UIPayload the store speaks) and the
  * genui `Tree` are the same structure under two names. These two casts are the
  * ONLY bridge between them — an `as unknown as` on a tree anywhere else is a

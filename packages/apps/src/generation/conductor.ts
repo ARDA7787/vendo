@@ -27,11 +27,11 @@ import {
   type TextEdit,
   type Tree,
 } from "@vendoai/core";
-import { createCheckingLayer } from "../checking/layer.js";
+import { createCheckingLayer, judgmentRules } from "../checking/layer.js";
 import { reviewerCheck } from "../checking/reviewer.js";
 import type { Check, CheckingLayer, Finding } from "../checking/types.js";
 import { runBrainTurn, type BrainOutcome, type BrainTurn } from "./brain.js";
-import { asPayload, asTree, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
+import { UNSTORED_APP_ID, asPayload, asTree, type GeneratedAppDocument, type GenerationDependencies } from "./engine.js";
 import { fillPlan, type FillOptions } from "./fill.js";
 import { runIslandLane } from "./lanes.js";
 import { growSkeleton, skeletonFromPlan, type Skeleton } from "./skeleton.js";
@@ -106,18 +106,20 @@ const checkingFor = (
   deps: GenerationDependencies,
   samples: Readonly<Record<string, unknown>>,
   checks: readonly Check[] | undefined,
-): CheckingLayer => createCheckingLayer({
-  deps,
-  checks: [reviewerCheck(deps, samples), ...(checks ?? [])],
-});
-
-/** A placeholder id for a document that has not been stored yet. The edit path
- *  keys nothing off it — it exists because `AppDocument` carries an id and a
- *  freshly generated app does not have one until the runtime mints it. */
-const UNSTORED = "app_conducted";
+): CheckingLayer => {
+  const plugged = checks ?? [];
+  // The judgment rules the host and every pack contributed are not code — they
+  // are lines on the reviewer's rubric, and the reviewer is the only thing that
+  // can apply them. Derived once, by the same function the layer exposes them
+  // with, so the rubric the reviewer reads and `layer.rubric` can never diverge.
+  return createCheckingLayer({
+    deps,
+    checks: [reviewerCheck(deps, samples, judgmentRules(plugged)), ...plugged],
+  });
+};
 
 const withId = (document: GeneratedAppDocument): AppDocument =>
-  ({ ...document, id: UNSTORED } as AppDocument);
+  ({ ...document, id: UNSTORED_APP_ID } as AppDocument);
 
 const withoutId = (document: AppDocument): GeneratedAppDocument => {
   const { id: _id, ...rest } = document;
@@ -166,7 +168,7 @@ export const applyBrainEdits = async (
  *  the instruction is the findings themselves — nothing is translated. */
 const fixInstruction = (findings: readonly Finding[]): string => [
   "These things are wrong with the app as it stands. Fix each one with an <Edit> over the app text printed above, and change nothing else.",
-  ...findings.map(({ where, message }) => `- ${where}: ${message}`),
+  ...findings.map(({ where, message }) => (where === undefined ? `- ${message}` : `- ${where}: ${message}`)),
 ].join("\n");
 
 /**
@@ -192,7 +194,7 @@ const checkAndFix = async (
   let plan = input.plan;
   for (let round = 0; ; round += 1) {
     const findings = await checking.run({
-      app: withoutId(document),
+      document,
       request: input.request,
       ...(plan === undefined ? {} : { plan }),
     });

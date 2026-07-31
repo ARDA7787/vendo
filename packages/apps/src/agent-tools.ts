@@ -18,7 +18,9 @@ import type { AppsRuntime } from "./runtime.js";
 
 const DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 
-const descriptors: ToolDescriptor[] = [
+/** Exported so the apps PACK can declare exactly these tools through the public
+ *  `Pack.tools` slot rather than a privileged path into the registry. */
+export const agentToolDescriptors: ToolDescriptor[] = [
   {
     // The agent's streaming-view bridge keys on this exact core-defined name.
     name: VENDO_APPS_CREATE_TOOL,
@@ -201,7 +203,7 @@ export const createAgentTools = (
   dependencies: AgentToolsDataDependencies,
 ): ToolRegistry => ({
   async descriptors() {
-    return structuredClone(descriptors);
+    return structuredClone(agentToolDescriptors);
   },
   async execute(call, ctx: RunContext): Promise<ToolOutcome> {
     try {

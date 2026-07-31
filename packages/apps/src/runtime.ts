@@ -323,6 +323,12 @@ const fallbackAppName = (prompt: string): string => {
  *  when a create neither persisted an app nor a failure inside its window:
  *  the one class the in-band catch cannot cover (a build task that hangs or
  *  dies without ever settling). */
+/** One finding as an operator log line. `where` is optional — a check judging the
+ *  whole app may have no locus to name — so it is only printed when there is one,
+ *  never as the string "undefined". */
+const findingLine = (finding: Finding): string =>
+  `[vendo] gen ${finding.severity}${finding.where === undefined ? "" : ` ${finding.where}`}: ${finding.message}`;
+
 const BUILD_WATCHDOG_REASON =
   "the build never finished — the server-side build task stalled or died without reporting a "
   + "failure. Retry the request; if this repeats, check the host server log.";
@@ -1778,7 +1784,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       clearTimeout(watchdog);
       if (unsavedReason === undefined) await reportLifecycle("create", app.id, ctx);
       for (const finding of conducted.findings) {
-        console.info(`[vendo] gen ${finding.severity} ${finding.where}: ${finding.message}`);
+        console.info(findingLine(finding));
       }
       console.info(`[vendo] gen create complete app=${appId} total=${((Date.now() - createStartedAt) / 1000).toFixed(1)}s${unsavedReason === undefined ? "" : " (NOT SAVED)"}`);
       if (unsavedReason !== undefined) {
@@ -1802,7 +1808,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           }, ctx, generationDeps);
           app = served.document;
           for (const finding of served.findings) {
-            console.info(`[vendo] gen ${finding.severity} ${finding.where}: ${finding.message}`);
+            console.info(findingLine(finding));
           }
           // The streamed view parts are last-write-wins and the emit above
           // already painted resolved data, so the escalated tree must resolve
@@ -1987,7 +1993,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       };
       app = await persistEdit(previous, app, version, ctx.principal.subject, undefined, {}, conducted.session);
       for (const finding of conducted.findings) {
-        console.info(`[vendo] gen ${finding.severity} ${finding.where}: ${finding.message}`);
+        console.info(findingLine(finding));
       }
       // Server work the amendment declared lands additively on the stored app,
       // exactly as it does on create.
@@ -2013,7 +2019,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           graduated = served.graduated;
           serverIssues.push(...(served.issues ?? []));
           for (const finding of served.findings) {
-            console.info(`[vendo] gen ${finding.severity} ${finding.where}: ${finding.message}`);
+            console.info(findingLine(finding));
           }
         } catch (error) {
           console.warn(`[vendo] server work skipped for ${appId} (the edit stands without it): ${safeErrorMessage(error)}`);
@@ -2021,7 +2027,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       }
       const blocking = conducted.findings.filter(({ severity }) => severity === "block");
       const issues = [
-        ...blocking.map(({ where, message }) => `${where} ${message}`),
+        // `where` is optional (a pack check may not be able to name a locus),
+        // so it is prefixed only when there is one — never as "undefined ...".
+        ...blocking.map(({ where, message }) => (where === undefined ? message : `${where} ${message}`)),
         ...serverIssues,
       ];
       // The version records the surface the edit LANDED on, so a flip to a

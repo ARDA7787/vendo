@@ -8,12 +8,12 @@
  * be the reason a generated app dies (the layer guards a throw too, but this
  * one does not throw in the first place).
  */
-import { printWire, type AppPlan } from "@vendoai/core";
+import { printWire, type AppDocument, type AppPlan } from "@vendoai/core";
 import { treeOf } from "./facts.js";
 import type { Check, Finding } from "./types.js";
 import { REPORT_FINDINGS_DESCRIPTION, REVIEWER_SYSTEM } from "../generation/prompts/reviewer.js";
 import { strictToolCall } from "../generation/strict-tool-call.js";
-import type { GeneratedAppDocument, GenerationDependencies } from "../generation/engine.js";
+import type { GenerationDependencies } from "../generation/engine.js";
 
 export const REVIEWER_CHECK_NAME = "reviewer";
 
@@ -79,7 +79,7 @@ const findingsFrom = (reported: unknown): Finding[] => {
  *  person sees rather than compiler bookkeeping. Undefined when the document
  *  carries no valid tree — the `document` fact check reports that, and the
  *  reviewer stays quiet instead of judging rubble. */
-const printedApp = (app: GeneratedAppDocument): string | undefined => {
+const printedApp = (app: AppDocument): string | undefined => {
   const tree = treeOf(app);
   if (tree === undefined) return undefined;
   return printWire(
@@ -124,23 +124,43 @@ const sampleLines = (samples: Readonly<Record<string, unknown>>): string => {
 };
 
 /**
- * The reviewer, bound to the model it calls with and (when generation resolved
- * them) the query results the app's literals must match.
+ * The host's and packs' judgment rules, appended to the rubric as their own
+ * lines.
+ *
+ * One line per rule, never concatenated: a joined blob reads as a single garbled
+ * rule. They are appended rather than woven in, so a host rule can add a reason
+ * to reject but can never soften the four the reviewer already applies.
+ */
+const rubricSection = (rubric: readonly string[]): string => (rubric.length === 0 ? "" : `
+
+ALSO REJECT anything that breaks one of these rules, which this product's owner set. Judge them exactly like the four above, and quote the rule you applied in your message:
+${rubric.map((rule) => `- ${rule}`).join("\n")}`);
+
+/**
+ * The reviewer, bound to the model it calls with, (when generation resolved them)
+ * the query results the app's literals must match, and the judgment rules the
+ * floor collected from the host and every pack.
  */
 export const reviewerCheck = (
   deps: GenerationDependencies,
   samples?: Readonly<Record<string, unknown>>,
+  rubric: readonly string[] = [],
 ): Check => ({
   name: REVIEWER_CHECK_NAME,
-  run: async ({ app, request, plan }): Promise<Finding[]> => {
-    const printed = printedApp(app);
+  // `fact` is about WHO RUNS IT, not about how sure it is: the two kinds are
+  // "code the floor runs" and "a sentence for the reviewer's rubric" (core
+  // `pack.ts`). The reviewer is code, and it is the thing rubric lines are
+  // handed to — it can hardly be one of them.
+  kind: "fact",
+  run: async ({ document, request, plan }): Promise<Finding[]> => {
+    const printed = printedApp(document);
     if (printed === undefined) return [];
     const reported = await strictToolCall(
       deps,
       REPORT_FINDINGS_TOOL,
       REPORT_FINDINGS_DESCRIPTION,
       REPORT_FINDINGS_SCHEMA,
-      REVIEWER_SYSTEM,
+      `${REVIEWER_SYSTEM}${rubricSection(rubric)}`,
       `USER_REQUEST: ${request}\nAPP (wire markup):\n${printed}${planLines(plan)}${samples === undefined ? "" : sampleLines(samples)}`,
     );
     return reported === undefined ? [] : findingsFrom(reported.findings);

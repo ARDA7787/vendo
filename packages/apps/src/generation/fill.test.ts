@@ -6,14 +6,14 @@
  * executed once before anything is built and never a write, and a section that
  * fails staying a section-sized failure.
  */
-import { validateTree, type AppPlan, type NormalizedCatalog, type Tree } from "@vendoai/core";
+import { validateTree, type AppDocument, type AppPlan, type NormalizedCatalog, type Tree } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createCheckingLayer } from "../checking/layer.js";
 import { scriptedLanguageModel, type ScriptedModelCall } from "../testing/index.js";
 import { fillPlan } from "./fill.js";
 import { skeletonFromPlan } from "./skeleton.js";
-import type { GeneratedPartial, GenerationDependencies, HostToolInfo } from "./engine.js";
+import { UNSTORED_APP_ID, type GeneratedPartial, type GenerationDependencies, type HostToolInfo } from "./engine.js";
 
 const catalog: NormalizedCatalog = [{
   name: "MetricCard",
@@ -255,7 +255,10 @@ describe("fillPlan", () => {
       { value: "Overview", label: "Overview" },
       { value: "Overdue", label: "Overdue" },
     ]);
-    const checked = await createCheckingLayer({ deps }).run({ app: result.document, request: "invoices" });
+    const checked = await createCheckingLayer({ deps }).run({
+      document: { ...result.document, id: UNSTORED_APP_ID } as AppDocument,
+      request: "invoices",
+    });
     expect(checked).toEqual([]);
   });
 

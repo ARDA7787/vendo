@@ -31,10 +31,10 @@ import {
   type Tree,
   type TreeNode,
 } from "@vendoai/core";
+import type { AppDocument } from "@vendoai/core";
 import { prewiredPropNames } from "../prewired-schema.js";
 import { APP_NAME_MAX_CHARS } from "../generation/contracts/sections.js";
 import type {
-  GeneratedAppDocument,
   GenerationDependencies,
   HostToolInfo,
 } from "../generation/engine.js";
@@ -418,7 +418,7 @@ const bindingShapeIssues = (tree: Tree, deps: GenerationDependencies): FactIssue
 
 /** The document's own validity: it parses as an app, its tree is a tree of the
  *  format this engine speaks, and it carries a short human title. */
-const documentIssues = (app: GeneratedAppDocument): FactIssue[] => {
+const documentIssues = (app: AppDocument): FactIssue[] => {
   const issues: FactIssue[] = [];
   const name = app.name?.trim() ?? "";
   if (name === "") {
@@ -426,7 +426,7 @@ const documentIssues = (app: GeneratedAppDocument): FactIssue[] => {
   } else if (name.length > APP_NAME_MAX_CHARS) {
     issues.push({ where: "document", message: `name="${name}" is ${name.length} characters — name is the app's display title (at most ${APP_NAME_MAX_CHARS} characters); write a short human title, never the request echoed back` });
   }
-  const validation = validateAppDocument({ ...app, id: "app_generation_validation" });
+  const validation = validateAppDocument(app);
   if (!validation.ok) issues.push({ where: "document", message: validation.error.message });
   if (app.tree === undefined) {
     issues.push({ where: "document", message: "carries no tree — the engine emits tree documents only" });
@@ -444,7 +444,7 @@ const documentIssues = (app: GeneratedAppDocument): FactIssue[] => {
 /** The document's tree, or undefined when it is not one — the `document`
  *  check reports that, and every other check stays quiet rather than
  *  repeating it. */
-export const treeOf = (app: GeneratedAppDocument): Tree | undefined => {
+export const treeOf = (app: Pick<AppDocument, "tree">): Tree | undefined => {
   if (app.tree === undefined || app.tree.formatVersion !== VENDO_TREE_FORMAT) return undefined;
   const validation = validateTree(app.tree);
   return validation.ok ? validation.tree : undefined;
@@ -457,12 +457,13 @@ const blocking = (issues: readonly FactIssue[]): Finding[] =>
  *  tree to look at. */
 const treeCheck = (
   name: string,
-  issues: (tree: Tree, app: GeneratedAppDocument) => FactIssue[] | Promise<FactIssue[]>,
+  issues: (tree: Tree, app: AppDocument) => FactIssue[] | Promise<FactIssue[]>,
 ): Check => ({
   name,
-  run: async ({ app }) => {
-    const tree = treeOf(app);
-    return tree === undefined ? [] : blocking(await issues(tree, app));
+  kind: "fact",
+  run: async ({ document }) => {
+    const tree = treeOf(document);
+    return tree === undefined ? [] : blocking(await issues(tree, document));
   },
 });
 
@@ -471,9 +472,9 @@ const treeCheck = (
  * Every finding is `block`: a fact is not a matter of taste.
  */
 export const factChecks = (deps: GenerationDependencies): Check[] => [
-  { name: "document", run: async ({ app }) => blocking(documentIssues(app)) },
+  { name: "document", kind: "fact", run: async ({ document }) => blocking(documentIssues(document)) },
   treeCheck("tools-exist", (tree) => unknownToolIssues(tree, deps.tools)),
-  treeCheck("components-exist", (tree, app) => catalogIssues(tree, app.components, deps.catalog)),
+  treeCheck("components-exist", (tree, document) => catalogIssues(tree, document.components, deps.catalog)),
   treeCheck("bindings-fit", (tree) => [
     ...bindingShapeIssues(tree, deps),
     ...bindingKindIssues(tree, deps),

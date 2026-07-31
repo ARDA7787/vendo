@@ -39,6 +39,7 @@ import {
   type ComponentRegistry,
   type Json,
   type KnowledgeAdapter,
+  type PackProvider,
   type PermissionGrant,
   type Principal,
   type RunContext,
@@ -104,6 +105,15 @@ import {
   type CapabilitySurfaceSnapshot,
 } from "./capability-misses.js";
 import { catalogThemeSummary, mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson } from "./catalog.js";
+import {
+  DEFAULT_PACKS,
+  hostPackToolCollision,
+  hostToolNamesIn,
+  mergePacks,
+  missingAppsPackWarning,
+  vendoDirOf,
+  type PackContext,
+} from "./packs/index.js";
 import { knowledgeIndexResolver } from "./knowledge-prompt.js";
 import { bindVendoModelSlots, vendoModel } from "#dev-creds/model";
 // Models spec 2026-07-22 — `vendoModel(name?)` is the vendo model family
@@ -167,6 +177,20 @@ import { HostedSessionDoorsMissingError, hostedStore, type HostedStore } from ".
 // adapters: a host can pass it explicitly via createVendo({ store }) with its
 // own options instead of relying on the VENDO_API_KEY default.
 export { hostedStore, type HostedStore, type HostedStoreOptions } from "./hosted-store.js";
+// Packs — the composition side (architecture §5). `definePack` is on the root
+// entry instead, because pack modules are imported on the client too.
+export {
+  APPS_PACK_NAME,
+  AUTOMATIONS_PACK_NAME,
+  DEFAULT_PACKS,
+  UNATTENDED_IRREVERSIBILITY_RULE,
+  apps,
+  automations,
+  mergePacks,
+  toolsFromRegistry,
+  type MergedPacks,
+  type PackContext,
+} from "./packs/index.js";
 import { createRuntimeCapture } from "./runtime-capture.js";
 import {
   BASE_PATH,
@@ -472,6 +496,17 @@ export interface CreateVendoConfig {
         restart. */
     designRules?: string;
   };
+  /** Packs — the only way capability arrives (architecture §5). Each one
+      contributes to four slots that already exist: tools → the one registry
+      (guarded and projected like every other tool), skills → the workspace
+      mount, checks → the checking floor, components → the catalog. Names are
+      global as authored and a collision fails at boot naming both packs; nothing
+      is ever auto-prefixed.
+
+      Unset means `[apps()]`. A pack whose tools need a platform handle is
+      written as a plain function of the boot context — which is exactly what
+      `apps()` is, so it has no privileged path a third party lacks. */
+  packs?: readonly PackProvider<PackContext>[];
 }
 
 /** ENG-237 recommended defaults (documented in the PR body; Yousef-gated as
@@ -972,6 +1007,33 @@ function dotVendoFile(name: string, root?: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** A synchronous, throw-free read of one file, for the compose-time gates. */
+function readFileSyncOrUndefined(path: string): string | undefined {
+  try {
+    const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+    const fs = proc?.getBuiltinModule?.("node:fs") as typeof import("node:fs") | undefined;
+    if (fs === undefined) return undefined;
+    return fs.readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The host's own tool names, as far as composition can know them without doing
+ * any I/O beyond one file read: the in-memory `profile.tools` piece, else
+ * `tools.json` from the SAME directory the tool registry resolves it from.
+ *
+ * `vendoDirOf` is the registry's own rule (`profileDir` may be the host root or
+ * the `.vendo` directory itself). Using anything else here made the gate read a
+ * different file — or no file — and a gate that reads nothing passes everything.
+ */
+function hostToolNames(config: CreateVendoConfig): string[] {
+  const inMemory = config.profile?.tools;
+  if (inMemory !== undefined) return inMemory.map((tool) => tool.name);
+  return hostToolNamesIn(readFileSyncOrUndefined(`${vendoDirOf(config.profileDir ?? ".")}/tools.json`));
 }
 
 /** The compose-time project root for .vendo reads that happen LATER (the
@@ -1666,13 +1728,49 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       return undefined;
     }
   };
+  // ONE composition call for every configured pack (architecture §5). It runs
+  // here, before the catalog and the apps runtime, because two of its four slots
+  // feed them: components → the catalog below, checks → the checking floor
+  // createApps() is built with. The apps runtime it hands back to a pack tool is
+  // a thunk for that reason — composed further down, resolved when a tool
+  // actually runs, which is always inside a request.
+  let appsForPacks: AppsRuntime | undefined;
+  const packContext: PackContext = {
+    apps: () => {
+      if (appsForPacks === undefined) {
+        throw new VendoError("not-implemented", "the apps runtime is not composed yet");
+      }
+      // A NEW object carrying only what the handle names, not the runtime with a
+      // narrower type on it. `delete`, `publish` and `exportApp` live on the
+      // runtime, and "no reaching into other packs" cannot rest on a type a pack
+      // author is free to cast away — so the reach is closed by construction.
+      return { agentTools: appsForPacks.agentTools.bind(appsForPacks) };
+    },
+  };
+  const packs = mergePacks(config.packs ?? DEFAULT_PACKS, packContext);
+  // A pack claiming one of the host's own tool names is a BOOT error, naming both
+  // parties: the tool registry would refuse it anyway, but only on some later
+  // request and only as "added registry". Compared against the host tool names
+  // composition already has in hand — deliberately no I/O, so composing never
+  // reaches the network to find out.
+  const toolCollision = hostPackToolCollision(packs.toolOwners, hostToolNames(config));
+  if (toolCollision !== undefined) throw toolCollision;
+  // An explicit `packs:` without apps() leaves the agent unable to build apps.
+  // Legitimate, but never silent.
+  const noAppsPack = missingAppsPackWarning(config.packs === undefined ? undefined : packs.names);
+  if (noAppsPack !== undefined) console.warn(noAppsPack);
   // Task 15a: an in-memory profile.catalog replaces the DISK leg of the merge
   // (it normalizes through the same validator-building path as the file
-  // read); explicit createVendo({ catalog }) registrations still win by name.
+  // read); explicit createVendo({ catalog }) registrations still win by name,
+  // and both win over a pack's components — the host has the last word about
+  // its own screens.
   const catalog = mergeRuntimeCatalog(
-    config.profile?.catalog !== undefined
-      ? runtimeCatalogFromFile(config.profile.catalog)
-      : runtimeCatalogFromJson(dotVendoFile("catalog.json", config.profileDir)),
+    mergeRuntimeCatalog(
+      config.profile?.catalog !== undefined
+        ? runtimeCatalogFromFile(config.profile.catalog)
+        : runtimeCatalogFromJson(dotVendoFile("catalog.json", config.profileDir)),
+      normalizeCatalogConfig(packs.components),
+    ),
     normalizeCatalogConfig(config.catalog),
   );
   // execution-v2 Lane C — the per-app box bearer store (hash rows are the
@@ -1804,7 +1902,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     ...(inference.paint?.model === undefined ? {} : { fill: { model: inference.paint.model } }),
     ...(config.apps?.pipeline === undefined ? {} : { pipeline: config.apps.pipeline }),
     ...(config.apps?.fillConcurrency === undefined ? {} : { fillConcurrency: config.apps.fillConcurrency }),
-    ...(config.apps?.checks === undefined ? {} : { checks: config.apps.checks }),
+    // The floor's plugged checks: the host's own, then every pack's. Appended,
+    // never replacing — and a pack's judgment rules ride along here too, which
+    // the floor splits out into the reviewer's rubric rather than running.
+    checks: [...(config.apps?.checks ?? []), ...packs.checks],
     // cse lane 3 — theme/semantics flow as PROVIDER thunks so a
     // cloud-owned surface applies without a compose-time fetch. semantics
     // resolves live per generation (picks up cloud overrides as the snapshot warms);
@@ -1838,7 +1939,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     },
   });
   resolveAppToolRisk = apps.agentToolRisk;
-  actions.add(apps.agentTools());
+  appsForPacks = apps;
+  // Every pack's tools reach the ONE registry here — the same `add` the app
+  // tools used to arrive through directly, so they are guarded, audited, and
+  // projected identically. `apps()` is in `packs` by default, which is why
+  // `apps.agentTools()` is no longer added by name: it comes in as a pack.
+  actions.add(packs.tools);
   // Knowledge K1 — the tool exists exactly when an adapter is configured;
   // no adapter, no `vendo_knowledge_search` in any descriptor surface.
   const knowledge = selectKnowledge(config.knowledge, store);

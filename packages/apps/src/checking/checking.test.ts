@@ -7,16 +7,17 @@
 import {
   VENDO_APP_FORMAT,
   compileWire,
+  type AppDocument,
   type NormalizedCatalog,
   type ShapeType,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { createCheckingLayer } from "./layer.js";
 import type { Check, CheckInput } from "./types.js";
-import type {
-  GeneratedAppDocument,
-  GenerationDependencies,
-  HostToolInfo,
+import {
+  UNSTORED_APP_ID,
+  type GenerationDependencies,
+  type HostToolInfo,
 } from "../generation/engine.js";
 import { scriptedLanguageModel } from "../testing/scripted-model.js";
 
@@ -65,18 +66,19 @@ const deps = (): GenerationDependencies => ({
 
 /** A document as the engine would emit it, compiled from wire so the tree is
  *  the real thing rather than a hand-built lookalike. */
-const documentFrom = (wire: string): GeneratedAppDocument => {
+const documentFrom = (wire: string): AppDocument => {
   const compiled = compileWire(wire, { toolShapes });
   return {
     format: VENDO_APP_FORMAT,
+    id: UNSTORED_APP_ID,
     name: compiled.name ?? "Untitled",
     ui: "tree",
-    tree: compiled.tree as GeneratedAppDocument["tree"],
-  };
+    tree: compiled.tree as AppDocument["tree"],
+  } as AppDocument;
 };
 
 const inputFor = (wire: string, request = "show me my invoices"): CheckInput =>
-  ({ app: documentFrom(wire), request });
+  ({ document: documentFrom(wire), request });
 
 const cleanApp =
   '<App name="Invoices"><Query id="invoices" tool="host_listInvoices"/><Stack gap={12}><Text text="Invoices" variant="heading"/><Table rows={invoices.data}/></Stack></App>';
@@ -100,6 +102,7 @@ describe("checking layer", () => {
     let ran = 0;
     const gated = (name: string): Check => ({
       name,
+      kind: "fact",
       run: async () => {
         await arrive();
         ran += 1;
@@ -124,6 +127,7 @@ describe("checking layer", () => {
   it("surfaces a host-registered check's findings alongside the built-ins", async () => {
     const hostCheck: Check = {
       name: "maple-house-style",
+      kind: "fact",
       run: async ({ request }) => [{
         severity: "block",
         where: 'node "n2"',
@@ -150,6 +154,7 @@ describe("checking layer", () => {
   it("turns a check that throws into a warn finding naming it, never a crash", async () => {
     const exploding: Check = {
       name: "reviewer",
+      kind: "fact",
       run: async () => { throw new Error("model call timed out"); },
     };
 
@@ -238,10 +243,10 @@ describe("built-in fact checks", () => {
     // parse, so a stored/assembled tree is the only way one arrives.
     const layer = createCheckingLayer({ deps: deps() });
     const app = documentFrom(cleanApp);
-    const tree = structuredClone(app.tree) as NonNullable<GeneratedAppDocument["tree"]>;
+    const tree = structuredClone(app.tree) as NonNullable<AppDocument["tree"]>;
     const table = tree.nodes.find((node) => node.component === "Table");
     (table as { props?: Record<string, unknown> }).props = { rows: { $expr: "sum(invoices.data.amountCents) + * 2" } };
-    const findings = await layer.run({ app: { ...app, tree }, request: "invoices" });
+    const findings = await layer.run({ document: { ...app, tree }, request: "invoices" });
 
     const finding = findings.find(({ where }) => where.includes('prop "rows"'));
     expect(finding?.severity).toBe("block");
@@ -260,7 +265,7 @@ describe("built-in fact checks", () => {
   it("blocks a document with no title and says what name is for", async () => {
     const layer = createCheckingLayer({ deps: deps() });
     const app = documentFrom(cleanApp);
-    const findings = await layer.run({ app: { ...app, name: "" }, request: "invoices" });
+    const findings = await layer.run({ document: { ...app, name: "" }, request: "invoices" });
 
     expect(findings).toContainEqual({
       severity: "block",
