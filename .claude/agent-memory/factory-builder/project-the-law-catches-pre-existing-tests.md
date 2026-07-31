@@ -13,7 +13,9 @@ a human or deleting something in an unattended run. Known instances:
 
 - `fixtures/automations-e2e` ladder test
 - `fixtures/integration/src/away-park-revoke.e2e.test.ts`
-- `apps/demo-accounting/src/vendo/away-drill.test.ts` (ENG-260 away drill)
+- `apps/demo-accounting/src/vendo/away-drill.test.ts` (ENG-260, Cadence — fixed)
+- `apps/demo-bank/src/vendo/away-drill.test.ts` (ENG-260, Maple — fixed 2026-07-31,
+  drove `host_transferMoney`; step moved to `host_getProfile`)
 
 **Why:** the tests were written before §12 existed, so a red test here is the
 law working, not a regression. Yousef's standing ruling in this wave: never
