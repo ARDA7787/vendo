@@ -1926,6 +1926,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // `find_tools`. The search seam is the SAME guard-bound registry the
     // agent executes through — a searched-in tool has no unguarded path.
     toolSearch: {
+      // Annotate results the subject cannot run yet. The tool description and the
+      // system prompt both promise this, and the connect-card flow depends on it;
+      // same predicate the connect gate executes against, so the annotation and
+      // the refusal can never disagree.
+      connectRequired: async (toolkit, toolkitCtx) => !(await subjectHasToolkit(toolkit, toolkitCtx)),
       // A curated agent menu has to hold at BOTH doors into the toolset: the
       // per-turn seed below and search, which materializes hits into the live
       // toolset mid-turn. Filtering only the seed would let the model search

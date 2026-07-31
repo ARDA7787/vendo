@@ -1,4 +1,5 @@
 import { duplicateToolTitles, VendoError, type ToolDescriptor, type ToolRegistry } from "@vendoai/core";
+import { FIND_TOOLS_TOOL_NAME } from "@vendoai/agent";
 
 /**
  * Design §12 — "two actions must never read identically on a card."
@@ -26,8 +27,20 @@ export function withUniqueToolTitles(tools: ToolRegistry): ToolRegistry {
   const assertUnique = (descriptors: readonly ToolDescriptor[]): void => {
     if (!checked) {
       checked = true;
+      // A host tool that takes a reserved internal name is a DEPLOYMENT fault, so
+      // it belongs here with the title check rather than surfacing as a mid-turn
+      // stream throw the user sees as a broken conversation. `find_tools` carries
+      // no `vendo_` prefix, so nothing else would catch it.
+      const reserved = descriptors.find((descriptor) => descriptor.name === FIND_TOOLS_TOOL_NAME);
+      if (reserved !== undefined) {
+        verdict = new VendoError(
+          "conflict",
+          `A host tool is named ${JSON.stringify(FIND_TOOLS_TOOL_NAME)}, which Vendo reserves for its own `
+          + "tool-discovery meta-tool. Rename it in .vendo/overrides.json.",
+        );
+      }
       const collisions = duplicateToolTitles(descriptors);
-      if (collisions.length > 0) {
+      if (verdict === undefined && collisions.length > 0) {
         const detail = collisions
           .map(({ title, tools: names }) => `"${title}" (${names.join(", ")})`)
           .join("; ");

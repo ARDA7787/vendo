@@ -39,6 +39,11 @@ export type ToolSearchFn = (query: string, options?: { limit?: number }) => Prom
 export interface ToolSearchConfig {
   /** The registry query seam (umbrella wires it to the guard-bound registry). */
   search: ToolSearchFn;
+  /** Whether this subject still has to connect an account before a toolkit's
+   *  tools can run. Used to ANNOTATE search results, which the tool description
+   *  and the system prompt both promise and the connect-card flow depends on.
+   *  Unwired = no annotation (and nothing claims otherwise). */
+  connectRequired?: (toolkit: string, ctx: RunContext) => Promise<boolean>;
   /** Uncurated loadout cap. Defaults to {@link DEFAULT_MAX_INITIAL_TOOLS}. */
   maxInitialTools?: number;
   /** Explicit curated initial loadout by tool name. When set, exactly these
@@ -141,6 +146,9 @@ export interface ToolSearchSession {
 
 export interface ToolSearchSessionOptions {
   config: ToolSearchConfig;
+  /** This turn's context. Used to annotate search results connect-required for
+   *  THIS subject (a connection is per person, not per deployment). */
+  ctx?: RunContext;
   /** The full built toolset's descriptors (names available to load). */
   descriptors: readonly ToolDescriptor[];
   /** Per-run loaded set — persists across turns within a thread. Mutated here. */
@@ -159,6 +167,11 @@ export interface ToolSearchSessionOptions {
 
 export function createToolSearchSession(options: ToolSearchSessionOptions): ToolSearchSession {
   const available = new Set(options.descriptors.map((descriptor) => descriptor.name));
+  // Toolkit per tool name, so a search result can be annotated connect-required.
+  // Updated when a lazily expanded tool is resolved mid-search.
+  const toolkits = new Map<string, string | undefined>(
+    options.descriptors.map((d) => [d.name, (d as { toolkit?: string }).toolkit]),
+  );
   const initial = computeInitialLoadout(options.descriptors, options.config, options.seedNames, options.menuNames);
   // THIS turn's menu. `loaded` persists across turns within a thread, so a tool
   // searched in while the menu was unresolved (the degrade-to-unrestricted
@@ -218,6 +231,7 @@ export function createToolSearchSession(options: ToolSearchSessionOptions): Tool
               for (const descriptor of await options.resolve(missing)) {
                 options.materialize(descriptor);
                 available.add(descriptor.name);
+                toolkits.set(descriptor.name, (descriptor as { toolkit?: string }).toolkit);
               }
             } catch {
               // Unresolved names simply stay unloadable below.
@@ -227,11 +241,34 @@ export function createToolSearchSession(options: ToolSearchSessionOptions): Tool
           // — a stale or drifting search seam can never conjure an unbound tool.
           const loadable = matches.filter((match) => available.has(match.name));
           for (const match of loadable) options.loaded.add(match.name);
+          // Annotate the unconnected ones. A result the model cannot actually run
+          // yet has to say so, or it burns a turn calling it and reads the refusal
+          // as a failure — which is exactly the loop the connect card exists to
+          // replace. `toolkit` comes off the descriptor (01-core §4).
+          const annotate = async (match: ToolSearchMatch): Promise<Record<string, unknown>> => {
+            const row: Record<string, unknown> = {
+              name: match.name, description: match.description, risk: match.risk,
+            };
+            const toolkit = toolkits.get(match.name);
+            if (toolkit === undefined) return row;
+            row["toolkit"] = toolkit;
+            if (options.config.connectRequired === undefined) return row;
+            try {
+              if (options.ctx !== undefined
+                  && await options.config.connectRequired(toolkit, options.ctx)) {
+                row["connectRequired"] = true;
+              }
+            } catch {
+              // A failed lookup must never fail the search; the tool's own
+              // connect-required outcome still catches the call.
+            }
+            return row;
+          };
           return {
             status: "ok",
             output: {
               loaded: loadable.map((match) => match.name),
-              tools: loadable.map((match) => ({ name: match.name, description: match.description, risk: match.risk })),
+              tools: await Promise.all(loadable.map(annotate)),
             },
           };
         },

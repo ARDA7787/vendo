@@ -42,6 +42,21 @@ describe("the host's product slug (design §4)", () => {
     expect(prefixedToolName("maple", "invoices_list")).toBe("maple_invoices_list");
   });
 
+  it("VALIDATES its slug, so the reserved ban cannot be bypassed (finding 18)", () => {
+    // deriveProductSlug refuses these, but a caller can pass a slug straight to
+    // prefixedToolName — which made the host/vendo ban trivially avoidable
+    // through the configurable path the design explicitly offers.
+    expect(() => prefixedToolName("host", "invoices_list")).toThrow(VendoError);
+    expect(() => prefixedToolName("vendo", "invoices_list")).toThrow(VendoError);
+    expect(() => prefixedToolName("vendo_apps", "invoices_list")).toThrow(VendoError);
+  });
+
+  it("refuses a malformed slug rather than minting an invalid tool name", () => {
+    expect(() => prefixedToolName("", "invoices_list")).toThrow(VendoError);
+    expect(() => prefixedToolName("1password", "invoices_list")).toThrow(VendoError);
+    expect(() => prefixedToolName("Acme Inc", "invoices_list")).toThrow(VendoError);
+  });
+
   it("does not double-prefix a stem that already carries the slug", () => {
     // Extraction runs more than once; a re-sync must not produce
     // maple_maple_invoices_list.

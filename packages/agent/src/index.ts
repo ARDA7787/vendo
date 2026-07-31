@@ -17,5 +17,6 @@ export {
 } from "./tool-pack.js";
 export { VENDO_VERB_TOOLS, vendoVerbsRegistry, type VendoVerbPorts, type VendoVerbFinding } from "./vendo-verbs.js";
 export { ASK_USER_TOOL, askUserRegistry, type AskUserPorts, type AskUserRecord } from "./ask-user.js";
+export { FIND_TOOLS_TOOL_NAME } from "./tool-search.js";
 export type { ToolSearchConfig, ToolSearchFn, ToolSearchMatch } from "./tool-search.js";
 export type { Thread, ThreadSummary } from "./threads.js";

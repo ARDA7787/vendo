@@ -32,13 +32,33 @@ describe("ask_user — questions as a tool, one door, any seat (design §4)", ()
       record: async (principal, answer) => { recorded.push({ subject: principal.subject, answer }); },
     }));
 
-    const outcome = await registry.execute(call({ question: "Which account?", questionId: "q_1" }), ctx());
+    const outcome = await registry.execute(call({ question: "Which account?" }), ctx());
 
     expect(outcome).toEqual({ status: "ok", output: { answer: { text: "the savings one" } } });
     expect(recorded).toEqual([{
       subject: "user_alice",
-      answer: { threadId: "thr_1", questionId: "q_1", answer: { text: "the savings one" } },
+      answer: {
+        threadId: "thr_1",
+        // Server-minted: the model cannot name the row its answer lands in.
+        questionId: expect.stringMatching(/^q_session_1_/) as unknown as string,
+        answer: { text: "the savings one" },
+      },
     }]);
+  });
+
+  it("IGNORES a model-supplied questionId (finding 5)", async () => {
+    // Accepting one let the model reuse an id, which made the store drop the
+    // user's real answer while an earlier one stood as theirs.
+    const seen: string[] = [];
+    const registry = askUserRegistry(ports({
+      record: async (_principal, answer) => { seen.push(answer.questionId); },
+    }));
+
+    await registry.execute(call({ question: "Which?", questionId: "q_reused" }), ctx());
+    await registry.execute(call({ question: "Which?", questionId: "q_reused" }), ctx());
+
+    expect(seen).not.toContain("q_reused");
+    expect(seen[0]).not.toBe(seen[1]);
   });
 
   it("gives the MODEL no way to choose which thread an answer lands in", async () => {

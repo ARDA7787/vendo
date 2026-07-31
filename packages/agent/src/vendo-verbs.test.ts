@@ -86,18 +86,41 @@ describe("the vendo verbs are projected as ordinary tools (design §4)", () => {
     expect(outcome).toEqual({ status: "ok", output: { scheduled: true, cron: "0 8 * * *" } });
   });
 
+  it("treats an EMPTY validate request as a finding, not a pass (finding 15)", async () => {
+    // validate({}) answering ok/no-findings told the model its app was fine when
+    // nothing had been checked at all — the worst possible lie for a checker.
+    const outcome = await vendoVerbsRegistry(ports()).execute(call("validate", {}), ctx());
+    expect(outcome.status).toBe("error");
+  });
+
+  it("does not leak raw JS error text to the model when a port throws", async () => {
+    const registry = vendoVerbsRegistry(ports({
+      validate: async () => { throw new TypeError("Cannot read properties of undefined (reading 'nodes')"); },
+    }));
+
+    const outcome = await registry.execute(call("validate", { document: "<Plan/>" }), ctx());
+
+    expect(outcome.status).toBe("error");
+    expect(JSON.stringify(outcome)).not.toContain("Cannot read properties");
+    expect(JSON.stringify(outcome)).not.toContain("TypeError");
+  });
+
   it("refuses an unknown verb instead of silently succeeding", async () => {
     const outcome = await vendoVerbsRegistry(ports()).execute(call("records_wipe", {}), ctx());
     expect(outcome.status).toBe("error");
   });
 
-  it("turns a port failure into an honest tool error", async () => {
+  it("turns a port failure into an honest tool error, without leaking the raw message", async () => {
+    // This test previously asserted the port's raw text reached the model. The
+    // verifier was right that that is a leak: internal error strings teach the
+    // model nothing it can act on and put our internals in the transcript.
     const registry = vendoVerbsRegistry(ports({
-      schedule: async () => { throw new Error("cron is invalid"); },
+      schedule: async () => { throw new Error("ECONNREFUSED 127.0.0.1:5432"); },
     }));
     const outcome = await registry.execute(call("schedule", { appId: "app_1", cron: "nonsense" }), ctx());
     expect(outcome.status).toBe("error");
-    expect(JSON.stringify(outcome)).toContain("cron is invalid");
+    expect(JSON.stringify(outcome)).not.toContain("ECONNREFUSED");
+    expect(JSON.stringify(outcome)).toContain("schedule");
   });
 
   it("keeps every verb available in an unattended run — none of them is destructive", async () => {

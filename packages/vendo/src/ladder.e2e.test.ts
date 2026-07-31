@@ -333,4 +333,24 @@ describe.sequential("Wave 9 rung (a) e2e — the 8am digest rides the automation
     // "your digest is ready · [Send]") arrives with the automations pack, on its
     // own track. The wave-1 truth asserted here is the refusal itself.
   });
+
+  it("still round-trips a records put into the tree query, which the refusal test no longer reaches", async () => {
+    // Coverage the pre-law version of the test above uniquely carried: an
+    // automation writing to its declared collection, and open() resolving the
+    // vendo_apps_data_list query over those rows into the rendered payload. The
+    // refusal now aborts the run before the publish step, so this exercises the
+    // same round trip directly rather than letting the coverage vanish.
+    const { store, apps } = await harness();
+    await apps.edit(APP_ID, "email me a digest of unpaid invoices at 8am", ctx);
+
+    await store.records(`app:${APP_ID}:digest`).put({
+      id: "latest",
+      data: { summary: "1 unpaid invoice" },
+    });
+
+    const surface = await apps.open(APP_ID, ctx);
+    expect(surface.kind).toBe("tree");
+    if (surface.kind !== "tree") throw new Error("expected the tree surface");
+    expect(JSON.stringify(surface.payload)).toContain("1 unpaid invoice");
+  });
 });

@@ -45,7 +45,6 @@ const DESCRIPTOR: ToolDescriptor = {
     properties: {
       question: { type: "string", minLength: 1 },
       choices: { type: "array", items: { type: "string" } },
-      questionId: { type: "string", minLength: 1 },
     },
     required: ["question"],
     additionalProperties: false,
@@ -79,7 +78,7 @@ export function askUserRegistry(ports: AskUserPorts): ToolRegistry {
       if (isUnattended(ctx)) {
         return { status: "blocked", reason: UNATTENDED_REASON };
       }
-      const args = (call.args ?? {}) as { question?: unknown; choices?: unknown; questionId?: unknown };
+      const args = (call.args ?? {}) as { question?: unknown; choices?: unknown };
       const question = typeof args.question === "string" ? args.question.trim() : "";
       if (question === "") {
         return {
@@ -99,12 +98,13 @@ export function askUserRegistry(ports: AskUserPorts): ToolRegistry {
       const choices = Array.isArray(args.choices)
         ? args.choices.filter((choice): choice is string => typeof choice === "string")
         : undefined;
-      // A minted id keeps two questions in one turn from sharing a row (the
-      // store keys an answer by it), without letting the model reuse one.
+      // The id is SERVER-MINTED, always. It used to accept the model's
+      // `questionId` when one was supplied, under a comment claiming the model
+      // could not reuse one — which was simply false: a reused id made the store
+      // drop the user's real answer while an earlier one stood as theirs. The
+      // model has no need to name a row, so it no longer can.
       minted += 1;
-      const questionId = typeof args.questionId === "string" && args.questionId.trim() !== ""
-        ? args.questionId
-        : `q_${ctx.sessionId}_${Date.now()}_${minted}`;
+      const questionId = `q_${ctx.sessionId}_${Date.now()}_${minted}`;
 
       try {
         const answer = await ports.collect(question, choices);

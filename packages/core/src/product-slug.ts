@@ -63,6 +63,16 @@ export function deriveProductSlug(productName: string): string {
  * than stacked on (`maple_host_invoices_list` would be nonsense).
  */
 export function prefixedToolName(slug: string, stem: string): string {
+  // Validate the slug HERE too, not only in deriveProductSlug. The design makes
+  // the slug configurable, so a caller can hand one straight to this function —
+  // which left the reserved host/vendo ban bypassable through exactly the path
+  // the design offers. Re-deriving is the check: it throws on the same inputs.
+  if (deriveProductSlug(slug) !== slug) {
+    throw new VendoError(
+      "validation",
+      `${JSON.stringify(slug)} is not a normalised tool-name prefix; derive it with deriveProductSlug.`,
+    );
+  }
   const bare = stem.startsWith("host_")
     ? stem.slice("host_".length)
     : stem.startsWith(`${slug}_`)

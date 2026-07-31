@@ -102,12 +102,20 @@ export function vendoVerbsRegistry(ports: VendoVerbPorts): ToolRegistry {
       try {
         switch (call.tool) {
           case "validate": {
+            // Nothing to check is NOT a pass. Answering ok/no-findings for an
+            // empty request told the model its app was fine when nothing had been
+            // examined — the worst lie a checker can tell.
+            const appId = typeof args["appId"] === "string" ? args["appId"] : undefined;
+            const document = typeof args["document"] === "string" ? args["document"] : undefined;
+            if (appId === undefined && document === undefined) {
+              return fail("validation", "validate needs an appId or a document to check");
+            }
             // A broken document comes back as FINDINGS, never as a tool error: an
             // error reads to the model as "the tool is broken", findings read as
             // "your document is wrong". Only the second one gets fixed.
             const result = await ports.validate({
-              ...(typeof args["appId"] === "string" ? { appId: args["appId"] } : {}),
-              ...(typeof args["document"] === "string" ? { document: args["document"] } : {}),
+              ...(appId === undefined ? {} : { appId }),
+              ...(document === undefined ? {} : { document }),
             });
             return { status: "ok", output: { ok: result.ok, findings: result.findings } as unknown as Json };
           }
@@ -132,7 +140,12 @@ export function vendoVerbsRegistry(ports: VendoVerbPorts): ToolRegistry {
             return fail("not-found", `${call.tool} is not a Vendo verb`);
         }
       } catch (error) {
-        return fail("error", error instanceof Error ? error.message : "unknown error");
+        // A port failure is OURS, not the model's, and raw JS text ("Cannot read
+        // properties of undefined") teaches it nothing it can act on while
+        // leaking our internals into the transcript. Log the detail for us; hand
+        // the model a sentence about what to do.
+        console.error(`[vendo] ${call.tool} failed:`, error);
+        return fail("error", `${call.tool} could not complete. Try again, or continue without it.`);
       }
     },
   };
