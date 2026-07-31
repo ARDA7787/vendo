@@ -133,7 +133,7 @@ for (const backend of backends()) {
         vendo_knowledge_chunks: 1,
         vendo_workspace_files: 0, // this subject wrote no workspace files
         vendo_workspace_history: 0,
-        workspace_content: 0, // ...so no workspace content was deleted either
+        workspace_content_objects: 0, // ...so no workspace content was deleted either
       });
 
       // Gone through the doors...

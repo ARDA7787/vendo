@@ -2,6 +2,7 @@ import { VendoError, type Principal } from "@vendoai/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backends, type MadeBackend } from "./backends.test-util.js";
 import { FILES_STORE_MAX_BYTES } from "./files-store.js";
+import { dbFor } from "./store.js";
 import { workspaceStore, WORKSPACE_HISTORY_LIMIT, WORKSPACE_INLINE_MAX_BYTES } from "./workspace.js";
 
 const user: Principal = { kind: "user", subject: "user_ws" };
@@ -596,6 +597,68 @@ for (const backend of backends()) {
       expect(await (await workspace.open(user)).readFile(path)).toBe(loser);
       expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
       expect(await (await workspace.open(user)).readFile(path)).toBe("chart: base");
+    });
+
+    // N7 (verifier): the mirror of N1/N2, through undo. undo released the
+    // superseded blob BEFORE its compare-and-swap, so a lost undo race deleted
+    // content that a concurrent writer's history row now pointed at —
+    // permanent, unrecoverable loss reported forever as content-missing, the
+    // exact mode N4 exists to prevent, reached through a different door.
+    it("destroys no content when an undo loses its race to a concurrent writer", async () => {
+      const path = "/user/files/undo-race.bin";
+      const workspace = workspaceStore(made.store);
+      const big = (marker: string): string => marker.repeat(WORKSPACE_INLINE_MAX_BYTES + 1);
+
+      // Reach the repro's state: live r2 (blob K_b), history r1 (blob K_a).
+      for (const content of [big("a"), big("b")]) {
+        const fs = await workspace.open(user);
+        await fs.writeFile(path, content);
+        await fs.commit({ message: "wrote" });
+      }
+
+      // A writer prepared against r2, held until the undo is mid-flight.
+      const writer = await workspace.open(user);
+      await writer.writeFile(path, big("c"));
+
+      // Force the interleave: undo's compare-and-swap is the one carrying
+      // recordHistory=false (its last SQL param). Just before it runs, land the
+      // writer — so it supersedes r2, writing a history row that points at K_b,
+      // in the window where undo had already released K_b under the old order.
+      const db = dbFor(made.store);
+      const original = db.query.bind(db);
+      let landedWriter = false;
+      db.query = async (text: string, params?: unknown[]) => {
+        if (!landedWriter && text.includes("WITH swapped AS") && params?.[params.length - 1] === false) {
+          landedWriter = true;
+          await writer.commit({ message: "the racing writer" });
+        }
+        return original(text, params);
+      };
+      try {
+        // undo restores r1 (K_a) but loses its first CAS to the writer, re-aims,
+        // and wins — dropping only the content it actually superseded.
+        expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      } finally {
+        db.query = original;
+      }
+      expect(landedWriter).toBe(true);
+
+      // No history row may reference a blob that is gone: the writer's r2 → K_b
+      // row must still be readable, or the content is lost forever.
+      const dangling = await made.sql(
+        `SELECT h.blob_ref FROM vendo_workspace_history h
+         WHERE h.blob_ref IS NOT NULL AND h.path = $1
+           AND NOT EXISTS (
+             SELECT 1 FROM vendo_blobs b WHERE b.namespace = 'workspace' AND b.key = h.blob_ref
+           )`,
+        [path],
+      );
+      expect(dangling).toEqual([]);
+
+      // And the writer's revision is genuinely recoverable, not content-missing.
+      const recovered = await workspace.undo(user, path);
+      expect(recovered).toMatchObject({ status: "ok" });
+      expect(await (await workspace.open(user)).readFile(path)).toBe(big("b"));
     });
 
     it("strands no blob when overlapping commits race on one blob-backed path", async () => {

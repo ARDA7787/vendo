@@ -302,12 +302,16 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
     let prepared = initial;
     for (let attempt = 0; attempt < SWAP_ATTEMPTS; attempt += 1) {
       const now = new Date().toISOString();
-      // Without a history row nothing references the revision being replaced, so
-      // its blob goes with it rather than lingering unreachable.
-      if (prepared.prior !== undefined && !options.recordHistory) {
-        await dropBlob(prepared.prior.stored);
-      }
       if (await swapRow(owner, prepared, options, now)) {
+        // Only AFTER the swap wins: with no history row (recordHistory:false, the
+        // undo path) nothing references the revision we just replaced, so its
+        // blob goes with it. Dropping it BEFORE the swap would delete content a
+        // concurrent winner's history row points at when we then lose the race —
+        // permanent loss, the mirror of the N1/N2 hazard. A won CAS on
+        // `revision = prior.revision` is the proof nobody else superseded it.
+        if (prepared.prior !== undefined && !options.recordHistory) {
+          await dropBlob(prepared.prior.stored);
+        }
         await trim(owner, prepared.path);
         return { landed: true, revision: prepared.revision, updatedAt: now };
       }

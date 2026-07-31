@@ -132,8 +132,9 @@ for (const backend of backends()) {
         .bySubject(owner.subject);
       expect(report.vendo_workspace_files).toBe(2);
       expect(report.vendo_workspace_history).toBe(1);
-      // The content deleted through the adapter is auditable on its own axis.
-      expect(report.workspace_content).toBe(2);
+      // Every piece of content erased, inline OR blob: the two blob revisions of
+      // audited.bin plus the one inline doc — objects, never bytes.
+      expect(report.workspace_content_objects).toBe(3);
     });
 
     it("counts content deleted through a host-wired adapter too", async () => {
@@ -156,7 +157,7 @@ for (const backend of backends()) {
       expect(held.size).toBe(2);
 
       const report = await eraseStore(made.store, { files }).bySubject(owner.subject);
-      expect(report.workspace_content).toBe(2);
+      expect(report.workspace_content_objects).toBe(2);
       // The host's bucket is actually emptied, not just the rows.
       expect(held.size).toBe(0);
     });

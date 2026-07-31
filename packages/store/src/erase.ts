@@ -33,16 +33,22 @@ export const ERASE_TABLES = [
 export type EraseTable = typeof ERASE_TABLES[number];
 
 /** Rows deleted per table, plus the workspace content deleted behind the files
- *  adapter. That last count is its own axis because workspace blobs are reached
- *  through `blob_ref` (the row is the only pointer) and, with a host-wired
- *  `files:` adapter, are not `vendo_blobs` rows at all — without it a GDPR
- *  erase would report nothing about the bytes it actually destroyed. */
-export type EraseReport = Record<EraseTable, number> & { workspace_content: number };
+ *  adapter, plus a count of the workspace content objects erased. That last is
+ *  its own axis because a workspace file's content is EITHER inline in the row
+ *  OR a blob reached through `blob_ref` (the row is the only pointer), and with
+ *  a host-wired `files:` adapter the blobs are not `vendo_blobs` rows at all —
+ *  so neither the table counts nor `vendo_blobs` alone tell a GDPR audit how
+ *  many pieces of user content this erase actually destroyed.
+ *
+ *  It is a COUNT OF OBJECTS, never bytes: one per content-bearing workspace row
+ *  removed, inline or blob. The name says `objects` because that is the unit it
+ *  measures. */
+export type EraseReport = Record<EraseTable, number> & { workspace_content_objects: number };
 
 function emptyReport(): EraseReport {
   return {
     ...Object.fromEntries(ERASE_TABLES.map((table) => [table, 0])) as Record<EraseTable, number>,
-    workspace_content: 0,
+    workspace_content_objects: 0,
   };
 }
 
@@ -84,15 +90,20 @@ export function eraseStore(store: VendoStore, options: { files: FilesAdapter }):
     params: unknown[],
   ): Promise<void> => {
     const result = await db.query(
-      `DELETE FROM ${table} WHERE ${where} RETURNING blob_ref`,
+      `DELETE FROM ${table} WHERE ${where} RETURNING content, blob_ref`,
       params,
     );
     report[table] += result.rows.length;
     for (const row of result.rows) {
       const ref = row["blob_ref"];
       if (typeof ref === "string") {
+        // A blob object: delete it through the adapter and count it.
         await files.delete(ref);
-        report.workspace_content += 1;
+        report.workspace_content_objects += 1;
+      } else if (typeof row["content"] === "string") {
+        // Inline content: no separate object to delete (it left with the row),
+        // but it is still a piece of user content this erase destroyed.
+        report.workspace_content_objects += 1;
       }
     }
   };
