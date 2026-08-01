@@ -1372,6 +1372,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const resolvePrincipal = config.auth?.principal ?? config.principal ?? (async () => null);
   const actAsSeam = config.auth === undefined ? config.actAs : config.auth.actAs;
   const oauthSeam = config.auth === undefined ? config.oauth : config.auth.oauth;
+  // Build contract §9.1 — the fourth seam. It rides the preset (there is no
+  // per-seam twin: the org query has no meaning without an identity story) and
+  // is handed to the wire, the automations engine, and the schedule engine, so
+  // an attended request and an unattended fire resolve the SAME answer.
+  const membershipsSeam = config.auth?.memberships;
   // 02-store §4 (kill-list B3) — ephemeral session policy. Validated like the
   // agent's context config; defaults are the recommended knobs. The store takes
   // the clock per call (register/sweep), so one time source needs no seam.
@@ -2502,6 +2507,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const runtimeCapture = development ? createRuntimeCapture(developmentPaths) : null;
   const handler = createWireHandler({
     principal: resolvePrincipal,
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     ready,
     trustedBaseIsHttps,
     get sessionId() { return sessionId(); },

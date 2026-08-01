@@ -1,42 +1,22 @@
 import {
   VendoError,
+  type AccessLevel,
+  type AppAccess,
+  type AppGrantRecord,
   type AppId,
+  type CanThing,
   type IsoDateTime,
   type Membership,
   type RunContext,
 } from "@vendoai/core";
 import type { VendoStore } from "../store.js";
 
-/** Build contract §9.3 — the closed, ORDERED level vocabulary. Defining new
- *  level types is not a surface; assignments are fully flexible. */
-export type AccessLevel = "viewer" | "editor" | "owner";
+/** Build contract §9.3 — the SHAPES live in core (the apps runtime and the MCP
+ *  door speak them, and `apps → core` is the only edge layering allows); the
+ *  implementation is here, because only the store can read the grant rows. */
+export type { AccessLevel, AppAccess, AppGrantRecord, CanThing } from "@vendoai/core";
 
 const RANK: Record<AccessLevel, number> = { viewer: 1, editor: 2, owner: 3 };
-
-/** Build contract §9.3 — what `can()` is asked about. */
-export type CanThing = { app: AppId } | { path: string };
-
-/** One stored grant row (build contract §9.2). */
-export interface AppGrantRecord {
-  id: string;
-  appId: AppId;
-  orgId: string;
-  /** `user:<subject>` · `team:<orgId>/<teamId>` · `org:<orgId>` */
-  principal: string;
-  level: AccessLevel;
-  /** The granting subject, for audit. */
-  createdBy: string;
-  createdAt: IsoDateTime;
-}
-
-/** Build contract §9.3 */
-export interface AppAccess {
-  can(ctx: RunContext, level: AccessLevel, thing: CanThing): Promise<boolean>;
-  levelFor(ctx: RunContext, appId: AppId): Promise<AccessLevel | null>;
-  grant(ctx: RunContext, appId: AppId, principal: string, level: AccessLevel): Promise<void>;
-  revoke(ctx: RunContext, appId: AppId, principal: string): Promise<void>;
-  list(ctx: RunContext, appId: AppId): Promise<AppGrantRecord[]>;
-}
 
 /** The grant-principal encoding (§9.2): one string, ref-queryable. Parsed here
  *  and nowhere else — the store door validates writes through this same

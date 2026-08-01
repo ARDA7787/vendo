@@ -56,7 +56,7 @@ const loadVerifyToken = lazyModule<ClerkVerifyToken>(
  * standard returnTo and Clerk's redirect_url.
  */
 export function clerk(options: HostAuthPresetOptions = {}): HostAuthPreset {
-  const { secret, user } = options;
+  const { secret, user, memberships } = options;
 
   const sessionClaims = async (request: Request): Promise<JwtClaims | null> => {
     const token = bearerToken(request) ?? cookieValue(request, "__session");
@@ -79,6 +79,8 @@ export function clerk(options: HostAuthPresetOptions = {}): HostAuthPreset {
 
   return composeHostAuthPreset({
     sessionClaims,
+    // Build contract §9.1 — forwarded verbatim: the org chart is the HOST's.
+    ...(memberships === undefined ? {} : { memberships }),
     resolveUser: makeUserResolver(user, userFromNameEmailClaims),
     // Away + MCP execution: the shipped away-token producer half (04 §2.1);
     // the host mounts the matching verify middleware on its API.

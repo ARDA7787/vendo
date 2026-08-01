@@ -4,6 +4,7 @@ import {
   VENDO_VIEW_STREAM,
   VendoError,
   vendoViewStreamId,
+  type AccessLevel,
   type AppDocument,
   type AppId,
   type Json,
@@ -201,7 +202,7 @@ const optionalLimit = (value: Json | undefined): number | undefined => {
 
 export interface AgentToolsDataDependencies {
   data: AppDataAccess;
-  requireOwned(appId: AppId, subject: string): Promise<AppDocument>;
+  requireOwned(appId: AppId, ctx: RunContext, level?: AccessLevel): Promise<AppDocument>;
 }
 
 const errorOutcome = (error: unknown): ToolOutcome => ({
@@ -281,7 +282,7 @@ export const createAgentTools = (
       }
       if (call.tool === "vendo_apps_data_list") {
         const args = input(call.args, ["appId", "collection"], ["refs", "limit", "cursor"]);
-        const app = await dependencies.requireOwned(args.appId as string, ctx.principal.subject);
+        const app = await dependencies.requireOwned(args.appId as string, ctx);
         const refs = optionalRefs(args.refs);
         const limit = optionalLimit(args.limit);
         if (args.cursor !== undefined && (typeof args.cursor !== "string" || args.cursor.trim() === "")) {
@@ -302,7 +303,7 @@ export const createAgentTools = (
         if (!Object.prototype.hasOwnProperty.call(args, "data") || args.data === undefined) {
           throw new VendoError("validation", "data is required");
         }
-        const app = await dependencies.requireOwned(args.appId as string, ctx.principal.subject);
+        const app = await dependencies.requireOwned(args.appId as string, ctx);
         const refs = optionalRefs(args.refs);
         const record = await dependencies.data.records(app, args.collection as string).put({
           id: args.id as string,
@@ -313,7 +314,7 @@ export const createAgentTools = (
       }
       if (call.tool === "vendo_apps_data_delete") {
         const args = input(call.args, ["appId", "collection", "id"]);
-        const app = await dependencies.requireOwned(args.appId as string, ctx.principal.subject);
+        const app = await dependencies.requireOwned(args.appId as string, ctx);
         await dependencies.data.records(app, args.collection as string).delete(args.id as string);
         return { status: "ok", output: { status: "ok" } };
       }

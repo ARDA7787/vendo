@@ -40,6 +40,8 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
   undo(principal: Principal, path: string): Promise<UndoOutcome>;
   /** Newest superseded revision first. */
   history(principal: Principal, path: string): Promise<WorkspaceHistoryEntry[]>;
+  /** Build contract §9.5 — promote's workspace half; see WorkspaceRows.moveApp. */
+  promoteApp(appId: string, from: string, orgId: string): Promise<number>;
 } {
   const rows = workspaceRows(dbFor(store), options.files ?? storeFiles(store));
   return {
@@ -52,6 +54,9 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
     },
     async history(principal, path) {
       return await rows.history(principal.subject, normalizePath(path));
+    },
+    async promoteApp(appId, from, orgId) {
+      return await rows.moveApp(appId, from, orgId);
     },
   };
 }

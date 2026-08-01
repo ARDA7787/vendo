@@ -2,6 +2,7 @@ import type { AppsRuntime, AppTokens } from "@vendoai/apps";
 import type { AutomationsEngine } from "@vendoai/automations";
 import {
   VendoError,
+  type Membership,
   type Principal,
   type RunContext,
   type ToolOutcome,
@@ -49,6 +50,10 @@ const STATUS_BY_CODE: Record<VendoErrorCode, number> = {
 
 export interface WireDeps {
   principal: (req: Request) => Promise<Principal | null>;
+  /** Build contract §9.1 — the host's own org query, resolved ONCE per request
+      in createContextResolver and stashed on the ctx. Unset → no orgs asserted
+      → `can()` degenerates to ownership. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
   ready: () => Promise<void>;
   /** VENDO_BASE_URL is https → TLS terminates upstream; see secureRequest. */
   trustedBaseIsHttps: boolean;

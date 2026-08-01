@@ -207,12 +207,20 @@ export function createContextResolver(
     if (principal.ephemeral === true) {
       await deps.sessionStore.register(principal.subject, deps.sessions.now());
     }
+    // Build contract §9.1 — asserted, never stored: ONE call to the host's own
+    // org query per request, stashed here so every door downstream reads the
+    // same answer. An ephemeral visitor belongs to no org by construction (the
+    // host issued them nothing), so the seam is not even asked.
+    const memberships = deps.memberships === undefined || principal.ephemeral === true
+      ? undefined
+      : await deps.memberships(principal);
     return {
       principal,
       venue,
       presence: "present",
       sessionId,
       requestHeaders: requestHeaders(req),
+      ...(memberships === undefined ? {} : { memberships }),
     };
   };
 }

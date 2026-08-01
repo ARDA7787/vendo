@@ -1,6 +1,6 @@
 import { VendoError, type FilesAdapter, type IsoDateTime } from "@vendoai/core";
 import type { Db } from "./db.js";
-import { iso, text } from "./helpers/utils.js";
+import { escapeLike, iso, text } from "./helpers/utils.js";
 
 /** Build contract §3.3 — inline in `content` up to this size; past it the row
     carries a `blob_ref` into the files adapter instead. */
@@ -129,6 +129,13 @@ export interface WorkspaceRows {
   /** Deleting records the content it removed (history is append-only, §3.3), so
       `undo` can bring the file back. Returns false if there was nothing there. */
   remove(owner: string, path: string, intent?: string): Promise<boolean>;
+  /** Build contract §9.5 — promote's workspace half: move one app's documents
+      from `/user/apps/<id>/**` (owner = the promoter) to
+      `/orgs/<orgId>/apps/<id>/**` (owner = the org). Owner AND path change
+      together, because owner derivation is a pure function of the path (§9.7);
+      history moves with the files, or undo would walk into unreachable rows.
+      Returns how many file rows moved. */
+  moveApp(appId: string, from: string, orgId: string): Promise<number>;
   history(owner: string, path: string): Promise<WorkspaceHistoryEntry[]>;
   /** Walks history backwards: restores the newest superseded revision and
       consumes it, so a second call walks one step further back.
@@ -400,6 +407,26 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
       await db.query("DELETE FROM vendo_workspace_files WHERE path = $1 AND owner = $2", [path, owner]);
       await trim(owner, path);
       return true;
+    },
+
+    async moveApp(appId, from, orgId) {
+      const before = `/user/apps/${appId}/`;
+      const after = `/orgs/${orgId}/apps/${appId}/`;
+      let moved = 0;
+      for (const table of ["vendo_workspace_files", "vendo_workspace_history"] as const) {
+        // `overlay` rewrites only the anchored prefix, so a path that merely
+        // CONTAINS the app id deeper down is untouched — and the LIKE keeps the
+        // statement anchored at the mount for the same reason erase.byApp is.
+        const result = await db.query(
+          `UPDATE ${table}
+              SET owner = $3, path = $4 || substring(path FROM ${before.length + 1})
+            WHERE owner = $1 AND path LIKE $2 ESCAPE '\\'
+            RETURNING 1`,
+          [from, `${escapeLike(before)}%`, orgId, after],
+        );
+        if (table === "vendo_workspace_files") moved = result.rows.length;
+      }
+      return moved;
     },
 
     async history(owner, path) {

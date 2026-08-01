@@ -13,6 +13,7 @@ import type {
   Guard,
   IsoDateTime,
   Json,
+  Membership,
   Principal,
   RunContext,
   RunId,
@@ -51,6 +52,11 @@ export interface AutomationsConfig {
    *  kinds for the same data (Vendo Cloud's scheduler + Composio delivery, under the hosted
    *  store — see packages/vendo/src/server.ts) so the two never double-run one automation. */
   localTriggerKinds?: ReadonlySet<"schedule" | "external">;
+  /** Build contract §9.1 — the SAME host org query the wire resolves per
+   *  request, resolved here per fire. Keyed on Principal precisely so an
+   *  unattended run can call it with no session; unset → no orgs asserted →
+   *  `can()` degenerates to ownership, which is today's behavior exactly. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
 }
 
 /** 07 §5 */
