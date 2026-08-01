@@ -980,9 +980,17 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
    * With no `appAccess` wired (the OSS single-player default) it degenerates to
    * exactly what it always was — row ownership, at every level.
    */
-  const holds = async (appId: AppId, ctx: RunContext, level: AccessLevel): Promise<boolean> => {
+  const holds = async (
+    appId: AppId,
+    ctx: RunContext,
+    level: AccessLevel,
+    /** The row, when the caller already read it — `open()` and `get()` are on
+        every render, so the single-player path must stay ONE read. */
+    known?: VendoRecord | null,
+  ): Promise<boolean> => {
     if (config.appAccess === undefined) {
-      return (await apps.get(appId))?.refs?.subject === ctx.principal.subject;
+      const record = known === undefined ? await apps.get(appId) : known;
+      return record?.refs?.subject === ctx.principal.subject;
     }
     return await config.appAccess.can(ctx, level, { app: appId });
   };
@@ -993,7 +1001,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     level: AccessLevel = "editor",
   ): Promise<AppDocument | null> => {
     const record = await apps.get(appId);
-    if (record === null || !(await holds(appId, ctx, level))) return null;
+    if (record === null || !(await holds(appId, ctx, level, record))) return null;
     return documentFromRecord(record);
   };
 
