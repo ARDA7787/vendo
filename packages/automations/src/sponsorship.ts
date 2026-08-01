@@ -81,8 +81,15 @@ export const readSponsorship = async (
   return { row: parsed.data, ...(record.revision === undefined ? {} : { revision: record.revision }) };
 };
 
+/** Both refs are load-bearing: the 02-store §5 erase cascade collects generic
+ *  rows by `refs.subject` (erasing the sponsor takes their name off the row)
+ *  AND by `refs.app_id` (deleting the app takes its sponsorship with it). A row
+ *  that survived either cascade would be a dangling name. */
+const sponsorshipRefs = (row: Sponsorship): Record<string, string> =>
+  ({ subject: row.sponsor, app_id: row.appId });
+
 export const writeSponsorship = async (records: RecordStore, row: Sponsorship): Promise<void> => {
-  await records.put({ id: row.appId, data: { ...row }, refs: { subject: row.sponsor } });
+  await records.put({ id: row.appId, data: { ...row }, refs: sponsorshipRefs(row) });
 };
 
 /** Compare-and-swap the row onto a new sponsor. Returns false when another
@@ -97,7 +104,7 @@ export const swapSponsor = async (
 ): Promise<boolean> => {
   if (records.atomic !== undefined && expected.revision !== undefined) {
     const swapped = await records.atomic.compareAndSwap(
-      { id: next.appId, data: { ...next }, refs: { subject: next.sponsor } },
+      { id: next.appId, data: { ...next }, refs: sponsorshipRefs(next) },
       expected.revision,
     );
     return swapped !== null;

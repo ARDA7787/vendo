@@ -163,6 +163,16 @@ describe("sponsorship — minted at enable", () => {
     });
   });
 
+  it("refs the row to both erase axes, so no dangling name survives either cascade", async () => {
+    const app = doc("app_erasable");
+    await seedApp(store, app, "user_dana", false);
+    const { engine } = harness({ store });
+    await engine.enable(app.id, ctx());
+
+    expect((await store.records(SPONSORSHIPS).get(app.id))?.refs)
+      .toEqual({ subject: "user_dana", app_id: app.id });
+  });
+
   it("re-enabling after an invalidation refreshes the row to the enabler", async () => {
     const app = doc("app_remint");
     await seedApp(store, app, "user_dana", false);
