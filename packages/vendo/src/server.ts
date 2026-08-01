@@ -271,11 +271,12 @@ export interface Vendo {
   connections: ConnectionsService;
   store: VendoStore;
   /** Architecture §3 — turns served through the composed `Harness` (`harness:`,
-      or `vendo()`). `POST /threads` routes here when the host named a harness;
-      otherwise it stays on `agent.stream`. Both paths now carry the same four
-      discovery rails, so the split is a wave-1 ruling (zero behaviour change for
-      existing hosts) rather than a capability gap. Exposed so a host — and the
-      live proofs — can drive a harness turn directly either way. */
+      or `vendo()`). Post-flip (wave 2) `POST /threads` routes here whether or not
+      the host named a harness; the only deployment left on `agent.stream` is one
+      whose store has no SQL handle, since the transcript and the workspace are
+      tables (`storeServesHarnessTurns`). This door is exposed either way so a
+      host — and the live proofs — can drive a harness turn directly; on a store
+      without SQL it raises the not-implemented refusal rather than degrading. */
   harness: HarnessTurns;
 }
 

@@ -54,11 +54,13 @@ export interface WireDeps {
   store: VendoStore;
   telemetry?: Telemetry;
   agent: VendoAgent;
-  /** Architecture §3 — turns through the composed `Harness`. Present only when
-      the host NAMED a harness: `POST /threads` then routes here instead of
-      `agent.stream`. Unset keeps today's path byte for byte — a wave-1 ruling,
-      not a gap: `find_tools`, the connection-scoped loadout, the curated agent
-      menu and capability-miss detection all reach the harness path too. */
+  /** Architecture §3 — turns through the composed `Harness`. Post-flip (wave 2)
+      `POST /threads` routes here for EVERY host: `harness:` when the host named
+      one, `vendo()` when they did not. What decides it is the STORE, not the
+      config — this is unset for exactly one reason, that the store has no SQL
+      handle and so cannot serve the transcript and workspace TABLES a harness
+      turn needs (build contract §3.3/§6). Those deployments keep `agent.stream`,
+      which needs neither table. */
   harness?: Pick<HarnessTurns, "stream">;
   guard: VendoGuard;
   apps: AppsRuntime;

@@ -26,11 +26,12 @@ export const threadRoutes: RouteEntry[] = [
     // returns the same SSE `Response` with the same thread-id header, so nothing
     // downstream (liveness, abort, the client) can tell which ran.
     //
-    // Only a host that NAMED a harness is routed here. `deps.harness` unset means
-    // today's path, unchanged. The harness path now carries the same four
-    // discovery rails (`find_tools`, the connection-scoped loadout, the curated
-    // menu, capability-miss detection), so this default is a wave-1 ruling —
-    // existing hosts see no behaviour change — not an outstanding debt.
+    // Post-flip (wave 2) EVERY host is routed here — `harness:` when the host
+    // named one, `vendo()` when they did not. `deps.harness` is unset for exactly
+    // one reason, and it is a capability fact rather than a preference: a store
+    // with no SQL handle cannot serve the transcript and workspace TABLES a
+    // harness turn needs, so those deployments keep `agent.stream`, which needs
+    // neither. See `storeServesHarnessTurns` in server.ts.
     const runTurn = deps.harness ?? deps.agent;
     const turn = await runTurn.stream({
       ...(body["threadId"] === undefined ? {} : { threadId: string(body["threadId"], "threadId") }),
