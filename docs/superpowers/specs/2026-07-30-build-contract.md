@@ -639,11 +639,25 @@ independent declarations that would drift):
 ```ts
 // collection "automations:sponsorships", keyed by appId
 { appId, sponsor: string,            // subject
+  display?: string,                  // Principal.display captured at enable/
+                                     // adopt (amendment 2026-08-01: consumer-
+                                     // voice law — summaries and cards never
+                                     // show raw subjects when a display was
+                                     // asserted; fallback to subject is the
+                                     // ratified behavior when none was)
   intentHash: string,                // core intentHash over §7's AppIntent
   status: "active" | "invalidated",
   reason?: "edit" | "departure" | "grants",
   invalidatedAt?: IsoDateTime }
 ```
+
+Amendment 2026-08-01 (verifier finding 3): a companion ERA MARKER collection
+`automations:sponsored` (`{appId, since}`, refs `{app_id}` only — carries NO
+subject data, so a subject erase cannot collect it) records that an app
+entered the sponsorship era. Marker present + sponsorship row absent (the
+erased-sponsor case) fails closed as `departure` — the automation stops and
+waits for adoption; it never reverts to the owner. Pre-era rows (no marker)
+keep the owner fallback. The erase path writes nothing.
 
 Minted/refreshed at enable time (sponsor = the enabling subject). The
 engine's `runContext` resolves the run's principal from the active
