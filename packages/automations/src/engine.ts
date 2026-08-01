@@ -1008,6 +1008,20 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       let step: Step;
       let outcome: ToolOutcome;
       try {
+        // §9.9 — the fire-time gate AGAIN, here, because a resume is a second
+        // firing through a different door: the run parked, time passed, and the
+        // document it is about to act on is re-read from the store. Without this
+        // a third party could edit the automation while the run sat parked and
+        // have the SPONSOR's identity execute the edited call on approval
+        // (proved: inv_42 → inv_EVIL as user_dana). A throw from the seams lands
+        // on the catch below, which is why it sits inside this block.
+        const refusal = await sponsorshipRefusal(appFound.row, ctx);
+        if (refusal !== undefined) {
+          await audit(ctx, "sponsorship-invalidated", { reason: refusal.reason, summary: refusal.summary });
+          await terminal(run, ctx, "error", refusal.summary, { code: "blocked", message: refusal.summary });
+          await dropPark();
+          return;
+        }
         await mintGrant(approvalData.request);
         trigger = validateTrigger(appFound.row.doc.trigger);
         if (trigger.run.kind !== "steps") throw new VendoError("validation", "parked agentic run is invalid");

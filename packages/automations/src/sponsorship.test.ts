@@ -110,15 +110,20 @@ interface Harness {
   calls: Array<{ call: ToolCall; ctx: RunContext }>;
 }
 
-const harness = (overrides: Partial<AutomationsConfig> = {}): Harness => {
+const harness = (
+  overrides: Partial<AutomationsConfig> = {},
+  /** Scripted outcomes per execution, so a test can park a call. */
+  plan: (call: ToolCall, index: number) => ToolOutcome | undefined = () => undefined,
+): Harness => {
   const store = overrides.store ?? memoryStoreAdapter();
   const guard = new GuardDouble();
   const calls: Array<{ call: ToolCall; ctx: RunContext }> = [];
   const tools: ToolRegistry = {
     async descriptors() { return [readTool, writeTool]; },
     async execute(call, runCtx): Promise<ToolOutcome> {
+      const index = calls.length;
       calls.push({ call: structuredClone(call), ctx: structuredClone(runCtx) });
-      return { status: "ok", output: {} };
+      return plan(call, index) ?? { status: "ok", output: {} };
     },
   };
   const engine = createAutomations({
@@ -270,6 +275,89 @@ describe("sponsorship — the fire-time gate", () => {
       presence: "away",
       memberships: [{ org: "maple" }],
     });
+  });
+});
+
+/** F1 (verifier repro) — a run that PARKED on an approval resumes later, from a
+ *  different door (the guard's decision callback), and re-reads the app document
+ *  it never re-checked. The gate has to run again there or a third party can
+ *  edit the doc while the run is parked and have the sponsor's identity execute
+ *  the edited call. */
+describe("sponsorship — the resume gate", () => {
+  const parkOnce = (store: StoreAdapter) => (call: ToolCall, index: number): ToolOutcome | undefined => {
+    if (index !== 0) return undefined;
+    void store.records("vendo_approvals").put({
+      id: "apr_parked",
+      data: {
+        request: {
+          id: "apr_parked",
+          call: structuredClone(call),
+          descriptor: writeTool,
+          inputPreview: "update the invoice",
+          ctx: { principal: { kind: "user", subject: "user_dana" }, venue: "automation", presence: "away" },
+          createdAt: NOW.toISOString(),
+        },
+        status: "pending",
+      },
+    });
+    return { status: "pending-approval", approvalId: "apr_parked" };
+  };
+
+  const oneWriteStep = (id: string, invoice: string): AppDocument => ({
+    format: VENDO_APP_FORMAT,
+    id,
+    name: "Weekly invoice sweep",
+    trigger: {
+      on: { kind: "host-event", event: "go" },
+      run: { kind: "steps", steps: [{ id: "write", tool: writeTool.name, args: { invoice: `'${invoice}'` } }] },
+    },
+  });
+
+  it("resumes an approved parked call when the document is untouched", async () => {
+    const store = memoryStoreAdapter();
+    const app = oneWriteStep("app_resume_ok", "inv_42");
+    const { engine, guard, calls } = harness({ store }, parkOnce(store));
+    await seedApp(store, app);
+    await engine.enable(app.id, ctx());
+    const [runId] = await engine.emit("go", {}, ctx().principal);
+    expect(await engine.runs.get(runId!, ctx())).toMatchObject({ status: "pending-approval" });
+
+    guard.decide("apr_parked", true);
+    await flush();
+
+    // The exact parked call replays — resume semantics are untouched.
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.call.args).toEqual({ invoice: "inv_42" });
+    expect(calls[1]?.ctx.principal.subject).toBe("user_dana");
+    expect(await engine.runs.get(runId!, ctx())).toMatchObject({ status: "ok" });
+  });
+
+  it("refuses to resume once a third party has edited the document", async () => {
+    const store = memoryStoreAdapter();
+    const app = oneWriteStep("app_resume_evil", "inv_42");
+    const { engine, guard, calls } = harness({ store }, parkOnce(store));
+    await seedApp(store, app);
+    await engine.enable(app.id, ctx());
+    const [runId] = await engine.emit("go", {}, ctx().principal);
+
+    // Somebody else rewrites the automation while the run sits parked.
+    const edited = oneWriteStep(app.id, "inv_EVIL");
+    await seedApp(store, edited);
+    await engine.onDocumentEdit(app, edited, "user_omar");
+
+    guard.decide("apr_parked", true);
+    await flush();
+
+    // Nothing executed a second time — not the parked call, and certainly not
+    // the edited one — and the run is a loud terminal failure, not a stranded
+    // "running" row.
+    expect(calls).toHaveLength(1);
+    const run = await engine.runs.get(runId!, ctx());
+    expect(run?.status).toBe("error");
+    expect(run?.summary).toMatch(/stopped/i);
+    expect(guard.audit.some((event) =>
+      (event.detail as { status?: string }).status === "sponsorship-invalidated")).toBe(true);
+    expect(await store.records("automations:parked").get("apr_parked")).toBeNull();
   });
 });
 
