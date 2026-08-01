@@ -29,8 +29,10 @@ export interface AdoptionCard {
   appId: string;
   /** The automation's user-visible name. */
   automation: string;
-  /** The sponsor it can no longer run as. */
-  sponsor: string;
+  /** The person it can no longer run as, named as they asserted themselves.
+   *  ABSENT when their data was erased: the name went with the erase, and the
+   *  card says "someone else" rather than resurrecting an identifier. */
+  sponsor?: string;
   reason: NonNullable<Sponsorship["reason"]>;
   stoppedAt?: string;
   needs: AdoptionNeed[];
@@ -75,13 +77,18 @@ export const adoptionNeeds = (
 
 export const adoptionCard = (
   doc: AppDocument,
-  sponsorship: Sponsorship,
+  stopped: {
+    reason: NonNullable<Sponsorship["reason"]>;
+    /** The sponsor's name; omitted once their data is erased. */
+    sponsor?: string;
+    stoppedAt?: string;
+  },
   descriptors: Map<string, ToolDescriptor>,
 ): AdoptionCard => ({
   appId: doc.id,
   automation: doc.name,
-  sponsor: sponsorship.sponsor,
-  reason: sponsorship.reason ?? "edit",
-  ...(sponsorship.invalidatedAt === undefined ? {} : { stoppedAt: sponsorship.invalidatedAt }),
+  ...(stopped.sponsor === undefined ? {} : { sponsor: stopped.sponsor }),
+  reason: stopped.reason,
+  ...(stopped.stoppedAt === undefined ? {} : { stoppedAt: stopped.stoppedAt }),
   needs: adoptionNeeds(doc, descriptors),
 });
