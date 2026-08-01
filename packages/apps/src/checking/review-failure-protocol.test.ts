@@ -15,12 +15,15 @@
  *
  * WHAT THE CODE DOES TODAY, with the evidence:
  *
- *  1. A blocking finding does not stop the write. `runtime.ts` `edit()` calls
- *     `persistEdit(...)` and only AFTERWARDS collects
- *     `conducted.findings.filter(({ severity }) => severity === "block")` into an
- *     advisory `issues: string[]` on the returned `EditResult`. On `create()` the
- *     findings are `console.info(findingLine(finding))` and nothing more. The
- *     failed app is live either way.
+ *  1. A blocking finding DOES now stop the write (2026-08-01, `./commit-gate.test.ts`).
+ *     `runtime.ts` refuses at the commit path on both paths: `create()` fails the
+ *     build before it emits or persists, and `edit()` returns `failedEdit(...)`
+ *     before `persistEdit(...)` ever runs, so the previous app stays in its row
+ *     and keeps serving. That is the FAIL half of §7 — but it is a REFUSAL, not
+ *     the flagged-version protocol the rest of this file describes: what §7 asks
+ *     for beyond it (a landed-but-flagged commit, a post-land fix round, a card
+ *     with two choices, an owner override) is still absent, and the tests below
+ *     still name it.
  *  2. There is no version status to be flagged. `AppDocument`
  *     (`packages/core/src/app-document.ts`) has no `status`/`flagged`/`review`
  *     field — the only failure-ish field is `buildFailed`, a terminal generation
@@ -41,10 +44,9 @@
  *     §7's carve-out is not merely unimplemented, it is currently unrepresentable.
  *
  * The floor itself is real and good — the reviewer, the pack checks, the judgment
- * rubric and the fix rounds all work. It is the protocol AFTER a FAIL that is
- * absent. This file's own header states the shipped philosophy plainly: "Findings
- * are advice, not exceptions: a check reports, it never throws the build away"
- * (`./types.ts`).
+ * rubric and the fix rounds all work, and a `block` now stops the write. It is
+ * the protocol AFTER a FAIL — the flagged version, its remediation round, its
+ * card and its override — that is absent.
  */
 import { describe, expect, it } from "vitest";
 
@@ -53,8 +55,9 @@ describe.skip("review failure protocol (design §7) — NOT IMPLEMENTED", () => 
     // MUST BE BUILT: (a) a version status on the stored app so a landed commit can
     // be `flagged`, and (b) a served-version pointer distinct from the
     // latest-written one, so `runtime.open` serves the previous doc while the
-    // flagged one waits. Today `persistEdit` overwrites the single row and `open`
-    // serves whatever is in it.
+    // flagged one waits. Today a failing commit does not land at all — it is
+    // refused, which keeps the previous version serving without either mechanism,
+    // and leaves the failed work nowhere to sit.
     expect.fail("no version status and no served-version pointer exist");
   });
 

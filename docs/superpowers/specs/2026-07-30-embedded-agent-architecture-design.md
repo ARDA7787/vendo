@@ -332,28 +332,26 @@ The harness-independent floor. Swap any harness; the floor doesn't move.
   internal reviewer. `models.reviewer` overrides the seat; depth
   (rubric-only single call vs full test-drive) is a host dial, defaulting by
   blast radius: org-shared/automation apps get the full test-drive, personal
-  quick edits rubric-only. **Failure protocol — DOES NOT EXIST (audited 2026-07-31; this paragraph was
-  aspirational and is now a follow-up lane, with skipped tests naming the work
-  at `packages/apps/src/checking/review-failure-protocol.test.ts`).** What
-  ships instead is the floor's own stated philosophy: *findings are advice, not
-  exceptions — a check reports, it never throws the build away.* A blocking
-  finding does NOT stop the write (`apps/src/runtime.ts` persists first, filters
-  after, and the result is an advisory `issues: string[]`); `AppDocument` has no
-  status/flagged field and the row is keyed by app id, so "the previous version
-  keeps serving" has no mechanism; there is no failure card in the stream
-  vocabulary, no `owner` role (ownership is a subject-string compare), and no
-  override path. The host-check carve-out is not merely missing but
-  **unrepresentable**: `Finding` carries no provenance, so a host-check failure
-  cannot be told apart from a reviewer finding at any waive point — fixing that
-  is a shape change, not a wiring change. The bounded fix round exists but
-  PRE-land (`FIX_ROUNDS = 2` in the generation conductor), not post-commit.
-  The intended design, for whoever builds it: FAIL → the commit lands as a
-  flagged version (the previous version keeps serving), one bounded fix round,
-  then a plain-language card on the app ("Your change didn't pass a safety
-  check: <reason>. Fix it / keep the current version"); an `owner` may accept a
-  flagged version, with the override recorded in the audit trail — except
-  host-check failures, which only the host can waive via its own policy config. Reviewer traffic runs under its own breaker
-  context, never the user's budget.
+  quick edits rubric-only. **Failure protocol — a REFUSAL, not a flagged
+  version (built 2026-08-01; Yousef's call).** A `block` surviving the pre-land
+  fix rounds (`FIX_ROUNDS = 2` in the generation conductor) stops the write at
+  the commit path in `apps/src/runtime.ts`: a create fails the build before it
+  emits or persists, an edit returns before `persistEdit`, and the person gets a
+  plain-language reason on the existing `issues` channel with the finding's
+  machine locus and severity stripped (§3). `warn` never blocks. This needs no
+  version model, which is the point: an edit that is never written leaves the
+  previous app in its row, still serving, for free; a create that is never
+  written leaves no app. **What is still absent** (the follow-up lane, with
+  skipped tests naming the work at
+  `packages/apps/src/checking/review-failure-protocol.test.ts`): the flagged
+  version itself, a post-land remediation round, a failure card in the stream
+  vocabulary with two choices, an `owner` role (ownership is a subject-string
+  compare) and any override path. The host-check carve-out is not merely missing
+  but **unrepresentable**: `Finding` carries no provenance, so a host-check
+  failure cannot be told apart from a reviewer finding at any waive point —
+  fixing that is a shape change, not a wiring change, and it is only needed once
+  an override exists. Reviewer traffic runs under its own breaker context, never
+  the user's budget.
 - **host checks** — plugged in via packs, same guarantee: they fire whether or
   not the builder feels like it.
 
