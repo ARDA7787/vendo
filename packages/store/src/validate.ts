@@ -143,6 +143,19 @@ export function parseThreadData(value: unknown, id: string): ThreadData {
   return { subject: input["subject"], messages, ...(title === undefined ? {} : { title }) };
 }
 
+/** Contract §7 — an effect receipt: the subject that owns it (erase cascade +
+ *  anon adoption both key on it) and the recorded tool outcome. `at` is the
+ *  database's own timestamp; a caller-supplied one is ignored. */
+export function parseEffectData(value: unknown, id: string): { subject: string; outcome: Json } {
+  if (id === "") invalid("effect key must be a non-empty string");
+  const input = object(value, "effect data");
+  const subject = input["subject"];
+  if (typeof subject !== "string" || subject === "") {
+    invalid("effect subject must be a non-empty string");
+  }
+  return { subject, outcome: requireJson(input["outcome"], "effect outcome") };
+}
+
 export function parseRunData(value: unknown, id: string): RunData {
   parseSchema(runIdSchema, id, "run id");
   const input = object(value, "run data");

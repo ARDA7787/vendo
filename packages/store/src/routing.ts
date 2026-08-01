@@ -2,6 +2,7 @@ import {
   VendoError,
   type AtomicRecordStore,
   type AuditEvent,
+  type Json,
   type PermissionGrant,
   type RecordQuery,
   type RecordStore,
@@ -28,12 +29,13 @@ import {
   threadFromRow,
 } from "./helpers/rows.js";
 import type { AppRow, ApprovalRow, RunRow, StateRow, ThreadRow } from "./helpers/types.js";
-import { cursorMs, decodeCursor, encodeCursor, pageLimit } from "./helpers/utils.js";
+import { cursorMs, decodeCursor, encodeCursor, iso, pageLimit, text } from "./helpers/utils.js";
 import {
   invalid,
   parseAppData,
   parseApprovalData,
   parseAuditEvent,
+  parseEffectData,
   parsePermissionGrant,
   parseRunData,
   parseThreadData,
@@ -53,6 +55,7 @@ export const RESERVED_COLLECTIONS = [
   "vendo_runs",
   "vendo_apps",
   "vendo_state",
+  "vendo_effects",
 ] as const;
 
 export const DEDICATED_RECORD_COLLECTIONS = [
@@ -175,6 +178,18 @@ function appRecord(row: AppRow): VendoRecord {
     // Present when the row carries the write counter (01 §12: opaque token
     // when atomic is present) — Wave 7's lifecycle/schedule-claim arbitration.
     ...(row.revision === undefined ? {} : { revision: row.revision }),
+  };
+}
+
+function effectRecord(row: Record<string, unknown>): VendoRecord {
+  const subject = text(row["subject"]);
+  const at = iso(row["at"]);
+  return {
+    id: text(row["id"]),
+    data: { subject, outcome: row["outcome"] as Json, at },
+    refs: { subject },
+    createdAt: at,
+    updatedAt: at,
   };
 }
 
@@ -479,6 +494,59 @@ function configFor(db: Db, collection: ReservedCollection): RoutedConfig {
             return result.rows[0]
               ? appRecord(appFromRow(result.rows[0] as Record<string, unknown>))
               : null;
+          },
+        },
+      };
+    case "vendo_effects":
+      return {
+        table: collection,
+        // Contract §7: the effect ledger, in ITS OWN table — subject-adoption
+        // (helpers/subjects.ts) and the erase cascade both address
+        // `vendo_effects` directly, so receipts routed to the generic table
+        // would be invisible to both (found by the wave-1 independent check).
+        // The PK is `key`, aliased so the door's generic id machinery works.
+        select: "SELECT * FROM (SELECT key AS id, subject, outcome, at FROM vendo_effects) e",
+        // Receipts are a ledger: never deleted through the door, erased only
+        // via the store erase API — same law as vendo_audit.
+        appendOnly: true,
+        cursorColumn: "at",
+        refs: { subject: "subject" },
+        fromDb: effectRecord,
+        async put(record) {
+          const { subject, outcome } = parseEffectData(record.data, record.id);
+          // Insert-once even on the plain door: a receipt that exists is the
+          // truth about what already executed; overwriting it is how a re-run
+          // double-sends. Losing the race returns the recorded row.
+          const result = await db.query(
+            `INSERT INTO vendo_effects (key, subject, outcome) VALUES ($1, $2, $3::jsonb)
+             ON CONFLICT (key) DO NOTHING
+             RETURNING key AS id, subject, outcome, at`,
+            [record.id, subject, JSON.stringify(outcome)],
+          );
+          if (result.rows[0]) return effectRecord(result.rows[0]);
+          const existing = await db.query(
+            "SELECT key AS id, subject, outcome, at FROM vendo_effects WHERE key = $1",
+            [record.id],
+          );
+          return effectRecord(existing.rows[0] as Record<string, unknown>);
+        },
+        atomic: {
+          async insertIfAbsent(record) {
+            requireRecordId(record.id);
+            const { subject, outcome } = parseEffectData(record.data, record.id);
+            const result = await db.query(
+              `INSERT INTO vendo_effects (key, subject, outcome) VALUES ($1, $2, $3::jsonb)
+               ON CONFLICT (key) DO NOTHING
+               RETURNING key AS id, subject, outcome, at`,
+              [record.id, subject, JSON.stringify(outcome)],
+            );
+            return result.rows[0] ? effectRecord(result.rows[0]) : null;
+          },
+          async compareAndSwap() {
+            throw new VendoError(
+              "blocked",
+              "vendo_effects receipts are immutable once written; only insertIfAbsent is supported",
+            );
           },
         },
       };

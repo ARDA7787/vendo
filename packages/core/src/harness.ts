@@ -127,10 +127,11 @@ export interface TurnState {
 }
 
 /**
- * Build contract §1.5 — the CLOSED yield vocabulary. Routing (frozen):
- * `text` → screen + transcript · `status` → screen only · `error` → screen +
- * transcript + audit · `usage` → audit/metering only. Tool calls are mirrored
- * by the runtime, never yielded; harnesses never yield view events.
+ * Build contract §1.5 — the CLOSED yield vocabulary. Routing (frozen, as
+ * amended 2026-07-30): `text` → screen + transcript · `status` → screen only ·
+ * `error` → screen + audit (not the transcript) · `usage` → audit/metering
+ * only. Tool calls are mirrored by the runtime, never yielded; harnesses never
+ * yield view events.
  */
 export type HarnessEvent =
   | { type: "text"; delta: string }
