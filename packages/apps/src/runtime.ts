@@ -624,7 +624,15 @@ export interface AppsRuntime {
     levelFor(appId: AppId, ctx: RunContext): Promise<AccessLevel | null>;
   };
   edit(appId: AppId, instruction: string, ctx: RunContext): Promise<EditResult>;
-  history(appId: AppId): { list(): Promise<VersionEntry[]>; undo(): Promise<AppDocument> };
+  /**
+   * The capped version log, and the one-step rollback over it.
+   *
+   * Build contract §9.3 — this takes the ctx (06 §1's `history(appId)` widened
+   * by the wave-3 ruling): `list` needs `viewer`, `undo` needs `EDITOR`,
+   * because rolling back the team's app is an edit. Without the ctx here the
+   * only boundary would be the wire route — and one door is not a boundary.
+   */
+  history(appId: AppId, ctx: RunContext): { list(): Promise<VersionEntry[]>; undo(): Promise<AppDocument> };
   open(appId: AppId, ctx: RunContext): Promise<OpenSurface>;
   call(appId: AppId, ref: string, args: Json, ctx: RunContext): Promise<ToolOutcome>;
   exportApp(appId: AppId, ctx: RunContext): Promise<Uint8Array>;
@@ -1006,10 +1014,14 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         every render, so the single-player path must stay ONE read. */
     known?: VendoRecord | null,
   ): Promise<boolean> => {
-    if (config.appAccess === undefined) {
-      const record = known === undefined ? await apps.get(appId) : known;
-      return record?.refs?.subject === ctx.principal.subject;
-    }
+    const record = known === undefined ? await apps.get(appId) : known;
+    // The owner fast path. Ownership is the TOP level, so the row the caller
+    // already read answers every level for its own subject — no grants query,
+    // no second read. This is what keeps get()/open() at ONE store read on the
+    // single-player path even with `can()` wired (which is always, under the
+    // umbrella).
+    if (record?.refs?.subject === ctx.principal.subject) return true;
+    if (config.appAccess === undefined) return false;
     return await config.appAccess.can(ctx, level, { app: appId });
   };
 
@@ -1366,6 +1378,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     lifecycle,
     callFn: fnCaller.callFn,
     audit: (event) => config.guard.report(event),
+    // Build contract §9.1 — an unattended fire asserts the SAME orgs a request
+    // does, or `can()` would answer differently attended and unattended (a
+    // promoted app would be invisible to its own schedule).
+    ...(config.memberships === undefined ? {} : { memberships: config.memberships }),
   });
   const caller = fnCaller.wrap(createAppCaller(config.tools, {
     // W0 — remember every mutating in-app action the guard parks, so the
@@ -1398,7 +1414,15 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           // No wake here: the proxy wakes the machine on the first forwarded
           // request, AFTER it has re-checked access. Waking first would spend a
           // machine on a caller the very next check might refuse.
-          return proxy(app.id);
+          //
+          // Theme parity with the personal branch below: the served app MAY
+          // consume the host's tokens, and the proxy forwards the query string
+          // into the box, so a shared app renders in the host's brand exactly
+          // as the owner's own copy does.
+          const orgTheme = resolveProvider(config.theme);
+          return orgTheme === undefined
+            ? proxy(app.id)
+            : `${proxy(app.id)}?vendoTheme=${encodeURIComponent(JSON.stringify(orgTheme))}`;
         }
         const machine = await lifecycle.wake(app);
         // Absorb the fresh-boot 502 race server-side so the iframe's first
@@ -2335,7 +2359,19 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // records the org that actually holds the app (one row per (app,
       // principal), so this updates in place rather than accreting).
       await config.appAccess?.grant(ctx, appId, promoter, "owner");
-      await reportLifecycle("promote", appId, ctx, { orgId, from });
+      // An automation runs with a PERSON's access — their connections, their
+      // secrets, their name in the audit log — and there is no org principal to
+      // run as (inventing one would run it as a synthetic user named after the
+      // org). The person who armed it may not even be in the team. So the move
+      // DISARMS it, the same law an edited trigger already follows; re-enabling
+      // mints a fresh sponsorship under whoever turns it back on.
+      const moved = await apps.get(appId);
+      const movedRow = moved === null ? null : rowFromRecord(moved);
+      const disarmed = movedRow?.enabled === true;
+      if (disarmed && movedRow !== null) {
+        await apps.put(appRecordInput(movedRow.doc, orgId, false, sessionOf(movedRow.doc)));
+      }
+      await reportLifecycle("promote", appId, ctx, { orgId, from, ...(disarmed ? { disarmed } : {}) });
       return withoutSession(structuredClone(app));
     },
 
@@ -2597,20 +2633,23 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
 
 
     /**
-     * ⚠️ OWNERSHIP IS THE CALLER'S RESPONSIBILITY. The frozen 06 §1 signature
-     * `history(appId)` takes no RunContext, so — unlike create/get/edit/delete/fork/
-     * open/call, which all scope by `ctx.principal.subject` — this handle cannot check
-     * ownership itself. The umbrella wire route (`/apps/:id/history`, 09 §3) MUST resolve
-     * the principal and confirm ownership before exposing `list`/`undo`; that route is the
-     * system's cross-user auth boundary ("the unauthenticated surface is exactly nothing").
-     * Flagged by Codex + Greptile review; closing it inside this block needs a contract
-     * major to add `ctx` here — see the PR's escalation note.
+     * Build contract §9.3 — the level lives HERE, not only at the wire route
+     * that used to be the sole boundary: reading the log needs `viewer`,
+     * rolling the app back needs `EDITOR`. A caller who cannot even see the app
+     * stays masked (`not-found`) at both verbs, exactly like every other door.
+     * The 06 §1 signature gained the ctx for this reason (wave-3 ruling).
      */
-    history(appId) {
+    history(appId, ctx) {
       const surface = history.surface(appId);
       return Object.freeze({
-        list: () => surface.list(),
-        undo: async () => withoutSession(await surface.undo()),
+        list: async () => {
+          await requireOwned(appId, ctx, "viewer");
+          return await surface.list();
+        },
+        undo: async () => {
+          await requireOwned(appId, ctx, "editor");
+          return withoutSession(await surface.undo());
+        },
       });
     },
 
@@ -3077,7 +3116,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // §9.8 — LIVE rows, every request. `viewer` is the level because a
       // viewer may see and USE a shared app; a caller who cannot see it stays
       // masked, exactly as every other app door answers them.
-      await requireOwned(appId, ctx, "viewer");
+      //
       // Payload only. The forwarded request is assembled here from method,
       // path, content-type and body — nothing else can ride along, so no
       // cookie, authorization or host header can cross the skin even if the

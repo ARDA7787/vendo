@@ -3,6 +3,7 @@ import {
   type AppDocument,
   type RunContext,
   type ToolRegistry,
+  type VendoTheme,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { createApps, type AppsConfig, type AppsRuntime, type BoxRequest } from "./index.js";
@@ -86,6 +87,28 @@ describe("§9.8 — open() routes ORG-owned served apps through the proxy", () =
       kind: "http",
       url: "/api/vendo/apps/app_org_served/serve/",
     });
+  });
+
+  it("gives the org branch the SAME theme handoff the personal branch gets", async () => {
+    // Without it a shared served app renders unthemed while the owner's own
+    // copy of the very same app renders in the host's brand.
+    const theme: VendoTheme = {
+      colors: {
+        background: "#fff", surface: "#fafafa", text: "#111", muted: "#666",
+        accent: "#0a7", accentText: "#fff", danger: "#c00", border: "#ddd",
+      },
+      typography: { fontFamily: "Inter", baseSize: "15px" },
+      radius: { small: "4px", medium: "8px", large: "16px" },
+      density: "comfortable",
+      motion: "full",
+    };
+    const { runtime, store, seed } = await setup({ theme });
+    await seed("app_org_theme", "acme");
+    await seedGrantRows(store, "app_org_theme", { "user:kim": "viewer" });
+
+    const opened = await runtime.open("app_org_theme", ctx("kim", ["acme"]));
+    expect((opened as { url: string }).url)
+      .toBe(`/api/vendo/apps/app_org_theme/serve/?vendoTheme=${encodeURIComponent(JSON.stringify(theme))}`);
   });
 
   it("leaves a PERSONAL served app on the provider URL, unchanged", async () => {

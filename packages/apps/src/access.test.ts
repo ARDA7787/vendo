@@ -11,7 +11,7 @@ import {
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { createApps, type AppsConfig, type AppsRuntime } from "./index.js";
-import { guardFixture, memoryStore, seedAppRow } from "./testing/index.js";
+import { fakeBoxSandbox, guardFixture, memoryStore, seedAppRow } from "./testing/index.js";
 // One copy of the AppAccess stand-in, shared with served-orgs.test.ts.
 import { seedGrantRows as seedGrants, storeAccessFixture as storeAccess } from "./testing/app-access-fixture.js";
 
@@ -112,6 +112,25 @@ describe("§9.3 — reads need viewer, edits editor, delete owner", () => {
   });
 });
 
+describe("§9.3 — history is level-aware in the RUNTIME, not only at the wire", () => {
+  it("keeps list at viewer, reserves undo for an editor, masks a stranger", async () => {
+    const { runtime, store } = setup();
+    await seedAppRow(store, doc("app_hist"), "acme");
+    await seedGrants(store, "app_hist", { "user:kim": "viewer", "user:dana": "editor" });
+
+    // A viewer may read the version list...
+    expect(await runtime.history("app_hist", ctx("kim")).list()).toEqual([]);
+    // ...but rolling the team's app back is an edit.
+    await expect(runtime.history("app_hist", ctx("kim")).undo())
+      .rejects.toMatchObject({ code: "forbidden" });
+    // A caller who cannot see it at all stays masked at both verbs.
+    await expect(runtime.history("app_hist", ctx("mal")).list())
+      .rejects.toMatchObject({ code: "not-found" });
+    await expect(runtime.history("app_hist", ctx("mal")).undo())
+      .rejects.toMatchObject({ code: "not-found" });
+  });
+});
+
 describe("§9.3 — list unions owned and granted", () => {
   it("lists the caller's own apps plus every app they hold a grant on", async () => {
     const { runtime, store } = setup();
@@ -183,6 +202,31 @@ describe("§9.5–§9.6 — promote", () => {
     // ORG as the row subject, not the editor, or it silently lands nowhere.
     await runtime.schedule("app_promoted_edit", "0 9 * * *", ctx("kim")).catch(() => undefined);
     expect((await store.records("vendo_apps").get("app_promoted_edit"))?.refs?.["subject"]).toBe("acme");
+  });
+
+  it("DISARMS an enabled automation, because automations run with a person's access", async () => {
+    // There is no org principal to run as: the sponsor is a person who may not
+    // even be in the team. Leaving it armed would run it as a synthetic user
+    // named after the org — no connections, no secrets, audit attributed to
+    // nobody. Re-enabling later mints a fresh sponsorship under a real person.
+    const { runtime, store } = setup();
+    await seedAppRow(store, doc("app_armed"), "dana", true);
+    const withOrg: RunContext = { ...ctx("dana"), memberships: [{ org: "acme" }] };
+
+    await runtime.promote("app_armed", "acme", withOrg);
+
+    const row = await store.records("vendo_apps").get("app_armed");
+    expect((row?.data as { enabled: boolean }).enabled).toBe(false);
+    // The document itself is untouched — only the arming bit moved.
+    expect((row?.data as { doc: AppDocument }).doc.name).toBe("Dash");
+  });
+
+  it("leaves an app that was already off exactly as it was", async () => {
+    const { runtime, store } = setup();
+    await seedAppRow(store, doc("app_unarmed"), "dana", false);
+    await runtime.promote("app_unarmed", "acme", { ...ctx("dana"), memberships: [{ org: "acme" }] });
+    const row = await store.records("vendo_apps").get("app_unarmed");
+    expect((row?.data as { enabled: boolean }).enabled).toBe(false);
   });
 
   it("requires an asserted membership in the target org", async () => {
@@ -339,6 +383,77 @@ describe("§9.3 — the MCP door inherits can() rather than re-deriving it", () 
   });
 });
 
+describe("§9.3 — the permission check costs what it claims to cost", () => {
+  /** Counts app-row reads and `can()` calls through the SAME store the runtime
+      and its `can()` both use, so the numbers are the real ones. */
+  const instrumented = (over: Partial<AppsConfig> = {}) => {
+    const store = memoryStore();
+    let rowReads = 0;
+    const counting = {
+      ...store,
+      records: (collection: string) => {
+        const records = store.records(collection);
+        if (collection !== "vendo_apps") return records;
+        return { ...records, get: async (id: string) => { rowReads += 1; return await records.get(id); } };
+      },
+    } as ReturnType<typeof memoryStore>;
+    const real = storeAccess(counting);
+    let canCalls = 0;
+    const access: AppAccess = { ...real, can: (...args) => { canCalls += 1; return real.can(...args); } };
+    const runtime = createApps({
+      store: counting,
+      guard: guardFixture(),
+      tools,
+      catalog: [],
+      appAccess: access,
+      multiParty: true,
+      ...over,
+    });
+    return {
+      runtime,
+      store,
+      reset: () => { rowReads = 0; canCalls = 0; },
+      rowReads: () => rowReads,
+      canCalls: () => canCalls,
+    };
+  };
+
+  it("keeps an owner's get() at ONE app-row read even with can() wired", async () => {
+    // open() and get() are on every render. The row `owned()` just read answers
+    // the whole question for its owner — ownership IS the top level — so the
+    // grants query and the second read must not happen.
+    const { runtime, store, reset, rowReads } = instrumented();
+    await seedAppRow(store, doc("app_one_read"), "dana");
+    reset();
+    expect((await runtime.get("app_one_read", ctx("dana")))?.id).toBe("app_one_read");
+    expect(rowReads()).toBe(1);
+  });
+
+  it("still consults can() for a caller who is NOT the row's subject", async () => {
+    const { runtime, store, reset, canCalls } = instrumented();
+    await seedAppRow(store, doc("app_not_mine"), "acme");
+    await seedGrants(store, "app_not_mine", { "user:kim": "viewer" });
+    reset();
+    expect((await runtime.get("app_not_mine", ctx("kim")))?.id).toBe("app_not_mine");
+    expect(canCalls()).toBe(1);
+  });
+
+  it("checks access ONCE per serve, not twice", async () => {
+    const { runtime, store, reset, canCalls } = instrumented({
+      experimentalMachines: true,
+      experimentalServedApps: true,
+    });
+    await seedAppRow(store, doc("app_serve_once"), "acme");
+    await seedGrants(store, "app_serve_once", { "user:kim": "viewer" });
+    reset();
+    // The machine is absent, so the forward fails — the access check has
+    // already happened by then, which is exactly what this counts.
+    await runtime.serve("app_serve_once", { method: "GET", path: "/" }, ctx("kim"))
+      .catch(() => undefined);
+    expect(canCalls()).toBe(1);
+  });
+});
+
 describe("§9.5 — the hosted-store promote limitation speaks plainly", () => {
   it("names what is unavailable AND the fix, in one consumer-safe sentence", async () => {
     const { runtime, store } = setup({ promoteApp: undefined });
@@ -351,5 +466,47 @@ describe("§9.5 — the hosted-store promote limitation speaks plainly", () => {
           + "wire your own Postgres with createVendo({ store: createStore({ url }) }) to move it, "
           + "or share a copy with fork instead",
       });
+  });
+});
+
+describe("§9.1 — an unattended app-schedule fire asserts the same orgs a request does", () => {
+  it("resolves memberships through the config seam on every fire", async () => {
+    // The seam is only worth anything if the SCHEDULE ENGINE gets it: an
+    // app-schedule fire that asserts no orgs cannot see a promoted app, so
+    // `can()` would answer differently attended and unattended.
+    const asked: string[] = [];
+    const store = memoryStore();
+    const sandbox = fakeBoxSandbox();
+    const runtime = createApps({
+      store,
+      guard: guardFixture(),
+      tools,
+      catalog: [],
+      appAccess: storeAccess(store),
+      multiParty: true,
+      experimentalMachines: true,
+      machine: { sandbox },
+      memberships: async (principal) => {
+        asked.push(principal.subject);
+        return [{ org: "acme" }];
+      },
+    });
+
+    const box = await sandbox.create({ env: {}, template: "node" });
+    const state = sandbox.machines[sandbox.machines.length - 1]!.state;
+    state.manifest = { schedules: [{ cron: "* * * * *", fn: "digest" }] };
+    state.fns.set("digest", () => ({ ok: true }));
+    const snapshotRef = await box.snapshot();
+    await seedAppRow(store, {
+      ...doc("app_fire"),
+      ui: "http",
+      machine: { snapshotRef, provisionedAt: "2026-08-01T00:00:00.000Z" },
+    }, "dana", true);
+
+    // First tick caches the manifest; the second one is due and fires.
+    await runtime.schedules.tick(new Date("2026-08-01T12:00:10.000Z"));
+    const report = await runtime.schedules.tick(new Date("2026-08-01T12:01:30.000Z"));
+    expect(report.fired.map((entry) => entry.fn)).toEqual(["digest"]);
+    expect(asked).toContain("dana");
   });
 });
