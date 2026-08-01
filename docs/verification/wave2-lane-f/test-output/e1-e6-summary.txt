@@ -40,4 +40,5 @@ E6 verdict (matched ask, same host/model/store, sequential)
   whole turn    instant median 18.1s   vs   vendo median 34.0s
   build failed  instant 1/4   vs   vendo 4/5
   latency and failure rate: BETTER than baseline on both.
-  the <=5s skeleton target: NOT met (median 6.0s, best 5.0s). See PARKED.md.
+  the <=5s skeleton target: NOT met (median 6.0s, best 5.0s).
+                            See docs/verification/wave2-lane-f/PARKED.md.
