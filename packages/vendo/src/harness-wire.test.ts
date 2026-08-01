@@ -37,6 +37,23 @@ async function tempStore(prefix: string): Promise<VendoStore> {
   return store;
 }
 
+/**
+ * A store the way a HOST supplies one: the whole public `VendoStore` surface,
+ * delegating to a real store so records and blobs genuinely work — but not the
+ * handle `@vendoai/store` minted, so it is absent from the package's internals
+ * WeakMap (`dbFor`) and has no SQL handle. That is the same shape the Cloud
+ * hosted store presents to `storeServesHarnessTurns`, without needing the Cloud.
+ */
+function nonSqlStore(backing: VendoStore): VendoStore {
+  return {
+    records: (collection) => backing.records(collection),
+    blobs: (namespace) => backing.blobs(namespace),
+    ensureSchema: () => backing.ensureSchema(),
+    close: () => backing.close(),
+    raw: () => backing.raw(),
+  };
+}
+
 const request = (path: string, body: unknown): Request =>
   new Request(`https://host.test/api/vendo${path}`, {
     method: "POST",
@@ -295,6 +312,53 @@ describe("createVendo({ harness }) — a turn served through the composed runtim
       .filter((row) => row.kind === "run")
       .map((row) => row.detail?.harness);
     expect(harnesses).not.toContain("vendo");
+  });
+
+  /**
+   * THE FLIP'S ONE EXCEPTION, exercised. A store with no SQL handle — the Cloud
+   * hosted store, or a host's own adapter behind the public `VendoStore` surface —
+   * cannot serve the transcript and workspace TABLES a harness turn needs, so it
+   * keeps `agent.stream`. Untested, that branch is exactly the kind of fallback
+   * that rots into "every chat turn is a boot-shaped error" for the deployments
+   * least able to notice.
+   *
+   * Two-sided, so it cannot pass by accident:
+   *  - the harness path is provably IMPOSSIBLE on this store (driving the door
+   *    directly raises the not-implemented refusal), and yet
+   *  - the route answers 200 and writes NO `run` row, the audit row only the
+   *    harness runtime writes — and the marker text of the harness that WAS
+   *    named is absent from the body, which the named-harness case above proves
+   *    would otherwise be there.
+   */
+  it("keeps POST /threads on agent.stream when the store has no SQL handle", async () => {
+    const backing = await tempStore("vendo-harness-nonsql-");
+    const { vendo } = await compose({
+      store: nonSqlStore(backing),
+      harness: scriptedHarness(async function* () {
+        yield { type: "text", delta: "HARNESS-RAN" };
+      }),
+    });
+
+    const turn = await vendo.handler(request("/threads", {
+      threadId: "thr_nonsql", message: userMessage("m1", "hello"),
+    }));
+    expect(turn.status).toBe(200);
+    expect(await turn.text()).not.toContain("HARNESS-RAN");
+
+    const { records } = await backing.records("vendo_audit").list({ refs: { subject: principal.subject } });
+    const runs = records
+      .map((record) => (record.data as { kind?: string }))
+      .filter((row) => row.kind === "run");
+    expect(runs).toEqual([]);
+
+    // The other side of the oracle: the harness door is composed and reachable,
+    // and it is the STORE that cannot serve it. So the 200 above is a routing
+    // fact, not a harness that happened to stay silent.
+    await expect(vendo.harness.stream({
+      threadId: "thr_nonsql" as never,
+      message: userMessage("m2", "hello"),
+      ctx: { principal } as never,
+    })).rejects.toThrow(/needs a SQL-backed store/);
   });
 });
 
