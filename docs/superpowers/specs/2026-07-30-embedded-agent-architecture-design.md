@@ -607,7 +607,9 @@ stops and asks the app's editors+ to **adopt** — approving its reads and
 writes as themselves, one card. The ask is not a new approval primitive
 (approvals stay strictly self-subject): the stopped run is a card in the app
 itself, shown to whoever editor+ opens it next; the first to accept adopts.
-Nothing is pushed to a set of people. The automation labels its window ("runs with
+Nothing is pushed to a set of people (his call, 2026-08-01). When the §3
+notification hook is eventually built, it announces this same card — an
+upgrade, not a rework. The automation labels its window ("runs with
 Dana's access") and names a wider editor set when one exists. Runs are visible
 in a consumer-voice history rendered from the audit rows — a render, not new
 machinery. No non-human principal ever acts.
