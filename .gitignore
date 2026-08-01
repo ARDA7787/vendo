@@ -102,3 +102,4 @@ docs/verification/w4-pipeline/samples.ndjson
 
 # throwaway design exploration (never committed)
 design-canvas/
+packages/apps/box/claude-turn.mjs

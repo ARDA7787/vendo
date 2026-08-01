@@ -42,11 +42,15 @@
     "./internal": {
       "types": "./dist/internal.d.ts",
       "default": "./dist/internal.js"
+    },
+    "./box-door": {
+      "default": "./box/turn-routes.mjs"
     }
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "box"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

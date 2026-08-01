@@ -39,11 +39,11 @@ import {
   type ToolSearchConfig,
 } from "@vendoai/agent/internal";
 import type { VendoGuard } from "@vendoai/guard";
-import { threadMessageStore, workspaceStore, type VendoStore } from "@vendoai/store";
+import { harnessStateStore, threadMessageStore, workspaceStore, type VendoStore } from "@vendoai/store";
 import {
   createDiscoveryRails,
   createHarnessRuntime,
-  memoryHarnessStateStore,
+  provideHarnessAdapters,
   reportHire,
   vendo,
   type DiscoveryRails,
@@ -60,6 +60,12 @@ export interface HarnessTurnsConfig {
    *  written where the erase cascade will look for them. */
   files: FilesAdapter;
   guard: VendoGuard;
+  /** The composed sandbox adapter (`selectSandbox`). A harness declaring
+   *  `requires: { sandbox: true }` — `claudeCode()` — is constructed by the HOST
+   *  at boot, where no composition exists, so composition fills its slot here
+   *  instead. Unset, such a harness must be handed one directly
+   *  (`claudeCode({ sandbox })`), and the boot gate refuses if neither happened. */
+  sandbox?: unknown;
   /** The guard-bound registry — the one choke point, already carrying the
    *  connect gate and unique-title assertion. */
   tools: ToolRegistry;
@@ -113,13 +119,21 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
   // hosted store — which has no local SQL and, in wave 1, no workspace or
   // transcript door of its own. Deferred, a hosted deployment composes exactly as
   // before and only a host that actually drives a harness turn meets the gap.
-  let sql: { transcript: ReturnType<typeof threadMessageStore<UIMessage>>; workspaces: ReturnType<typeof workspaceStore> } | undefined;
+  let sql: {
+    transcript: ReturnType<typeof threadMessageStore<UIMessage>>;
+    workspaces: ReturnType<typeof workspaceStore>;
+    harnessState: ReturnType<typeof harnessStateStore>;
+  } | undefined;
   const sqlDoors = (): NonNullable<typeof sql> => {
     if (sql === undefined) {
       try {
         sql = {
           transcript: threadMessageStore<UIMessage>(config.store),
           workspaces: workspaceStore(config.store, { files: config.files }),
+          // §1.3 made DURABLE. A session-owning harness reads its state on the
+          // turn AFTER the one that wrote it, so the process-lifetime default
+          // meant a re-seed on every restart and on every second replica.
+          harnessState: harnessStateStore(config.store),
         };
       } catch (cause) {
         throw new VendoError(
@@ -134,11 +148,6 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
     }
     return sql;
   };
-  // Hoisted, NOT per turn: `turn.state` is read on the turn AFTER the one that
-  // wrote it (§1.3), so a per-turn store would hand every session-owning harness
-  // a blank slate forever.
-  const harnessState = memoryHarnessStateStore();
-
   /**
    * The `/host` mount for this deployment: pack skills as SKILL.md files.
    *
@@ -165,6 +174,11 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
    */
   const defaultHarness = vendo({ onHire: reportHire }) as unknown as Harness<never>;
   const resolveHarness = (): Harness<never> => config.harness ?? defaultHarness;
+  // Deployment-scoped, filled once: the adapter is a deployment fact, so nothing
+  // here could attribute one user's machine to another user's thread.
+  if (config.harness !== undefined && config.sandbox !== undefined) {
+    provideHarnessAdapters(config.harness, { sandbox: config.sandbox });
+  }
 
   /**
    * The per-THREAD searched-in set, exactly as `createAgent` keeps one: a tool
@@ -281,7 +295,7 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
       // title, exactly as a `createAgent` turn's persist does.
       await threads.persist(thread, [input.message]);
 
-      const { transcript, workspaces } = sqlDoors();
+      const { transcript, workspaces, harnessState } = sqlDoors();
       const workspace = await workspaces.open(input.ctx.principal, { host: hostProjection() });
       const runtime = createHarnessRuntime({
         tools: config.tools,
