@@ -407,12 +407,22 @@ finance-dashboard:  org:acme → viewer · team:finance → editor · dana → o
   from ownership + memberships + grants, all rows — is the only permission
   logic; the workspace façade, the wire, and the MCP door all call it. Harnesses,
   packs, and tools are permission-blind: they just perceive a smaller world.
-- **The host's identity system IS the org** (decided with Yousef
-  2026-08-01: don't overcomplicate). Memberships are never Vendo rows: the
-  same auth answer that names the user (`fromSession(getUser)`) also names
-  their orgs and teams — true on every request, straight from the host's
-  source of truth, no second org chart, no sync, no console channel into the
-  host's database. The only rows Vendo stores are the Vendo-specific part —
+- **The host's identity system IS the org** (LOCKED with Yousef 2026-08-01,
+  after a two-agent industry survey: every surviving embedded vendor —
+  Liveblocks, TipTap, Metabase, Sigma, LaunchDarkly — asserts memberships
+  per session and stores only grants; the one org-chart-sync vendor, Cord,
+  is dead). Memberships are never Vendo rows: the same auth answer that
+  names the user (`fromSession(getUser)`) also names their orgs and teams —
+  a `memberships` callback on the auth preset, one query against the host's
+  own tables. True on every request, straight from the host's source of
+  truth, no second org chart, no sync, no console channel into the host's
+  database. Because the callback is host server code in the same
+  deployment, unattended runs can call it too — no session needed, which is
+  the one case that forces syncing on third-party clouds (Stream) and does
+  not exist for us. The Cloud console never manages a BYO org; it MAY show
+  a read-only *observed* view (last-asserted users/teams/shares, the
+  Metabase/LaunchDarkly pattern) for support, built from data already
+  flowing through the deployment. The only rows Vendo stores are the Vendo-specific part —
   grants (app → principal → level) — written by the Share dialog inside the
   embedded surface, behind the `store` adapter the host already wired
   (their Postgres or Cloud's hosted store), host-SQL-queryable. Cloud's
