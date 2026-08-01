@@ -43,6 +43,7 @@ import {
   type AutomationsEngine,
 } from "@vendoai/automations";
 import {
+  RESERVED_SUBJECT_PREFIX,
   VendoError,
   descriptorHash,
   vendoThemeSchema,
@@ -1516,7 +1517,30 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // every other adapter choice: the guard evaluates rules, this reads them.
     // Callers with no asserted memberships (every unkeyed deployment, and any
     // request whose host asserted none) resolve to no rules at all.
-    orgPolicy: orgPolicyResolver(workspacePolicySource(store)),
+    //
+    // A per-ORG failure (unreadable or malformed policy.json) skips that org's
+    // rules and lands on the audit trail, so the admin whose file is broken can
+    // see their policy is not in force. Reported through the guard that is being
+    // constructed here — the callback only ever runs inside a later check, which
+    // is the same late-binding `resolveRisk` above uses.
+    orgPolicy: orgPolicyResolver(workspacePolicySource(store), async (org, reason) => {
+      console.warn(
+        `[vendo] org policy for "${org}" was not applied: ${reason}. `
+        + "Fix /orgs/<org>/policy.json — until then this org's rules are not in force.",
+      );
+      await guard.report({
+        id: `aud_${globalThis.crypto.randomUUID()}`,
+        at: new Date().toISOString(),
+        kind: "policy-decision",
+        // A broken org file is nobody's personal event, so it is audited under
+        // the runtime's own reserved namespace (`vendo:`, block-actions §C)
+        // rather than pinned to whichever member happened to trigger the read.
+        principal: { kind: "user", subject: `${RESERVED_SUBJECT_PREFIX}org-policy:${org}` },
+        venue: "chat",
+        presence: "away",
+        detail: { reason: "org-policy-unavailable", org, message: reason },
+      });
+    }),
   });
   let presentCredentialsWarningEmitted = false;
   const warnPresentCredentialsNotForwarded = async (event: {

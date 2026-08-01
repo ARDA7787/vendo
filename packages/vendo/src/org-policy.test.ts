@@ -47,14 +47,58 @@ describe("org policy resolution at the composition seam", () => {
     expect(await orgPolicyResolver(async () => undefined)(ctx([{ org: "maple" }]))).toEqual([]);
   });
 
-  it("throws on a malformed file rather than silently dropping the tightening", async () => {
-    const resolve = orgPolicyResolver(async () => "{not json");
-    await expect(resolve(ctx([{ org: "maple" }]))).rejects.toThrow(/org maple/);
+  /** F7 — one org's broken file must not disarm every OTHER org's policy. The
+   *  bad file is reported and skipped; the rest still bind. */
+  it("keeps the parseable orgs' rules when one org's file is malformed, and reports the failure", async () => {
+    const failures: Array<{ org: string; reason: string }> = [];
+    const resolve = orgPolicyResolver(
+      async (org) => org === "broken"
+        ? "{not json"
+        : policy([{ match: { risk: "destructive" }, action: "block" }]),
+      (org, reason) => { failures.push({ org, reason }); },
+    );
+
+    const rules = await resolve(ctx([{ org: "broken" }, { org: "maple" }]));
+
+    expect(rules).toEqual([{ match: { risk: "destructive" }, action: "block" }]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.org).toBe("broken");
+    expect(failures[0]?.reason).toMatch(/org broken/);
   });
 
-  it("throws on a file that tries to LOOSEN", async () => {
-    const resolve = orgPolicyResolver(async () => policy([{ match: {}, action: "run" }]));
-    await expect(resolve(ctx([{ org: "maple" }]))).rejects.toThrow(/org maple/);
+  it("reports a file that tries to LOOSEN and applies none of its rules", async () => {
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(
+      async () => policy([{ match: {}, action: "run" }, { match: {}, action: "block" }]),
+      (org) => { failures.push(org); },
+    );
+
+    // Not "drop the run rule and keep the block": a file this layer cannot
+    // understand is not partially applied.
+    expect(await resolve(ctx([{ org: "maple" }]))).toEqual([]);
+    expect(failures).toEqual(["maple"]);
+  });
+
+  /** F8 — an absent file and a FAILED READ are different facts. Absent is the
+   *  normal case (most orgs set no policy); a read that blew up must be heard,
+   *  because silently treating it as "no policy" is a silent loosening. */
+  it("reports a source that fails to read, rather than treating it as no policy", async () => {
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(
+      async () => { throw new Error("workspace read failed"); },
+      (org, reason) => { failures.push(`${org}: ${reason}`); },
+    );
+
+    expect(await resolve(ctx([{ org: "maple" }]))).toEqual([]);
+    expect(failures).toEqual(["maple: workspace read failed"]);
+  });
+
+  it("says nothing at all when the file is simply absent", async () => {
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(async () => undefined, (org) => { failures.push(org); });
+
+    expect(await resolve(ctx([{ org: "maple" }]))).toEqual([]);
+    expect(failures).toEqual([]);
   });
 
   it("ignores a memberships field that is not a list of orgs", async () => {

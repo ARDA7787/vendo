@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createGuard } from "../src/index.js";
 import { parseOrgPolicyFile } from "../src/org-policy.js";
 import { createMemoryStore } from "./fixtures/memory-store.js";
-import { call, context, descriptor, seedGrant } from "./fixtures/tools.js";
+import { alice, call, context, descriptor, FixtureTools, seedGrant } from "./fixtures/tools.js";
 
 /** Contract §9.10 — the org-admin policy layer: a post-pipeline strictness
  *  clamp that TIGHTENS a draft decision and can never loosen one. Every gate
@@ -150,6 +150,51 @@ describe("org policy — the strictness clamp", () => {
     const { events } = await guard.audit.query({ kind: "policy-decision" });
     expect(events.some((event: AuditEvent) =>
       (event.detail as { reason?: string } | undefined)?.reason === "org-policy-unavailable")).toBe(true);
+  });
+
+  /** F2 — an org "ask" has to be SATISFIABLE. The approval the clamp parks is
+   *  consumed on the very next check, which the pipeline reports as a
+   *  run/"grant" with no grantId (THE LAW's own replay carve-out). Re-clamping
+   *  that made "ask" mean park-approve-park forever: the user could never get
+   *  the call through. */
+  it("lets the approval it parked actually satisfy the call", async () => {
+    const store = createMemoryStore();
+    const guard = createGuard({
+      store,
+      orgPolicy: async () => [{ match: { tool: "host_write" }, action: "ask" }],
+    });
+    const tools = new FixtureTools();
+    const bound = guard.bind(tools);
+    const toolCall = call("host_write", { amount: 5 }, "call_org_ask");
+
+    const parked = await bound.execute(toolCall, context());
+    expect(parked).toMatchObject({ status: "pending-approval" });
+    if (parked.status !== "pending-approval") throw new Error("expected the call to park");
+    await guard.approvals.decide(parked.approvalId, { approve: true }, alice);
+
+    await expect(bound.execute(toolCall, context())).resolves.toMatchObject({ status: "ok" });
+    expect(tools.executions).toHaveLength(1);
+    // Single-use as ever: the next identical replay parks again.
+    await expect(bound.execute(toolCall, context())).resolves.toMatchObject({ status: "pending-approval" });
+    expect(tools.executions).toHaveLength(1);
+  });
+
+  it("still binds a STANDING grant — an org ask over a remembered grant is confirm-every-time", async () => {
+    const store = createMemoryStore();
+    const write = descriptor("write", { name: "host_standing" });
+    await seedGrant(store, { descriptor: write });
+    const ctx = context();
+
+    const unclamped = createGuard({ store });
+    await expect(unclamped.check(call(write.name, {}, "call_red"), write, ctx))
+      .resolves.toMatchObject({ action: "run", decidedBy: "grant" });
+
+    const clamped = createGuard({
+      store,
+      orgPolicy: async () => [{ match: { tool: write.name }, action: "ask" }],
+    });
+    await expect(clamped.check(call(write.name, {}, "call_green"), write, ctx))
+      .resolves.toMatchObject({ action: "ask", decidedBy: "org" });
   });
 
   it("clamps ahead of THE LAW, which still refuses the unattended destructive call", async () => {

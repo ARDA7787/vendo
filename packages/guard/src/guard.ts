@@ -701,7 +701,20 @@ class GuardImplementation implements VendoGuard {
     // up the rank run < ask < block — which is what makes "host policy always
     // wins, org policy tightens never loosens" structural rather than a promise.
     // THE LAW's call-time gate stays downstream of it, untouched.
-    const orgRule = await this.#orgRule(call, effectiveDescriptor, ctx);
+    //
+    // ONE carve-out, and it is the same one THE LAW makes below (`replayApproved`
+    // in `bind`): a run/"grant" with NO grantId is a one-time CONSUMED approval —
+    // a human just tapped this exact call with these exact arguments, moments
+    // ago, which is the very thing an org "ask" asked for. Re-clamping it made
+    // "ask" unsatisfiable: park → approve → park, forever, with the call never
+    // getting through. A STANDING grant (grantId present) stays bound on
+    // purpose: an org ask over a remembered grant means confirm-every-time, and
+    // that is the point of the layer.
+    const consumedApproval = draft.action === "run"
+      && draft.decidedBy === "grant" && draft.grantId === undefined;
+    const orgRule = consumedApproval
+      ? undefined
+      : await this.#orgRule(call, effectiveDescriptor, ctx);
     if (orgRule !== undefined && strictness(orgRule.action) > strictness(draft.action)) {
       // Only "ask" and "block" can outrank a draft — "run" is the floor — so the
       // else arm here is reached exactly when the org rule says ask.
