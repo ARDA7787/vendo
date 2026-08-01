@@ -171,12 +171,10 @@ export const createTurnRoutes = (options = {}) => {
      */
     async handle(method, pathname, headers, payload) {
       if (method !== "POST") return { status: 405, body: { error: "POST only" } };
-      // The token is the machine's whole defence: the provider exposes control
-      // ports on an unguessable hostname, and this closes the rest.
       // `hello` is open ONLY until a token exists — trust on first use, then
       // every route including this one is closed. The provider already serves
-      // control ports on an unguessable per-machine hostname; this closes the
-      // rest, and it is the whole defence the machine has.
+      // control ports on an unguessable per-machine hostname; the token closes
+      // the rest, and together they are the whole defence the machine has.
       const claiming = pathname === "/turn/hello" && token === "";
       if (!claiming && (token === "" || headers["x-vendo-box-token"] !== token)) {
         return { status: 401, body: { error: "bad or missing box token" } };
