@@ -383,3 +383,44 @@ describe("§9.9 — the additive, ctx-aware venue-state slot", () => {
     expect(seen).toEqual(["app_venue:dana", "app_venue:kim"]);
   });
 });
+
+describe("§9.3 — the MCP door inherits can() rather than re-deriving it", () => {
+  it("gates the door's whole surface (list · open · call) through the runtime", async () => {
+    // 10-mcp §4's AppsPort is a structural SUBSET of AppsRuntime — the umbrella
+    // passes these three verbs essentially verbatim (server.ts's `appsPort`), so
+    // there is no second permission path to police. This exercises exactly that
+    // triple at viewer level and for a stranger.
+    const { runtime, store } = setup();
+    const app: AppDocument = {
+      ...doc("app_door"),
+      ui: "tree",
+      tree: {
+        formatVersion: "vendo-genui/v2",
+        root: "root",
+        nodes: [{ id: "root", component: "Stack", source: "prewired" }],
+      },
+    };
+    await seedAppRow(store, app, "acme");
+    await seedGrants(store, "app_door", { "user:kim": "viewer" });
+
+    const port = {
+      list: (runCtx: RunContext) => runtime.list(runCtx),
+      open: (id: AppId, runCtx: RunContext) => runtime.open(id, runCtx),
+      call: (id: AppId, ref: string, runCtx: RunContext) => runtime.call(id, ref, {}, runCtx),
+    };
+
+    // A viewer reaches all three (viewer = see + use).
+    expect((await port.list(ctx("kim"))).map((entry) => entry.id)).toEqual(["app_door"]);
+    expect(await port.open("app_door", ctx("kim"))).toMatchObject({ kind: "tree" });
+    // `call` resolves through the guard-bound registry; what matters here is
+    // that the PERMISSION gate let it through rather than masking the app.
+    await expect(port.call("app_door", "host_missing", ctx("kim")))
+      .resolves.toMatchObject({ status: "error" });
+
+    // A stranger sees nothing and reaches nothing — masked, never 403.
+    expect(await port.list(ctx("mal"))).toEqual([]);
+    await expect(port.open("app_door", ctx("mal"))).rejects.toMatchObject({ code: "not-found" });
+    await expect(port.call("app_door", "host_missing", ctx("mal")))
+      .rejects.toMatchObject({ code: "not-found" });
+  });
+});
