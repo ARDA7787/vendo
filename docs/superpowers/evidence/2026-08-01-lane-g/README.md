@@ -44,4 +44,16 @@ therefore proven over the real composition in
 `appAccess`, real wire routes, two principals — covering all seven E8 slices
 including promote, the 403 fork offer, revoke against live rows,
 subject-partitioned app data, and the one-ok-one-conflict `/orgs` commit pair.
-See `PARKED.md` item 1 for the hosted-store promote gap that follows from this.
+See `PARKED.md` item 1 — the hosted-store promote gap that follows from this was
+ruled BYO-store-only on 2026-08-01 and is closed.
+
+## §9.8 (served org apps) — not browser-provable in this demo
+
+The proxy needs a served (layer-3) app, which needs `experimentalServedApps` AND
+a real sandbox provider; `demo-bank` leaves both off. It is proven instead at two
+levels: `packages/apps/src/served-orgs.test.ts` (open() routes org apps to the
+proxy and leaves personal ones alone, `serve()` re-checks on live rows, only the
+payload crosses the skin, and a refused caller never costs a machine) and
+`packages/vendo/src/orgs-e8.test.ts` §9.8 block (the mounted route admits a
+granted viewer and masks a stranger — verified discriminating by unmounting the
+route and watching the pair go red).
