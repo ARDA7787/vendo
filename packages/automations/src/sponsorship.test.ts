@@ -347,6 +347,46 @@ describe("sponsorship — the resume gate", () => {
     expect(await engine.runs.get(runId!, ctx())).toMatchObject({ status: "ok" });
   });
 
+  /** N1 (verifier variant D) — the gate checks the CURRENT state, which an
+   *  adoption between park and resume satisfies perfectly: the sponsorship is
+   *  active, the intent matches, the new sponsor can edit. But the parked
+   *  approval belongs to the PREVIOUS era: resuming it would execute a call the
+   *  new sponsor never saw under their identity, and mint the grant under the
+   *  old sponsor. A run may only be resumed by the person who was asked. */
+  it("refuses to resume a parked approval from a previous sponsor's era", async () => {
+    const store = memoryStoreAdapter();
+    const app = oneWriteStep("app_resume_adopted", "inv_42");
+    const { engine, guard, calls } = harness(
+      { store, appAccess: appAccessStub(["user_dana", "user_omar"]) },
+      parkOnce(store),
+    );
+    await seedApp(store, app);
+    await engine.enable(app.id, ctx("user_dana", "Dana"));
+    const [runId] = await engine.emit("go", {}, ctx().principal);
+    expect(await engine.runs.get(runId!, ctx())).toMatchObject({ status: "pending-approval" });
+
+    // The automation changes hands while the run sits parked: someone else edits
+    // it, and a different editor adopts it — so by the time the approval is
+    // decided, the automation runs as Omar.
+    await engine.onDocumentEdit(app, app, "user_omar");
+    expect((await engine.adopt(app.id, ctx("user_omar", "Omar"))).adopted).toBe(true);
+
+    guard.decide("apr_parked", true);
+    await flush();
+
+    // Never resumed…
+    expect(calls).toHaveLength(1);
+    const run = await engine.runs.get(runId!, ctx());
+    expect(run?.status).toBe("error");
+    expect(run?.summary).toMatch(/run it again/i);
+    expect(guard.audit.some((event) =>
+      (event.detail as { status?: string }).status === "sponsorship-changed")).toBe(true);
+    // …and never minted: the parked approval was Dana's, and nothing about
+    // Omar's adoption grants Dana anything.
+    expect((await store.records("vendo_grants").list()).records).toEqual([]);
+    expect(await store.records("automations:parked").get("apr_parked")).toBeNull();
+  });
+
   it("refuses to resume once a third party has edited the document", async () => {
     const store = memoryStoreAdapter();
     const app = oneWriteStep("app_resume_evil", "inv_42");

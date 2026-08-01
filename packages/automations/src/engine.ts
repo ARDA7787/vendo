@@ -201,6 +201,12 @@ const SPONSORSHIP_STOP: Record<
 const captureRefs = (subject: string, appId: string): Record<string, string> =>
   ({ subject, app_id: appId });
 
+/** §9.9 — what a run says when the automation changed hands while it waited. The
+ *  automation itself is fine; it is this RUN that belongs to a sponsor who no
+ *  longer holds it, and re-running is the whole remedy. */
+const SPONSOR_CHANGED = (who: string): string =>
+  `stopped: this run was waiting with ${who}'s access, which has changed — run it again to continue`;
+
 const clone = <T>(value: T): T => globalThis.structuredClone(value);
 const id = (prefix: string): string => `${prefix}${globalThis.crypto.randomUUID()}`;
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -1116,6 +1122,24 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         if (refusal !== undefined) {
           await audit(ctx, "sponsorship-invalidated", { reason: refusal.reason, summary: refusal.summary });
           await terminal(run, ctx, "error", refusal.summary, { code: "blocked", message: refusal.summary });
+          await dropPark();
+          return;
+        }
+        // …and the gate above is not enough on its own, because it asks about
+        // the automation NOW while this run belongs to an earlier era. An
+        // adoption completing between park and resume satisfies every current
+        // check — active sponsorship, matching intent, an editor who can edit —
+        // yet the parked approval belongs to the sponsor who is gone: resuming it
+        // would execute a call the new sponsor never saw under THEIR identity,
+        // against an intent that may no longer contain that step, and mint the
+        // grant under the OLD sponsor. A run may only be resumed by the very
+        // person who was asked, so a changed hand ends it: nothing runs, nothing
+        // is granted, and the automation simply runs again from the top.
+        const parked = approvalData.request.ctx.principal;
+        if (parked.subject !== ctx.principal.subject) {
+          const summary = SPONSOR_CHANGED(parked.display ?? parked.subject);
+          await audit(ctx, "sponsorship-changed", { parked: parked.subject, summary });
+          await terminal(run, ctx, "error", summary, { code: "blocked", message: summary });
           await dropPark();
           return;
         }
