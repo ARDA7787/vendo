@@ -4,7 +4,8 @@ export { VendoActivities, type VendoActivitiesProps } from "./vendo-activities.j
 export { ApprovalCard, type ApprovalCardProps } from "./approval-card.js";
 export { VendoAppEmbed, VendoApprovalEmbed, VendoToolResult } from "./embeds.js";
 export { ApprovalSheet } from "./approval-sheet.js";
-export { AutomationCard, type AutomationCardProps } from "./automation-card.js";
+export { AdoptionCard, AdoptionVenueCard, type AdoptionCardProps } from "./adoption-card.js";
+export { AutomationCard, sponsorLabel, type AutomationCardProps } from "./automation-card.js";
 export { GrantSetCard, type GrantSetCardProps, type GrantSetPermission } from "./grant-set-card.js";
 export { AutomationsPanel } from "./automations-panel.js";
 export { ConnectCard, type ConnectCardProps } from "./connect-card.js";

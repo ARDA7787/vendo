@@ -26,7 +26,8 @@ import {
 } from "react";
 import { useVendoThemeOrDefault } from "../context.js";
 import { themeCssVariables } from "../theme.js";
-import type { InClientVenue, PinDrift } from "../wire-types.js";
+import { AdoptionVenueCard } from "../chrome/adoption-card.js";
+import type { AdoptionVenue, InClientVenue, PinDrift } from "../wire-types.js";
 import { resolvePointer } from "./bindings.js";
 import { NodeErrorBoundary } from "./error-boundary.js";
 import { FluidReveal } from "./fluid-reveal.js";
@@ -571,6 +572,15 @@ function StatefulTreeView({
   const inClient = (tree as WalkTree & { inClient?: InClientVenue }).inClient;
   // Tolerate a malformed field (like every other payload extra): only an
   // array of well-formed entries renders the notice.
+  // §9.9 — the adoption ask, when the server attached one for THIS caller (it
+  // only does so for an editor+). Tolerated like every other payload extra: a
+  // malformed field is no card, never a broken surface.
+  const adoptionRaw = (tree as WalkTree & { adoption?: unknown }).adoption;
+  const adoption = typeof adoptionRaw === "object" && adoptionRaw !== null
+    && typeof (adoptionRaw as AdoptionVenue).automation === "string"
+    && Array.isArray((adoptionRaw as AdoptionVenue).needs)
+    ? adoptionRaw as AdoptionVenue
+    : undefined;
   const pinDriftRaw = (tree as WalkTree & { pinDrift?: unknown }).pinDrift;
   const pinDrift = (Array.isArray(pinDriftRaw) ? pinDriftRaw : [])
     .filter((entry): entry is PinDrift =>
@@ -670,6 +680,10 @@ function StatefulTreeView({
     <NodeErrorBoundary nodeId={validation.tree.root} retryKey={data ?? validation.tree.data} streaming={streaming}>
       {dropBackNotice}
       {driftNotice}
+      {/* §9.9 — a stopped automation asks IN the app, above its own surface:
+          nothing is pushed to anybody, and the next editor to open it may
+          take it on. */}
+      {adoption === undefined ? null : <AdoptionVenueCard card={adoption} />}
       <NodeRenderer
         nodeId={validation.tree.root}
         ancestry={new Set()}
