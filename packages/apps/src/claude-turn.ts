@@ -98,7 +98,14 @@ export interface ClaudeTurnInput {
   callTool: GuardedCall;
   emit: (event: ClaudeTurnEvent) => void;
   signal?: AbortSignal;
-  /** Test seam only — production loads the real SDK. */
+  /**
+   * The Agent SDK module. The BOX leaves it unset and this file resolves it from
+   * the machine image; `machine: "local"` passes it in, because the optional peer
+   * is declared on `@vendoai/harnesses` (contract build-list item 1) and a
+   * dynamic import here would resolve against `@vendoai/apps`, which does not
+   * declare it — under a strict node_modules layout that is a hard failure.
+   * Tests pass a double.
+   */
   sdk?: SdkModule;
 }
 

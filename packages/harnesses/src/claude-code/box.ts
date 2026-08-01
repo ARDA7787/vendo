@@ -69,6 +69,17 @@ interface PoolEntry {
  *  which is what "reused across its turns" means. */
 const pool = new Map<string, PoolEntry>();
 
+/**
+ * Where an idle-swept machine went, per thread. This OUTLIVES its pool entry,
+ * and it is what makes "an idle-TTL'd box never costs a re-seed" true: the sweep
+ * runs BETWEEN turns, so it has no `turn.state` to write to, and without this the
+ * snapshot it takes would be unreachable and every swept session would re-seed.
+ *
+ * Exactly as durable as the pool itself — a process that restarts loses both,
+ * and loses the machine with them, so the re-seed it then pays is honest.
+ */
+const swept = new Map<string, string>();
+
 const mintToken = (): string => `bxt_${globalThis.crypto.randomUUID()}`;
 
 async function control(
@@ -100,21 +111,24 @@ async function control(
 
 /** Arm the idle sweep: snapshot, then destroy. The ref is what a later turn
  *  resumes, so the native session comes back with the disk. */
-function armIdle(threadId: string, entry: PoolEntry): void {
+function armIdle(threadId: string, entry: PoolEntry, idleTtlMs: number): void {
   if (entry.timer !== undefined) clearTimeout(entry.timer);
   entry.timer = setTimeout(() => {
     void (async () => {
       if (entry.leased) return;
       pool.delete(threadId);
       try {
-        entry.resumeRef = await entry.machine.snapshot();
+        const ref = await entry.machine.snapshot();
+        entry.resumeRef = ref;
+        swept.set(threadId, ref);
       } catch {
         // No snapshot means the next turn starts fresh and re-seeds from our
         // transcript — disposable by contract.
+        swept.delete(threadId);
       }
       await entry.machine.destroy().catch(() => undefined);
     })();
-  }, MACHINE_IDLE_TTL_MS);
+  }, idleTtlMs);
   entry.timer.unref?.();
 }
 
@@ -126,15 +140,19 @@ export interface BoxMachineOptions {
   resumeRef?: string;
   /** Provider template; defaults to `VENDO_BOX_TEMPLATE`. */
   template?: string;
+  /** Test seam; production uses {@link MACHINE_IDLE_TTL_MS}. */
+  idleTtlMs?: number;
 }
 
 export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachine> {
+  const idleTtlMs = options.idleTtlMs ?? MACHINE_IDLE_TTL_MS;
   const existing = pool.get(options.threadId);
   let entry: PoolEntry;
   if (existing !== undefined) {
     if (existing.timer !== undefined) clearTimeout(existing.timer);
     entry = existing;
   } else {
+    const idleRef = swept.get(options.threadId);
     const token = mintToken();
     // Deliberately NOT setting CLAUDE_CONFIG_DIR: the SDK's default is under
     // $HOME, and `/workspace` is EMPTIED and re-materialized at the start of
@@ -147,12 +165,16 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
       VENDO_WORKSPACE_ROOT: "/workspace",
     };
     let machine: SandboxMachineLike | undefined;
-    if (options.resumeRef !== undefined) {
+    // The sweep's own ref first: it is newer than anything a caller could carry.
+    const resumeFrom = idleRef ?? options.resumeRef;
+    if (resumeFrom !== undefined) {
       try {
-        machine = await options.sandbox.resume(options.resumeRef);
+        machine = await options.sandbox.resume(resumeFrom);
+        swept.delete(options.threadId);
       } catch {
         // A snapshot the provider dropped is a re-seed, not a failure.
         machine = undefined;
+        swept.delete(options.threadId);
       }
     }
     if (machine === undefined) {
@@ -251,13 +273,20 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
 
         const ask = polled["ask"] as { id?: unknown; name?: unknown; args?: unknown } | undefined;
         if (ask !== undefined && typeof ask.id === "string" && typeof ask.name === "string") {
-          // §1.4: the machine is NOT leased while a guarded call runs — the wait
-          // for a human tap happens in here, and no lease may outlive it.
+          // §1.4, made real rather than declared: a guarded call may block up to
+          // APPROVAL_WAIT_MS for a human tap, and no machine lease may outlive
+          // that. So the lease is DROPPED and the idle sweep ARMED for the whole
+          // window — a wait that outlives the machine's idle budget loses the
+          // machine, and losing it mid-turn is the case the store already
+          // survives (nothing syncs, the next turn recovers on a fresh one).
           entry.leased = false;
+          armIdle(options.threadId, entry, idleTtlMs);
           let result;
           try {
             result = await turnRequest.callTool(ask.name, (ask.args ?? {}) as Record<string, unknown>);
           } finally {
+            if (entry.timer !== undefined) clearTimeout(entry.timer);
+            entry.timer = undefined;
             entry.leased = true;
           }
           await request(`/turn/${turnId}/answer`, { id: ask.id, result });
@@ -269,10 +298,13 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
 
     async release() {
       entry.leased = false;
-      armIdle(options.threadId, entry);
-      // Nothing to carry yet: the machine is warm, so `resumeRef` only becomes
-      // real once the sweep has taken it. The state written last turn stands.
-      return entry.resumeRef === undefined ? undefined : { resumeRef: entry.resumeRef };
+      armIdle(options.threadId, entry, idleTtlMs);
+      // The machine is warm, so there is usually nothing to carry — `resumeRef`
+      // only becomes real once a sweep has taken it, and the in-process `swept`
+      // map is what the NEXT turn actually reads. Handing it up too lets a
+      // different replica pick the session up once one exists.
+      const ref = entry.resumeRef ?? swept.get(options.threadId);
+      return ref === undefined ? undefined : { resumeRef: ref };
     },
   };
 }
@@ -281,6 +313,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
 export async function disposeSessionMachines(): Promise<void> {
   const entries = [...pool.entries()];
   pool.clear();
+  swept.clear();
   for (const [, entry] of entries) {
     if (entry.timer !== undefined) clearTimeout(entry.timer);
     await entry.machine.destroy().catch(() => undefined);

@@ -5,7 +5,7 @@ import { createTurnState } from "../harness-state.js";
 import { provideHarnessAdapters } from "../harness-sandbox.js";
 import { testWorkspace, unusedModels, userMessage } from "../test-doubles.test-util.js";
 import { claudeCode, inferenceEnv, promptFor, rewindFor } from "./index.js";
-import { disposeSessionMachines, type SandboxAdapterLike, type SandboxMachineLike } from "./box.js";
+import { boxMachine, disposeSessionMachines, type SandboxAdapterLike, type SandboxMachineLike } from "./box.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -31,14 +31,20 @@ interface FakeBox extends SandboxMachineLike {
   env: Record<string, string>;
 }
 
-function fakeSandbox(script: BoxScript): SandboxAdapterLike & { boxes: FakeBox[]; failResume?: boolean } {
+function fakeSandbox(script: BoxScript): SandboxAdapterLike & {
+  boxes: FakeBox[];
+  failResume?: boolean;
+  resumedFrom: string[];
+} {
   const adapter = {
     boxes: [] as FakeBox[],
     failResume: false,
+    resumedFrom: [] as string[],
     async create(spec: { env: Record<string, string> }) {
       return makeBox(adapter, script, spec.env);
     },
-    async resume(_ref: string) {
+    async resume(ref: string) {
+      adapter.resumedFrom.push(ref);
       if (adapter.failResume) throw new VendoError("not-found", "snapshot gone");
       return makeBox(adapter, script, {});
     },
@@ -292,6 +298,83 @@ describe("promptFor — the truth is ours", () => {
     const prompt = promptFor(messages, false);
     expect(prompt).toContain("make a dashboard");
     expect(prompt).toContain("now make it blue");
+  });
+});
+
+describe("the session machine — one per thread, idle-TTL disposed (design §9)", () => {
+  const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test("the idle sweep SNAPSHOTS before destroying, and the next turn resumes that snapshot", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const first = await boxMachine({ sandbox, threadId: "thr_idle", env: {}, idleTtlMs: 5 });
+    await first.release();
+    await wait(60);
+
+    expect(sandbox.boxes[0]?.snapshots).toBe(1);
+    expect(sandbox.boxes[0]?.destroyed).toBe(true);
+
+    // No ref handed in: the sweep's own ref has to be reachable, or every swept
+    // session pays a re-seed — the exact thing the machine exists to prevent.
+    await boxMachine({ sandbox, threadId: "thr_idle", env: {} });
+    expect(sandbox.resumedFrom).toEqual(["fake:box_0"]);
+  });
+
+  test("a snapshot the provider dropped re-seeds on a FRESH machine instead of failing", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const first = await boxMachine({ sandbox, threadId: "thr_gone", env: {}, idleTtlMs: 5 });
+    await first.release();
+    await wait(60);
+    sandbox.failResume = true;
+    await boxMachine({ sandbox, threadId: "thr_gone", env: {} });
+    expect(sandbox.resumedFrom).toEqual(["fake:box_0"]);
+    // box_0 was swept, the resume failed, so a brand-new machine took over.
+    expect(sandbox.boxes.filter((box) => !box.destroyed)).toHaveLength(1);
+  });
+
+  test("a machine still in use is NOT swept", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    await boxMachine({ sandbox, threadId: "thr_busy", env: {}, idleTtlMs: 5 });
+    // Never released: the turn is still running.
+    await wait(60);
+    expect(sandbox.boxes[0]?.destroyed).toBe(false);
+    expect(sandbox.boxes[0]?.snapshots).toBe(0);
+  });
+
+  test("§1.4 · no machine lease is held while a guarded call waits", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    let leasedDuringCall: boolean | undefined;
+    const machine = await boxMachine({ sandbox, threadId: "thr_lease", env: {}, idleTtlMs: 20 });
+    // The driver marks the machine unleased around every host-side call, so the
+    // idle sweep may reclaim it exactly as it may reclaim an idle one.
+    const box = sandbox.boxes[0]!;
+    const request = box.request.bind(box);
+    box.request = async (req) => {
+      if (req.path.endsWith("/poll")) {
+        // Park an ask so the driver goes and executes it host-side.
+        return {
+          status: 200,
+          headers: {},
+          body: encoder.encode(JSON.stringify({
+            events: [], cursor: 0, ask: { id: "a1", name: "t", args: {} }, done: false,
+          })),
+        };
+      }
+      return request(req);
+    };
+    const running = machine.run({
+      prompt: "p",
+      tools: [],
+      callTool: async () => {
+        // NOTHING releases the machine here — the driver itself must have
+        // dropped the lease and armed the sweep for the duration of the call.
+        await wait(60);
+        leasedDuringCall = !sandbox.boxes[0]!.destroyed;
+        return { status: "ok", output: {} };
+      },
+      emit: () => undefined,
+    }).catch(() => undefined);
+    await running;
+    expect(leasedDuringCall).toBe(false);
   });
 });
 

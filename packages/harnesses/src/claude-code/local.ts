@@ -21,6 +21,9 @@ import type { TurnMachine, TurnRequest } from "./machine.js";
 
 /** The turn runner is shared with the box — one implementation, two homes. */
 const RUNNER = "@vendoai/apps/internal";
+/** Resolved at RUNTIME and from HERE, because this package is the one that
+ *  declares the optional peer. The shared runner must stay free of it. */
+const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
 
 /** A stable home per thread, so the SDK's own session file survives between
  *  turns on the same host exactly as it survives inside a warm box. */
@@ -110,11 +113,13 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
     async run(request: TurnRequest) {
       const runClaudeTurn = options.runner
         ?? (await import(RUNNER)).runClaudeTurn as (input: Record<string, unknown>) => Promise<void>;
+      const sdk = options.runner === undefined ? await import(SDK_PACKAGE) : undefined;
       await runClaudeTurn({
         ...request,
         cwd: root,
         configDir,
         env: { ...options.env, CLAUDE_CONFIG_DIR: configDir },
+        ...(sdk === undefined ? {} : { sdk }),
       });
     },
 
