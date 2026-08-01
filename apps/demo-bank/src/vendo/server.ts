@@ -4,7 +4,7 @@ import { vendoAutoJudge } from "@vendoai/guard";
 import { createStore } from "@vendoai/store";
 import { authJs } from "@vendoai/vendo/auth/auth-js";
 import { createVendo, vendoModel } from "@vendoai/vendo/server";
-import { authSecret, resolveMapleSubject } from "@/server/users";
+import { authSecret, primaryMapleUser, resolveMapleSubject } from "@/server/users";
 import { mapleKnowledgeDocs } from "./knowledge";
 import { mapleMcpConfig } from "./mcp-config";
 import { mapleRegistry } from "./registry";
@@ -23,6 +23,22 @@ export const mapleAuth = authJs({
   user: (subject) => {
     const user = resolveMapleSubject(subject);
     return user ? { display: user.display, email: user.email } : null;
+  },
+  // Build contract §9.1 — Maple's OWN identity tables answer "which orgs?".
+  // One query against what the host already knows; Vendo stores nothing about
+  // it. Keyed on the Principal, not the request, so an unattended automation
+  // fire resolves the same orgs an attended click does. Both seeded staff are
+  // in `maple`; Yousef is the org admin (implicit owner of every org app),
+  // Mia is an ordinary member who reaches an app only through a grant.
+  memberships: async (principal) => {
+    const user = resolveMapleSubject(principal.subject);
+    if (!user) return [];
+    return [{
+      org: "maple",
+      display: "Maple Bank",
+      teams: ["support"],
+      admin: user.subject === primaryMapleUser().subject,
+    }];
   },
 });
 

@@ -1,6 +1,7 @@
 import { getProfile } from "@/server/accounts"
 import { isAutologinSession } from "@/server/autologin"
 import { ok } from "@/server/http"
+import { mapleDemoUsers } from "@/server/users"
 import { resolveMapleSession } from "@/vendo/auth"
 
 export const dynamic = "force-dynamic"
@@ -13,9 +14,13 @@ export async function GET(req: Request) {
   // Undefined for credential logins (and dropped from the JSON): only an
   // auto-minted session (DEMO_AUTOLOGIN) shows the "Live demo" chip.
   const demoAutologin = (await isAutologinSession(req)) || undefined
+  // The seeded roster (identity only — the password never leaves the server)
+  // so the account switcher can offer the OTHER staff member. E8 needs two
+  // real people in one org to prove sharing.
+  const staff = mapleDemoUsers()
   return ok(
     user
-      ? { ...profile, name: user.display, email: user.email, demoAutologin }
-      : { ...profile, demoAutologin },
+      ? { ...profile, name: user.display, email: user.email, demoAutologin, staff }
+      : { ...profile, demoAutologin, staff },
   )
 }
