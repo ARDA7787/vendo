@@ -9,6 +9,22 @@ export const WORKSPACE_INLINE_MAX_BYTES = 65_536;
 /** Build contract §3.3 — retention per path, same as app history. */
 export const WORKSPACE_HISTORY_LIMIT = 50;
 
+/** Build contract §9.7 — which mount holds an app's documents: a person's
+    `/user`, or an org's `/orgs/<org>`. Owner and path prefix always travel
+    together, so naming the mount is the whole address. */
+export type AppMount =
+  | { kind: "user"; subject: string }
+  | { kind: "org"; org: string };
+
+const mountOwner = (mount: AppMount): string =>
+  mount.kind === "user" ? mount.subject : mount.org;
+
+const appPrefix = (mount: AppMount, appId: string): string =>
+  mount.kind === "user" ? `/user/apps/${appId}/` : `/orgs/${mount.org}/apps/${appId}/`;
+
+/** The two tables an app's documents live in; both move together. */
+const WORKSPACE_TABLES = ["vendo_workspace_files", "vendo_workspace_history"] as const;
+
 /** One file's metadata. Content is fetched separately (it may live in a blob). */
 export interface WorkspaceFileMeta {
   path: string;
@@ -142,12 +158,15 @@ export interface WorkspaceRows {
       `undo` can bring the file back. Returns false if there was nothing there. */
   remove(owner: string, path: string, intent?: string): Promise<boolean>;
   /** Build contract §9.5 — promote's workspace half: move one app's documents
-      from `/user/apps/<id>/**` (owner = the promoter) to
-      `/orgs/<orgId>/apps/<id>/**` (owner = the org). Owner AND path change
+      between mounts (`/user/apps/<id>/**` owned by a person and
+      `/orgs/<org>/apps/<id>/**` owned by the org). Owner AND path change
       together, because owner derivation is a pure function of the path (§9.7);
       history moves with the files, or undo would walk into unreachable rows.
-      Returns how many file rows moved. */
-  moveApp(appId: string, from: string, orgId: string): Promise<number>;
+      Both directions, so the umbrella's promote can put the documents back
+      when the row flip that follows them fails. A destination that already
+      holds these paths is refused BEFORE anything moves. Returns how many file
+      rows moved. */
+  moveApp(appId: string, from: AppMount, to: AppMount): Promise<number>;
   history(owner: string, path: string): Promise<WorkspaceHistoryEntry[]>;
   /** Walks history backwards: restores the newest superseded revision and
       consumes it, so a second call walks one step further back.
@@ -453,11 +472,28 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
       return true;
     },
 
-    async moveApp(appId, from, orgId) {
-      const before = `/user/apps/${appId}/`;
-      const after = `/orgs/${orgId}/apps/${appId}/`;
+    async moveApp(appId, from, to) {
+      const before = appPrefix(from, appId);
+      const after = appPrefix(to, appId);
+      // The destination is checked FIRST, across both tables: `vendo_workspace_files`
+      // is keyed (path, owner), so a collision would fail the UPDATE mid-move and
+      // strand half the app. Refuse in the caller's own words instead — a promote
+      // is all-or-nothing (§9.5).
+      for (const table of WORKSPACE_TABLES) {
+        const clash = await db.query(
+          `SELECT 1 FROM ${table} WHERE owner = $1 AND path LIKE $2 ESCAPE '\\' LIMIT 1`,
+          [mountOwner(to), `${escapeLike(after)}%`],
+        );
+        if (clash.rows.length > 0) {
+          throw new VendoError(
+            "conflict",
+            `this app already has files where it would be moved to, so nothing was moved`,
+            { appId, path: after },
+          );
+        }
+      }
       let moved = 0;
-      for (const table of ["vendo_workspace_files", "vendo_workspace_history"] as const) {
+      for (const table of WORKSPACE_TABLES) {
         // `overlay` rewrites only the anchored prefix, so a path that merely
         // CONTAINS the app id deeper down is untouched — and the LIKE keeps the
         // statement anchored at the mount for the same reason erase.byApp is.
@@ -466,7 +502,7 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
               SET owner = $3, path = $4 || substring(path FROM ${before.length + 1})
             WHERE owner = $1 AND path LIKE $2 ESCAPE '\\'
             RETURNING 1`,
-          [from, `${escapeLike(before)}%`, orgId, after],
+          [mountOwner(from), `${escapeLike(before)}%`, mountOwner(to), after],
         );
         if (table === "vendo_workspace_files") moved = result.rows.length;
       }

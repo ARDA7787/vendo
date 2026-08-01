@@ -588,7 +588,8 @@ function configFor(db: Db, collection: ReservedCollection): RoutedConfig {
             `INSERT INTO vendo_app_grants (id, app_id, org_id, principal, level, created_by)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (app_id, principal)
-               DO UPDATE SET level = EXCLUDED.level, created_by = EXCLUDED.created_by
+               DO UPDATE SET level = EXCLUDED.level, created_by = EXCLUDED.created_by,
+                             org_id = EXCLUDED.org_id
              RETURNING *`,
             [record.id, data.appId, data.orgId, data.principal, data.level, data.createdBy],
           );

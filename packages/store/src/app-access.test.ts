@@ -128,7 +128,44 @@ for (const backend of backends()) {
         .rejects.toBeInstanceOf(VendoError);
     });
 
+    it("refuses a grant naming an org the app does not live in", async () => {
+      // §9.2's `org_id` is "the org whose workspace holds the app", so a
+      // `team:`/`org:` principal from a DIFFERENT org can never be satisfied
+      // honestly — accepting the row would show access that is not real.
+      const app = "app_crossorg";
+      await appStore(made.store).put({ kind: "user", subject: "acme" }, doc(app));
+      const admin = ctxFor("dana", [{ org: "acme", admin: true }, { org: "other" }]);
+      await expect(access().grant(admin, app, "org:other", "owner"))
+        .rejects.toMatchObject({ code: "validation" });
+      await expect(access().grant(admin, app, "team:other/finance", "editor"))
+        .rejects.toMatchObject({ code: "validation" });
+      expect(await access().list(admin, app)).toEqual([]);
+      expect(await access().levelFor(
+        ctxFor("sam", [{ org: "other", teams: ["finance"] }]),
+        app,
+      )).toBeNull();
+    });
+
+    it("refuses a whole-team grant on a still-personal app", async () => {
+      // "Share implies promote": the app has to move into the org first, and
+      // the refusal says so rather than storing a grant nothing can match.
+      const app = "app_personal_team";
+      await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
+      await expect(access().grant(ctxFor("dana", [{ org: "acme" }]), app, "org:acme", "viewer"))
+        .rejects.toMatchObject({ code: "validation" });
+    });
+
     describe("path access (§9.3)", () => {
+      it("governs the app subtree ROOT, not only what is under it", async () => {
+        const app = "app_root";
+        await appStore(made.store).put({ kind: "user", subject: "acme" }, doc(app));
+        const member = ctxFor("kim", [{ org: "acme" }]);
+        // No grant on the app ⇒ the bare subtree path is not theirs to write,
+        // so the namespace the real app needs cannot be squatted as a file.
+        expect(await access().can(member, "editor", { path: `/orgs/acme/apps/${app}` })).toBe(false);
+        expect(await access().can(member, "editor", { path: "/orgs/acme/apps/app_never" })).toBe(false);
+      });
+
       it("keeps /user/** the caller's own, at every level", async () => {
         const ctx = ctxFor("dana");
         expect(await access().can(ctx, "owner", { path: "/user/apps/app_1/app.vendo" })).toBe(true);

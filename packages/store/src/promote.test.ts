@@ -37,8 +37,10 @@ for (const backend of backends()) {
       await other.writeFile("/user/memory/notes.md", "mine");
       await other.commit();
 
+      // Documents first, the row last — the order the umbrella's promote seam
+      // uses, so any failure leaves the app wholly personal (§9.5).
+      await workspace.moveApp(app, { kind: "user", subject: "dana" }, { kind: "org", org: "acme" });
       await appStore(made.store).promote(app, "dana", "acme");
-      await workspace.promoteApp(app, "dana", "acme");
 
       expect(await appStore(made.store).get(app)).toMatchObject({ subject: "acme" });
       expect(await made.sql(
@@ -60,6 +62,55 @@ for (const backend of backends()) {
         code: "conflict",
       });
       expect(await appStore(made.store).get(app)).toMatchObject({ subject: "dana" });
+    });
+
+    it("refuses a destination collision in the caller's own words, moving nothing", async () => {
+      // The org workspace already holds documents at this app's subtree — the
+      // (path, owner) primary key would reject the move mid-statement, so the
+      // move refuses BEFORE it touches a row (§9.5 is all-or-nothing).
+      const app = "app_clash";
+      const workspace = workspaceStore(made.store);
+      // Left behind by an app that used to live there — seeded as rows, since
+      // no live caller can write another app's subtree (that is §9.3's job).
+      await made.sql(
+        "INSERT INTO vendo_workspace_files (path, owner, content, bytes) VALUES ($1, $2, $3, $4)",
+        [`/orgs/acme/apps/${app}/app.vendo`, "acme", "somebody else's", 16],
+      );
+
+      const mine = await workspace.open(dana);
+      await mine.writeFile(`/user/apps/${app}/app.vendo`, "mine");
+      await mine.commit();
+
+      await expect(workspace.moveApp(
+        app,
+        { kind: "user", subject: "dana" },
+        { kind: "org", org: "acme" },
+      )).rejects.toMatchObject({ code: "conflict" });
+      // Nothing moved: the personal copy is exactly where it was.
+      expect(await made.sql(
+        "SELECT owner FROM vendo_workspace_files WHERE path = $1",
+        [`/user/apps/${app}/app.vendo`],
+      )).toEqual([{ owner: "dana" }]);
+    });
+
+    it("moves an app's documents BACK, so a failed flip can be compensated", async () => {
+      // The umbrella's promote seam moves documents first and flips the row
+      // last; when the flip fails it must be able to put the documents back,
+      // or the app would be left half-personal.
+      const app = "app_roundtrip";
+      const workspace = workspaceStore(made.store);
+      const fs = await workspace.open(dana);
+      await fs.writeFile(`/user/apps/${app}/app.vendo`, "page: v1");
+      await fs.commit();
+
+      const personal = { kind: "user", subject: "dana" } as const;
+      const team = { kind: "org", org: "acme" } as const;
+      expect(await workspace.moveApp(app, personal, team)).toBe(1);
+      expect(await workspace.moveApp(app, team, personal)).toBe(1);
+      expect(await made.sql(
+        "SELECT path, owner FROM vendo_workspace_files WHERE path LIKE $1",
+        [`/%/apps/${app}/%`],
+      )).toEqual([{ path: `/user/apps/${app}/app.vendo`, owner: "dana" }]);
     });
   });
 }

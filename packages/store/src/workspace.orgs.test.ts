@@ -109,6 +109,55 @@ for (const backend of backends()) {
       expect(await reader.readFile("/orgs/acme/policy.json")).toContain("org-policy@1");
     });
 
+    it("undoes and reads the history of an ORG file, owner derived from the path", async () => {
+      // §9.7 — owner derivation is a pure function of the path in EVERY door.
+      // Deriving it from the principal instead made a promoted app's history
+      // unreachable: history() answered [] and undo() answered empty.
+      const path = "/orgs/acme/files/roadmap.md";
+      const first = await workspace().open(dana, { memberships: acme });
+      await first.writeFile(path, "v1");
+      await first.commit();
+      const second = await workspace().open(kim, { memberships: acme });
+      await second.writeFile(path, "v2");
+      await second.commit();
+
+      expect(await workspace().history(ctxOf(kim, acme), path)).toHaveLength(1);
+      expect(await workspace().undo(ctxOf(kim, acme), path)).toMatchObject({ status: "ok" });
+      const settled = await workspace().open(kim, { memberships: acme });
+      expect(await settled.readFile(path)).toBe("v1");
+    });
+
+    it("refuses undo/history on an org the host did not assert", async () => {
+      const path = "/orgs/acme/files/private.md";
+      const seed = await workspace().open(dana, { memberships: acme });
+      await seed.writeFile(path, "team only");
+      await seed.commit();
+
+      const stranger = { principal: kim, venue: "app" as const, presence: "present" as const, sessionId: "s" };
+      await expect(workspace().history(stranger, path)).rejects.toMatchObject({ code: "forbidden" });
+      await expect(workspace().undo(stranger, path)).rejects.toMatchObject({ code: "forbidden" });
+    });
+
+    it("keeps an org's scratch out of the store, exactly like /user/scratch", async () => {
+      const fs = await workspace().open(dana, { memberships: acme });
+      await fs.writeFile("/orgs/acme/scratch/tmp.json", "{}");
+      await fs.writeFile("/user/scratch/tmp.json", "{}");
+      await fs.writeFile("/orgs/acme/files/kept.md", "kept");
+      expect(await fs.commit()).toEqual({ status: "ok", changed: ["/orgs/acme/files/kept.md"] });
+      expect(await made.sql(
+        "SELECT path FROM vendo_workspace_files WHERE path LIKE '%/scratch/%'",
+      )).toEqual([]);
+    });
+
+    it("refuses an org app's subtree ROOT as a file, so the namespace cannot be poisoned", async () => {
+      // Without the app grant governing the bare `/orgs/<org>/apps/<id>` path,
+      // any member could write it AS A FILE and the real app subtree could
+      // never exist underneath it (a file cannot also be a directory).
+      const squatter = await workspace().open(kim, { memberships: acme });
+      await squatter.writeFile("/orgs/acme/apps/app_squatted", "mine now");
+      await expect(squatter.commit()).rejects.toMatchObject({ code: "forbidden" });
+    });
+
     describe("commit policy per mount (§9.7)", () => {
       it("/orgs is strict CAS: two concurrent commits, one ok and one conflict", async () => {
         const path = "/orgs/acme/files/shared.md";

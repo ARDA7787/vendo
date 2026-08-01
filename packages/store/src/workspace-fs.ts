@@ -25,9 +25,12 @@ export const HOST_MOUNT = "/host";
 export const ORGS_MOUNT = "/orgs";
 
 /** Intra-turn junk (§3.1): visible to the turn, never committed to the store.
-    The bare path counts — a FILE called `/user/scratch` would otherwise persist
-    and shadow the directory the layout reserves. */
-const SCRATCH_MOUNT = "/user/scratch";
+    One per mount — `/user/scratch` and `/orgs/<org>/scratch` — because a turn
+    working in an org mount has the same throwaway files a personal turn does,
+    and committing them would publish them to the whole team. The bare path
+    counts: a FILE called `scratch` would otherwise persist and shadow the
+    directory the layout reserves. */
+const SCRATCH = /^(?:\/user|\/orgs\/[^/]+)\/scratch(?:\/|$)/;
 
 const DIR_MODE = 0o755;
 const FILE_MODE = 0o644;
@@ -210,7 +213,7 @@ export class WorkspaceStoreFs implements WorkspaceFs {
   }
 
   private persists(path: string): boolean {
-    return this.storeBacked(path) && !under(path, SCRATCH_MOUNT);
+    return this.storeBacked(path) && !SCRATCH.test(path);
   }
 
   /** Every path the turn can see: the store's index, the host overlay, and this

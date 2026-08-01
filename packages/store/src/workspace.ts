@@ -1,9 +1,9 @@
-import type { FilesAdapter, Membership, Principal, RunContext, WorkspaceFs } from "@vendoai/core";
+import { VendoError, type FilesAdapter, type Membership, type Principal, type RunContext, type WorkspaceFs } from "@vendoai/core";
 import { storeFiles } from "./files-store.js";
-import { appAccess } from "./helpers/app-access.js";
+import { appAccess, orgOfPath } from "./helpers/app-access.js";
 import { dbFor, type VendoStore } from "./store.js";
 import { HOST_MOUNT, normalizePath, WorkspaceStoreFs } from "./workspace-fs.js";
-import { workspaceRows, type UndoOutcome, type WorkspaceHistoryEntry } from "./workspace-rows.js";
+import { workspaceRows, type AppMount, type UndoOutcome, type WorkspaceHistoryEntry } from "./workspace-rows.js";
 
 /** Build contract §9.7 — what the façade needs to know about the caller: who
     they are, and which orgs the host ASSERTED this request. A RunContext
@@ -59,12 +59,13 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
   /** Walks one step back through a path's history — including back to a file
       that was deleted. `empty` means there is nothing left to undo;
       `content-missing` is a revision whose blob is gone (consumed, so the walk
-      continues into older revisions instead of stopping there forever). */
-  undo(principal: Principal, path: string): Promise<UndoOutcome>;
-  /** Newest superseded revision first. */
-  history(principal: Principal, path: string): Promise<WorkspaceHistoryEntry[]>;
+      continues into older revisions instead of stopping there forever).
+      An undo is a WRITE, so it needs `can(editor)` on the path. */
+  undo(caller: WorkspaceCaller, path: string): Promise<UndoOutcome>;
+  /** Newest superseded revision first; viewer-level, like any other read. */
+  history(caller: WorkspaceCaller, path: string): Promise<WorkspaceHistoryEntry[]>;
   /** Build contract §9.5 — promote's workspace half; see WorkspaceRows.moveApp. */
-  promoteApp(appId: string, from: string, orgId: string): Promise<number>;
+  moveApp(appId: string, from: AppMount, to: AppMount): Promise<number>;
   /** Build contract §3.5 / §9.3 — checkout's query: every file this caller
       reaches, and whether each is writable. Wave-2's sandbox lane materializes
       from this; nothing here writes to a disk (that is lane E's). */
@@ -92,6 +93,14 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
 
   const canWrite = async (caller: WorkspaceCaller, path: string): Promise<boolean> =>
     await access.can(runContextOf(caller), "editor", { path });
+
+  /** Build contract §9.7 — owner derivation is a PURE FUNCTION OF THE PATH, in
+      every door and not just the façade: the org for `/orgs/<org>/**`, the
+      bound subject for `/user/**`. Deriving it from the principal instead made
+      a promoted app's history unreachable. Guarded by `can()` at every caller,
+      so a path in an unasserted org is refused before it is ever addressed. */
+  const ownerOfPath = (caller: WorkspaceCaller, path: string): string =>
+    orgOfPath(path) ?? caller.principal.subject;
 
   /** Every owner one caller's façade reads through: themselves, plus each org
       the host asserted. An org absent from the assertions has no owner here. */
@@ -130,14 +139,22 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
         hostFiles(opts?.host),
       );
     },
-    async undo(principal, path) {
-      return await rows.undo(principal.subject, normalizePath(path));
+    async undo(caller, path) {
+      const normalized = normalizePath(path);
+      if (!(await canWrite(caller, normalized))) {
+        throw new VendoError("forbidden", `you cannot write ${normalized}`, { path: normalized });
+      }
+      return await rows.undo(ownerOfPath(caller, normalized), normalized);
     },
-    async history(principal, path) {
-      return await rows.history(principal.subject, normalizePath(path));
+    async history(caller, path) {
+      const normalized = normalizePath(path);
+      if (!(await canRead(caller, normalized))) {
+        throw new VendoError("forbidden", `you cannot read ${normalized}`, { path: normalized });
+      }
+      return await rows.history(ownerOfPath(caller, normalized), normalized);
     },
-    async promoteApp(appId, from, orgId) {
-      return await rows.moveApp(appId, from, orgId);
+    async moveApp(appId, from, to) {
+      return await rows.moveApp(appId, from, to);
     },
     async visibleFiles(caller) {
       const visible: VisibleWorkspaceFile[] = [];
@@ -161,6 +178,7 @@ export { HOST_MOUNT, ORGS_MOUNT, USER_MOUNT } from "./workspace-fs.js";
 export {
   WORKSPACE_HISTORY_LIMIT,
   WORKSPACE_INLINE_MAX_BYTES,
+  type AppMount,
   type UndoOutcome,
   type WorkspaceFileMeta,
   type WorkspaceHistoryEntry,

@@ -48,6 +48,7 @@ export {
   WORKSPACE_INLINE_MAX_BYTES,
   HOST_MOUNT,
   USER_MOUNT,
+  type AppMount,
   type HostProjection,
   type WorkspaceFileMeta,
   type WorkspaceHistoryEntry,

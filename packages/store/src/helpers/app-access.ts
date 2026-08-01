@@ -55,9 +55,11 @@ export function orgOfPath(path: string): string | undefined {
   return match?.[1];
 }
 
-/** `/orgs/<orgId>/apps/<appId>/…` — the app grant governs this subtree. */
+/** `/orgs/<orgId>/apps/<appId>` and everything under it — the app grant governs
+ *  the whole subtree INCLUDING its root, or a member with no grant could write
+ *  the root as a file and the app's own subtree could never exist beneath it. */
 export function appOfOrgPath(path: string): AppId | undefined {
-  const match = /^\/orgs\/[^/]+\/apps\/([^/]+)\//.exec(path);
+  const match = /^\/orgs\/[^/]+\/apps\/([^/]+)(?:\/|$)/.exec(path);
   return match?.[1] as AppId | undefined;
 }
 
@@ -169,6 +171,18 @@ export function appAccess(store: VendoStore): AppAccess {
     async grant(ctx, appId, principal, level) {
       await require(ctx, appId, "owner");
       const orgId = await rowSubject(appId);
+      // §9.2 — `org_id` is "the org whose workspace holds the app", so a
+      // team:/org: principal from anywhere else can never be satisfied: the
+      // matcher keys on the org that HOLDS the row. Storing it anyway would
+      // show a share in the list that grants nothing.
+      const named = parseGrantPrincipal(principal);
+      if (named !== undefined && named.kind !== "user" && named.org !== orgId) {
+        throw new VendoError(
+          "validation",
+          `this app is not in ${named.org}'s workspace, so ${named.org} cannot be given access to it`
+          + ` — move the app into ${named.org} first (sharing offers to), then share it`,
+        );
+      }
       await grants.put({
         id: `ag_${globalThis.crypto.randomUUID()}`,
         data: { appId, orgId, principal, level, createdBy: ctx.principal.subject },
