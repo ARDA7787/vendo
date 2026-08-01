@@ -1,8 +1,10 @@
+import type { ApprovalRequest } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoContext, useVendoTools } from "../context.js";
 import type { AdoptionVenue } from "../wire-types.js";
 import { toolPresentation } from "./build-beat.js";
 import { ChromeRoot } from "./chrome-root.js";
+import { GrantSetCard } from "./grant-set-card.js";
 
 /** Build contract §9.9 / design §13 — the adoption card.
  *
@@ -24,10 +26,15 @@ export interface AdoptionCardProps {
   onAdopt?(): void | PromiseLike<void>;
 }
 
-const STOPPED_BECAUSE: Record<AdoptionVenue["reason"], (sponsor: string) => string> = {
-  edit: (sponsor) => `It changed after ${sponsor} allowed it, so it is paused.`,
-  departure: (sponsor) => `${sponsor} no longer has access to this app, so it is paused.`,
-  grants: (sponsor) => `${sponsor}'s permissions for this app were removed, so it is paused.`,
+/** `sponsor` is absent once that person's data is erased, and then the card stays
+ *  anonymous instead of naming somebody it no longer knows. */
+const STOPPED_BECAUSE: Record<AdoptionVenue["reason"], (sponsor: string | undefined) => string> = {
+  edit: (sponsor) => `It changed after ${sponsor ?? "the person who set it up"} allowed it, so it is paused.`,
+  departure: (sponsor) => sponsor === undefined
+    ? "The person it ran as no longer has access to this app, so it is paused."
+    : `${sponsor} no longer has access to this app, so it is paused.`,
+  grants: (sponsor) =>
+    `${sponsor ?? "The person who set it up"}'s permissions for this app were removed, so it is paused.`,
 };
 
 const RISK_WORD = { read: "Reads", write: "Changes", destructive: "Changes" } as const;
@@ -75,7 +82,11 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
           </span>
           <div className="fl-approval-heading">
             <div className="fl-approval-eyebrow">Paused automation</div>
-            <div className="fl-approval-title">{card.automation} ran with {card.sponsor}&apos;s access</div>
+            <div className="fl-approval-title">
+              {card.sponsor === undefined
+                ? `${card.automation} is paused`
+                : `${card.automation} ran with ${card.sponsor}'s access`}
+            </div>
             <div className="fl-approval-desc" style={{ marginTop: 3 }}>
               {STOPPED_BECAUSE[card.reason](card.sponsor)} Take it on and it runs with yours instead.
             </div>
@@ -131,9 +142,23 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
   );
 }
 
+/** The payload key the adoption ask rides on the app's open surface
+ *  (`payload.adoption`). ONE name, exported, because two sides have to agree on
+ *  it: the composition seam attaches `{ [ADOPTION_VENUE_KEY]: card }` from the
+ *  automations engine's `adoption()` provider, and the tree renderer reads it
+ *  from there. A silent disagreement is a card nobody ever sees. */
+export const ADOPTION_VENUE_KEY = "adoption";
+
 /**
  * The card as the APP SURFACE renders it: bound to the client, so taking it on
- * posts through the adopt door and the card settles in place.
+ * posts through the adopt door and then walks the adopter through the rest of
+ * the ceremony.
+ *
+ * Adoption is TWO steps, and the card must not skip the second: taking it on
+ * re-mints the automation's grants under the adopter, and until they decide that
+ * set the automation is NOT running. So a non-empty `missing` renders the same
+ * enable-flow set card the panel uses, and only an empty one — or an approved
+ * set — says it runs again.
  *
  * Split from the presentational card for the same reason every other chrome
  * surface is: the tree renderer mounts this from the payload's venue state,
@@ -142,6 +167,43 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
 export function AdoptionVenueCard({ card }: { card: AdoptionVenue }) {
   const { client } = useVendoContext();
   const [state, setState] = useState<"waiting" | "adopted">("waiting");
+  const [set, setSet] = useState<{
+    asks: ApprovalRequest[];
+    grantSetId?: string;
+    state: "parked" | "denied";
+  }>();
+
+  if (set !== undefined) {
+    return (
+      <GrantSetCard
+        name={card.automation}
+        permissions={set.asks.map((ask) => ({
+          approvalId: ask.id,
+          tool: ask.call.tool,
+          ...(ask.descriptor.description.length > 0 ? { description: ask.descriptor.description } : {}),
+          risk: ask.descriptor.risk,
+        }))}
+        state={set.state}
+        onDecide={async (approve) => {
+          await client.approvals.decide(
+            set.asks.map((ask) => ask.id),
+            { approve },
+            set.grantSetId === undefined ? undefined : { grantSetId: set.grantSetId },
+          );
+          if (!approve) {
+            // Declining leaves the automation theirs but ungranted — the set
+            // card's own settled record ("the automation stays paused") is the
+            // honest thing to leave on screen.
+            setSet({ ...set, state: "denied" });
+            return;
+          }
+          setSet(undefined);
+          setState("adopted");
+        }}
+      />
+    );
+  }
+
   return (
     <AdoptionCard
       card={card}
@@ -151,6 +213,14 @@ export function AdoptionVenueCard({ card }: { card: AdoptionVenue }) {
         // A lost race is not an error to swallow: the person who tapped is told
         // that somebody else got there first, which is what actually happened.
         if (!result.adopted) throw new Error("Someone else already took this automation on.");
+        if (result.missing.length > 0) {
+          setSet({
+            asks: result.missing,
+            ...(result.grantSetId === undefined ? {} : { grantSetId: result.grantSetId }),
+            state: "parked",
+          });
+          return;
+        }
         setState("adopted");
       }}
     />

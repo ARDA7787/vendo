@@ -17,6 +17,7 @@ const VALUE_EXPORTS = [
   // Build contract §9.9 — the adoption card: the presentational half, the
   // client-bound half the app surface renders from venue state, and the
   // window label the panel and the card share.
+  "ADOPTION_VENUE_KEY",
   "AdoptionCard",
   "AdoptionVenueCard",
   "sponsorLabel",

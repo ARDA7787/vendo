@@ -161,7 +161,22 @@ export interface AutomationsEngine {
 
   /** Build contract §9.9 — the adoption card as additive venue state on the
    *  app's open payload. `undefined` when nothing is waiting or the caller
-   *  cannot edit the app: nothing is pushed, the card waits IN the app. */
+   *  cannot edit the app: nothing is pushed, the card waits IN the app.
+   *
+   *  THE COMPOSITION CONTRACT, stated here because two packages have to agree on
+   *  it: the card rides the open payload under the key **`adoption`** —
+   *  `payload.adoption` — which is exactly what `@vendoai/ui`'s tree renderer
+   *  reads (`ADOPTION_VENUE_KEY` in `chrome/adoption-card.tsx`, asserted by its
+   *  own test). The venue-state provider the apps runtime calls is therefore:
+   *
+   *  ```ts
+   *  async (app, ctx) => {
+   *    const card = await automations.adoption(app.id, ctx);
+   *    return card === undefined ? undefined : { adoption: card };
+   *  }
+   *  ```
+   *
+   *  Any other key attaches a card nobody ever sees. */
   adoption(appId: AppId, ctx: RunContext): Promise<AdoptionCard | undefined>;
 
   /** Take a stopped automation on: approve its reads and writes as YOURSELF

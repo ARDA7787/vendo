@@ -7,7 +7,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VENDO_TREE_FORMAT, type ToolOutcome, type UIPayload } from "@vendoai/core";
 import { VendoProvider, createVendoClient } from "../../src/index.js";
-import { AdoptionCard, AutomationCard } from "../../src/chrome/index.js";
+import {
+  ADOPTION_VENUE_KEY,
+  AdoptionCard,
+  AdoptionVenueCard as AdoptionCardHarness,
+  AutomationCard,
+} from "../../src/chrome/index.js";
 import { TreeView } from "../../src/tree/index.js";
 import type { AdoptionVenue } from "../../src/wire-types.js";
 
@@ -33,8 +38,12 @@ const WAITING: AdoptionVenue = {
   ],
 };
 
+/** F4 — the provider side and the renderer side must agree on ONE payload key,
+ *  or the composition attaches a card nobody ever sees. The constant is the
+ *  contract; this asserts the renderer honours it and that it is the key the
+ *  automations engine's `adoption()` provider is documented to ride on. */
 function treeWith(adoption?: AdoptionVenue): UIPayload {
-  const tree: UIPayload & { adoption?: AdoptionVenue } = {
+  const tree: UIPayload & { [ADOPTION_VENUE_KEY]?: AdoptionVenue } = {
     formatVersion: VENDO_TREE_FORMAT,
     root: "root",
     nodes: [
@@ -42,7 +51,7 @@ function treeWith(adoption?: AdoptionVenue): UIPayload {
       { id: "heading", component: "Text", props: { text: "Invoices", variant: "heading" } },
     ],
   };
-  if (adoption !== undefined) tree.adoption = adoption;
+  if (adoption !== undefined) tree[ADOPTION_VENUE_KEY] = adoption;
   return tree;
 }
 
@@ -95,12 +104,104 @@ describe("AdoptionCard", () => {
   });
 });
 
+/** F5 — taking it on is not the end of the ceremony. Adoption re-mints the
+ *  automation's grants under the ADOPTER, and until they decide that set the
+ *  automation is not running: claiming otherwise is a lie the card can tell in
+ *  one render. */
+describe("AdoptionVenueCard — what happens after Take it on", () => {
+  const approval = (id: string, tool: string, risk: "read" | "write") => ({
+    id,
+    call: { id: `call_${id}`, tool, args: {} },
+    descriptor: { name: tool, description: `${tool} description`, inputSchema: { type: "object" }, risk },
+    inputPreview: `Allow the automation to use ${tool} while you're away`,
+    ctx: { principal: { kind: "user" as const, subject: "user_omar" }, venue: "automation" as const, presence: "present" as const },
+    createdAt: "2026-08-01T09:00:00.000Z",
+  });
+
+  const clientWith = (
+    adopt: () => Promise<{ adopted: boolean; missing: unknown[]; grantSetId?: string; reason?: string }>,
+    decide = vi.fn(async () => undefined),
+  ) => {
+    const base = createVendoClient({ baseUrl: "http://127.0.0.1:9" });
+    return {
+      client: {
+        ...base,
+        automations: { ...base.automations, adopt },
+        approvals: { ...base.approvals, decide },
+      } as unknown as typeof base,
+      decide,
+    };
+  };
+
+  it("asks the adopter for the automation's permissions before claiming anything runs", async () => {
+    const missing = [approval("apr_read", "host_listInvoices", "read"), approval("apr_write", "host_updateInvoice", "write")];
+    const { client: bound, decide } = clientWith(
+      async () => ({ adopted: true, missing, grantSetId: "gset_1" }),
+    );
+    render(
+      <VendoProvider client={bound}>
+        <AdoptionCardHarness card={WAITING} />
+      </VendoProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /take it on/i }));
+
+    // The enable-flow set card, not a claim of success.
+    const set = await screen.findByRole("article", { name: /Standing access/ });
+    expect(set.textContent).toContain("2 permissions");
+    expect(screen.queryByText(/running again/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /allow both/i }));
+    await waitFor(() => expect(decide).toHaveBeenCalledWith(
+      ["apr_read", "apr_write"],
+      { approve: true },
+      { grantSetId: "gset_1" },
+    ));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/running again/i));
+  });
+
+  it("claims it runs only when adoption needed no new permissions", async () => {
+    const { client: bound } = clientWith(async () => ({ adopted: true, missing: [] }));
+    render(
+      <VendoProvider client={bound}>
+        <AdoptionCardHarness card={WAITING} />
+      </VendoProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /take it on/i }));
+
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/running again/i));
+  });
+
+  it("tells the loser of the race the truth", async () => {
+    const { client: bound } = clientWith(
+      async () => ({ adopted: false, missing: [], reason: "already-adopted" }),
+    );
+    render(
+      <VendoProvider client={bound}>
+        <AdoptionCardHarness card={WAITING} />
+      </VendoProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /take it on/i }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/already took/i));
+    expect(screen.queryByText(/running again/i)).toBeNull();
+  });
+});
+
 describe("the adoption card as venue state", () => {
   it("renders above the app when one is waiting, and not otherwise", () => {
     render(surface());
     expect(screen.queryByRole("article", { name: /^Take on/ })).toBeNull();
     cleanup();
 
+    render(surface(WAITING));
+    expect(screen.getByRole("article", { name: "Take on — Weekly invoice sweep" })).toBeTruthy();
+  });
+
+  it("is the one key the constant names, so composition cannot silently miss it", () => {
+    expect(ADOPTION_VENUE_KEY).toBe("adoption");
     render(surface(WAITING));
     expect(screen.getByRole("article", { name: "Take on — Weekly invoice sweep" })).toBeTruthy();
   });

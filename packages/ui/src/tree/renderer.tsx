@@ -26,7 +26,7 @@ import {
 } from "react";
 import { useVendoThemeOrDefault } from "../context.js";
 import { themeCssVariables } from "../theme.js";
-import { AdoptionVenueCard } from "../chrome/adoption-card.js";
+import { ADOPTION_VENUE_KEY, AdoptionVenueCard } from "../chrome/adoption-card.js";
 import type { AdoptionVenue, InClientVenue, PinDrift } from "../wire-types.js";
 import { resolvePointer } from "./bindings.js";
 import { NodeErrorBoundary } from "./error-boundary.js";
@@ -573,9 +573,11 @@ function StatefulTreeView({
   // Tolerate a malformed field (like every other payload extra): only an
   // array of well-formed entries renders the notice.
   // §9.9 — the adoption ask, when the server attached one for THIS caller (it
-  // only does so for an editor+). Tolerated like every other payload extra: a
-  // malformed field is no card, never a broken surface.
-  const adoptionRaw = (tree as WalkTree & { adoption?: unknown }).adoption;
+  // only does so for an editor+). Read through the shared key constant, so the
+  // provider side and this side cannot drift into a card nobody ever sees.
+  // Tolerated like every other payload extra: a malformed field is no card,
+  // never a broken surface.
+  const adoptionRaw = (tree as WalkTree & Record<string, unknown>)[ADOPTION_VENUE_KEY];
   const adoption = typeof adoptionRaw === "object" && adoptionRaw !== null
     && typeof (adoptionRaw as AdoptionVenue).automation === "string"
     && Array.isArray((adoptionRaw as AdoptionVenue).needs)

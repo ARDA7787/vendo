@@ -66,8 +66,10 @@ export interface AdoptionVenue {
   appId: AppId;
   /** The automation's user-visible name. */
   automation: string;
-  /** Who it used to run as. */
-  sponsor: string;
+  /** Who it used to run as, named as they asserted themselves. ABSENT once that
+   *  person's data is erased — the name went with the erase, and the card says
+   *  "someone else" rather than resurrecting an identifier. */
+  sponsor?: string;
   reason: "edit" | "departure" | "grants";
   stoppedAt?: IsoDateTime;
   /** One entry per read and write — never one summary line for a compound. */
