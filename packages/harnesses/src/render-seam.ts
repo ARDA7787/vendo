@@ -39,9 +39,12 @@ import { assembleTree, stripServerAuthoritativeFields } from "@vendoai/apps/inte
 /** §1.6 — the two files that sync mid-turn. Everything else waits for turn end. */
 export const HOT_PATH_FILES = ["app.vendo", "plan.vendo"] as const;
 
-/** §3.1, frozen: `/user/apps/<appId>/app.vendo`. `appId` is the store's app id
- *  verbatim, and a path's meaning never depends on who wrote it. */
-const HOT_PATH = /^\/user\/apps\/(app_[^/]+)\/(app\.vendo|plan\.vendo)$/;
+/** §3.1, frozen: `/user/apps/<appId>/app.vendo` and — since wave 3 (§9.7) —
+ *  `/orgs/<orgId>/apps/<appId>/app.vendo`. `appId` is the store's app id
+ *  verbatim in BOTH, which is exactly why one regex can read either: a path's
+ *  meaning never depends on who wrote it, so a promoted app's hot paths must
+ *  keep painting the skeleton mid-turn like a personal one's. */
+const HOT_PATH = /^\/(?:user|orgs\/[^/]+)\/apps\/(app_[^/]+)\/(app\.vendo|plan\.vendo)$/;
 
 /** The appId a hot-path write belongs to, or undefined if this is not one. */
 export function hotPathAppId(path: string): AppId | undefined {

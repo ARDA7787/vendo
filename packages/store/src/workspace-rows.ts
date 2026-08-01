@@ -123,7 +123,19 @@ export interface WorkspaceRows {
     owner: string,
     prepared: PreparedWrite,
     intent?: string,
-  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime }>;
+    /** Build contract §9.7 — `/orgs` commits are STRICT compare-and-swap: one
+        attempt, no re-aim. A lost swap comes back `conflict: true` (and its
+        blob is released) so the façade can answer the frozen conflict branch
+        instead of overwriting a colleague's edit. */
+    options?: {
+      strict?: boolean;
+      /** The revision this turn CHECKED OUT (contract §3.5) — null when the
+          file did not exist then. Strict mounts swap against this, not against
+          whatever the head happens to be at commit time, or a commit would
+          quietly overwrite an edit that landed mid-turn. */
+      expectedRevision?: number | null;
+    },
+  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime; conflict?: true }>;
   /** Drop a prepared write that will never land, so its blob is not orphaned. */
   discard(prepared: PreparedWrite): Promise<void>;
   /** Deleting records the content it removed (history is append-only, §3.3), so
@@ -304,10 +316,28 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
   const landRow = async (
     owner: string,
     initial: PreparedWrite,
-    options: { intent?: string; recordHistory: boolean },
-  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime }> => {
+    options: {
+      intent?: string;
+      recordHistory: boolean;
+      strict?: boolean;
+      expectedRevision?: number | null;
+    },
+  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime; conflict?: true }> => {
     let prepared = initial;
-    for (let attempt = 0; attempt < SWAP_ATTEMPTS; attempt += 1) {
+    if (options.strict === true
+      && (prepared.prior?.revision ?? null) !== (options.expectedRevision ?? null)) {
+      // The head moved between checkout and commit: the base this write was
+      // built on is gone, so the swap is refused before it is attempted.
+      await dropBlob(prepared.stored);
+      return {
+        landed: false,
+        revision: prepared.prior?.revision ?? 0,
+        updatedAt: prepared.prior?.updatedAt ?? new Date().toISOString(),
+        conflict: true,
+      };
+    }
+    const attempts = options.strict === true ? 1 : SWAP_ATTEMPTS;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const now = new Date().toISOString();
       if (await swapRow(owner, prepared, options, now)) {
         // Only AFTER the swap wins: with no history row (recordHistory:false, the
@@ -333,6 +363,18 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
           await dropBlob(prepared.stored);
           return { landed: false, revision: head.revision, updatedAt: head.updatedAt };
         }
+      }
+      if (options.strict === true) {
+        // §9.7 — strict mounts do not re-aim. Release the blob this write
+        // placed (nothing points at it) and report the loss; the harness
+        // re-reads the new head and re-applies.
+        await dropBlob(prepared.stored);
+        return {
+          landed: false,
+          revision: head?.revision ?? prepared.revision,
+          updatedAt: head?.updatedAt ?? new Date().toISOString(),
+          conflict: true,
+        };
       }
       prepared = {
         ...prepared,
@@ -386,10 +428,12 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
       };
     },
 
-    async land(owner, prepared, intent) {
+    async land(owner, prepared, intent, options) {
       return await landRow(owner, prepared, {
         ...(intent === undefined ? {} : { intent }),
         recordHistory: true,
+        ...(options?.strict === true ? { strict: true } : {}),
+        ...(options?.expectedRevision === undefined ? {} : { expectedRevision: options.expectedRevision }),
       });
     },
 

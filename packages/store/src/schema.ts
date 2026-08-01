@@ -156,12 +156,13 @@ export const DDL = [
   )`,
   "CREATE INDEX IF NOT EXISTS vendo_knowledge_chunks_refs_idx ON vendo_knowledge_chunks USING GIN (refs jsonb_path_ops)",
   // Build contract §3.3 (v6): the workspace. One row per file, keyed
-  // (path, owner) — `owner` is the subject for /user/** paths and the reserved
-  // host subject for the read-only /host/** mounts. Content is inline up to
-  // WORKSPACE_INLINE_MAX_BYTES; past it (or when the bytes are not text) the
+  // (path, owner). `owner` is a pure function of the path (§9.7): the subject
+  // for `/user/**`, the org id for `/orgs/<orgId>/**`. (`/host/**` is a
+  // per-turn projection the caller supplies, never rows.) Content is inline up
+  // to WORKSPACE_INLINE_MAX_BYTES; past it (or when the bytes are not text) the
   // row carries a `blob_ref` into the files adapter instead. `revision` is the
-  // per-file counter the /orgs compare-and-swap will arm in wave 3 — it ships
-  // now so the table never migrates for it.
+  // per-file counter the /orgs compare-and-swap arms (wave 3) — it shipped in
+  // v6 so the table never had to migrate for it.
   `CREATE TABLE IF NOT EXISTS vendo_workspace_files (
     path text NOT NULL, owner text NOT NULL, content text, blob_ref text,
     bytes integer NOT NULL, revision integer NOT NULL DEFAULT 1,

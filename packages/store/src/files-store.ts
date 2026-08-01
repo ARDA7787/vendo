@@ -6,8 +6,11 @@ import type { VendoStore } from "./store.js";
 export const FILES_STORE_MAX_BYTES = 5 * 1024 * 1024;
 
 /** The blob namespace the store-backed files adapter owns. Flat, and outside
-    the `app:<id>:…` grammar, so no app gate applies; the erase cascade reaches
-    it by the `ws/<owner>/…` key prefix workspace-rows mints. */
+    the `app:<id>:…` grammar, so no app gate applies. The erase cascade reaches
+    these objects through the ROW that points at them (`blob_ref`), never
+    through a key prefix — workspace-rows mints random `wsb_<uuid>` keys
+    precisely so a row that changes owner (an anon adoption, a wave-3 promote)
+    does not strand its content behind an unreachable key. */
 export const WORKSPACE_BLOB_NAMESPACE = "workspace";
 
 /**
