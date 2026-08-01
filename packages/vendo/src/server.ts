@@ -17,13 +17,16 @@ import { assembleSystemPrompt } from "@vendoai/agent/internal";
 // Architecture §3 — the harness runtime and the default thinker. `vendo()` is
 // composed HERE (not by the host) when `harness:` is unset; its prompt and
 // descriptor catalog reach it on the turn, never at construction.
-import { assertHarnessComposable, vendo } from "@vendoai/harnesses";
+import { assertHarnessComposable, reportHire, vendo } from "@vendoai/harnesses";
 // …and re-exported, because §10's one-line opt-in is `harness: vendo()`. Without
 // this, naming the default harness costs a SECOND direct dependency on
 // `@vendoai/harnesses` — a documented one-liner that does not compile from the
 // package the host installed. Alias it at the import when your own composed
 // value is called `vendo` (`import { vendo as vendoHarness }`).
 export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai/harnesses";
+// The specialist, same reason: `harness: instant()` has to compile from the one
+// package the host installed (architecture §6).
+export { instant, type InstantHarnessDeps, type InstantHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
@@ -82,6 +85,7 @@ import {
   registerEphemeralSubject,
   storeFiles,
   sweepEphemeralSubjects,
+  threadMessageStore,
   type SubjectMergeReport,
   type VendoStore,
 } from "@vendoai/store";
@@ -1004,6 +1008,26 @@ function selectFiles(configured: FilesAdapter | undefined, store: VendoStore): F
     get: (key) => blobs().get(key),
     delete: (key) => blobs().delete(key),
   };
+}
+
+/**
+ * Can this store serve a harness turn? The transcript (build contract §6) and the
+ * workspace (§3.3) are SQL tables; `threadMessageStore` resolves the handle as its
+ * first act and throws for a store that has none — the Cloud hosted store, or a
+ * host's own non-SQL adapter. Probing is a WeakMap lookup, never I/O, so it is
+ * safe where `createVendo` runs at module init (Workers).
+ *
+ * This is the ONE thing that keeps the wave-2 default-route flip honest: a
+ * deployment that cannot serve harness turns keeps the shipped `agent.stream`
+ * path, which needs neither table, instead of failing every chat turn.
+ */
+function storeServesHarnessTurns(store: VendoStore): boolean {
+  try {
+    threadMessageStore(store);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function selectStore(
@@ -2185,12 +2209,20 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // gate will refuse with a connect card.
     preflight: (call, ctx) => connectGate.check(call, ctx),
   });
-  // Architecture §3 — WHO THINKS, composed. `assertHarnessComposable` is the
-  // BOOT gate: a harness that needs a machine to live on and has none is a wiring
-  // mistake the host hears about here, not a turn that dies in front of a user.
-  // Checked against the resolved harness (`vendo()` when the host chose nothing)
-  // because a default is still a choice that has to hold.
-  const harness = (config.harness ?? vendo()) as Harness;
+  // Architecture §3 — WHO THINKS, composed ONCE.
+  //
+  // This used to be two constructions: a throwaway `vendo()` here for the boot
+  // gate, and a second `vendo({ onHire: reportHire })` inside harness-turn.ts as
+  // the fallback that actually ran. The gate was therefore asserting a value that
+  // was never served, and the two differed (only one reported its hires). One
+  // value now, resolved here and passed down, so the harness the gate checks IS
+  // the harness the turn runs.
+  //
+  // `assertHarnessComposable` is the BOOT gate: a harness that needs a machine to
+  // live on and has none is a wiring mistake the host hears about here, not a turn
+  // that dies in front of a user. Checked against the resolved harness because a
+  // default is still a choice that has to hold.
+  const harness = (config.harness ?? vendo({ onHire: reportHire })) as Harness;
   assertHarnessComposable(harness, sandbox.adapter === undefined ? {} : { sandbox: sandbox.adapter });
   // The harness runtime, wired to everything a turn needs: the store handle (its
   // transcript and its workspace), the ONE guard-bound registry, the merged pack
@@ -2198,7 +2230,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // per-turn halves it cannot know (thread, workspace, ctx-shaped prompt and
   // descriptor catalog) are resolved in harness-turn.ts.
   const harnessTurns = createHarnessTurns({
-    ...(config.harness === undefined ? {} : { harness: config.harness }),
+    harness: harness as Harness<never>,
     store,
     // The SAME adapter the erase cascade deletes through (selectStore) — the
     // whole point of resolving it once.
@@ -2227,6 +2259,28 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
   });
+  /**
+   * THE harness door — one object, served two ways.
+   *
+   * `vendo.harness` (the host's/proofs' direct handle) and the wire's chat route
+   * are the SAME value. They used to be two: the returned door wrapped the
+   * `ready()` latch around `harnessTurns`, and `createWireHandler` was handed the
+   * raw one. That was harmless while the wire path was opt-in and the wire
+   * awaited `ready()` itself, but the wave-2 flip makes this the path every host
+   * takes, and two objects means "what a host can drive" and "what a request
+   * actually runs" can drift. `ready()` is an idempotent latch, so latching twice
+   * on the wire path costs a resolved promise.
+   */
+  const harnessDoor: HarnessTurns = {
+    stream: async (input) => {
+      await ready();
+      return harnessTurns.stream(input);
+    },
+    workspace: async (principal, opts) => {
+      await ready();
+      return harnessTurns.workspace(principal, opts);
+    },
+  };
   // Per-subject connected-toolkit lookups are cached briefly so a turn never
   // pays a broker round-trip it doesn't need; failures degrade to host tools
   // only (warn, never the turn). Bounded so long-lived deployments don't grow.
@@ -2508,15 +2562,22 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     store,
     telemetry: telemetryClient(config.telemetry),
     agent,
-    // Only a host that NAMED a harness gets the wire's chat turn routed through
-    // it. The four rails this used to be waiting on — `find_tools`, the
-    // connection-scoped loadout, the curated agent menu, capability-miss
-    // detection — now reach the harness path too (`createDiscoveryRails`), so
-    // parity is no longer the blocker. The default stays as it is by ruling for
-    // wave 1: existing hosts see zero behaviour change, and which thinker should
-    // be the resident is a BENCH question (design §16), not a wiring one.
-    // Flipping it is this one line.
-    ...(config.harness === undefined ? {} : { harness: harnessTurns }),
+    // THE FLIP (wave 2). Every chat turn goes through the harness runtime —
+    // `harness:` when the host named one, `vendo()` when they did not. The four
+    // rails this waited on (`find_tools`, the connection-scoped loadout, the
+    // curated agent menu, capability-miss detection) reach the harness path, and
+    // the assembled prompt rides the turn, so the two paths are the same turn with
+    // one swappable thinker. Keeping the default on `agent.stream` meant every
+    // harness improvement shipped to nobody.
+    //
+    // ONE exception, and it is a capability fact rather than a preference: serving
+    // a turn through a harness needs the transcript and workspace TABLES (build
+    // contract §3.3/§6). A store with no SQL handle — the Cloud hosted store in
+    // wave 1, or a host's own non-SQL adapter — cannot serve them, and flipping
+    // such a deployment would turn every chat turn into a boot-shaped error. Those
+    // stay on `agent.stream`, which needs neither table. The probe is a WeakMap
+    // lookup inside @vendoai/store, not I/O, so it is safe at module init.
+    ...(storeServesHarnessTurns(store) ? { harness: harnessDoor } : {}),
     guard,
     apps,
     // execution-v2 Lane C — the /box surfaces: tool calls through the SAME
@@ -2587,19 +2648,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // internal composition detail (see selectedConnections above).
     connections: selectedConnections,
     store,
-    harness: {
-      // The same `ready()` latch every other composed door arms: a harness turn
-      // reads the transcript and writes workspace rows, so the schema has to be
-      // there first.
-      stream: async (input) => {
-        await ready();
-        return harnessTurns.stream(input);
-      },
-      workspace: async (principal, opts) => {
-        await ready();
-        return harnessTurns.workspace(principal, opts);
-      },
-    },
+    // The SAME door the wire's chat route runs (see `harnessDoor`), latched by
+    // `ready()` because a harness turn reads the transcript and writes workspace
+    // rows, so the schema has to be there first.
+    harness: harnessDoor,
   };
 }
 

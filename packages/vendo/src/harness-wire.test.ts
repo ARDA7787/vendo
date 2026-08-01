@@ -249,19 +249,52 @@ describe("createVendo({ harness }) — a turn served through the composed runtim
     } as Parameters<typeof createVendo>[0])).toThrow(/boxed needs a sandbox adapter/);
   });
 
-  it("leaves POST /threads on the shipped agent path when no harness is named", async () => {
-    let ranHarness = false;
-    const { vendo } = await compose();
-    // The default harness exists and is reachable directly...
+  /**
+   * THE FLIP (wave 2). `POST /threads` goes through the harness runtime for every
+   * host, named harness or not — the wave-1 ruling that kept the default on
+   * `agent.stream` is spent, because both paths now carry the same four discovery
+   * rails and the same assembled prompt.
+   *
+   * The discriminator is the audit plane, not the prose: only the harness runtime
+   * writes a `run` row naming the harness that ran (`reportRun`). A turn that
+   * quietly fell back to `agent.stream` produces no such row, so this cannot pass
+   * by accident.
+   */
+  it("routes POST /threads through the harness runtime when NO harness is named", async () => {
+    const { vendo, store } = await compose();
+    // The default harness exists and is reachable directly…
     expect(vendo.harness).toBeDefined();
-    // ...but the wire route did not switch under a host that named nothing.
+    // …and the wire route now runs it. The model double is empty, so `vendo()`
+    // fails honestly — which is itself the failure the audit row records.
     const turn = await vendo.handler(request("/threads", {
       threadId: "thr_default", message: userMessage("m1", "hello"),
     }));
-    // The scripted harness was never installed, so any 200 here came from
-    // `agent.stream` reaching the (empty) model double and failing honestly.
-    expect(ranHarness).toBe(false);
-    expect([200, 400, 500]).toContain(turn.status);
+    expect(turn.status).toBe(200);
+    await turn.text();
+
+    const { records } = await store.records("vendo_audit").list({ refs: { subject: principal.subject } });
+    const runs = records
+      .map((record) => (record.data as { kind?: string; detail?: { harness?: string } }))
+      .filter((row) => row.kind === "run");
+    expect(runs.map((row) => row.detail?.harness)).toContain("vendo");
+  });
+
+  it("still prefers the harness the host DID name", async () => {
+    const { vendo, store } = await compose({
+      harness: scriptedHarness(async function* () {
+        yield { type: "text", delta: "the named one ran" };
+      }),
+    });
+    const turn = await vendo.handler(request("/threads", {
+      threadId: "thr_named", message: userMessage("m1", "hello"),
+    }));
+    expect(await turn.text()).toContain("the named one ran");
+    const { records } = await store.records("vendo_audit").list({ refs: { subject: principal.subject } });
+    const harnesses = records
+      .map((record) => (record.data as { kind?: string; detail?: { harness?: string } }))
+      .filter((row) => row.kind === "run")
+      .map((row) => row.detail?.harness);
+    expect(harnesses).not.toContain("vendo");
   });
 });
 
