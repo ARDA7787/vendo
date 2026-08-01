@@ -500,6 +500,138 @@ describe("sponsorship — consumer-voice names", () => {
   });
 });
 
+/** F10 — the identity checks call HOST code (a memberships callback, an access
+ *  seam). They run before the run row is written, and the schedule path swallows
+ *  a rejected run, so a throw there used to make the whole firing vanish: no
+ *  row, no audit, nothing to look at. */
+describe("sponsorship — a broken identity seam", () => {
+  const scheduled = (id: string): AppDocument => ({
+    format: VENDO_APP_FORMAT,
+    id,
+    name: "Weekly invoice sweep",
+    trigger: {
+      on: { kind: "schedule", every: "1h" },
+      run: { kind: "steps", steps: [{ id: "read", tool: readTool.name }] },
+    },
+  });
+
+  it("leaves a loud failure artifact when the memberships callback throws on a scheduled fire", async () => {
+    const app = scheduled("app_seam_broken");
+    const { store, engine, guard, calls } = harness({
+      memberships: async () => { throw new Error("host directory is down"); },
+    });
+    await seedApp(store, app);
+    await engine.enable(app.id, ctx());
+
+    const [runId] = await engine.tick(new Date(NOW.getTime() + 2 * 3_600_000));
+
+    expect(calls).toEqual([]);
+    expect(runId).toBeDefined();
+    const run = await engine.runs.get(runId!, ctx());
+    expect(run).toMatchObject({ status: "error" });
+    expect(run?.error?.message).toContain("host directory is down");
+    expect(guard.audit.some((event) =>
+      (event.detail as { status?: string }).status === "sponsorship-check-failed")).toBe(true);
+  });
+
+  it("terminates a claimed RESUME loudly rather than stranding it in \"running\"", async () => {
+    const store = memoryStoreAdapter();
+    const app: AppDocument = {
+      format: VENDO_APP_FORMAT,
+      id: "app_seam_resume",
+      name: "Weekly invoice sweep",
+      trigger: {
+        on: { kind: "host-event", event: "go" },
+        run: { kind: "steps", steps: [{ id: "write", tool: writeTool.name, args: { invoice: "'inv_42'" } }] },
+      },
+    };
+    let breakSeam = false;
+    const { engine, guard, calls } = harness(
+      { store, memberships: async () => { if (breakSeam) throw new Error("host directory is down"); return []; } },
+      (call, index) => {
+        if (index !== 0) return undefined;
+        void store.records("vendo_approvals").put({
+          id: "apr_seam",
+          data: {
+            request: {
+              id: "apr_seam",
+              call: structuredClone(call),
+              descriptor: writeTool,
+              inputPreview: "update the invoice",
+              ctx: { principal: { kind: "user", subject: "user_dana" }, venue: "automation", presence: "away" },
+              createdAt: NOW.toISOString(),
+            },
+            status: "pending",
+          },
+        });
+        return { status: "pending-approval", approvalId: "apr_seam" };
+      },
+    );
+    await seedApp(store, app);
+    await engine.enable(app.id, ctx());
+    const [runId] = await engine.emit("go", {}, ctx().principal);
+
+    breakSeam = true;
+    guard.decide("apr_seam", true);
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(await engine.runs.get(runId!, ctx())).toMatchObject({ status: "error" });
+    expect(guard.audit.some((event) =>
+      (event.detail as { status?: string }).status === "sponsorship-check-failed")).toBe(true);
+  });
+
+  it("runs normally when the same callback answers", async () => {
+    const app = scheduled("app_seam_ok");
+    const { store, engine, calls } = harness({ memberships: async () => [{ org: "maple" }] });
+    await seedApp(store, app);
+    await engine.enable(app.id, ctx());
+
+    const [runId] = await engine.tick(new Date(NOW.getTime() + 2 * 3_600_000));
+
+    expect(calls).toHaveLength(1);
+    expect(await engine.runs.get(runId!, ctx())).toMatchObject({ status: "ok" });
+  });
+});
+
+/** F12 — the consent rows are generic records, and the 02-store §5 erase cascade
+ *  finds generic rows by their REFS. Without them a subject erase (or an app
+ *  delete) leaves the automation's pending asks behind. */
+describe("sponsorship — consent rows join the erase cascade", () => {
+  it("refs every capture it writes to the subject and the app", async () => {
+    const app = doc("app_refs");
+    const { store, engine } = harness();
+    await seedApp(store, app, "user_dana", false);
+    const { missing } = await engine.enable(app.id, ctx());
+
+    expect(missing).not.toHaveLength(0);
+    for (const request of missing) {
+      expect((await store.records("automations:captures").get(request.id))?.refs)
+        .toEqual({ subject: "user_dana", app_id: app.id });
+    }
+  });
+
+  it("relies on the approvals table's own derived refs, which survive a re-put", async () => {
+    // `vendo_approvals` is RESERVED: the store derives its refs from the request
+    // and ignores whatever a caller passes, and the cascade deletes it by its
+    // subject COLUMN. Asserted rather than assumed, because it is the reason
+    // captures needed refs and approvals did not.
+    const app = doc("app_refs_reserved");
+    const { store, engine, guard } = harness();
+    await seedApp(store, app, "user_dana", false);
+    const { missing } = await engine.enable(app.id, ctx());
+    expect((await store.records("vendo_approvals").get(missing[0]!.id))?.refs)
+      .toMatchObject({ subject: "user_dana" });
+
+    guard.decide(missing[0]!.id, true);
+    await flush();
+
+    const consumed = await store.records("vendo_approvals").get(missing[0]!.id);
+    expect(consumed?.data).toMatchObject({ consumedAt: NOW.toISOString() });
+    expect(consumed?.refs).toMatchObject({ subject: "user_dana" });
+  });
+});
+
 describe("sponsorship — the adoption card", () => {
   it("appears for an editor once the automation stops, and never for a non-editor", async () => {
     const app = doc("app_card");

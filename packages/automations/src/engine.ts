@@ -194,6 +194,13 @@ const SPONSORSHIP_STOP: Record<
     + " — anyone who can edit this app can take it on",
 };
 
+/** Captures are a GENERIC collection, and the 02-store §5 erase cascade finds
+ *  generic rows by their refs — so an unref'd capture outlives both the person
+ *  who was asked and the app that asked. (Approvals need none: `vendo_approvals`
+ *  is reserved, derives its own refs, and is erased by its subject column.) */
+const captureRefs = (subject: string, appId: string): Record<string, string> =>
+  ({ subject, app_id: appId });
+
 const clone = <T>(value: T): T => globalThis.structuredClone(value);
 const id = (prefix: string): string => `${prefix}${globalThis.crypto.randomUUID()}`;
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -545,20 +552,26 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
    *  named person. The app row's subject is the fallback for automations armed
    *  before sponsorship existed, and for a sponsorship that has lapsed (the
    *  fire-time gate below stops those runs anyway). */
+  /** The run's context before any seam is consulted — a pure function of the run
+   *  and a subject, so it cannot fail. It is what a failed identity resolution
+   *  still audits under (F10: a fire that cannot even resolve who it runs as
+   *  must leave a record, not vanish). */
+  const baseRunContext = (run: InternalRunRecord, subject: string): RunContext => ({
+    principal: { kind: "user", subject },
+    venue: "automation",
+    presence: "away",
+    sessionId: `sess_${run.id}`,
+    appId: run.appId,
+    trigger: { runId: run.id, kind: run.trigger.kind },
+  });
+
   const runContext = async (run: InternalRunRecord, subject: string): Promise<RunContext> => {
     const sponsorship = await readSponsorship(sponsorships(), run.appId);
-    const principal: Principal = {
-      kind: "user",
-      subject: sponsorship?.row.status === "active" ? sponsorship.row.sponsor : subject,
-    };
-    const ctx: RunContext = {
-      principal,
-      venue: "automation",
-      presence: "away",
-      sessionId: `sess_${run.id}`,
-      appId: run.appId,
-      trigger: { runId: run.id, kind: run.trigger.kind },
-    };
+    const ctx = baseRunContext(
+      run,
+      sponsorship?.row.status === "active" ? sponsorship.row.sponsor : subject,
+    );
+    const principal = ctx.principal;
     // §9.1 — memberships are ASSERTED per run, never stored: an unattended fire
     // has no session, so the engine resolves them from the host's own callback
     // and rides them on the ctx (the schema is passthrough, like `inClient` on
@@ -845,16 +858,36 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     if (agentController !== undefined) abortControllers.set(runId, agentController);
     const done = (async (): Promise<void> => {
       try {
-        const ctx = await runContext(record, app.subject);
-        // §9.9 — BEFORE any step or agentic dispatch. A lapsed sponsorship
-        // fails the run loudly (a persisted error row plus its own audit
-        // event); it never silently skips, because an automation that quietly
-        // stops firing is indistinguishable from one nobody needs.
-        const refusal = await sponsorshipRefusal(app, ctx);
-        if (refusal !== undefined) {
+        // §9.9's gate runs BEFORE any step or agentic dispatch, and its two
+        // outcomes both end the run LOUDLY — a persisted error row plus its own
+        // audit event — because an automation that quietly stops firing is
+        // indistinguishable from one nobody needs:
+        //  - a lapsed sponsorship (the gate said no), and
+        //  - a gate that could not ANSWER, because the host's memberships
+        //    callback or access seam threw. That throw used to escape here, and
+        //    the schedule path swallows a rejected run, so the whole firing
+        //    vanished: no row, no audit, nothing to look at.
+        let ctx = baseRunContext(record, app.subject);
+        let stop: { reason?: NonNullable<Sponsorship["reason"]>; summary: string } | undefined;
+        try {
+          ctx = await runContext(record, app.subject);
+          stop = await sponsorshipRefusal(app, ctx);
+        } catch (error) {
+          stop = {
+            summary: `stopped: ${app.doc.name} could not check who it runs as (${message(error)})`,
+          };
+        }
+        if (stop !== undefined) {
           await writeRun(record);
-          await audit(ctx, "sponsorship-invalidated", { reason: refusal.reason, summary: refusal.summary });
-          await terminal(record, ctx, "error", refusal.summary, { code: "blocked", message: refusal.summary });
+          await audit(
+            ctx,
+            stop.reason === undefined ? "sponsorship-check-failed" : "sponsorship-invalidated",
+            { ...(stop.reason === undefined ? {} : { reason: stop.reason }), summary: stop.summary },
+          );
+          await terminal(record, ctx, "error", stop.summary, {
+            code: stop.reason === undefined ? "error" : "blocked",
+            message: stop.summary,
+          });
           return;
         }
         await writeRun(record);
@@ -1009,12 +1042,30 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
 
       const appFound = await appRecord(run.appId);
       if (appFound === null) {
-        const ctx = await runContext(run, approvalData.request.ctx.principal.subject);
+        // The app is gone, so there is no sponsorship left to resolve and no
+        // seam worth asking — the approval's own subject is the honest voice for
+        // this terminal row, and it cannot throw.
+        const ctx = baseRunContext(run, approvalData.request.ctx.principal.subject);
         await terminal(run, ctx, "stopped", "app deleted before resume");
         await dropPark();
         return;
       }
-      const ctx = await runContext(run, appFound.row.subject);
+      // The run is already CLAIMED ("running"), so an identity seam that throws
+      // here must not strand it: land the loud terminal row under the row
+      // subject instead (F10, the resume half).
+      let ctx: RunContext;
+      try {
+        ctx = await runContext(run, appFound.row.subject);
+      } catch (error) {
+        const fallback = baseRunContext(run, appFound.row.subject);
+        await audit(fallback, "sponsorship-check-failed", { summary: message(error) });
+        await terminal(run, fallback, "error", `stopped at resume: ${message(error)}`, {
+          code: "error",
+          message: message(error),
+        });
+        await dropPark();
+        return;
+      }
       if (!appFound.row.enabled || appFound.row.doc.trigger === undefined) {
         await terminal(run, ctx, "stopped", "automation disabled before resume");
         await dropPark();
@@ -1263,7 +1314,11 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
           // Adopt pre-set rows (and any stray sibling) into THE app's set so
           // one decision can settle everything outstanding.
           if (pending.data.grantSetId !== grantSetId) {
-            await config.store.records(CAPTURES).put({ id: pending.id, data: { ...pending.data, grantSetId } });
+            await config.store.records(CAPTURES).put({
+              id: pending.id,
+              data: { ...pending.data, grantSetId },
+              refs: captureRefs(pending.data.subject, pending.data.appId),
+            });
           }
           missing.push(clone(parsed.data.request));
           continue;
@@ -1292,6 +1347,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       await config.store.records(CAPTURES).put({
         id: request.id,
         data: { appId, subject, tool, descriptorHash: descriptorHash(descriptor), grantSetId },
+        refs: captureRefs(subject, appId),
       });
       missing.push(request);
     }
