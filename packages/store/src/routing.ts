@@ -193,6 +193,21 @@ function effectRecord(row: Record<string, unknown>): VendoRecord {
   };
 }
 
+/** The single vendo_effects write: insert-once, null when the key already exists. */
+async function insertEffect(
+  db: Db,
+  record: { id: string; data: unknown },
+): Promise<VendoRecord | null> {
+  const { subject, outcome } = parseEffectData(record.data, record.id);
+  const result = await db.query(
+    `INSERT INTO vendo_effects (key, subject, outcome) VALUES ($1, $2, $3::jsonb)
+     ON CONFLICT (key) DO NOTHING
+     RETURNING key AS id, subject, outcome, at`,
+    [record.id, subject, JSON.stringify(outcome)],
+  );
+  return result.rows[0] ? effectRecord(result.rows[0]) : null;
+}
+
 function stateRecord(row: StateRow): VendoRecord {
   return {
     id: `${row.appId}:${row.subject}`,
@@ -513,17 +528,11 @@ function configFor(db: Db, collection: ReservedCollection): RoutedConfig {
         refs: { subject: "subject" },
         fromDb: effectRecord,
         async put(record) {
-          const { subject, outcome } = parseEffectData(record.data, record.id);
           // Insert-once even on the plain door: a receipt that exists is the
           // truth about what already executed; overwriting it is how a re-run
           // double-sends. Losing the race returns the recorded row.
-          const result = await db.query(
-            `INSERT INTO vendo_effects (key, subject, outcome) VALUES ($1, $2, $3::jsonb)
-             ON CONFLICT (key) DO NOTHING
-             RETURNING key AS id, subject, outcome, at`,
-            [record.id, subject, JSON.stringify(outcome)],
-          );
-          if (result.rows[0]) return effectRecord(result.rows[0]);
+          const inserted = await insertEffect(db, record);
+          if (inserted) return inserted;
           const existing = await db.query(
             "SELECT key AS id, subject, outcome, at FROM vendo_effects WHERE key = $1",
             [record.id],
@@ -533,14 +542,7 @@ function configFor(db: Db, collection: ReservedCollection): RoutedConfig {
         atomic: {
           async insertIfAbsent(record) {
             requireRecordId(record.id);
-            const { subject, outcome } = parseEffectData(record.data, record.id);
-            const result = await db.query(
-              `INSERT INTO vendo_effects (key, subject, outcome) VALUES ($1, $2, $3::jsonb)
-               ON CONFLICT (key) DO NOTHING
-               RETURNING key AS id, subject, outcome, at`,
-              [record.id, subject, JSON.stringify(outcome)],
-            );
-            return result.rows[0] ? effectRecord(result.rows[0]) : null;
+            return insertEffect(db, record);
           },
           async compareAndSwap() {
             throw new VendoError(

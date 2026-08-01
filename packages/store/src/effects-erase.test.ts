@@ -20,7 +20,6 @@ async function seedEffect(made: MadeBackend, key: string, subject: string): Prom
   await made.store.records("vendo_effects").put({
     id: key,
     data: { subject, outcome: { status: "ok", output: { receipt: key } } },
-    refs: { subject },
   });
 }
 
