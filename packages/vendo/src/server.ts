@@ -28,6 +28,7 @@ export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai
 // package the host installed (architecture §6).
 export { instant, type InstantHarnessDeps, type InstantHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
+import { warnDeprecatedConfigKeys } from "./config-keys.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -316,6 +317,21 @@ export interface CreateVendoConfig {
       ephemeral anonymous principal. With neither `auth` nor `principal`, every
       session is anonymous (the null path is the default resolver — 09 §2). */
   principal?: (req: Request) => Promise<Principal | null>;
+  /** Architecture §10 — THE host's own tools, as `vendo init` / `vendo sync`
+      extract them: the declarations `.vendo/tools.json` carries, passed in
+      memory instead of read from disk.
+
+      This is the explicit override, not the quickstart: day one is one key
+      (`createVendo({ auth })`) reading `.vendo/` off the project root, and a
+      host reaches for `tools:` when the declarations live somewhere the
+      filesystem cannot be — a Worker, a per-tenant venue composing from a
+      database, a test.
+
+      Precedence: `tools:` wins over the deprecated `profile.tools` (the same
+      value under its pre-§10 spelling), which wins over the `profileDir` /
+      cwd `tools.json` read. Unset, nothing changes — the file is read exactly
+      as before. */
+  tools?: ExtractedTool[];
   /** Host components available to generated apps: the name-keyed registry
       object (01 §14 — the same object serves <VendoRoot>; the server ignores
       each entry's `component` reference) or the array form. Entry names must
@@ -1123,9 +1139,23 @@ function readFileSyncOrUndefined(path: string): string | undefined {
  * different file — or no file — and a gate that reads nothing passes everything.
  */
 function hostToolNames(config: CreateVendoConfig): string[] {
-  const inMemory = config.profile?.tools;
+  const inMemory = selectHostTools(config);
   if (inMemory !== undefined) return inMemory.map((tool) => tool.name);
   return hostToolNamesIn(readFileSyncOrUndefined(`${vendoDirOf(config.profileDir ?? ".")}/tools.json`));
+}
+
+/**
+ * ADAPTER RULE, host-tool declarations (§10's `tools:` slot): the ONE place the
+ * in-memory host-tool list is chosen, so the compose-time gate, the actions
+ * registry and the development-capture baseline can never read different sets.
+ *
+ * `tools:` beats the deprecated `profile.tools` rather than the other way round.
+ * The `apps.designRules` precedent — longer-standing knob wins — is about two
+ * knobs of equal standing; this is a slot and its own former spelling, and a host
+ * who adds the documented slot expects it to take effect.
+ */
+function selectHostTools(config: CreateVendoConfig): ExtractedTool[] | undefined {
+  return config.tools ?? config.profile?.tools;
 }
 
 /** The compose-time project root for .vendo reads that happen LATER (the
@@ -1377,6 +1407,10 @@ function createWireHandler(deps: WireDeps): (request: Request) => Promise<Respon
 
 /** 09-vendo §2 — compose every live block around the guard choke point. */
 export function createVendo(config: CreateVendoConfig): Vendo {
+  // §10 consolidation — a deprecated key still works, and says where it went.
+  // Once per key per process: a deployment composes once, but a multi-tenant
+  // venue composes per session and repeated advice is noise nobody reads.
+  warnDeprecatedConfigKeys(config as Record<string, unknown>);
   // 09-vendo §2.1 — one preset or the per-seam trio, never mixed. Checked
   // before anything is constructed so a miswired config leaks no resources.
   if (config.auth !== undefined) {
@@ -1672,7 +1706,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // inputs (tools/capabilities existed; overrides is the parallel input
     // added with this seam). Inside the registry each wins over its dir-read
     // file, so per-piece precedence needs no second path here.
-    ...(config.profile?.tools === undefined ? {} : { tools: config.profile.tools }),
+    ...(selectHostTools(config) === undefined ? {} : { tools: selectHostTools(config) }),
     // Overrides seam (#557 + Task 15a): an explicitly-passed in-memory
     // profile.overrides wins (adapter rule); otherwise a cloud-configured host
     // gets the enablement provider. Both flow through the registry's single
@@ -1806,8 +1840,8 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       : selectConfigSurface("overrides.json", { readFile: readSurfaceFile, cloud: configCloud }).value;
     try {
       return mergedHostSemantics({
-        tools: config.profile?.tools !== undefined
-          ? { format: VENDO_TOOLS_FORMAT, tools: config.profile.tools }
+        tools: selectHostTools(config) !== undefined
+          ? { format: VENDO_TOOLS_FORMAT, tools: selectHostTools(config) }
           : parsedFile("tools.json"),
         // The AI layer's semantics, read live off the same local disk leg as
         // tools.json: judgments.json is not a cloud config surface, and there

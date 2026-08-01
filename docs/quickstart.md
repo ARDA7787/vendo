@@ -32,8 +32,8 @@ errors with the exact flag to pass instead of guessing or prompting.
 
 ## Model keys
 
-The agent needs an LLM. `createVendo`'s `model` is optional: when you don't
-pass one, the composed default resolves a real key from the environment, in
+The agent needs an LLM. `createVendo`'s `models` block is optional: when you
+set no seat, the composed default resolves a real key from the environment, in
 this order:
 
 1. An explicit env key: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or
@@ -51,8 +51,10 @@ this order:
 3. Nothing available: chat fails honestly, with exact instructions in the
    server log.
 
-Production deploys always need a real server-side key. To take full control
-of the model (BYO-LLM), pass any ai-SDK model to `createVendo({ model })`.
+Production deploys always need a real server-side key. To take full control of
+the model (BYO-LLM), pass any ai-SDK model to the `default` seat:
+`createVendo({ models: { default } })`. The top-level `model:` key still works
+for one more minor and warns once naming the seat.
 
 Vendo Cloud is optional. When `VENDO_API_KEY` is set, init validates it and
 states the plan and what it unlocks; when it is absent, init prints one calm
@@ -189,16 +191,16 @@ hand-write one.
 
 ### The catch-all route — the composition
 
+This is exactly what `vendo init` writes — no model line, no tool list, no
+harness:
+
 ```ts
-// app/api/vendo/[...vendo]/route.ts — the `vendo init` scaffold, plus an
-// explicit model pin (init itself writes no model line)
-import { anthropic } from "@ai-sdk/anthropic";
+// app/api/vendo/[...vendo]/route.ts — the `vendo init` scaffold, verbatim
 import { authJs } from "@vendoai/vendo/auth/auth-js";
 import { createVendo, nextVendoHandler } from "@vendoai/vendo/server";
 import { registry } from "@/vendo/registry";
 
 const vendo = createVendo({
-  model: anthropic("claude-sonnet-4-6"),
   auth: authJs(),
   catalog: registry,
   policy: {}, // .vendo/policy.json: destructive asks, reads run
@@ -207,10 +209,40 @@ const vendo = createVendo({
 export const { GET, POST, PUT, PATCH, DELETE } = nextVendoHandler(vendo);
 ```
 
-The example pins an explicit provider. You can omit `model` entirely — the
-composed default resolves a real key from the environment (see Model keys
-above), so the first turn works before you have picked one; pass any AI SDK
-model whenever you want full control.
+Day one is one key. `.vendo/` — which init wrote — supplies the tools, the
+theme and the brief; the model resolves from the environment (see Model keys
+above); the thinker defaults to `vendo()`; capability defaults to `[apps()]`;
+persistence defaults to PGlite. Everything else either defaults or degrades
+honestly, and says so.
+
+Pin an explicit provider when you want full control, using the `default`
+**seat** rather than the deprecated top-level `model:`:
+
+```ts
+import { anthropic } from "@ai-sdk/anthropic";
+
+const vendo = createVendo({
+  auth: authJs(),
+  catalog: registry,
+  models: { default: anthropic("claude-sonnet-4-6") },
+  policy: {},
+});
+```
+
+A seat is a job, not a model: the same model may fill several, and everything
+you leave unset borrows `default`. The five are `default` (the thinker),
+`reviewer` (generated-app review), `judge` (the guard's judgment channel),
+`fill` (the fast tier that writes an app's groups) and `verifier` (the
+knowledge check).
+
+To swap **who thinks**, name a harness — `instant()` is the non-agentic
+specialist that puts a real layout on screen in seconds:
+
+```ts
+import { createVendo, instant } from "@vendoai/vendo/server";
+
+const vendo = createVendo({ auth: authJs(), catalog: registry, harness: instant() });
+```
 
 `authJs()` is zero-argument in the standard case: it reads `AUTH_SECRET`
 (mirroring Auth.js itself) and derives the principal's display name and email
@@ -222,9 +254,9 @@ see [actAs preset recipes](./act-as-presets.md) for the full list, the
 `user` resolver for custom identity mapping, and the per-seam escape hatch for
 hosts without a shipped preset.
 
-`model` and `catalog` are the only other keys most hosts touch on day one.
-Every key is optional — a bare `createVendo()` legitimately boots, with an
-env-resolved model, anonymous ephemeral sessions, and PGlite persistence.
+`catalog` is the only other key most hosts touch on day one. Every key is
+optional — a bare `createVendo()` legitimately boots, with an env-resolved
+model, anonymous ephemeral sessions, and PGlite persistence.
 The `policy: {}` line activates the `.vendo/policy.json` file init wrote, so
 the scaffolded default posture is: destructive tools ask, reads run. Remove
 the `policy` key entirely and every call auto-runs (audited, with the
@@ -251,15 +283,25 @@ import type { AutomationsEngine } from "@vendoai/automations";
 import type { ConnectionsService, HostAuthPreset, HostOAuthAdapter } from "@vendoai/vendo/server";
 
 export function createVendo(config: {
-  model?: LanguageModel;       // absent → env-resolved key (see Model keys above)
-  paint?: AppsConfig["paint"]; // paint-lane knob for app generation (no-think model, or `disabled`)
+  // ── the slots ──────────────────────────────────────────────────────────
   auth?: HostAuthPreset;       // one preset fills principal + actAs + oauth
+  tools?: ExtractedTool[];     // `vendo init`/`vendo sync` declarations, in memory
+  harness?: Harness;           // WHO THINKS. default: vendo(). also: instant()
+  packs?: PackProvider[];      // where capability comes from. default: [apps()]
+  models?: { default?: M; reviewer?: M; judge?: M; fill?: M; verifier?: M };
+  store?: VendoStore;          // default: PGlite at .vendo/data
+  files?: FilesAdapter;        // default: blobs in the store, to a 5 MiB cap
+  sandbox?: SandboxAdapter;    // unlocks machine-backed apps
+
+  // ── everything else: adapters, escape hatches, venue plumbing ──────────
   principal?: (req: Request) => Promise<Principal | null>; // escape hatch
-  catalog?: ComponentCatalog | ComponentRegistry;           // registry.tsx, or the array form
-  store?: VendoStore;
-  sandbox?: SandboxAdapter;
+  catalog?: ComponentCatalog | ComponentRegistry;          // registry.tsx, or the array form
+  theme?: VendoTheme;          // overrides .vendo/theme.json
+  brief?: string;              // overrides .vendo/brief.md
+  knowledge?: KnowledgeAdapter;
   connectors?: Connector[];
-  connections?: ConnectionsService; // explicit connections adapter; always wins over defaults
+  connectorApps?: string[];    // scopes the auto-composed Cloud connector
+  connections?: ConnectionsService; // explicit adapter; always wins over defaults
   actAs?: ActAs;                // escape hatch
   policy?: PolicyConfig;        // "cautious" | "readonly" | "autopilot" | { file } | { rules }
   judge?: Judge;
@@ -269,8 +311,17 @@ export function createVendo(config: {
   oauth?: HostOAuthAdapter;     // escape hatch; required when `mcp` is true and `auth` is absent
   serverActions?: Record<string, ServerActionHandler>; // generated by `vendo sync`
   agent?: { toolOutputCap?: number; maxOutputTokens?: number; historyWindow?: number; maxInitialTools?: number; maxSteps?: number };
+  apps?: AppsConfig;            // generation options + the layer-2/3 opt-ins
   sessions?: { ttlMs?: number; sweepIntervalMs?: number };
+  approvals?: { parkedCallTtlMs?: number };
   development?: boolean | { root?: string; out?: string }; // dev-only source capture
+  profileDir?: string;          // which project root `.vendo/` is read under
+  fetch?: typeof fetch;         // what host tool bindings execute through
+  profile?: { overrides?, theme?, brief?, catalog?, policy?, designRules? }; // `.vendo/` in memory
+
+  // ── deprecated: still work for one more minor, and warn once ───────────
+  model?: LanguageModel;        // → models.default
+  paint?: AppsConfig["paint"];  // → models.fill
 }): Vendo;
 
 export interface Vendo {
@@ -280,9 +331,11 @@ export interface Vendo {
 }
 ```
 
-Every key is optional: `model` resolves from the environment when absent (see
-Model keys above), and with neither `auth` nor `principal` every session is
-ephemeral and anonymous. `auth` and any of `principal`/`actAs`/`oauth` are
+Every key is optional: the model resolves from the environment when no seat is
+set (see Model keys above), and with neither `auth` nor `principal` every
+session is ephemeral and anonymous. Where each key is headed —
+slot, pack option, harness option, adapter, or deprecated — is stated per key
+in `docs/superpowers/specs/2026-08-01-config-migration-table.md`. `auth` and any of `principal`/`actAs`/`oauth` are
 mutually exclusive — supplying both throws a validation error at compose
 time. Pick the preset or hand-wire the three seams, never both.
 

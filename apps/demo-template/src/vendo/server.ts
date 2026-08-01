@@ -40,7 +40,9 @@ const model = wrapLanguageModel({
 const catalog: ComponentCatalog = [];
 
 export const vendo = createVendo({
-  model,
+  // The `default` SEAT (build contract §4), not the deprecated top-level
+  // `model:` — a seat is a job, and everything unset borrows this one.
+  models: { default: model },
   // No login wall: every visitor is anonymous. Returning null rides the
   // umbrella's per-client anonymous principal (a signed session cookie), so
   // visitors never share threads, grants, approvals, or apps.
