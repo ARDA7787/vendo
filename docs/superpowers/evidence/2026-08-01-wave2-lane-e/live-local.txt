@@ -1,46 +1,40 @@
 
  RUN  v2.1.9 /Users/yousefh/orca/workspaces/flowlet/wave2-lane-e/packages/harnesses
 
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(node:45961) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
 (Use `node --trace-warnings ...` to show where the warning was created)
 stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E1 · a normal ask reaches the projected tool, and the tool executes HOST-side
 [live E1 normal] {"reply":"I'll check the outstanding invoices for you.2","calls":[{"name":"maple_invoices_list","args":{"status":"outstanding"}}]}
 
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(node:45961) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
 stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E1 · edit-in-place: the box's real bash edits the app, and the DIFF lands in the store
-[live E1 edit] {"reply":"I'll find and change the dashboard heading from 'Invoices' to 'Bills'.Done. The heading now says 'Bills'.","after":"<App name=\"Money\">\n  <Heading text=\"Bills\" />\n</App>\n","commits":[{"changed":["/user/apps/app_live/app.vendo"]}]}
+[live E1 edit] {"reply":"I'll find and change that dashboard heading for you.Done. The heading now says 'Bills'.","after":"<App name=\"Money\">\n  <Heading text=\"Bills\" />\n</App>\n","commits":[{"changed":["/user/apps/app_live/app.vendo"]}]}
 
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(node:45961) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
 stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E1 · a guard DENIAL comes back through the native permission hook and is narrated
-[live E1 denial] {"reply":"I'll pay invoice inv_1 for you now.The payment for invoice inv_1 requires your approval before it can be processed.","calls":[{"name":"maple_invoices_pay","args":{"id":"inv_1"}}]}
+[live E1 denial] {"reply":"I'll help you pay that invoice. Let me load the payment tool first.The payment needs your approval before it can go through.","calls":[{"name":"maple_invoices_pay","args":{"id":"inv_1"}}]}
 
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(node:45961) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
 stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E1 · an impossible ask is refused honestly, with no invented tool
-[live E1 impossible] {"reply":"I'm not able to book flights. I'm the assistant inside Maple, which is focused on small business banking. I can help you with things like managing invoices and other banking-related tasks, but travel bookings aren't something I can do.\n\nYou'd need to use a travel booking service or airline website to book your flight to Tokyo.","calls":[]}
+[live E1 impossible] {"reply":"I'm not able to book flights for you. Maple is a small business banking product, and I don't have access to any flight booking tools or services.\n\nIf you need to book a flight to Tokyo, you'll need to use a travel booking website or app like:\n- Airline websites directly (JAL, ANA, etc.)\n- Travel booking platforms (Expedia, Kayak, Google Flights, etc.)\n- A travel agent\n\nIs there anything related to your business banking that I can help you with instead?","calls":[]}
 
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(node:45961) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
 stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > §1.3 · turn.state carries the native session, and the next turn RESUMES it
-[live session] {"carried":"{\"sessionId\":\"5947891b-1b28-4565-b04a-3a427d1e7c03\"}"}
+[live session] {"carried":"{\"sessionId\":\"2c972d67-e53f-48b9-a698-a1a1c32f2611\",\"covers\":1,\"rewind\":[{\"at\":1,\"uuid\":\"a683b0c2-90a1-4fd2-9ec7-2c4df00fe1bb\"}]}"}
 
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(node:45961) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
 stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > §1.3 · turn.state carries the native session, and the next turn RESUMES it
 [live session resume] {"reply":"4127"}
 
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
-(node:47690) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
-stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E7 · the SDK subprocess gets the inference credential and NOTHING else
-[live E7] env var names in the subprocess: AI_AGENT,ANTHROPIC_API_KEY,CLAUDECODE,CLAUDE_AGENT_SDK_VERSION,CLAUDE_CODE_CHILD_SESSION,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,CLAUDE_CODE_ENTRYPOINT,CLAUDE_CODE_EXECPATH,CLAUDE_CODE_SESSION_ID,CLAUDE_CONFIG_DIR,CLAUDE_PID,COREPACK_ENABLE_AUTO_PIN,DISABLE_AUTOUPDATER,GIT_EDITOR,HOME,LOGNAME,NoDefaultCurrentDirectoryInExePath,OLDPWD,PATH,PWD,SHELL,SHLVL
-
- ✓ src/claude-code/claude-code.live.test.ts (6 tests) 171673ms
-   ✓ claudeCode() — live, machine:"local" > E1 · a normal ask reaches the projected tool, and the tool executes HOST-side 11966ms
-   ✓ claudeCode() — live, machine:"local" > E1 · edit-in-place: the box's real bash edits the app, and the DIFF lands in the store 15481ms
-   ✓ claudeCode() — live, machine:"local" > E1 · a guard DENIAL comes back through the native permission hook and is narrated 10574ms
-   ✓ claudeCode() — live, machine:"local" > E1 · an impossible ask is refused honestly, with no invented tool 19179ms
-   ✓ claudeCode() — live, machine:"local" > §1.3 · turn.state carries the native session, and the next turn RESUMES it 39252ms
-   ✓ claudeCode() — live, machine:"local" > E7 · the SDK subprocess gets the inference credential and NOTHING else 75220ms
+ ✓ src/claude-code/claude-code.live.test.ts (5 tests) 69862ms
+   ✓ claudeCode() — live, machine:"local" > E1 · a normal ask reaches the projected tool, and the tool executes HOST-side 10140ms
+   ✓ claudeCode() — live, machine:"local" > E1 · edit-in-place: the box's real bash edits the app, and the DIFF lands in the store 12731ms
+   ✓ claudeCode() — live, machine:"local" > E1 · a guard DENIAL comes back through the native permission hook and is narrated 9723ms
+   ✓ claudeCode() — live, machine:"local" > E1 · an impossible ask is refused honestly, with no invented tool 12980ms
+   ✓ claudeCode() — live, machine:"local" > §1.3 · turn.state carries the native session, and the next turn RESUMES it 24287ms
 
  Test Files  1 passed (1)
-      Tests  6 passed (6)
-   Start at  13:13:10
-   Duration  172.45s (transform 553ms, setup 0ms, collect 589ms, tests 171.67s, environment 0ms, prepare 46ms)
+      Tests  5 passed (5)
+   Start at  13:44:32
+   Duration  70.44s (transform 402ms, setup 0ms, collect 388ms, tests 69.86s, environment 0ms, prepare 34ms)
 

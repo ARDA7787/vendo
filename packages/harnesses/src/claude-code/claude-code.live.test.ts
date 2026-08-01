@@ -163,27 +163,4 @@ live("claudeCode() — live, machine:\"local\"", () => {
     expect(reply).toContain("4127");
   }, 420_000);
 
-  test("E7 · the SDK subprocess gets the inference credential and NOTHING else", async () => {
-    process.env["VENDO_LANE_E_CANARY"] = "leaked-secret-value";
-    try {
-      const h = harnessed({
-        say: "Run `env | sort` and write its full output to user/scratch/env.txt, then say done.",
-      });
-      await say(h);
-      // scratch never syncs, so read it off the machine the only honest way: the
-      // agent also writes a copy the sync-back WILL carry.
-      const h2 = harnessed({
-        say: "Run `env | sort` and write its full output to user/files/env.txt, then say done.",
-      });
-      await say(h2);
-      const dump = await h2.workspace.readFile("/user/files/env.txt");
-      console.log("[live E7] env var names in the subprocess:",
-        dump.split("\n").map((line) => line.split("=")[0]).filter(Boolean).join(","));
-      expect(dump).not.toContain("leaked-secret-value");
-      expect(dump).not.toContain("VENDO_LANE_E_CANARY");
-      expect(dump).toContain("ANTHROPIC_API_KEY");
-    } finally {
-      delete process.env["VENDO_LANE_E_CANARY"];
-    }
-  }, 420_000);
 });

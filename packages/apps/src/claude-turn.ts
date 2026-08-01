@@ -69,7 +69,11 @@ export type ClaudeTurnEvent =
   | { type: "error"; message: string }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; model?: string }
   /** Not a `HarnessEvent`: the native session ref the caller puts in `turn.state`. */
-  | { type: "session"; sessionId: string };
+  | { type: "session"; sessionId: string }
+  /** Not a `HarnessEvent` either: an assistant message's own uuid, which is what
+   *  `resumeSessionAt` rewinds to. The caller ledgers these so a prefix
+   *  truncation can use the SDK's NATIVE rewind instead of paying a re-seed. */
+  | { type: "checkpoint"; uuid: string };
 
 export interface ClaudeTurnInput {
   prompt: string;
@@ -311,6 +315,8 @@ export async function runClaudeTurn(input: ClaudeTurnInput): Promise<void> {
       continue;
     }
     if (type === "assistant") {
+      const uuid = message["uuid"];
+      if (typeof uuid === "string") input.emit({ type: "checkpoint", uuid });
       const content = (message["message"] as { content?: Array<Record<string, unknown>> } | undefined)?.content;
       for (const block of content ?? []) {
         if (block["type"] === "text" && typeof block["text"] === "string" && block["text"] !== "") {

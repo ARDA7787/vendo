@@ -43,6 +43,7 @@ import { harnessStateStore, threadMessageStore, workspaceStore, type VendoStore 
 import {
   createDiscoveryRails,
   createHarnessRuntime,
+  provideHarnessAdapters,
   reportHire,
   vendo,
   type DiscoveryRails,
@@ -59,6 +60,12 @@ export interface HarnessTurnsConfig {
    *  written where the erase cascade will look for them. */
   files: FilesAdapter;
   guard: VendoGuard;
+  /** The composed sandbox adapter (`selectSandbox`). A harness declaring
+   *  `requires: { sandbox: true }` — `claudeCode()` — is constructed by the HOST
+   *  at boot, where no composition exists, so composition fills its slot here
+   *  instead. Unset, such a harness must be handed one directly
+   *  (`claudeCode({ sandbox })`), and the boot gate refuses if neither happened. */
+  sandbox?: unknown;
   /** The guard-bound registry — the one choke point, already carrying the
    *  connect gate and unique-title assertion. */
   tools: ToolRegistry;
@@ -167,6 +174,11 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
    */
   const defaultHarness = vendo({ onHire: reportHire }) as unknown as Harness<never>;
   const resolveHarness = (): Harness<never> => config.harness ?? defaultHarness;
+  // Deployment-scoped, filled once: the adapter is a deployment fact, so nothing
+  // here could attribute one user's machine to another user's thread.
+  if (config.harness !== undefined && config.sandbox !== undefined) {
+    provideHarnessAdapters(config.harness, { sandbox: config.sandbox });
+  }
 
   /**
    * The per-THREAD searched-in set, exactly as `createAgent` keeps one: a tool

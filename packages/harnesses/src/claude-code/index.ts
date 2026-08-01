@@ -62,7 +62,7 @@ const HOT_SYNC_INTERVAL_MS = 1_200;
 
 /** The recorded v0 inference exception (design §9): a boxed harness must reach a
  *  model to think, and that is the ONLY credential in the machine. */
-function inferenceEnv(): Record<string, string> {
+export function inferenceEnv(): Record<string, string> {
   const source = globalThis.process?.env ?? {};
   const key = source["ANTHROPIC_API_KEY"] ?? source["VENDO_INFERENCE_KEY"];
   const url = source["ANTHROPIC_BASE_URL"] ?? source["VENDO_INFERENCE_URL"];
@@ -141,6 +141,43 @@ interface ClaudeState {
   sessionId?: string;
   /** A snapshot ref for the machine the session lives on (sandbox path only). */
   resumeRef?: string;
+  /** How long our transcript was when this session last answered. A SHORTER
+   *  transcript next turn is a prefix truncation (§1.3) — the runtime keeps the
+   *  state precisely so the harness can rewind natively. */
+  covers?: number;
+  /** transcript length → the assistant uuid `resumeSessionAt` rewinds to. */
+  rewind?: Array<{ at: number; uuid: string }>;
+}
+
+/** Enough history to rewind through a plausible run of edits; a session id is
+ *  disposable, so an over-old truncation honestly costs a re-seed. */
+const REWIND_LEDGER_LIMIT = 24;
+
+/**
+ * §1.3's prefix truncation, through the SDK's own rewind.
+ *
+ * A shorter incoming transcript means the user edited a past message and resent.
+ * Resuming the session unchanged would leave the model remembering exactly what
+ * they removed, so this picks the checkpoint that predates the edit and hands it
+ * to `resumeSessionAt`. With no usable checkpoint the session is dropped and the
+ * turn re-seeds from our transcript — never wrong, only slower.
+ */
+export function rewindFor(
+  state: ClaudeState,
+  messageCount: number,
+): { resume?: string; resumeAt?: string } {
+  if (state.sessionId === undefined) return {};
+  // STRICTLY shorter. An equal-length history is either an untouched re-send or
+  // an edit of the last message — and the runtime already CLEARS the state for
+  // the latter (`classifyHistory` calls a differing overlap an arbitrary edit),
+  // so treating equality as a truncation only threw away good sessions.
+  if (state.covers === undefined || messageCount >= state.covers) return { resume: state.sessionId };
+  const point = [...(state.rewind ?? [])]
+    .filter((entry) => entry.at < messageCount)
+    .sort((left, right) => left.at - right.at)
+    .at(-1);
+  if (point === undefined) return {};
+  return { resume: state.sessionId, resumeAt: point.uuid };
 }
 
 const readState = (raw: string | undefined): ClaudeState => {
@@ -201,8 +238,15 @@ export function claudeCode(
           | SandboxAdapterLike
           | undefined;
         if (sandbox === undefined) {
-          // The boot gate should have caught this; a turn reaching here means a
-          // host built the harness by hand and never composed an adapter.
+          // The boot gate (`assertHarnessComposable`) passes when the DEPLOYMENT
+          // has an adapter, which is not the same fact as the HARNESS having
+          // been handed one — so this is reachable, and it has to be loud for
+          // the operator and quiet for the user.
+          console.error(
+            "[vendo] claudeCode() has no sandbox adapter. Hand it one directly — "
+            + "`harness: claudeCode({ sandbox: e2bSandbox({ apiKey }) })` — or pass "
+            + "`sandbox` into createHarnessTurns so composition fills the slot.",
+          );
           yield { type: "error", message: "I can't run right now — this assistant is missing its workspace machine." };
           return;
         }
@@ -224,7 +268,10 @@ export function claudeCode(
         return next;
       };
 
-      let sessionId = state.sessionId;
+      const rewind = rewindFor(state, turn.messages.length);
+      let sessionId = rewind.resume;
+      /** The newest assistant uuid this turn produced — the next rewind point. */
+      let checkpoint: string | undefined;
       let finished = false;
       let hotTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -265,7 +312,8 @@ export function claudeCode(
           ...(resolved.model === undefined ? {} : { model: resolved.model }),
           ...(resolved.effort === undefined ? {} : { effort: resolved.effort }),
           ...(resolved.maxTurns === undefined ? {} : { maxTurns: resolved.maxTurns }),
-          ...(sessionId === undefined ? {} : { resume: sessionId }),
+          ...(rewind.resume === undefined ? {} : { resume: rewind.resume }),
+          ...(rewind.resumeAt === undefined ? {} : { resumeAt: rewind.resumeAt }),
           callTool: (name, args) => callGuarded(turn, name, args),
           emit: (event) => events.push(event),
           signal: turn.signal,
@@ -280,6 +328,10 @@ export function claudeCode(
         for await (const event of events.drain()) {
           if (event.type === "session") {
             sessionId = event.sessionId;
+            continue;
+          }
+          if (event.type === "checkpoint") {
+            checkpoint = event.uuid;
             continue;
           }
           yield event;
@@ -313,8 +365,15 @@ export function claudeCode(
         } catch {
           // A machine we cannot release is the pool's problem, never the turn's.
         }
+        // A rewind that landed replaces the ledger's tail: everything after the
+        // rewind point is a branch the session no longer holds.
+        const kept = (state.rewind ?? []).filter((entry) => entry.at < turn.messages.length);
+        const ledger = checkpoint === undefined
+          ? kept
+          : [...kept, { at: turn.messages.length, uuid: checkpoint }].slice(-REWIND_LEDGER_LIMIT);
         const next: ClaudeState = {
-          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(sessionId === undefined ? {} : { sessionId, covers: turn.messages.length }),
+          ...(ledger.length === 0 ? {} : { rewind: ledger }),
           ...(released?.resumeRef === undefined ? {} : { resumeRef: released.resumeRef }),
         };
         if (next.sessionId === undefined) turn.state.clear();

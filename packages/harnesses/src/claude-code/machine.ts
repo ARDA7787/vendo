@@ -19,6 +19,8 @@ export interface TurnRequest {
   maxTurns?: number;
   /** The native session to continue (`turn.state`). */
   resume?: string;
+  /** Resume only up to this assistant uuid — the SDK's native prefix rewind. */
+  resumeAt?: string;
   callTool: GuardedCall;
   emit: (event: ClaudeTurnEvent) => void;
   signal?: AbortSignal;

@@ -109,6 +109,7 @@ export const createTurnRoutes = (options = {}) => {
           effort: payload.effort,
           maxTurns: payload.maxTurns,
           resume: payload.resume,
+          resumeAt: payload.resumeAt,
           cwd: root,
           env: { ...sdkEnv },
           callTool,
@@ -234,6 +235,11 @@ export const createTurnRoutes = (options = {}) => {
             const workspacePath = toWorkspace(root, diskPath);
             if (!workspacePath.startsWith("/user/")) continue;
             try {
+              // Above any file the workspace itself can hold (FILES_STORE_MAX_BYTES
+              // is 5 MiB), so a CHECKED-OUT file can never be skipped here — which
+              // matters because an absent path reads as a deletion at turn end.
+              // Only something the box invented can be this big, and that is not a
+              // document the store was ever asked to keep.
               if (statSync(diskPath).size > 8 * 1024 * 1024) continue;
               files.push({ path: workspacePath, base64: readFileSync(diskPath).toString("base64") });
             } catch {

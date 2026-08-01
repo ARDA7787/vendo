@@ -228,6 +228,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
         effort: turnRequest.effort,
         maxTurns: turnRequest.maxTurns,
         resume: turnRequest.resume,
+        resumeAt: turnRequest.resumeAt,
       });
       const turnId = String(started["turnId"] ?? "");
       const deadline = Date.now() + TURN_BUDGET_MS;

@@ -4,7 +4,7 @@ import { assertHarnessComposable } from "../compose.js";
 import { createTurnState } from "../harness-state.js";
 import { provideHarnessAdapters } from "../harness-sandbox.js";
 import { testWorkspace, unusedModels, userMessage } from "../test-doubles.test-util.js";
-import { claudeCode, promptFor } from "./index.js";
+import { claudeCode, inferenceEnv, promptFor, rewindFor } from "./index.js";
 import { disposeSessionMachines, type SandboxAdapterLike, type SandboxMachineLike } from "./box.js";
 
 const decoder = new TextDecoder();
@@ -220,6 +220,67 @@ describe("options — declared, then overridable per turn", () => {
   });
 });
 
+describe("E7 · the credential law — build list item 8", () => {
+  const withEnv = <T>(vars: Record<string, string | undefined>, body: () => T): T => {
+    const source = process.env as Record<string, string | undefined>;
+    const before = Object.fromEntries(Object.keys(vars).map((key) => [key, source[key]]));
+    for (const [key, value] of Object.entries(vars)) {
+      if (value === undefined) delete source[key];
+      else source[key] = value;
+    }
+    try {
+      return body();
+    } finally {
+      for (const [key, value] of Object.entries(before)) {
+        if (value === undefined) delete source[key];
+        else source[key] = value;
+      }
+    }
+  };
+
+  test("only the recorded v0 inference exception enters the machine", () => {
+    const env = withEnv({
+      ANTHROPIC_API_KEY: "sk-test",
+      ANTHROPIC_BASE_URL: "https://gateway.example/v1/",
+      E2B_API_KEY: "e2b-should-never-travel",
+      DATABASE_URL: "postgres://should-never-travel",
+      VENDO_API_KEY: "vnd-should-never-travel",
+    }, inferenceEnv);
+    expect(env).toEqual({
+      ANTHROPIC_API_KEY: "sk-test",
+      // The bare origin: the SDK wants no /v1 and no trailing slash.
+      ANTHROPIC_BASE_URL: "https://gateway.example",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      DISABLE_AUTOUPDATER: "1",
+    });
+  });
+
+  test("the box's own VENDO_INFERENCE_* wiring is the same one exception", () => {
+    const env = withEnv({
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_BASE_URL: undefined,
+      VENDO_INFERENCE_KEY: "gw-key",
+      VENDO_INFERENCE_URL: "https://console.vendo.run/api/v1",
+    }, inferenceEnv);
+    expect(env["ANTHROPIC_API_KEY"]).toBe("gw-key");
+    expect(env["ANTHROPIC_BASE_URL"]).toBe("https://console.vendo.run/api");
+  });
+
+  test("no inference credential at all still yields no OTHER credential", () => {
+    const env = withEnv({
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_BASE_URL: undefined,
+      VENDO_INFERENCE_KEY: undefined,
+      VENDO_INFERENCE_URL: undefined,
+      E2B_API_KEY: "e2b-should-never-travel",
+    }, inferenceEnv);
+    expect(Object.keys(env).sort()).toEqual([
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+      "DISABLE_AUTOUPDATER",
+    ]);
+  });
+});
+
 describe("promptFor — the truth is ours", () => {
   test("a resumed session is asked only what the user just said", () => {
     const messages = [userMessage("m1", "first"), userMessage("m2", "second")];
@@ -231,6 +292,77 @@ describe("promptFor — the truth is ours", () => {
     const prompt = promptFor(messages, false);
     expect(prompt).toContain("make a dashboard");
     expect(prompt).toContain("now make it blue");
+  });
+});
+
+describe("§1.3 · a prefix truncation uses the SDK's NATIVE rewind", () => {
+  test("an APPEND resumes the session untouched", () => {
+    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 3, uuid: "u3" }] }, 5))
+      .toEqual({ resume: "s" });
+  });
+
+  test("an EQUAL-length history is not a truncation — the runtime clears a real last-message edit", () => {
+    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 1, uuid: "u1" }] }, 3))
+      .toEqual({ resume: "s" });
+  });
+
+  test("a SHORTER transcript rewinds to the checkpoint that predates the edit", () => {
+    const state = { sessionId: "s", covers: 5, rewind: [{ at: 1, uuid: "u1" }, { at: 3, uuid: "u3" }] };
+    // The user edited message index 2 and resent: history is 0..1, the new
+    // message is at 2, so the newest usable checkpoint is the one at 1.
+    // A checkpoint AT the incoming length answered a transcript that still
+    // contained the message the user just replaced, so only strictly-older ones
+    // are usable.
+    expect(rewindFor(state, 4)).toEqual({ resume: "s", resumeAt: "u3" });
+    expect(rewindFor(state, 2)).toEqual({ resume: "s", resumeAt: "u1" });
+  });
+
+  test("a truncation past every checkpoint drops the session and re-seeds — never wrong, only slower", () => {
+    expect(rewindFor({ sessionId: "s", covers: 5, rewind: [{ at: 3, uuid: "u3" }] }, 1)).toEqual({});
+  });
+
+  test("no session means nothing to rewind", () => {
+    expect(rewindFor({}, 3)).toEqual({});
+  });
+
+  test("end to end: turn 2 on an EDITED history resumes at turn 1's checkpoint", async () => {
+    const resumes: Array<{ resume?: string; resumeAt?: string }> = [];
+    const sandbox = fakeSandbox(async (box) => {
+      box.emit({ type: "session", sessionId: "sess_rw" });
+      box.emit({ type: "checkpoint", uuid: "uuid_turn1" });
+    });
+    const original = sandbox.create.bind(sandbox);
+    sandbox.create = async (spec) => {
+      const box = await original(spec);
+      const request = box.request.bind(box);
+      box.request = async (req) => {
+        if (req.path === "/turn/start" && req.body !== undefined) {
+          const body = JSON.parse(decoder.decode(req.body as Uint8Array));
+          resumes.push({ resume: body["resume"], resumeAt: body["resumeAt"] });
+        }
+        return request(req);
+      };
+      return box;
+    };
+    const harness = claudeCode({ sandbox });
+    const first = makeTurn({ thread: "thr_rw" });
+    await drain(harness, first.turn);
+    const carried = first.state.pending().value!;
+    expect(JSON.parse(carried)).toMatchObject({
+      sessionId: "sess_rw",
+      covers: 1,
+      rewind: [{ at: 1, uuid: "uuid_turn1" }],
+    });
+
+    // A THIRD message would be an append; two is the user resending an edit.
+    const edited = makeTurn({
+      thread: "thr_rw",
+      state: JSON.stringify({ sessionId: "sess_rw", covers: 3, rewind: [{ at: 1, uuid: "uuid_turn1" }] }),
+      messages: [{ id: "thr_rw", text: "make me a dashboard" }, { id: "m_edit", text: "no, a chart" }],
+    });
+    await drain(harness, edited.turn);
+    console.log("[rewind resumes]", JSON.stringify(resumes));
+    expect(resumes[1]).toEqual({ resume: "sess_rw", resumeAt: "uuid_turn1" });
   });
 });
 
