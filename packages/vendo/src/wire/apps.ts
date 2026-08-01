@@ -1,6 +1,16 @@
-import { VendoError, type Json } from "@vendoai/core";
+import { VendoError, type AccessLevel, type Json } from "@vendoai/core";
 import type { VendoStore } from "@vendoai/store";
 import { json, requestJson, route, string, type RouteEntry } from "./shared.js";
+
+/** Build contract §9.3 — the level vocabulary is CLOSED, so the wire refuses
+    anything outside it instead of letting a typo reach the store. */
+function accessLevel(value: unknown): AccessLevel {
+  const level = string(value, "level");
+  if (level !== "viewer" && level !== "editor" && level !== "owner") {
+    throw new VendoError("validation", "level must be viewer, editor, or owner");
+  }
+  return level;
+}
 
 /** What the ?pending=1 disambiguation learned about a record open() refused
     to serve this caller. */
@@ -216,6 +226,37 @@ export const appRoutes: RouteEntry[] = [
     }
     if (request.method === "POST" && operation === "fork" && segments.length === 3) {
       return json(await deps.apps.fork(appId, ctx));
+    }
+    // Build contract §9.2–§9.6 — the Share dialog's door. Reading the grant
+    // list is viewer-gated and OSS; writing one is owner-gated AND
+    // Cloud-gated, and the runtime (not this route) is where both are decided,
+    // so the MCP door inherits the same rules without a second copy.
+    if (operation === "grants" && segments.length === 3) {
+      if (request.method === "GET") {
+        return json({
+          level: await deps.apps.access.levelFor(appId, ctx),
+          grants: await deps.apps.access.list(appId, ctx),
+        });
+      }
+      if (request.method === "POST") {
+        const body = await requestJson(request);
+        await deps.apps.access.grant(
+          appId,
+          string(body["principal"], "principal"),
+          accessLevel(body["level"]),
+          ctx,
+        );
+        return json({ grants: await deps.apps.access.list(appId, ctx) });
+      }
+      if (request.method === "DELETE") {
+        const principal = wire.url.searchParams.get("principal");
+        await deps.apps.access.revoke(appId, string(principal, "principal"), ctx);
+        return json({ grants: await deps.apps.access.list(appId, ctx) });
+      }
+    }
+    if (request.method === "POST" && operation === "promote" && segments.length === 3) {
+      const body = await requestJson(request);
+      return json(await deps.apps.promote(appId, string(body["orgId"], "orgId"), ctx));
     }
     return undefined;
   }),

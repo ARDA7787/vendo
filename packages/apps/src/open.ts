@@ -262,6 +262,15 @@ export const createAppOpener = (
   pinBaselines: readonly PinBaseline[] = [],
   inClientVenue?: (app: AppDocument) => Promise<InClientVenueState | undefined>,
   served?: ServedSurface,
+  /**
+   * Build contract §9.9 — the ADDITIVE venue-state slot, ctx-aware because the
+   * states that ride it are per-caller (lane H's adoption card is served only
+   * to `can(editor)`). Its keys spread onto the payload beside `inClient`; the
+   * server-authoritative strip has already run, so nothing here can be forged
+   * by a document. Composable by construction: a second additive state is
+   * another key, not another parameter.
+   */
+  venueState?: (app: AppDocument, ctx: RunContext) => Promise<Record<string, unknown> | undefined>,
 ): ((app: AppDocument, ctx: RunContext) => Promise<OpenSurface>) => async (app, ctx) => {
   // A terminally failed build never becomes servable: resolve the poll now
   // with the persisted reason (approvals resolve to denied/expired the same
@@ -311,6 +320,12 @@ export const createAppOpener = (
     const inClient = await inClientVenue?.(app);
     if (inClient !== undefined) {
       (tree as Tree & { inClient: InClientVenueState }).inClient = inClient;
+    }
+    // §9.9 — additive, and deliberately AFTER inClient: an additive state may
+    // add keys, never overwrite the trust-axis verdict the client renders from.
+    for (const [key, value] of Object.entries(await venueState?.(app, ctx) ?? {})) {
+      if (key === "inClient" || key === "data" || key === "pinDrift") continue;
+      (tree as Tree & Record<string, unknown>)[key] = value;
     }
     const pinDrift = detectPinDrift(app, pinBaselines);
     if (pinDrift.length > 0) {

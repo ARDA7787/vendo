@@ -194,6 +194,15 @@ export interface AppsConfig {
    */
   onDocumentEdit?: (previous: AppDocument, next: AppDocument, editor: string) => Promise<void>;
   /**
+   * Build contract §9.9 (lane H's other half) — an ADDITIVE, ctx-aware venue
+   * state merged into the open payload beside the in-client verdict. Lane H's
+   * adoption card rides it, which is why it takes the RunContext: the card is
+   * served only to callers with `can(editor)`, so the decision is per-caller,
+   * not per-document. Returned keys spread onto the payload; `inClient`,
+   * `data` and `pinDrift` are reserved and never overwritten.
+   */
+  venueState?: (app: AppDocument, ctx: RunContext) => Promise<Record<string, unknown> | undefined>;
+  /**
    * execution-v2 Wave 9 — the layer-2 (machine-backed execution) experimental
    * opt-in, gating ALL of the box machinery for NEW graduation: machine
    * provisioning, box-agent delegation, and fn: generation targeting a new
@@ -1352,6 +1361,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         return url.toString();
       },
     },
+    // §9.9 — the additive, ctx-aware venue-state slot lane H's adoption card
+    // rides. Forwarded straight through; the runtime never interprets it.
+    config.venueState,
   );
 
   // 06-apps §8 — every edit result over a drifted app carries the drift report,

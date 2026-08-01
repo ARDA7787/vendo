@@ -347,3 +347,39 @@ describe("§9.9 — the onDocumentEdit choke point", () => {
     expect(seen.every((entry) => entry.editor === "dana")).toBe(true);
   });
 });
+
+describe("§9.9 — the additive, ctx-aware venue-state slot", () => {
+  it("merges a per-caller state into the open payload beside the in-client verdict", async () => {
+    const seen: string[] = [];
+    const { runtime, store } = setup({
+      venueState: async (app, runCtx) => {
+        seen.push(`${app.id}:${runCtx.principal.subject}`);
+        // Lane H's adoption card is served only to editors — the whole reason
+        // this slot takes the ctx.
+        return await runtime.access.levelFor(app.id, runCtx) === "viewer"
+          ? undefined
+          : { adoption: { automation: "nightly digest" } };
+      },
+    });
+    const app: AppDocument = {
+      ...doc("app_venue"),
+      ui: "tree",
+      tree: {
+        formatVersion: "vendo-genui/v2",
+        root: "root",
+        nodes: [{ id: "root", component: "Stack", source: "prewired" }],
+      },
+    };
+    await seedAppRow(store, app, "acme");
+    await seedGrants(store, "app_venue", { "user:kim": "viewer", "user:dana": "editor" });
+
+    const editorView = await runtime.open("app_venue", ctx("dana"));
+    expect(editorView).toMatchObject({ kind: "tree" });
+    expect((editorView as { payload: Record<string, unknown> }).payload["adoption"])
+      .toEqual({ automation: "nightly digest" });
+
+    const viewerView = await runtime.open("app_venue", ctx("kim"));
+    expect((viewerView as { payload: Record<string, unknown> }).payload["adoption"]).toBeUndefined();
+    expect(seen).toEqual(["app_venue:dana", "app_venue:kim"]);
+  });
+});

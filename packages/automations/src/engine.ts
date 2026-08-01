@@ -715,10 +715,14 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       startedAt,
       steps: [],
     };
-    const ctx = await runContext(record, app.subject);
     const agentController = trigger.run.kind === "agentic" ? new AbortController() : undefined;
     if (agentController !== undefined) abortControllers.set(runId, agentController);
     const done = (async (): Promise<void> => {
+      // Build contract §9.1 — asserting the owner's orgs is an I/O call now
+      // (the host's own query), so it happens INSIDE the run, not while minting
+      // its id: `launchRun` stays synchronous so the tick can collect run ids
+      // without blocking on any single automation.
+      const ctx = await runContext(record, app.subject);
       try {
         await writeRun(record);
         await audit(ctx, "running");

@@ -77,11 +77,14 @@ import {
 import { createMcpDoor, type AppsPort, type HostOAuthAdapter, type McpDoor } from "@vendoai/mcp";
 import {
   adoptEphemeralSubject,
+  appAccess,
+  appStore,
   createStore,
   envSecrets,
   registerEphemeralSubject,
   storeFiles,
   sweepEphemeralSubjects,
+  workspaceStore,
   type SubjectMergeReport,
   type VendoStore,
 } from "@vendoai/store";
@@ -1943,6 +1946,22 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // environment — VENDO_API_KEY fills its CloudAppsClient slot HERE, at the
   // composition seam; unfilled, share/publish refuse with cloud-required.
   const appsCloud = cloudKeyOptions();
+  // ADAPTER RULE, multi-party seam (build contract §9.6): sharing is
+  // multi-party coordination, so the WRITES that create it need a key —
+  // filled HERE, from the same one read every other Cloud default uses. The
+  // enforcement half below (`appAccess`) is OSS and never key-conditional:
+  // with no key no grant row can exist, so `can()` degenerates to ownership.
+  const multiParty = appsCloud !== undefined;
+  // §9.5's promote crosses subjects and moves workspace rows — raw-row work
+  // that needs a local engine handle. A Cloud-hosted store answers through the
+  // wire door instead and has none, so the seam stays unset there and promote
+  // refuses loudly rather than half-moving an app. Resolved on FIRST PROMOTE,
+  // never at compose: a host-passed store that is not a local engine handle
+  // must not take down createVendo for a verb it may never call.
+  const promoteRows = isHostedStore(store) ? undefined : {
+    get rows() { return appStore(store); },
+    get workspace() { return workspaceStore(store, { files }); },
+  };
   // Wave 9 — the arming seam for ladder-authored automations: filled with the
   // automations engine composed BELOW (arming only happens inside requests,
   // which run after createVendo returns, so the closure reference is safe —
@@ -1955,6 +1974,20 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     model: inference.agent.model,
     catalog,
     pinBaselines,
+    // Build contract §9 — the multi-party half. `can()` over whatever store the
+    // host wired (OSS, unconditional); `multiParty` is the Cloud gate on the
+    // three writes that create sharing; `promoteApp` is the store's sanctioned
+    // cross-subject door; `memberships` lets an unattended schedule fire assert
+    // the same orgs a request does.
+    appAccess: appAccess(store),
+    multiParty,
+    ...(promoteRows === undefined ? {} : {
+      promoteApp: async (appId: AppId, from: string, orgId: string) => {
+        await promoteRows.rows.promote(appId, from, orgId);
+        await promoteRows.workspace.promoteApp(appId, from, orgId);
+      },
+    }),
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     // execution-v2 Waves 4+9 — the layer-2/3 experimental opt-ins, host-config
     // only (never an env var: enabling machine-backed execution or a surface
     // that runs generated web apps is a deliberate per-project decision).
@@ -2385,6 +2418,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     guard,
     store,
     runner: agent.asRunner(),
+    // Build contract §9.1 — an away run asserts the owner's orgs the same way a
+    // request does; the callback is host server code in this deployment, so the
+    // absence of a session is not in its way.
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     ...(hostedStoreComposed ? { localTriggerKinds: new Set<"schedule" | "external">() } : {}),
   });
   automationsForArming = automations;
