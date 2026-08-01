@@ -1,0 +1,28 @@
+data: {"type":"tool-input-start","toolCallId":"hcall_5_d50f2a01-4526-483b-b08e-3f3c9aceed0b","toolName":"host_listItems","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_5_d50f2a01-4526-483b-b08e-3f3c9aceed0b","toolName":"host_listItems","input":{},"dynamic":true}
+
+data: {"type":"tool-output-available","toolCallId":"hcall_5_d50f2a01-4526-483b-b08e-3f3c9aceed0b","output":{"data":[{"id":"item_007","name":"Golf","status":"active","amount":27373,"updatedAt":"2026-07-23T23:50:00.000Z"},{"id":"item_005","name":"Echo","status":"active","amount":76757,"updatedAt":"2026-07-23T23:34:00.000Z"},{"id":"item_003","name":"Charlie","status":"active","amount":25980,"updatedAt":"2026-07-22T18:27:00.000Z"},{"id":"item_002","name":"Bravo","status":"active","amount":15410,"updatedAt":"2026-07-16T22:42:00.000Z"},{"id":"item_011","name":"Kilo","status":"active","amount":80957,"updatedAt":"2026-07-14T16:32:00.000Z"},{"id":"item_009","name":"India","status":"active","amount":19124,"updatedAt":"2026-07-03T23:40:00.000Z"},{"id":"item_010","name":"Juliett","status":"active","amount":33875,"updatedAt":"2026-06-29T21:23:00.000Z"},{"id":"item_006","name":"Foxtrot","status":"active","amount":16004,"updatedAt":"2026-06-29T18:02:00.000Z"},{"id":"item_012","name":"Lima","status":"active","amount":68083,"updatedAt":"2026-06-20T23:06:00.000Z"},{"id":"item_001","name":"Alpha","status":"active","amount":62543,"updatedAt":"2026-06-19T15:56:00.000Z"},{"id":"item_008","name":"Hotel","status":"archived","amount":35890,"updatedAt":"2026-06-12T23:38:00.000Z"},{"id":"item_004","name":"Delta","status":"archived","amount":36484,"updatedAt":"2026-06-06T23:52:00.000Z"}]},"dynamic":true}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_6_677c50ee-8aad-44e4-9ca0-369e6f7d9a38","toolName":"search_components","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_6_677c50ee-8aad-44e4-9ca0-369e6f7d9a38","toolName":"search_components","input":{"query":"transaction list feed"},"dynamic":true}
+
+data: {"type":"tool-output-available","toolCallId":"hcall_6_677c50ee-8aad-44e4-9ca0-369e6f7d9a38","output":{"components":[]},"dynamic":true}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_7_511d45ae-61de-49d2-91ab-93c6fa87117b","toolName":"search_components","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_7_511d45ae-61de-49d2-91ab-93c6fa87117b","toolName":"search_components","input":{"query":"list items status amount date"},"dynamic":true}
+
+data: {"type":"tool-output-available","toolCallId":"hcall_7_511d45ae-61de-49d2-91ab-93c6fa87117b","output":{"components":[]},"dynamic":true}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_8_68f40c38-f5e5-463d-8d33-53e7a6fc2fb6","toolName":"vendo_apps_create","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_8_68f40c38-f5e5-463d-8d33-53e7a6fc2fb6","toolName":"vendo_apps_create","input":{"prompt":"Build a recent transactions view that lists all items from the host. For each transaction show: the name, the amount (formatted as currency), the status as a badge (active = green, archived = muted/grey), and the date from updatedAt formatted as a readable short date (e.g. \"Jul 23, 2026\"). Sort by most recent first. Display as a clean, comfortable-density list with subtle row dividers and a clear header that says \"Recent Transactions\". No charts, just the list."},"dynamic":true}
+
+data: {"type":"data-vendo-build-failed","data":{"toolCallId":"hcall_8_68f40c38-f5e5-463d-8d33-53e7a6fc2fb6","reason":"app build failed: generation failed"}}
+
+data: {"type":"tool-output-error","toolCallId":"hcall_8_68f40c38-f5e5-463d-8d33-53e7a6fc2fb6","errorText":"app build failed: generation failed","dynamic":true}
+
+data: [DONE]
+

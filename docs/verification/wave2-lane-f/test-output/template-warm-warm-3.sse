@@ -1,0 +1,18 @@
+data: {"type":"data-vendo-status","data":{"label":"Building it…"},"transient":true}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_7_c370bdb0-3a67-47c4-a928-bb33aa280fd4","toolName":"vendo_apps_create","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_7_c370bdb0-3a67-47c4-a928-bb33aa280fd4","toolName":"vendo_apps_create","input":{"prompt":"Show my items in a table."},"dynamic":true}
+
+data: {"type":"data-vendo-build-failed","data":{"toolCallId":"hcall_7_c370bdb0-3a67-47c4-a928-bb33aa280fd4","reason":"app build failed: generation failed"}}
+
+data: {"type":"tool-output-error","toolCallId":"hcall_7_c370bdb0-3a67-47c4-a928-bb33aa280fd4","errorText":"app build failed: generation failed","dynamic":true}
+
+data: {"type":"text-start","id":"txt_1_23daf2f8-5de6-4c65-9074-8988fadbb206"}
+
+data: {"type":"text-delta","id":"txt_1_23daf2f8-5de6-4c65-9074-8988fadbb206","delta":"I couldn't put that together. Try describing it a different way."}
+
+data: {"type":"text-end","id":"txt_1_23daf2f8-5de6-4c65-9074-8988fadbb206"}
+
+data: [DONE]
+

@@ -1,0 +1,18 @@
+data: {"type":"data-vendo-status","data":{"label":"Building it…"},"transient":true}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_1_149e7183-8473-42ea-a44f-b26ba93ca18b","toolName":"vendo_apps_create","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_1_149e7183-8473-42ea-a44f-b26ba93ca18b","toolName":"vendo_apps_create","input":{"prompt":"Build me a page showing my three accounts and their balances."},"dynamic":true}
+
+data: {"type":"data-vendo-build-failed","data":{"toolCallId":"hcall_1_149e7183-8473-42ea-a44f-b26ba93ca18b","reason":"app build failed: Your host has no tool to list accounts or balances — the only data tools available are host_listItems and the Vendo app data tools, none of which carry account or balance information."}}
+
+data: {"type":"tool-output-error","toolCallId":"hcall_1_149e7183-8473-42ea-a44f-b26ba93ca18b","errorText":"app build failed: Your host has no tool to list accounts or balances — the only data tools available are host_listItems and the Vendo app data tools, none of which carry account or balance information.","dynamic":true}
+
+data: {"type":"text-start","id":"txt_1_b2405307-8be4-4244-a541-0a9658b47684"}
+
+data: {"type":"text-delta","id":"txt_1_b2405307-8be4-4244-a541-0a9658b47684","delta":"Your host has no tool to list accounts or balances — the only data tools available are host_listItems and the Vendo app data tools, none of which carry account or balance information."}
+
+data: {"type":"text-end","id":"txt_1_b2405307-8be4-4244-a541-0a9658b47684"}
+
+data: [DONE]
+

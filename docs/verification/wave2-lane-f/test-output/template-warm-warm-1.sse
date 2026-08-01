@@ -1,0 +1,18 @@
+data: {"type":"data-vendo-status","data":{"label":"Building it…"},"transient":true}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_5_691a7fa1-4c29-4d63-8d87-c176e97d41fd","toolName":"vendo_apps_create","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_5_691a7fa1-4c29-4d63-8d87-c176e97d41fd","toolName":"vendo_apps_create","input":{"prompt":"Make me a view of my recent items."},"dynamic":true}
+
+data: {"type":"data-vendo-build-failed","data":{"toolCallId":"hcall_5_691a7fa1-4c29-4d63-8d87-c176e97d41fd","reason":"app build failed: generation failed"}}
+
+data: {"type":"tool-output-error","toolCallId":"hcall_5_691a7fa1-4c29-4d63-8d87-c176e97d41fd","errorText":"app build failed: generation failed","dynamic":true}
+
+data: {"type":"text-start","id":"txt_1_e4f0934b-f537-4fbc-85ee-839cdbe41a9c"}
+
+data: {"type":"text-delta","id":"txt_1_e4f0934b-f537-4fbc-85ee-839cdbe41a9c","delta":"I couldn't put that together. Try describing it a different way."}
+
+data: {"type":"text-end","id":"txt_1_e4f0934b-f537-4fbc-85ee-839cdbe41a9c"}
+
+data: [DONE]
+
