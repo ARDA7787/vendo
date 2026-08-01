@@ -140,6 +140,72 @@ describe("E8 — two principals, one org, over the real composition", () => {
     expect((await call(vendo, kim, "GET", "/apps/app_dash")).body.name).toBe("Team dashboard");
   });
 
+  it("a viewer cannot roll the team's app back, but may read its versions", async () => {
+    // `undo` is an EDIT of the shared app — the level belongs in the runtime,
+    // not only in this route, which is why the runtime now takes the ctx.
+    await seedApp(store, seeded("app_undo", "Shared"), ORG);
+    await call(vendo, dana, "POST", "/apps/app_undo/grants", { principal: "user:kim", level: "viewer" });
+
+    const listed = await call(vendo, kim, "GET", "/apps/app_undo/history");
+    expect(listed.status).toBe(200);
+
+    const rolled = await call(vendo, kim, "POST", "/apps/app_undo/history", { op: "undo" });
+    expect(rolled.status).toBe(403);
+    expect(rolled.body.error.code).toBe("forbidden");
+
+    // A caller who cannot see it stays masked at both verbs.
+    const stranger: Principal = { kind: "user", subject: "stranger" };
+    expect((await call(vendo, stranger, "GET", "/apps/app_undo/history")).status).toBe(404);
+    expect((await call(vendo, stranger, "POST", "/apps/app_undo/history", { op: "undo" })).status).toBe(404);
+  });
+
+  it("the harness workspace door mounts the asserted orgs", async () => {
+    // The /orgs mounts have to be reachable from a PRODUCTION door, not only by
+    // calling the store directly: the harness door resolves the same host
+    // memberships seam the wire does, keyed on the principal.
+    const fs = await vendo.harness.workspace(kim);
+    expect(await fs.readdir("/")).toEqual(["host", "orgs", "user"]);
+    expect(await fs.readdir("/orgs")).toEqual([ORG]);
+    await fs.writeFile(`/orgs/${ORG}/files/from-the-door.md`, "hello");
+    expect(await fs.commit()).toEqual({ status: "ok", changed: [`/orgs/${ORG}/files/from-the-door.md`] });
+
+    // A principal the host asserts nothing for keeps today's single-player
+    // façade — the mount set is the assertions, nothing else.
+    const solo = await vendo.harness.workspace({ kind: "user", subject: "stranger" });
+    expect(await solo.readdir("/")).toEqual(["host", "user"]);
+  });
+
+  it("refuses a colliding promote in the consumer's voice, leaving the app WHOLLY personal", async () => {
+    // The org workspace already holds documents at this app's subtree. Promote
+    // is all-or-nothing: the documents move first and the row flips last, so a
+    // refusal here leaves nothing half-moved.
+    await seedApp(store, seeded("app_collide", "Mine"), "dana");
+    const workspace = workspaceStore(store);
+    const mine = await workspace.open(dana);
+    await mine.writeFile("/user/apps/app_collide/app.vendo", "page: mine");
+    await mine.commit();
+    await (store.raw() as { query(sql: string, params: unknown[]): Promise<unknown> }).query(
+      "INSERT INTO vendo_workspace_files (path, owner, content, bytes) VALUES ($1, $2, $3, $4)",
+      [`/orgs/${ORG}/apps/app_collide/app.vendo`, ORG, "someone else's", 14],
+    );
+
+    const refused = await call(vendo, dana, "POST", "/apps/app_collide/promote", { orgId: ORG });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("conflict");
+    // A typed refusal in the consumer's voice — never a raw database error.
+    expect(refused.body.error.message).not.toMatch(/duplicate key|constraint|SQLSTATE/i);
+
+    // The app is still entirely Dana's: row AND documents.
+    expect((await store.records("vendo_apps").get("app_collide"))?.refs?.["subject"]).toBe("dana");
+    const rows = await (store.raw() as {
+      query(sql: string, params: unknown[]): Promise<{ rows: Array<{ path: string; owner: string }> }>;
+    }).query("SELECT path, owner FROM vendo_workspace_files WHERE path LIKE $1 ORDER BY path", ["%app_collide%"]);
+    expect(rows.rows).toEqual([
+      { path: `/orgs/${ORG}/apps/app_collide/app.vendo`, owner: ORG },
+      { path: "/user/apps/app_collide/app.vendo", owner: "dana" },
+    ]);
+  });
+
   it("a viewer denied an edit gets forbidden (403) and can fork", async () => {
     await seedApp(store, seeded("app_view", "Shared view"), ORG);
     await call(vendo, dana, "POST", "/apps/app_view/grants", { principal: "user:kim", level: "viewer" });
@@ -317,6 +383,42 @@ describe("E8 — §9.8: the served-app proxy is a wire door", () => {
     // fails) — never a permission refusal.
     expect(own.status).not.toBe(403);
     expect(own.body?.error?.code).not.toBe("not-found");
+  });
+});
+
+describe("E8 — §9.8: open() hands an org served app a RESOLVABLE url", () => {
+  it("is absolute, like the personal branch's provider url", async () => {
+    // An MCP client (or anything that is not a browser sitting on the host
+    // origin) cannot resolve a relative path. The personal branch has always
+    // handed back an absolute provider URL; the org branch must match.
+    const store = await tempStore();
+    vi.stubEnv("VENDO_BASE_URL", "https://maple.test");
+    vi.stubEnv("VENDO_API_KEY", "vnd_e8_key");
+    const vendo = createVendo({
+      store,
+      tools,
+      auth: {
+        principal: async () => acting,
+        memberships: async (principal) => memberships[principal.subject] ?? [],
+      },
+      apps: { experimentalMachines: true, experimentalServedApps: true },
+    });
+    await store.ensureSchema();
+    // A served (layer-3) app the org holds. No wake happens on this path — the
+    // proxy wakes the machine only after IT has re-checked access.
+    await seedApp(store, {
+      ...seeded("app_abs", "Kanban"),
+      ui: "http",
+      machine: { snapshotRef: "fakebox:none", provisionedAt: "2026-08-01T00:00:00.000Z" },
+    }, ORG);
+    await call(vendo, dana, "POST", "/apps/app_abs/grants", { principal: "user:kim", level: "viewer" });
+
+    const opened = await call(vendo, kim, "GET", "/apps/app_abs/open");
+    expect(opened.status).toBe(200);
+    expect(opened.body).toEqual({
+      kind: "http",
+      url: "https://maple.test/api/vendo/apps/app_abs/serve/",
+    });
   });
 });
 

@@ -402,9 +402,10 @@ describe("09 §3 public wire", () => {
   });
 
   it("enforces history() ownership at the wire: cross-principal reads and undo are denied for real", async () => {
-    // 06-apps: history(appId) is ownership-blind by frozen signature; THIS route
-    // is the enforcement boundary. No mocks — a real store row, a real history
-    // entry, and the real apps runtime behind the handler.
+    // Build contract §9.3: the LEVEL lives in the apps runtime (`history` takes
+    // the ctx — list needs viewer, undo needs editor) and this route masks what
+    // the caller cannot see. No mocks — a real store row, a real history entry,
+    // and the real apps runtime behind the handler, so both halves are proven.
     let current: Principal = { kind: "user", subject: "user_owner" };
     const { vendo } = await setup(vi.fn(async () => current));
     expect((await vendo.handler(request("GET", "/status"))).status).toBe(200); // migrate the store

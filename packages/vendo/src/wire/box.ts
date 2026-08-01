@@ -56,8 +56,12 @@ export const servedProxyRoutes: RouteEntry[] = [
     const { request, params, deps, segments } = wire;
     const appId = string(params["appId"], "app id");
     const ctx = await wire.context("app");
-    // Everything after `/apps/<id>/serve` is the path INSIDE the box.
-    const inner = `/${segments.slice(3).join("/")}`;
+    // Everything after `/apps/<id>/serve` is the path INSIDE the box, QUERY
+    // STRING included: a parameterized request must arrive parameterized, or
+    // every served app that reads one (?tab=, ?vendoTheme=, pagination) breaks
+    // the moment the app is shared. Still payload only — the search string is
+    // part of what the caller asked for, not host authority.
+    const inner = `/${segments.slice(3).join("/")}${wire.url.search}`;
     const body = new Uint8Array(await request.arrayBuffer());
     const contentType = request.headers.get("content-type");
     // Forward ONLY the payload — no cookies, no authorization, no host

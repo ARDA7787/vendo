@@ -1986,15 +1986,45 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     multiParty,
     ...(promoteRows === undefined ? {} : {
       promoteApp: async (appId: AppId, from: string, orgId: string) => {
-        await promoteRows.rows.promote(appId, from, orgId);
-        await promoteRows.workspace.promoteApp(appId, from, orgId);
+        // §9.5 is ALL-OR-NOTHING, and the store seam (01-core §12) has no
+        // transaction: so the documents move FIRST — that is the step that can
+        // collide, and it refuses in the consumer's voice before touching a row
+        // — and the row flips LAST. If the flip loses to a concurrent write the
+        // documents go back, so a failed promote always leaves the app WHOLLY
+        // personal rather than half-moved.
+        const personal = { kind: "user", subject: from } as const;
+        const team = { kind: "org", org: orgId } as const;
+        await promoteRows.workspace.moveApp(appId, personal, team);
+        try {
+          await promoteRows.rows.promote(appId, from, orgId);
+        } catch (failure) {
+          await promoteRows.workspace.moveApp(appId, team, personal);
+          throw failure;
+        }
       },
     }),
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     // Build contract §9.8 — where the authenticated served-app proxy lives. The
     // wire owns its base path, so it is filled here and nowhere else; the apps
     // block never invents a URL for a door it does not mount.
-    servedProxyPath: (appId: AppId) => `${BASE_PATH}/apps/${encodeURIComponent(appId)}/serve/`,
+    //
+    // ABSOLUTE, like the personal branch's provider URL: an MCP client (or
+    // anything not already sitting on the host origin) cannot resolve a relative
+    // path. Serving an app means a machine, and machine provisioning already
+    // requires VENDO_BASE_URL (see machineEnv), so the origin is always there —
+    // and when it is not, the refusal names it rather than handing out a URL
+    // nobody can follow.
+    servedProxyPath: (appId: AppId) => {
+      if (configuredBaseUrl === undefined) {
+        throw new VendoError(
+          "validation",
+          "serving a team app needs VENDO_BASE_URL — the app's URL has to be absolute for anything "
+          + "that is not already on this origin (an MCP client, a native app). Set it to this "
+          + "deployment's public origin and restart.",
+        );
+      }
+      return `${configuredBaseUrl.replace(/\/+$/, "")}${BASE_PATH}/apps/${encodeURIComponent(appId)}/serve/`;
+    },
     // execution-v2 Waves 4+9 — the layer-2/3 experimental opt-ins, host-config
     // only (never an env var: enabling machine-backed execution or a surface
     // that runs generated web apps is a deliberate per-project decision).
@@ -2271,6 +2301,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     capabilityMiss,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
+    // Build contract §9.1/§9.7 — the same host org query the wire resolves per
+    // request, so a harness turn's façade mounts the team's files too.
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
   });
   // Per-subject connected-toolkit lookups are cached briefly so a turn never
   // pays a broker round-trip it doesn't need; failures degrade to host tools
