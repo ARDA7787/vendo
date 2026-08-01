@@ -150,15 +150,22 @@ function armIdle(threadId: string, entry: PoolEntry, idleTtlMs: number): void {
       pool.delete(threadId);
       try {
         const ref = await entry.machine.snapshot();
-        // The token the sleeping box's MEMORY still holds travels with the ref:
-        // a resume restores the supervisor, so the next acquire has to present
-        // this one to be allowed to rotate to a fresh one.
-        entry.resume = { ref, token: entry.token };
-        swept.set(threadId, entry.resume);
+        // The snapshot await is a window: a new machine may have claimed the
+        // thread meanwhile. Publishing the OLD box's ref then would hand the
+        // next process restart a one-turn-stale session. The newer machine
+        // owns the swept slot; this sweep only destroys its own box.
+        if (!pool.has(threadId)) {
+          // The token the sleeping box's MEMORY still holds travels with the
+          // ref: a resume restores the supervisor, so the next acquire has to
+          // present this one to be allowed to rotate to a fresh one.
+          entry.resume = { ref, token: entry.token };
+          swept.set(threadId, entry.resume);
+        }
       } catch {
         // No snapshot means the next turn starts fresh and re-seeds from our
-        // transcript — disposable by contract.
-        swept.delete(threadId);
+        // transcript — disposable by contract. Same window guard: never drop
+        // a ref a newer machine may have published.
+        if (!pool.has(threadId)) swept.delete(threadId);
       }
       await entry.machine.destroy().catch(() => undefined);
     })();

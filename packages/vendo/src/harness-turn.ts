@@ -44,8 +44,6 @@ import {
   createDiscoveryRails,
   createHarnessRuntime,
   provideHarnessAdapters,
-  reportHire,
-  vendo,
   type DiscoveryRails,
   type HarnessRuntimeDeps,
 } from "@vendoai/harnesses";
@@ -53,8 +51,10 @@ import type { LanguageModel, UIMessage } from "ai";
 
 
 export interface HarnessTurnsConfig {
-  /** The host's chosen harness. Unset means `vendo()` — see {@link resolveHarness}. */
-  harness?: Harness<never>;
+  /** The resolved harness. Composition (server.ts) resolves the default —
+   *  `vendo()` with the hire reporter — so there is exactly ONE construction
+   *  and the gate-checked value IS the served value. */
+  harness: Harness<never>;
   store: VendoStore;
   /** THE deployment's files adapter (`selectStore`), so workspace blobs are
    *  written where the erase cascade will look for them. */
@@ -158,7 +158,8 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
   const hostProjection = (): Record<string, string> => hostSkillFiles(config.packSkills);
 
   /**
-   * Who thinks. `config.harness` if the host chose one, else `vendo()`.
+   * Who thinks arrives RESOLVED from composition (server.ts) — the host's
+   * choice or the `vendo()` default, one construction, gate-checked = served.
    *
    * The system prompt is deliberately NOT a dep here. It used to be, and that is
    * exactly what made the documented `harness: vendo()` opt-in think with an empty
@@ -172,11 +173,9 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
    * the same discovery rail: the loadout, `find_tools` and the curated menu are the
    * RUNTIME's, so a host's own thinker gets them without asking.
    */
-  const defaultHarness = vendo({ onHire: reportHire }) as unknown as Harness<never>;
-  const resolveHarness = (): Harness<never> => config.harness ?? defaultHarness;
   // Deployment-scoped, filled once: the adapter is a deployment fact, so nothing
   // here could attribute one user's machine to another user's thread.
-  if (config.harness !== undefined && config.sandbox !== undefined) {
+  if (config.sandbox !== undefined) {
     provideHarnessAdapters(config.harness, { sandbox: config.sandbox });
   }
 
@@ -318,7 +317,7 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
       // not the harness's.
       const system = await config.system(input.ctx);
       const response = await runtime.run<never>({
-        harness: resolveHarness(),
+        harness: config.harness,
         threadId: thread.id,
         messages: thread.messages,
         ctx: input.ctx,

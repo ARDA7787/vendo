@@ -345,6 +345,7 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             signal,
             interactive: input.interactive,
             ...(input.system === undefined ? {} : { system: input.system }),
+            threadId: input.threadId,
           };
 
           try {

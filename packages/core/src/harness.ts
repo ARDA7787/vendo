@@ -59,6 +59,14 @@ export interface Turn<Options = unknown> {
    * the same thing. Unset only for a runtime driven without composition.
    */
   readonly system?: string;
+  /**
+   * Amendment 2026-08-01 (wave 2): the conversation's stable identity.
+   * Session-owning adapters (a machine pool, a native session ref) need a
+   * per-conversation key; deriving one from `messages[0].id` is a hack that
+   * history edits can orphan. The runtime already holds the thread id —
+   * passing it is simply true. Opaque to adapters.
+   */
+  readonly threadId: string;
 }
 
 /** Build contract §1.1 */

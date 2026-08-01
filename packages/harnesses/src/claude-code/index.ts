@@ -422,15 +422,16 @@ async function callGuarded(
 /**
  * The thread this turn belongs to — the session machine's pool key.
  *
- * `Turn.threadId` is the real answer and the contract now carries it; until the
- * runtime supplies it this falls back to the first message's id, which is stable
- * for the life of one thread and unguessable outside it. A thread with NEITHER
- * gets a per-turn random key: sharing a machine (and therefore a native session
- * and a workspace copy) between two conversations because both happened to have
- * no identity is the one outcome that must never happen.
+ * `Turn.threadId` (contract §1, amendment 2026-08-01) is the answer on every
+ * composed path. The fallbacks exist only for a runtime driven without
+ * composition: first message id (stable for the life of one thread,
+ * unguessable outside it), else a per-turn random key — sharing a machine
+ * (and therefore a native session and a workspace copy) between two
+ * conversations because both happened to have no identity is the one outcome
+ * that must never happen.
  */
 function threadOf(turn: Turn<ClaudeCodeOptions>): string {
-  const named = (turn as { threadId?: unknown }).threadId;
+  const named: unknown = turn.threadId;
   if (typeof named === "string" && named !== "") return named;
   const first = turn.messages[0]?.id;
   if (typeof first === "string" && first !== "") return first;

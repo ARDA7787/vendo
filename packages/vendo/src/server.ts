@@ -2266,6 +2266,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // descriptor catalog) are resolved in harness-turn.ts.
   const harnessTurns = createHarnessTurns({
     harness: harness as Harness<never>,
+    // The composed sandbox adapter, threaded through so a spawned harness's
+    // machine slot is filled by the SAME adapter the boot gate approved.
+    // Without this line, `createVendo({ sandbox, harness: claudeCode() })`
+    // boots green and then refuses every turn (wave-2 lane E blocker B2).
+    ...(sandbox.adapter === undefined ? {} : { sandbox: sandbox.adapter }),
     store,
     // The SAME adapter the erase cascade deletes through (selectStore) — the
     // whole point of resolving it once.
