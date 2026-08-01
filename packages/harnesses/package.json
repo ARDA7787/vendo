@@ -30,6 +30,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./claude-code": {
+      "types": "./dist/claude-code/index.d.ts",
+      "default": "./dist/claude-code/index.js"
     }
   },
   "files": [
@@ -51,7 +55,8 @@
   },
   "peerDependencies": {
     "ai": ">=6.0.0 <7",
-    "zod": ">=3.25.0 <5"
+    "zod": ">=3.25.0 <5",
+    "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -59,5 +64,10 @@
     "just-bash": "^3.1.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    }
   }
 }

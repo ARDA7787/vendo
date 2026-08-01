@@ -51,3 +51,17 @@ export {
   type RenderSeamOptions,
 } from "./render-seam.js";
 export { VENDO_STATUS_PART } from "./wire.js";
+export {
+  checkoutWorkspace,
+  contentHash,
+  pathAccess,
+  type Access,
+  type CheckoutFile,
+  type SyncFile,
+  type WorkspaceCheckout,
+} from "./materialize.js";
+export {
+  harnessAdapters,
+  provideHarnessAdapters,
+  type HarnessAdapters,
+} from "./harness-sandbox.js";

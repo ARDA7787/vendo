@@ -9,3 +9,18 @@
  */
 export { assembleTree } from "./runtime.js";
 export { stripServerAuthoritativeFields } from "./open.js";
+
+/** Wave 2 lane E — ONE Claude Agent SDK turn, port-injected. Consumed by
+ *  `@vendoai/harnesses/claude-code` for `machine: "local"`, and copied verbatim
+ *  into the box template (`box/build-template.mjs`) for the sandbox path. */
+export {
+  runClaudeTurn,
+  jsonSchemaToZodShape,
+  BOX_TOOLS,
+  VENDO_MCP_SERVER,
+  type ClaudeTurnEvent,
+  type ClaudeTurnInput,
+  type ClaudeTurnTool,
+  type GuardedCall,
+  type GuardedResult,
+} from "./claude-turn.js";

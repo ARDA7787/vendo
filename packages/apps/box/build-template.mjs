@@ -51,6 +51,15 @@ const template = Template()
   .copy("harness.mjs", "/opt/vendo-box/harness.mjs", { user: "root" })
   .copy("agent-sdk.mjs", "/opt/vendo-box/agent-sdk.mjs", { user: "root" })
   .copy("bootstrap.mjs", "/opt/vendo-box/bootstrap.mjs", { user: "root" })
+  // Wave 2 lane E — the conversational turn door and the SDK loop behind it.
+  // `claude-turn.mjs` is the COMPILED `packages/apps/src/claude-turn.ts`, the
+  // same module `machine: "local"` runs on the host: one implementation, two
+  // homes. Run `pnpm build` before this script so dist/ is current.
+  .copy("turn-routes.mjs", "/opt/vendo-box/turn-routes.mjs", { user: "root" })
+  .copy("../dist/claude-turn.js", "/opt/vendo-box/claude-turn.mjs", { user: "root" })
+  // The materialized workspace's home; the SDK's session file lives beside it
+  // (CLAUDE_CONFIG_DIR=/workspace/.claude) so a snapshot carries the session.
+  .runCmd("mkdir -p /workspace && chmod 777 /workspace", { user: "root" })
   // Wave 7 H2 — the pre-baked served-app scaffold: a layer-3 build starts
   // warm by copying it into /app and EDITING (skin-contract plumbing —
   // /fn envelopes, vendo.json, theme handoff — already wired and

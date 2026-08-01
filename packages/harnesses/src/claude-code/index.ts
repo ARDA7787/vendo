@@ -1,0 +1,355 @@
+/**
+ * `claudeCode()` — the Claude Agent SDK behind the frozen Harness contract.
+ *
+ * The flagship proof that "who thinks" is swappable: real bash hands over a
+ * materialized workspace copy, a native session that survives across turns, and
+ * NOT ONE new safety mechanism. Every tool call still lands in
+ * `turn.tools.call()` — one guard, one audit row, one mirror, exactly like
+ * `vendo()` — because the box's toolset is a projection, never an execution site.
+ *
+ * The ~250MB SDK never enters the host's node_modules on the sandbox path: it
+ * lives in the box image, and this subpath is a thin driver. `machine: "local"`
+ * loads it by dynamic import from an OPTIONAL peer.
+ *
+ * Read with: build contract §1 (the contract), §1.4 (approvals), §3.5
+ * (materialization), and design §3 / §8 / §9.
+ */
+import type {
+  Harness,
+  HarnessEvent,
+  Json,
+  ToolListing,
+  Turn,
+} from "@vendoai/core";
+import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedResult } from "@vendoai/apps/internal";
+import type { UIMessage } from "ai";
+import { z } from "zod";
+import { defineHarness } from "../define.js";
+import { harnessAdapters } from "../harness-sandbox.js";
+import { checkoutWorkspace, type SyncFile } from "../materialize.js";
+import type { TurnMachine } from "./machine.js";
+import { localMachine } from "./local.js";
+import { boxMachine, type SandboxAdapterLike } from "./box.js";
+
+/** v1 options, exactly (design §3): nothing else until asked. */
+export interface ClaudeCodeOptions {
+  model?: string;
+  effort?: "low" | "medium" | "high";
+  maxTurns?: number;
+  /** Run the SDK on the host's own server instead of a sandbox. Never default. */
+  machine?: "local";
+}
+
+/** Declared, then overridable per turn (design §3, "Options are declared"). */
+const optionsSchema = z.object({
+  model: z.string().optional(),
+  effort: z.enum(["low", "medium", "high"]).optional(),
+  maxTurns: z.number().int().positive().optional(),
+  machine: z.literal("local").optional(),
+});
+
+/** Host-side dependencies arrive by factory closure (design §3), which is how a
+ *  host who did not wire `createVendo({ sandbox })` hands one straight to the
+ *  harness. Composition fills the same slot through `provideHarnessAdapters`. */
+export interface ClaudeCodeDeps {
+  sandbox?: SandboxAdapterLike;
+}
+
+/** §3.5's hot paths, as workspace globs are not a thing here: the two files that
+ *  sync mid-turn, resolved per app the checkout carries. */
+const HOT_FILES = ["app.vendo", "plan.vendo"];
+const HOT_SYNC_INTERVAL_MS = 1_200;
+
+/** The recorded v0 inference exception (design §9): a boxed harness must reach a
+ *  model to think, and that is the ONLY credential in the machine. */
+function inferenceEnv(): Record<string, string> {
+  const source = globalThis.process?.env ?? {};
+  const key = source["ANTHROPIC_API_KEY"] ?? source["VENDO_INFERENCE_KEY"];
+  const url = source["ANTHROPIC_BASE_URL"] ?? source["VENDO_INFERENCE_URL"];
+  const env: Record<string, string> = {
+    // Nothing the CLI reaches for on the side: the box's egress is deny-by-default
+    // and a stalled telemetry call is a hung turn.
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    DISABLE_AUTOUPDATER: "1",
+  };
+  if (key !== undefined && key !== "") env["ANTHROPIC_API_KEY"] = key;
+  if (url !== undefined && url !== "") {
+    env["ANTHROPIC_BASE_URL"] = url.replace(/\/+$/, "").replace(/\/v1$/, "");
+  }
+  return env;
+}
+
+/** The plain text of one message, for the re-seed. Parts we cannot render as
+ *  prose are deliberately dropped: a re-seed is a summary, never the raw wire. */
+function textOf(message: UIMessage): string {
+  return message.parts
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
+/**
+ * What the SDK is asked this turn.
+ *
+ * Resuming a native session, the SDK already holds everything before now, so the
+ * prompt is only what the user just said. Starting fresh — a first turn, or a
+ * mid-conversation swap from `vendo()` — the thread is re-seeded from OUR
+ * transcript, which is what lets the swap continue the conversation rather than
+ * restart it. The truth is always ours (design §3, "Harness state").
+ */
+export function promptFor(messages: readonly UIMessage[], resuming: boolean): string {
+  const latest = messages.at(-1);
+  const spoken = latest === undefined ? "" : textOf(latest);
+  if (resuming) return spoken === "" ? "Continue." : spoken;
+  const earlier = messages.slice(0, -1)
+    .map((message) => {
+      const text = textOf(message);
+      return text === "" ? "" : `${message.role === "user" ? "User" : "You"}: ${text}`;
+    })
+    .filter((line) => line !== "");
+  if (earlier.length === 0) return spoken === "" ? "Continue." : spoken;
+  return `Here is the conversation so far, so you can pick it up mid-thread:\n\n${earlier.join("\n\n")}\n\n`
+    + `The user now says:\n\n${spoken}`;
+}
+
+/** The workspace conventions, appended to `Turn.system`. Consumer-voice law
+ *  applies to what the model SAYS; this block is what it needs to KNOW. */
+function workspaceBrief(root: string): string {
+  return `\n\n## Your workspace\n\n`
+    + `Everything you can see is under ${root}. \`user/\` is the person's own space — apps, memory, `
+    + `uploaded and generated files — and every change you make there is saved automatically when you finish `
+    + `(and immediately, for an app or plan file, so they see it appear). \`host/\` is reference material: read it, never write it. `
+    + `\`user/scratch/\` is yours to make a mess in and is never saved.\n\n`
+    + `The shell, the editor and the file tools act on a COPY. Anything that touches the real world — the `
+    + `product's own actions, the person's data, asking them a question — is a \`vendo\` tool, and those run `
+    + `on their behalf with their permission. If one comes back refused, say so plainly and move on; do not `
+    + `try to do it another way.\n\n`
+    + `Talk to the person like a person: no file paths, no tool names, no code.`;
+}
+
+const listingToTool = (listing: ToolListing): ClaudeTurnTool => ({
+  name: listing.name,
+  title: listing.title,
+  description: listing.description,
+  ...(listing.inputSchema === undefined ? {} : { inputSchema: listing.inputSchema }),
+});
+
+/** `turn.state` — the opaque blob (§1.3). Ours to shape, nobody else's to read. */
+interface ClaudeState {
+  /** The SDK's native session id, so a next turn resumes instead of re-seeding. */
+  sessionId?: string;
+  /** A snapshot ref for the machine the session lives on (sandbox path only). */
+  resumeRef?: string;
+}
+
+const readState = (raw: string | undefined): ClaudeState => {
+  if (raw === undefined) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null ? (parsed as ClaudeState) : {};
+  } catch {
+    return {};
+  }
+};
+
+/** A callback-driven producer, consumed by the generator that must `yield`. */
+function eventQueue<T>() {
+  const buffered: T[] = [];
+  let wake: (() => void) | undefined;
+  let done = false;
+  return {
+    push(value: T) {
+      buffered.push(value);
+      wake?.();
+    },
+    close() {
+      done = true;
+      wake?.();
+    },
+    async *drain(): AsyncGenerator<T> {
+      for (;;) {
+        while (buffered.length > 0) yield buffered.shift()!;
+        if (done) return;
+        await new Promise<void>((resolve) => { wake = resolve; });
+        wake = undefined;
+      }
+    },
+  };
+}
+
+export function claudeCode(
+  options: ClaudeCodeOptions & ClaudeCodeDeps = {},
+): Harness<ClaudeCodeOptions> {
+  const harness: Harness<ClaudeCodeOptions> = defineHarness<ClaudeCodeOptions>({
+    name: "claude-code",
+    optionsSchema: optionsSchema as never,
+    // The factory reads its OWN arg; the compose gate stays dumb (§9: a
+    // spawned-CLI harness with no machine to live on is a BOOT error).
+    ...(options.machine === "local" ? {} : { requires: { sandbox: true } }),
+
+    async *run(turn: Turn<ClaudeCodeOptions>): AsyncGenerator<HarnessEvent, void, void> {
+      const resolved = { ...options, ...(turn.options ?? {}) };
+      const state = readState(turn.state.get());
+      const checkout = await checkoutWorkspace(turn.workspace);
+
+      let machine: TurnMachine;
+      if (resolved.machine === "local") {
+        machine = await localMachine({ threadId: threadOf(turn), env: inferenceEnv() });
+      } else {
+        const sandbox = (options.sandbox ?? harnessAdapters(harness).sandbox) as
+          | SandboxAdapterLike
+          | undefined;
+        if (sandbox === undefined) {
+          // The boot gate should have caught this; a turn reaching here means a
+          // host built the harness by hand and never composed an adapter.
+          yield { type: "error", message: "I can't run right now — this assistant is missing its workspace machine." };
+          return;
+        }
+        machine = await boxMachine({
+          sandbox,
+          threadId: threadOf(turn),
+          env: inferenceEnv(),
+          ...(state.resumeRef === undefined ? {} : { resumeRef: state.resumeRef }),
+        });
+      }
+
+      const events = eventQueue<ClaudeTurnEvent>();
+      /** One sync at a time: the façade stages in memory, and two overlapping
+       *  commits would race each other's staging set. */
+      let syncing: Promise<unknown> = Promise.resolve();
+      const serialize = <T>(work: () => Promise<T>): Promise<T> => {
+        const next = syncing.then(work, work);
+        syncing = next.catch(() => undefined);
+        return next;
+      };
+
+      let sessionId = state.sessionId;
+      let finished = false;
+      let hotTimer: ReturnType<typeof setInterval> | undefined;
+
+      try {
+        await machine.materialize(checkout.files);
+
+        const hotPaths = checkout.files
+          .map((file) => file.path)
+          .filter((path) => HOT_FILES.some((name) => path.endsWith(`/${name}`)));
+        // Paths that do not exist YET are the interesting ones — a plan file the
+        // agent is about to write is exactly what puts the skeleton on screen.
+        const appIds = new Set(
+          checkout.files
+            .map((file) => /^\/user\/apps\/(app_[^/]+)\//.exec(file.path)?.[1])
+            .filter((id): id is string => id !== undefined),
+        );
+        const watched = new Set([
+          ...hotPaths,
+          ...[...appIds].flatMap((id) => HOT_FILES.map((name) => `/user/apps/${id}/${name}`)),
+        ]);
+
+        if (watched.size > 0) {
+          hotTimer = setInterval(() => {
+            if (finished) return;
+            void serialize(async () => {
+              const hot = await machine.collect([...watched]);
+              await checkout.syncHot(hot);
+            }).catch(() => undefined);
+          }, HOT_SYNC_INTERVAL_MS);
+          hotTimer.unref?.();
+        }
+
+        const tools = (await turn.tools.list()).map(listingToTool);
+        const running = machine.run({
+          prompt: promptFor(turn.messages, sessionId !== undefined),
+          systemPrompt: `${turn.system ?? ""}${workspaceBrief(rootHintFor(resolved))}`,
+          tools,
+          ...(resolved.model === undefined ? {} : { model: resolved.model }),
+          ...(resolved.effort === undefined ? {} : { effort: resolved.effort }),
+          ...(resolved.maxTurns === undefined ? {} : { maxTurns: resolved.maxTurns }),
+          ...(sessionId === undefined ? {} : { resume: sessionId }),
+          callTool: (name, args) => callGuarded(turn, name, args),
+          emit: (event) => events.push(event),
+          signal: turn.signal,
+        }).then(() => events.close(), (error: unknown) => {
+          // The thinker failed; the user hears one plain sentence and the turn
+          // still lands whatever work reached the disk.
+          console.error("[vendo] claude-code turn failed", error);
+          events.push({ type: "error", message: "Something went wrong while I was working on that." });
+          events.close();
+        });
+
+        for await (const event of events.drain()) {
+          if (event.type === "session") {
+            sessionId = event.sessionId;
+            continue;
+          }
+          yield event;
+        }
+        await running;
+      } finally {
+        finished = true;
+        if (hotTimer !== undefined) clearInterval(hotTimer);
+        // Turn end: the whole writable tree, deletions included (§3.5).
+        //
+        // A machine that died mid-turn cannot be read back, and an EMPTY read is
+        // not the same fact as "the user deleted everything" — syncing one as the
+        // other would erase the workspace on every dead box. No read, no sync:
+        // the store keeps what it had and the next turn recovers on a fresh
+        // machine, which is exactly what the kill-mid-turn law asks for.
+        let collected: SyncFile[] | undefined;
+        try {
+          collected = await machine.collect();
+        } catch (error) {
+          console.error("[vendo] claude-code could not read the workspace back", error);
+        }
+        if (collected !== undefined) {
+          const files = collected;
+          await serialize(() => checkout.syncAll(files)).catch((error: unknown) => {
+            console.error("[vendo] claude-code sync-back failed", error);
+          });
+        }
+        let released: { resumeRef?: string } | void = undefined;
+        try {
+          released = await machine.release();
+        } catch {
+          // A machine we cannot release is the pool's problem, never the turn's.
+        }
+        const next: ClaudeState = {
+          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(released?.resumeRef === undefined ? {} : { resumeRef: released.resumeRef }),
+        };
+        if (next.sessionId === undefined) turn.state.clear();
+        else turn.state.set(JSON.stringify(next));
+      }
+    },
+  });
+  return harness;
+}
+
+/** Contract §1.1's three statuses, flattened for the wire the machine speaks. */
+async function callGuarded(
+  turn: Turn<ClaudeCodeOptions>,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<GuardedResult> {
+  const result = await turn.tools.call(name, args as Json);
+  if (result.status === "ok") return { status: "ok", output: result.output };
+  if (result.status === "denied") return { status: "denied", reason: result.reason };
+  return { status: "error", message: result.error.message };
+}
+
+/**
+ * The thread this turn belongs to. `Turn` deliberately does not carry a thread
+ * id — a harness is permission-blind and thread-blind by contract — but the
+ * machine pool needs a stable key per conversation, and the first message's id
+ * is stable for the life of one thread and unguessable outside it.
+ */
+function threadOf(turn: Turn<ClaudeCodeOptions>): string {
+  return turn.messages[0]?.id ?? "thread";
+}
+
+/** What the workspace brief calls the root. The box path pins it; local mints a
+ *  temp dir, and naming it exactly is not worth a round trip. */
+const rootHintFor = (resolved: ClaudeCodeOptions): string =>
+  resolved.machine === "local" ? "your working directory" : "/workspace";
+
+export { pathAccess, checkoutWorkspace } from "../materialize.js";
