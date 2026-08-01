@@ -12,11 +12,16 @@ import { adoptEphemeralSubject, eraseStore, storeFiles } from "./index.js";
 const alice: Principal = { kind: "user", subject: "user_alice" };
 const anon: Principal = { kind: "user", subject: "anonymous_visitor" };
 
+/** Seed through the store's own door — the same write path the guard uses —
+ *  never raw SQL: a raw INSERT would keep these tests green even if routing
+ *  sent real receipts to the wrong table, which is exactly what happened
+ *  (wave-1 independent check, finding 2: a gate that cannot fail). */
 async function seedEffect(made: MadeBackend, key: string, subject: string): Promise<void> {
-  await made.sql(
-    "INSERT INTO vendo_effects (key, subject, outcome) VALUES ($1, $2, $3::jsonb)",
-    [key, subject, JSON.stringify({ status: "ok", output: { receipt: key } })],
-  );
+  await made.store.records("vendo_effects").put({
+    id: key,
+    data: { subject, outcome: { status: "ok", output: { receipt: key } } },
+    refs: { subject },
+  });
 }
 
 for (const backend of backends()) {
