@@ -23,6 +23,12 @@ export {
 } from "./runtime.js";
 export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "./vendo.js";
 export {
+  instant,
+  VENDO_APPS_EDIT_TOOL,
+  type InstantHarnessDeps,
+  type InstantHarnessOptions,
+} from "./instant.js";
+export {
   createDiscoveryRails,
   type DiscoveryOptions,
   type DiscoveryRails,
