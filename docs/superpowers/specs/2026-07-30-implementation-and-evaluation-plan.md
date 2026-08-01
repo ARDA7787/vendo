@@ -98,11 +98,16 @@ Proven by: E1 (the headline test), E3, E6, E7.
 
 ## 4. Wave 3 — multi-party (Cloud; needs B)
 
-- **Lane G — orgs + `can()`**: org/team principals and memberships (re-adding
-  what kill-list §A5 deleted — the lane contract must carry *why* they were
-  cut) · per-app grants (viewer/editor/owner) · `can()` as one function called
-  by façade, wire, and MCP door · `/orgs` mounts with CAS commits · promote +
-  `forkedFrom` · per-request `can()` for served apps · console management.
+- **Lane G — orgs + `can()`** (AMENDED 2026-08-01, decisions LOCKED with
+  Yousef — see design spec §8): NO membership rows, ever — the host's
+  identity system IS the org, asserted by a `memberships` callback on the
+  auth preset (callable for unattended runs too; kill-list §A5 stays
+  honored). Vendo stores only per-app grants (viewer/editor/owner) ·
+  `can()` as one function called by façade, wire, and MCP door · `/orgs`
+  mounts with CAS commits · promote + `forkedFrom` · per-request `can()`
+  for served apps · console = hosted-tier org management only, plus an
+  optional read-only observed view for BYO; no console channel into a
+  host's database.
 - **Lane H — sponsorship + org policy**: sponsor field · adopt on departure
   *and* on third-party edit · window labels · the org-admin policy layer
   (tighten-only).
