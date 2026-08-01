@@ -12,6 +12,7 @@ import {
   type Json,
   type PermissionGrant,
   type Principal,
+  type RecordStore,
   type RunContext,
   type RunId,
   type Step,
@@ -25,6 +26,16 @@ import {
 import { Cron } from "croner";
 import jsonata from "jsonata";
 import { z } from "zod";
+import { adoptionCard, type AdoptionCard } from "./adoption.js";
+import {
+  currentIntentHash,
+  declaredSurface,
+  readSponsorship,
+  SPONSORSHIPS,
+  swapSponsor,
+  writeSponsorship,
+  type Sponsorship,
+} from "./sponsorship.js";
 import type {
   AutomationsConfig,
   AutomationsEngine,
@@ -154,6 +165,18 @@ const runRowDataSchema = z.object({
   startedAt: z.string(),
   finishedAt: z.string().optional(),
 });
+
+/** §9.9 — what a stopped automation says, in the consumer's voice. It names the
+ *  person it used to run as and what anyone who can edit the app may do about
+ *  it; the machinery (hashes, grants, principals) stays out of the sentence. */
+const SPONSORSHIP_STOP: Record<NonNullable<Sponsorship["reason"]>, (name: string, sponsor: string) => string> = {
+  edit: (name, sponsor) =>
+    `stopped: ${name} changed after ${sponsor} allowed it — anyone who can edit this app can take it on`,
+  departure: (name, sponsor) =>
+    `stopped: ${sponsor} no longer has access to ${name} — anyone who can edit this app can take it on`,
+  grants: (name, sponsor) =>
+    `stopped: ${sponsor}'s permissions for ${name} were removed — anyone who can edit this app can take it on`,
+};
 
 const clone = <T>(value: T): T => globalThis.structuredClone(value);
 const id = (prefix: string): string => `${prefix}${globalThis.crypto.randomUUID()}`;
@@ -470,14 +493,79 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     return true;
   };
 
-  const runContext = (run: InternalRunRecord, subject: string): RunContext => ({
-    principal: { kind: "user", subject },
-    venue: "automation",
-    presence: "away",
-    sessionId: `sess_${run.id}`,
-    appId: run.appId,
-    trigger: { runId: run.id, kind: run.trigger.kind },
-  });
+  const sponsorships = (): RecordStore => config.store.records(SPONSORSHIPS);
+
+  /** §9.3's `can(editor)`, through the config seam. With no seam configured the
+   *  deployment has no app-access grants at all, so editor degenerates to
+   *  ownership — exactly the wave-1 rule, and the reason this stays optional. */
+  const canEdit = async (ctx: RunContext, row: AppRow, appId: string): Promise<boolean> =>
+    config.appAccess === undefined
+      ? row.subject === ctx.principal.subject
+      : await config.appAccess.can(ctx, "editor", { app: appId });
+
+  /** §9.9 — the run's identity is its SPONSOR: an automation always runs as a
+   *  named person. The app row's subject is the fallback for automations armed
+   *  before sponsorship existed, and for a sponsorship that has lapsed (the
+   *  fire-time gate below stops those runs anyway). */
+  const runContext = async (run: InternalRunRecord, subject: string): Promise<RunContext> => {
+    const sponsorship = await readSponsorship(sponsorships(), run.appId);
+    const principal: Principal = {
+      kind: "user",
+      subject: sponsorship?.row.status === "active" ? sponsorship.row.sponsor : subject,
+    };
+    const ctx: RunContext = {
+      principal,
+      venue: "automation",
+      presence: "away",
+      sessionId: `sess_${run.id}`,
+      appId: run.appId,
+      trigger: { runId: run.id, kind: run.trigger.kind },
+    };
+    // §9.1 — memberships are ASSERTED per run, never stored: an unattended fire
+    // has no session, so the engine resolves them from the host's own callback
+    // and rides them on the ctx (the schema is passthrough, like `inClient` on
+    // the open payload). `can()` reads them from there and never queries them.
+    const memberships = await config.memberships?.(principal);
+    if (memberships !== undefined) {
+      (ctx as RunContext & { memberships?: readonly unknown[] }).memberships = memberships;
+    }
+    return ctx;
+  };
+
+  /** §9.9's fire-time gate, in ONE place: a run may proceed only while the
+   *  sponsorship is active, the stored intent still matches the live document,
+   *  and the sponsor can still edit the app. Any failure marks the sponsorship
+   *  invalidated — which IS the adoption card (the card is derived state, not a
+   *  second row) — and the caller stops the run loudly before any tool call.
+   *
+   *  No sponsorship row at all means an automation armed before sponsorship
+   *  shipped: it keeps running as its owner rather than being stopped by a
+   *  feature it predates. */
+  const sponsorshipRefusal = async (
+    app: AppRow,
+    ctx: RunContext,
+  ): Promise<{ reason: NonNullable<Sponsorship["reason"]>; summary: string } | undefined> => {
+    const found = await readSponsorship(sponsorships(), app.doc.id);
+    if (found === undefined) return undefined;
+    const { row } = found;
+    const refusal = (reason: NonNullable<Sponsorship["reason"]>) => ({
+      reason,
+      summary: SPONSORSHIP_STOP[reason](app.doc.name, row.sponsor),
+    });
+    if (row.status !== "active") return refusal(row.reason ?? "edit");
+    const invalidate = async (reason: NonNullable<Sponsorship["reason"]>) => {
+      await writeSponsorship(sponsorships(), {
+        ...row,
+        status: "invalidated",
+        reason,
+        invalidatedAt: iso(),
+      });
+      return refusal(reason);
+    };
+    if (row.intentHash !== currentIntentHash(app.doc)) return await invalidate("edit");
+    if (!await canEdit(ctx, app, app.doc.id)) return await invalidate("departure");
+    return undefined;
+  };
 
   const terminal = async (
     run: InternalRunRecord,
@@ -707,11 +795,22 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       startedAt,
       steps: [],
     };
-    const ctx = runContext(record, app.subject);
     const agentController = trigger.run.kind === "agentic" ? new AbortController() : undefined;
     if (agentController !== undefined) abortControllers.set(runId, agentController);
     const done = (async (): Promise<void> => {
       try {
+        const ctx = await runContext(record, app.subject);
+        // §9.9 — BEFORE any step or agentic dispatch. A lapsed sponsorship
+        // fails the run loudly (a persisted error row plus its own audit
+        // event); it never silently skips, because an automation that quietly
+        // stops firing is indistinguishable from one nobody needs.
+        const refusal = await sponsorshipRefusal(app, ctx);
+        if (refusal !== undefined) {
+          await writeRun(record);
+          await audit(ctx, "sponsorship-invalidated", { reason: refusal.reason, summary: refusal.summary });
+          await terminal(record, ctx, "error", refusal.summary, { code: "blocked", message: refusal.summary });
+          return;
+        }
         await writeRun(record);
         await audit(ctx, "running");
         active.add(runId);
@@ -864,12 +963,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
 
       const appFound = await appRecord(run.appId);
       if (appFound === null) {
-        const ctx = runContext(run, approvalData.request.ctx.principal.subject);
+        const ctx = await runContext(run, approvalData.request.ctx.principal.subject);
         await terminal(run, ctx, "stopped", "app deleted before resume");
         await dropPark();
         return;
       }
-      const ctx = runContext(run, appFound.row.subject);
+      const ctx = await runContext(run, appFound.row.subject);
       if (!appFound.row.enabled || appFound.row.doc.trigger === undefined) {
         await terminal(run, ctx, "stopped", "automation disabled before resume");
         await dropPark();
@@ -1065,20 +1164,26 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     return captures;
   };
 
-  const enable: AutomationsEngine["enable"] = async (appId, ctx) => {
-    const found = await ownedApp(appId, ctx.principal.subject);
-    if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
-    const trigger = validateTrigger(found.row.doc.trigger);
-    const byName = await descriptors(ctx);
-    const surface = trigger.run.kind === "steps"
-      ? [...new Set(trigger.run.steps.map((step) => step.tool).filter((tool) => !tool.startsWith("fn:")))]
-      // PR flag: without a model seat, agentic capture conservatively exposes every bound descriptor.
-      : [...byName.keys()];
+  /** The tools a consent moment has to ask THIS subject about: the automation's
+   *  surface minus whatever they already hold a live standing grant for.
+   *
+   *  Two callers, one routine (07 §3): enable(), where the owner arms the
+   *  automation, and adopt() (§9.9), where an editor takes a stopped one on —
+   *  approving its reads and writes AS THEMSELVES, which is exactly the same
+   *  capture under a different subject. */
+  const captureGrants = async (
+    doc: AppDocument,
+    surface: readonly string[],
+    byName: Map<string, ToolDescriptor>,
+    ctx: RunContext,
+  ): Promise<{ missing: ApprovalRequest[]; grantSetId: string }> => {
+    const appId = doc.id;
+    const subject = ctx.principal.subject;
     // One grant SET per automation: re-enables reuse the app's still-pending
     // asks (and their set id) instead of minting duplicates for the same
     // (appId, tool); a fresh set id is minted only when nothing is pending.
     const pendingForApp = new Map(
-      (await pendingCaptures(found.row.subject))
+      (await pendingCaptures(subject))
         .filter((capture) => capture.data.appId === appId)
         .map((capture) => [capture.data.tool, capture]),
     );
@@ -1089,7 +1194,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     for (const tool of surface) {
       const descriptor = byName.get(tool);
       if (descriptor === undefined) throw new VendoError("validation", `unknown tool in automation: ${tool}`);
-      if (await liveGrant(found.row.subject, appId, descriptor)) continue;
+      if (await liveGrant(subject, appId, descriptor)) continue;
       const pending = pendingForApp.get(tool);
       if (pending !== undefined) {
         const approval = await config.store.records(APPROVALS).get(pending.id);
@@ -1111,7 +1216,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         id: id("apr_"),
         call: { id: id("call_"), tool, args: {} },
         descriptor: clone(descriptor),
-        inputPreview: `Allow "${found.row.doc.name}" to use ${tool} while you're away (standing, this app only)`,
+        inputPreview: `Allow "${doc.name}" to use ${tool} while you're away (standing, this app only)`,
         ctx: {
           principal: clone(ctx.principal),
           venue: "automation",
@@ -1126,10 +1231,40 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       });
       await config.store.records(CAPTURES).put({
         id: request.id,
-        data: { appId, subject: found.row.subject, tool, descriptorHash: descriptorHash(descriptor), grantSetId },
+        data: { appId, subject, tool, descriptorHash: descriptorHash(descriptor), grantSetId },
       });
       missing.push(request);
     }
+    return { missing, grantSetId };
+  };
+
+  /** The tools a consent moment covers. Steps DECLARE their surface; without a
+   *  model seat, agentic capture conservatively exposes every bound descriptor
+   *  (PR flag, unchanged). */
+  const consentSurface = (trigger: Trigger, byName: Map<string, ToolDescriptor>): string[] =>
+    trigger.run.kind === "steps" ? declaredSurface(trigger) : [...byName.keys()];
+
+  const enable: AutomationsEngine["enable"] = async (appId, ctx) => {
+    const found = await ownedApp(appId, ctx.principal.subject);
+    if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
+    const trigger = validateTrigger(found.row.doc.trigger);
+    const byName = await descriptors(ctx);
+    const { missing, grantSetId } = await captureGrants(
+      found.row.doc,
+      consentSurface(trigger, byName),
+      byName,
+      ctx,
+    );
+    // §9.9 — enabling is what names the sponsor: the person arming an
+    // automation is the person it runs as, bound to the intent they just saw.
+    // A re-enable refreshes both, which is how an invalidated automation its
+    // OWNER re-arms comes back without an adoption card.
+    await writeSponsorship(sponsorships(), {
+      appId,
+      sponsor: ctx.principal.subject,
+      intentHash: currentIntentHash(found.row.doc),
+      status: "active",
+    });
     found.row.enabled = true;
     await writeApp(found.record, found.row);
     if (trigger.on.kind === "schedule") {
@@ -1166,19 +1301,109 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       entry.grantSetId ??= capture.data.grantSetId;
       outstanding.set(capture.data.appId, entry);
     }
-    return records.map(parseAppRow)
-      .filter((row) => row.subject === ctx.principal.subject && row.doc.trigger !== undefined)
-      .map((row) => {
-        const pending = outstanding.get(row.doc.id);
-        return {
-          app: row.doc,
-          enabled: row.enabled,
-          ...(pending === undefined ? {} : {
-            pendingGrants: pending.pendingGrants,
-            ...(pending.grantSetId === undefined ? {} : { grantSetId: pending.grantSetId }),
-          }),
-        };
+    const entries: Awaited<ReturnType<AutomationsEngine["list"]>> = [];
+    for (const row of records.map(parseAppRow)) {
+      if (row.subject !== ctx.principal.subject || row.doc.trigger === undefined) continue;
+      const pending = outstanding.get(row.doc.id);
+      // §13's window label — "runs with Dana's access". The subject is always
+      // knowable; a display name is only knowable for the caller themselves
+      // (Vendo holds no directory — a name for someone else would be invented).
+      const sponsorship = await readSponsorship(sponsorships(), row.doc.id);
+      const sponsor = sponsorship?.row.sponsor ?? row.subject;
+      const display = sponsor === ctx.principal.subject ? ctx.principal.display : undefined;
+      // "…and names a wider editor set when one exists": the count comes from
+      // the grants themselves, so a deployment with no access seam says nothing
+      // rather than implying the automation is private.
+      const editors = config.appAccess?.list === undefined
+        ? undefined
+        : (await config.appAccess.list(ctx, row.doc.id)).length;
+      entries.push({
+        app: row.doc,
+        enabled: row.enabled,
+        sponsor: { subject: sponsor, ...(display === undefined ? {} : { display }) },
+        ...(editors === undefined ? {} : { editors }),
+        ...(pending === undefined ? {} : {
+          pendingGrants: pending.pendingGrants,
+          ...(pending.grantSetId === undefined ? {} : { grantSetId: pending.grantSetId }),
+        }),
       });
+    }
+    return entries;
+  };
+
+  /** §9.9 — invalidation on a third party's edit. Called by the apps runtime
+   *  after a successful persist (the `onDocumentEdit` config hook), so the
+   *  choke point stays where the write already is. */
+  const onDocumentEdit: AutomationsEngine["onDocumentEdit"] = async (_previous, next, editor) => {
+    const found = await readSponsorship(sponsorships(), next.id);
+    if (found === undefined || found.row.status !== "active") return;
+    if (editor !== found.row.sponsor) {
+      await writeSponsorship(sponsorships(), {
+        ...found.row,
+        status: "invalidated",
+        reason: "edit",
+        invalidatedAt: iso(),
+      });
+      return;
+    }
+    // The sponsor editing their OWN automation does not invalidate sponsorship
+    // (§13) — but the intent it was minted over just changed, so re-bind it
+    // here. Without this the fire-time hash check would stop the automation for
+    // an edit its own sponsor made, which is the same stop for the opposite
+    // reason. Their GRANT set may still be invalidated by the change; that is
+    // the automations-pack session's half, and it fails at the guard with a
+    // card rather than here.
+    const hash = currentIntentHash(next);
+    if (hash !== found.row.intentHash) {
+      await writeSponsorship(sponsorships(), { ...found.row, intentHash: hash });
+    }
+  };
+
+  const adoption: AutomationsEngine["adoption"] = async (appId, ctx) => {
+    const sponsorship = await readSponsorship(sponsorships(), appId);
+    if (sponsorship === undefined || sponsorship.row.status !== "invalidated") return undefined;
+    const found = await appRecord(appId);
+    // Served ONLY to editors+: a viewer sees the app, not the ask. Nothing is
+    // pushed to anybody — the card waits here for whoever opens the app next.
+    if (found === null || !await canEdit(ctx, found.row, appId)) return undefined;
+    return adoptionCard(found.row.doc, sponsorship.row, await descriptors(ctx));
+  };
+
+  const adopt: AutomationsEngine["adopt"] = async (appId, ctx) => {
+    const found = await appRecord(appId);
+    if (found === null || !await canEdit(ctx, found.row, appId)) {
+      // Existence-masking, as everywhere else: someone who cannot edit the app
+      // learns nothing about it from this door.
+      throw new VendoError("not-found", `app not found: ${appId}`);
+    }
+    const sponsorship = await readSponsorship(sponsorships(), appId);
+    if (sponsorship === undefined || sponsorship.row.status !== "invalidated") {
+      return { adopted: false, missing: [], reason: "already-adopted" };
+    }
+    if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
+    const trigger = validateTrigger(found.row.doc.trigger);
+    const byName = await descriptors(ctx);
+    // Approvals stay strictly SELF-SUBJECT: the adopter approves the
+    // automation's reads and writes as themselves, through the existing
+    // approvals door, and the grant set is minted under their subject.
+    const { missing, grantSetId } = await captureGrants(
+      found.row.doc,
+      consentSurface(trigger, byName),
+      byName,
+      ctx,
+    );
+    const swapped = await swapSponsor(sponsorships(), {
+      appId,
+      sponsor: ctx.principal.subject,
+      intentHash: currentIntentHash(found.row.doc),
+      status: "active",
+    }, { revision: sponsorship.revision });
+    // First editor+ to complete wins; the loser is told the truth rather than
+    // silently overwriting the winner. Their own asks stand — they are that
+    // person's standing grants for an app they can edit, and the engine already
+    // projects them as "waiting on N permissions".
+    if (!swapped) return { adopted: false, missing: [], reason: "already-adopted" };
+    return { adopted: true, missing, ...(missing.length === 0 ? {} : { grantSetId }) };
   };
 
   const sweepParked = async (): Promise<void> => {
@@ -1530,7 +1755,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     stopped.add(runId);
     abortControllers.get(runId)?.abort();
     const parkedApprovalId = run.__resume?.approvalId;
-    const runCtx = runContext(run, app.row.subject);
+    const runCtx = await runContext(run, app.row.subject);
     await terminal(run, runCtx, "stopped", "stopped by user");
     if (parkedApprovalId !== undefined) await config.store.records(PARKED).delete(parkedApprovalId);
     if (!active.has(runId)) stopped.delete(runId);
@@ -1546,5 +1771,8 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     webhook,
     runs: { get: runsGet, list: runsList, stop: runsStop },
     dryRun,
+    onDocumentEdit,
+    adoption,
+    adopt,
   };
 };
