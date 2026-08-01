@@ -7,6 +7,7 @@
 - [Worktree path with a space fails 7 tests](env-worktree-path-space-red.md) — pre-existing red in store/core/vendo from undecoded `%20`; never a lane's bug
 - [THE LAW catches pre-existing tests](project-the-law-catches-pre-existing-tests.md) — §12 turns old green tests red; fix the expectation, never the law
 - [Stale dist = phantom test results](gotcha-stale-dist-phantom-results.md) — always `pnpm build` before a scoped test in flowlet
+- [grep goes silent on claude-turn.ts](gotcha-grep-binary-claude-turn.md) — a raw NUL byte makes it "binary"; use `grep -a` before concluding a symbol is absent
 - [UI chrome exports are a pinned registry](gotcha-ui-chrome-export-registry.md) — a new chrome export reds export-surface.test.ts until it is listed there
 - [Root PARKED.md is gitignored](gotcha-root-parked-md-gitignored.md) — park records that are standing evidence go in docs/verification/&lt;lane&gt;/, never the repo root
 - [Generated .vendo artifacts fight hand edits](gotcha-generated-vendo-artifacts.md) — `vendo sync` rewrites tools.json on predev/prebuild; verification PNGs are gitignored

@@ -241,7 +241,7 @@ function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
   const prefix = `mcp__${VENDO_MCP_SERVER}__`;
   const settled = new Map<string, GuardedResult[]>();
   const schemas = new Map(input.tools.map((listed) => [listed.name, listed.inputSchema]));
-  const slot = (name: string, args: unknown): string => `${name} ${JSON.stringify(args ?? {})}`;
+  const slot = (name: string, args: unknown): string => `${name}\0${JSON.stringify(args ?? {})}`;
 
   const execute = async (bare: string, args: Record<string, unknown>): Promise<GuardedResult> => {
     try {
