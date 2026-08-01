@@ -25,6 +25,7 @@ import { assertHarnessComposable, vendo } from "@vendoai/harnesses";
 // value is called `vendo` (`import { vendo as vendoHarness }`).
 export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
+import { orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -1511,6 +1512,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       },
     }),
     ...(config.judge === undefined ? {} : { judge: config.judge }),
+    // Build contract §9.10 — the org-admin layer, composed at the seam like
+    // every other adapter choice: the guard evaluates rules, this reads them.
+    // Callers with no asserted memberships (every unkeyed deployment, and any
+    // request whose host asserted none) resolve to no rules at all.
+    orgPolicy: orgPolicyResolver(workspacePolicySource(store)),
   });
   let presentCredentialsWarningEmitted = false;
   const warnPresentCredentialsNotForwarded = async (event: {

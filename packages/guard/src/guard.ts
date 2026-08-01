@@ -38,6 +38,7 @@ import type {
   CreateGuardConfig,
   Judge,
   PolicyConfigObject,
+  PolicyRule,
   VendoGuard,
 } from "./types.js";
 
@@ -55,8 +56,10 @@ const AUDIT_COLLECTION = "vendo_audit";
  *  a re-run of a run that already sent the payment must not send it again. */
 const EFFECTS_COLLECTION = "vendo_effects";
 const JUDGE_TIMEOUT_MS = 15_000;
-/** Build contract §9.10 — the one rank the org clamp compares on. */
-const STRICTNESS: Record<PolicyRule["action"], number> = { run: 0, ask: 1, block: 2 };
+/** Build contract §9.10 — the one rank the org clamp compares on: an org rule
+ *  may move a decision UP this order and never down. */
+const strictness = (action: PolicyRule["action"]): number =>
+  action === "block" ? 2 : action === "ask" ? 1 : 0;
 
 interface ApprovalRecordData {
   request: ApprovalRequest;
@@ -699,7 +702,7 @@ class GuardImplementation implements VendoGuard {
     // wins, org policy tightens never loosens" structural rather than a promise.
     // THE LAW's call-time gate stays downstream of it, untouched.
     const orgRule = await this.#orgRule(call, effectiveDescriptor, ctx);
-    if (orgRule !== undefined && STRICTNESS[orgRule.action] > STRICTNESS[draft.action]) {
+    if (orgRule !== undefined && strictness(orgRule.action) > strictness(draft.action)) {
       // Only "ask" and "block" can outrank a draft — "run" is the floor — so the
       // else arm here is reached exactly when the org rule says ask.
       draft = orgRule.action === "block"
@@ -830,7 +833,7 @@ class GuardImplementation implements VendoGuard {
     let strictest: PolicyRule | undefined;
     for (const rule of rules) {
       if (!ruleMatches(rule, call.tool, descriptor.risk, ctx.venue, ctx.presence)) continue;
-      if (strictest === undefined || STRICTNESS[rule.action] > STRICTNESS[strictest.action]) {
+      if (strictest === undefined || strictness(rule.action) > strictness(strictest.action)) {
         strictest = rule;
       }
     }
