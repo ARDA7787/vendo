@@ -28,6 +28,19 @@ const assertedOrgs = (ctx: RunContext): string[] => {
     .filter((org): org is string => typeof org === "string" && org.length > 0))];
 };
 
+/** What "this org has no policy file" looks like coming out of the workspace.
+ *
+ *  Its refusals are PLAIN Errors carrying the POSIX code as a message PREFIX
+ *  (`ENOENT: no such file or directory, open '/orgs/maple/policy.json'` —
+ *  store/workspace-fs.ts); `error.code` is never set. Classifying on `.code`
+ *  therefore never matched, and the ordinary case — an org that simply set no
+ *  policy — took the FAILURE path: a warning and an audit row on every guarded
+ *  call, with the throw skipping the cache so the TTL never engaged. Matching the
+ *  prefix is exactly what `workspaceBash`'s REFUSAL regex does with these same
+ *  errors. ENOENT: no file · EACCES: no `/orgs` mount in this deployment yet ·
+ *  EISDIR: something other than a file at that path. */
+const ABSENT_POLICY = /^(ENOENT|EACCES|EISDIR):/;
+
 /** The workspace-backed source of policy bodies, TTL-cached per org.
  *
  *  Resolved LAZILY and tolerantly: `workspaceStore` wants a SQL handle, which a
@@ -61,12 +74,13 @@ export function workspacePolicySource(store: VendoStore): (orgId: string) => Pro
         const fs = await workspaces.open({ kind: "user", subject: orgId });
         body = await fs.readFile(orgPolicyPath(orgId));
       } catch (error) {
-        // ABSENT is the ordinary case: no policy.json, or no `/orgs` mount in
-        // this deployment yet. Anything else is a real read failure and must be
-        // heard — treating a broken read as "no policy" is a silent loosening of
-        // whatever the admin actually wrote, and it caches for the TTL.
-        const code = (error as { code?: unknown } | null)?.code;
-        if (code !== "ENOENT" && code !== "EACCES" && code !== "EISDIR") throw error;
+        // ABSENT is the ordinary case and is CACHED like any other answer, so the
+        // TTL engages for it too. Anything else is a real read failure and must
+        // be heard — treating a broken read as "no policy" is a silent loosening
+        // of whatever the admin actually wrote. A failure is deliberately NOT
+        // cached: a transient one must not disable an org's policy for the whole
+        // TTL, so it is re-read (and re-reported) until it answers.
+        if (!ABSENT_POLICY.test(error instanceof Error ? error.message : String(error))) throw error;
         body = undefined;
       }
     }

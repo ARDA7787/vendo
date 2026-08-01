@@ -710,6 +710,12 @@ class GuardImplementation implements VendoGuard {
     // getting through. A STANDING grant (grantId present) stays bound on
     // purpose: an org ask over a remembered grant means confirm-every-time, and
     // that is the point of the layer.
+    //
+    // Known and accepted: an org rule adopted BETWEEN a park and its approval is
+    // not applied to that one call — the consumed replay is already authorized by
+    // the human who tapped it. That is the same time-of-check window host policy
+    // has always had for approved replays, not a new one, and closing it would
+    // re-open the unsatisfiable-ask hole above.
     const consumedApproval = draft.action === "run"
       && draft.decidedBy === "grant" && draft.grantId === undefined;
     const orgRule = consumedApproval

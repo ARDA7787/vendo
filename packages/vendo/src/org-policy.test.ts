@@ -1,6 +1,10 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RunContext } from "@vendoai/core";
-import { describe, expect, it, vi } from "vitest";
-import { orgPolicyPath, orgPolicyResolver } from "./org-policy.js";
+import { createStore } from "@vendoai/store";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { orgPolicyPath, orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
 
 /** Build contract §9.10, the composition half: which files get read for whom,
  *  and what a bad one does. The clamp itself is the guard's (org-policy.test.ts
@@ -110,5 +114,70 @@ describe("org policy resolution at the composition seam", () => {
 
   it("reads each org's file from the org's own subtree", () => {
     expect(orgPolicyPath("maple")).toBe("/orgs/maple/policy.json");
+  });
+});
+
+/** N2 — the previous absent-vs-failed split was written against `error.code`,
+ *  which the workspace never sets: its refusals are plain Errors carrying the
+ *  code as a MESSAGE prefix (`ENOENT: no such file…`, store/workspace-fs.ts).
+ *  So the ordinary case — an org with no policy.json — took the FAILURE path:
+ *  a warning and an audit row on every guarded call, and the throw skipped the
+ *  cache so the TTL never engaged. These tests go through the real workspace,
+ *  not a stubbed source, because that is the blind spot that let it ship. */
+describe("org policy over the REAL workspace", () => {
+  const cleanups: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+  });
+
+  const realStore = async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "vendo-org-policy-store-"));
+    const store = createStore({ dataDir });
+    cleanups.push(async () => {
+      await store.close().catch(() => undefined);
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    await store.ensureSchema();
+    return store;
+  };
+
+  it("is SILENT for an org with no policy file — no rules, no failure reported", async () => {
+    const store = await realStore();
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(
+      workspacePolicySource(store),
+      (org, reason) => { failures.push(`${org}: ${reason}`); },
+    );
+
+    expect(await resolve(ctx([{ org: "maple" }]))).toEqual([]);
+    expect(failures).toEqual([]);
+  });
+
+  it("caches the absent answer, so the TTL engages instead of reading per call", async () => {
+    const store = await realStore();
+    const source = workspacePolicySource(store);
+
+    expect(await source("maple")).toBeUndefined();
+    // A closed store cannot be read at all — so a second `undefined` here can
+    // only have come from the cache.
+    await store.close();
+    expect(await source("maple")).toBeUndefined();
+  });
+
+  it("still REPORTS a read that genuinely fails", async () => {
+    const store = await realStore();
+    const source = workspacePolicySource(store);
+    // Warm the workspace façade on one org, then break the store underneath it:
+    // an UNCACHED org now hits a workspace that exists but cannot answer, which
+    // is a real failure and not an absent file.
+    expect(await source("maple")).toBeUndefined();
+    await store.close();
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(source, (org, reason) => { failures.push(`${org}: ${reason}`); });
+
+    expect(await resolve(ctx([{ org: "cadence" }]))).toEqual([]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("cadence");
   });
 });
