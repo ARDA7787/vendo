@@ -29,7 +29,13 @@ export interface SubjectMergeReport {
       - grants and approvals (users re-approve as themselves),
       - connected accounts (Composio keys them by subject; users reconnect),
       - audit and run history (history is a record of what the anonymous
-        principal did; it is not rewritten).
+        principal did; it is not rewritten),
+      - app-access grants (build contract §9.2). An ephemeral visitor can hold
+        no org grant by construction — the host asserts memberships for a
+        signed-in person, and an anonymous session has none — so there is
+        nothing to carry. Adopting them anyway would mean minting access to
+        someone else's app out of a cookie, which is the one thing sharing
+        must never do.
     The dropped rows are DELETED with the session (kill-list B3: anonymous rows
     are disk rows now).
 

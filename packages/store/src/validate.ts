@@ -14,6 +14,7 @@ import {
   type Json,
   type PermissionGrant,
 } from "@vendoai/core";
+import { isGrantPrincipal, type AccessLevel } from "./helpers/app-access.js";
 import type { AppRow, ApprovalRow, RunRow, ThreadRow } from "./helpers/types.js";
 
 export interface ApprovalData {
@@ -154,6 +155,36 @@ export function parseEffectData(value: unknown, id: string): { subject: string; 
     invalid("effect subject must be a non-empty string");
   }
   return { subject, outcome: requireJson(input["outcome"], "effect outcome") };
+}
+
+/** Build contract §9.2 — one app-access grant. The principal encoding is
+ *  enforced at the door so a doctored row can never name a shape `can()`
+ *  cannot match (and so `team:` never smuggles a second slash). */
+export function parseAppGrantData(value: unknown, id: string): {
+  appId: string;
+  orgId: string;
+  principal: string;
+  level: AccessLevel;
+  createdBy: string;
+} {
+  if (!/^ag_.+$/.test(id)) invalid(`app grant id must be "ag_<uuid>": ${id}`);
+  const input = object(value, "app grant data");
+  const appId = parseSchema(appIdSchema, input["appId"], "app grant appId");
+  const orgId = input["orgId"];
+  if (typeof orgId !== "string" || orgId === "") invalid("app grant orgId must be a non-empty string");
+  const principal = input["principal"];
+  if (typeof principal !== "string" || !isGrantPrincipal(principal)) {
+    invalid(`app grant principal must be "user:<subject>", "team:<orgId>/<teamId>", or "org:<orgId>": ${String(principal)}`);
+  }
+  const level = input["level"];
+  if (level !== "viewer" && level !== "editor" && level !== "owner") {
+    invalid("app grant level must be viewer, editor, or owner");
+  }
+  const createdBy = input["createdBy"];
+  if (typeof createdBy !== "string" || createdBy === "") {
+    invalid("app grant createdBy must be a non-empty string");
+  }
+  return { appId, orgId, principal, level, createdBy };
 }
 
 export function parseRunData(value: unknown, id: string): RunData {

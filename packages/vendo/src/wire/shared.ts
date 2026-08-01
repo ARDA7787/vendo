@@ -39,6 +39,8 @@ const STATUS_BY_CODE: Record<VendoErrorCode, number> = {
   validation: 400,
   "not-found": 404,
   blocked: 403,
+  // Build contract §9.4 — the caller sees the thing but may not do this to it.
+  forbidden: 403,
   conflict: 409,
   "cloud-required": 402,
   "sandbox-unavailable": 501,
