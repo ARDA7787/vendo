@@ -548,8 +548,15 @@ audited with the existing (never-yet-produced) `AuditEvent.kind: "share"`.
 
 ### 9.3 `can()` — one function, and where it lives
 
+Amendment 2026-08-01 (lane G, ratified): the TYPES below live in
+`packages/core/src/app-access.ts` and are re-exported by the store, because
+the apps runtime speaks them and `apps → core` is the only edge the
+dependency guard allows (same split as `Check`/`Finding`). `appAccess(store)`
+— the implementation — stays in `@vendoai/store`, built over the adapter
+door so hosted stores work too.
+
 ```ts
-// @vendoai/store
+// types in @vendoai/core, implementation in @vendoai/store
 export type AccessLevel = "viewer" | "editor" | "owner";   // closed, ordered
 export type CanThing = { app: AppId } | { path: string };
 
