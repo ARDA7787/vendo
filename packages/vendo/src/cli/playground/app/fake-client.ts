@@ -110,6 +110,12 @@ export function createFakeClient(fixtures: PlaygroundFixtures): VendoClient {
 
     apps: {
       list: async () => [...state.apps],
+      // Build contract §9.2-§9.6 — the playground is single-player, so the
+      // caller owns everything they can see and nothing is shared with anyone.
+      grants: async () => ({ level: "owner" as const, grants: [] }),
+      share: async () => ({ grants: [] }),
+      unshare: async () => ({ grants: [] }),
+      promote: async (id: string) => app(id),
       create: async ({ prompt }) => {
         const created: AppDocument = {
           format: "vendo/app@1",

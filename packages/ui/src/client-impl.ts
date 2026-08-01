@@ -11,6 +11,10 @@ const KNOWN_ERROR_CODES = new Set<VendoErrorCode>([
   "cloud-required",
   "not-found",
   "conflict",
+  // Build contract §9.4 — the code the fork offer renders from: the caller
+  // provably SEES the app and was denied the action, so the surface can answer
+  // with "…but I can make you your own" instead of a bare refusal.
+  "forbidden",
 ]);
 
 function route(baseUrl: string, path: string): string {
@@ -209,6 +213,11 @@ export function createVendoClient(config: VendoClientConfig): VendoClient {
           body: bytes as BodyInit,
         }),
       fork: id => json(`/apps/${idPath(id)}/fork`, "POST"),
+      grants: id => readJson(`/apps/${idPath(id)}/grants`),
+      share: (id, principal, level) => json(`/apps/${idPath(id)}/grants`, "POST", { principal, level }),
+      unshare: (id, principal) =>
+        json(`/apps/${idPath(id)}/grants?principal=${encodeURIComponent(principal)}`, "DELETE"),
+      promote: (id, orgId) => json(`/apps/${idPath(id)}/promote`, "POST", { orgId }),
       shipDiff: id => readJson(`/apps/${idPath(id)}/ship-diff`),
       pinDrift: id => readJson(`/apps/${idPath(id)}/pin-drift`),
       rebasePin: (id, slot) => json(`/apps/${idPath(id)}/rebase-pin`, "POST", { slot }),

@@ -267,13 +267,13 @@ describe("headless hooks", () => {
     }
 
     const view = render(<Probe value={client} />);
-    expect(latest).toEqual({ posture: "unconfigured", connected: false });
-    await waitFor(() => expect(latest).toEqual({ posture: "rules", connected: true }));
+    expect(latest).toEqual({ posture: "unconfigured", connected: false, memberships: [] });
+    await waitFor(() => expect(latest).toEqual({ posture: "rules", connected: true, memberships: [] }));
 
     await wire.close();
     const disconnectedClient = createVendoClient({ baseUrl: wire.url });
     view.rerender(<Probe value={disconnectedClient} />);
-    await waitFor(() => expect(latest).toEqual({ posture: "unconfigured", connected: false }));
+    await waitFor(() => expect(latest).toEqual({ posture: "unconfigured", connected: false, memberships: [] }));
   });
 
   it("resumes a thread and consumes a full ai-SDK turn with native and Vendo approvals", async () => {
