@@ -6,8 +6,10 @@
  * and adds the one shape that belongs to the floor rather than to the contract:
  * the assembled layer.
  *
- * Findings are advice, not exceptions: a check reports, it never throws the
- * build away.
+ * A check REPORTS; it never throws. What it reports is not advice: at the
+ * commit path a `block` stops the write (`runtime.ts` — nothing is persisted on
+ * create, and on edit the previous app is left in its row, still serving). A
+ * `warn` rides along on an app that ships.
  */
 import type { Check, CheckInput, Finding } from "@vendoai/core";
 

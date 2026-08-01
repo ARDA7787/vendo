@@ -336,6 +336,42 @@ const fallbackAppName = (prompt: string): string => {
 const findingLine = (finding: Finding): string =>
   `[vendo] gen ${finding.severity}${finding.where === undefined ? "" : ` ${finding.where}`}: ${finding.message}`;
 
+/**
+ * The floor's verdict at the commit path (design §7): what the checks marked
+ * `block`. `warn` never blocks — it rides along on an app that ships.
+ *
+ * The severities are the ones the checks already emit: `validate`'s
+ * code-shaped issues, the host's own pack checks, and the reviewer's `block`
+ * findings. Nothing here widens what counts as one.
+ */
+const blockedBy = (findings: readonly Finding[]): Finding[] =>
+  findings.filter(({ severity }) => severity === "block");
+
+/**
+ * Why it did not ship, as the person reads it.
+ *
+ * A finding's `where` is a MACHINE locus (a node id, a query name, a check's
+ * own name) and its `severity` is our vocabulary, not theirs — §3's consumer
+ * voice law keeps both off the screen. The message stays: it is the one
+ * sentence that says what is actually wrong, and "friendly is not vague" means
+ * the person hears that rather than "a check failed".
+ *
+ * ONE string, not one per finding: this is read as a paragraph in an error
+ * surface (demo-bank joins `issues` with "; "). Both leads end in a colon
+ * because a teaching sentence is written for a model and starts lower-case.
+ */
+const notShipped = (lead: string, blocking: readonly Finding[]): string =>
+  [lead, ...blocking.map(({ message }) => message)].join(" ");
+
+const CREATE_BLOCKED =
+  "This app wasn't created, because it didn't pass the checks that keep an app honest:";
+
+/** No version model is needed to say this and none exists: an edit that is
+ *  never written leaves the previous app in its row, still serving. */
+const EDIT_BLOCKED =
+  "This change wasn't made, so nothing changed and your app is exactly as it was — "
+  + "it didn't pass the checks that keep an app honest:";
+
 const BUILD_WATCHDOG_REASON =
   "the build never finished — the server-side build task stalled or died without reporting a "
   + "failure. Retry the request; if this repeats, check the host server log.";
@@ -1790,6 +1826,18 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         ));
         return failBuild(reason, retryable, conducted.issues);
       }
+      // The floor STOPS a bad app here, before the view is emitted and before
+      // anything is written. The conductor's fix rounds have already had their
+      // chance, so a block that survives is one nobody could fix — and an app
+      // that lies to the person is worse than no app. Not persisting is the
+      // whole mechanism: nothing exists, so there is nothing to flag, override,
+      // or roll back to.
+      const blocking = blockedBy(conducted.findings);
+      if (blocking.length > 0) {
+        for (const finding of conducted.findings) console.info(findingLine(finding));
+        const reason = notShipped(CREATE_BLOCKED, blocking);
+        return failBuild(reason, true, [reason]);
+      }
 
       let app: AppDocument = { ...conducted.document, id: appId };
       // Same rule at rest as at serve time: a model-forged venue, drift, egress
@@ -2096,6 +2144,14 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           conducted.issues.length === 0 ? ["edit failed validation"] : conducted.issues,
         );
       }
+      // Same floor, same point: a blocking finding is never written. The
+      // previous app is simply not overwritten, so it keeps serving out of its
+      // own row — which is why this needs no flagged version and no pointer.
+      const blockingFindings = blockedBy(conducted.findings);
+      if (blockingFindings.length > 0) {
+        for (const finding of conducted.findings) console.info(findingLine(finding));
+        return failedEdit(previous, instruction, [notShipped(EDIT_BLOCKED, blockingFindings)]);
+      }
       let app: AppDocument = { ...conducted.document, id: appId };
       // Same strip-before-persist rule as create(): open() strips at serve time,
       // but a model-forged venue or drift field must not be persisted.
@@ -2139,13 +2195,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           console.warn(`[vendo] server work skipped for ${appId} (the edit stands without it): ${safeErrorMessage(error)}`);
         }
       }
-      const blocking = conducted.findings.filter(({ severity }) => severity === "block");
-      const issues = [
-        // `where` is optional (a pack check may not be able to name a locus),
-        // so it is prefixed only when there is one — never as "undefined ...".
-        ...blocking.map(({ where, message }) => (where === undefined ? message : `${where} ${message}`)),
-        ...serverIssues,
-      ];
+      // No blocking finding can reach here — one would have stopped the write
+      // above. What is left is the server lane's own issues, reported beside an
+      // edit that DID land.
+      const issues = [...serverIssues];
       // The version records the surface the edit LANDED on, so a flip to a
       // served app reports rung 3 rather than the tree rung it started from.
       const landedVersion: VersionEntry = { ...version, rung: rungFor(app) };

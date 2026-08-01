@@ -3,10 +3,11 @@
  * {@link Check} that spends ONE strict tool call judging what no lookup can —
  * invented data, dishonest tool use, dead controls, sections that miss the ask.
  *
- * Its findings are advice like every other check's. Silence, a refusal to call
- * the tool, and a failed request all mean "no findings": a reviewer must never
- * be the reason a generated app dies (the layer guards a throw too, but this
- * one does not throw in the first place).
+ * A `block` it reports stops the app being written, like any other check's.
+ * That cuts one way only: silence, a refusal to call the tool, and a failed
+ * request all mean "no findings" — a reviewer that could not judge must never
+ * be the reason a good app dies (the layer guards a throw too, but this one
+ * does not throw in the first place).
  */
 import { printWire, type AppDocument, type AppPlan } from "@vendoai/core";
 import { treeOf } from "./facts.js";

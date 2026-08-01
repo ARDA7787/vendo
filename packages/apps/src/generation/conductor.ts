@@ -9,8 +9,10 @@
  * comes back as sentences the person reads instead of an app.
  *
  * Whatever the checking layer still finds is handed BACK to the brain as an
- * instruction, twice; after that the app ships with what is left stated plainly.
- * A finding is advice, never an exception.
+ * instruction, twice; after that the app is returned with what is left stated
+ * plainly. Nothing here throws a finding — but nothing here commits either: a
+ * `block` that survives these rounds stops the write at the runtime's commit
+ * path, which is the one place that can refuse without losing the answer.
  *
  * Nothing here persists, paints, or provisions. The runtime owns the store, the
  * screen, and the sandbox — this module owns the ORDER, which is why the bench
@@ -175,8 +177,7 @@ const fixInstruction = (findings: readonly Finding[]): string => [
  * Run the checking layer and hand every BLOCKING finding back to the brain as
  * an instruction, up to {@link FIX_ROUNDS} times. Whatever survives is returned
  * beside the app: a warn rides along, and a block the brain could not fix is
- * reported rather than hidden — the app the person can see always beats a
- * withheld one.
+ * returned intact so the commit path can refuse it.
  */
 const checkAndFix = async (
   input: {
