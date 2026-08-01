@@ -215,6 +215,27 @@ describe("E8 — two principals, one org, over the real composition", () => {
     expect(await theirs.commit()).toEqual({ status: "conflict", paths: [path] });
   });
 
+  it("refuses a level outside the closed vocabulary, and a missing principal", async () => {
+    await seedApp(store, seeded("app_vocab", "Vocabulary"), ORG);
+    // §9.3's level vocabulary is CLOSED: `operator` and friends are explicitly
+    // out of scope, so a typo (or an invented level) is refused at the door
+    // rather than landing a row `can()` cannot rank.
+    const bad = await call(vendo, dana, "POST", "/apps/app_vocab/grants", {
+      principal: "user:kim",
+      level: "operator",
+    });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.message).toContain("viewer, editor, or owner");
+
+    const noPrincipal = await call(vendo, dana, "POST", "/apps/app_vocab/grants", { level: "viewer" });
+    expect(noPrincipal.status).toBe(400);
+    // ...and the green half: a legal level goes straight through.
+    expect((await call(vendo, dana, "POST", "/apps/app_vocab/grants", {
+      principal: "user:kim",
+      level: "editor",
+    })).status).toBe(200);
+  });
+
   it("the memberships seam is asserted per request and never stored", async () => {
     await seedApp(store, seeded("app_asserted", "Asserted"), ORG);
     await call(vendo, dana, "POST", "/apps/app_asserted/grants", { principal: `org:${ORG}`, level: "viewer" });
