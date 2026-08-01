@@ -136,11 +136,15 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
     entry = existing;
   } else {
     const token = mintToken();
+    // Deliberately NOT setting CLAUDE_CONFIG_DIR: the SDK's default is under
+    // $HOME, and `/workspace` is EMPTIED and re-materialized at the start of
+    // every turn — parking the native session there would have deleted it on
+    // turn 2, which is the one thing the session machine exists to prevent. The
+    // snapshot carries the whole disk, so $HOME is where it belongs.
     const env = {
       ...options.env,
       VENDO_BOX_TOKEN: token,
       VENDO_WORKSPACE_ROOT: "/workspace",
-      CLAUDE_CONFIG_DIR: "/workspace/.claude",
     };
     let machine: SandboxMachineLike | undefined;
     if (options.resumeRef !== undefined) {
@@ -161,16 +165,29 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
     }
     entry = { machine, token, leased: true };
     pool.set(options.threadId, entry);
-    // A resumed machine boots with the SNAPSHOT's env, not ours, so the token has
-    // to be re-asserted before any /turn route will answer.
-    await control(entry, "POST", "/turn/token", { token }).catch(() => undefined);
+    // The credential handoff, and the only one. The provider does NOT hand
+    // create-time envs to a template's start command, and a resumed machine
+    // boots with the snapshot's env rather than ours — so the inference key and
+    // the token both arrive here, with the turn that needs them.
+    const { status } = await control(entry, "POST", "/turn/hello", { token, env: options.env });
+    if (status !== 200) {
+      pool.delete(options.threadId);
+      await machine.destroy().catch(() => undefined);
+      throw new VendoError("sandbox-unavailable", `the workspace machine refused the turn handshake (${status})`);
+    }
   }
   entry.leased = true;
 
   const request = async (path: string, body?: unknown): Promise<Record<string, unknown>> => {
     const { status, json } = await control(entry, "POST", path, body);
     if (status !== 200 && status !== 202) {
-      throw new VendoError("sandbox-unavailable", `box ${path} answered ${status}`);
+      // Carry the box's own sentence: a bare status turns every box problem
+      // into a guessing game on the host side.
+      const detail = (json as { error?: unknown } | undefined)?.error;
+      throw new VendoError(
+        "sandbox-unavailable",
+        `box ${path} answered ${status}${typeof detail === "string" ? `: ${detail}` : ""}`,
+      );
     }
     return (typeof json === "object" && json !== null ? json : {}) as Record<string, unknown>;
   };

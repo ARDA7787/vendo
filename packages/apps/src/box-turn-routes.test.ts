@@ -35,11 +35,26 @@ describe("the box turn door refuses anything without the machine token", () => {
     expect(answer.status).toBe(401);
   });
 
-  test("a resumed machine re-asserts the token, and only then answers", async () => {
+  test("a machine with no token yet is claimed by the first hello, and closed after", async () => {
     const door = createTurnRoutes({ root: newRoot(), token: "", env: {} }) as Routes;
     expect((await door.handle("POST", "/turn/collect", auth, {})).status).toBe(401);
-    expect((await door.handle("POST", "/turn/token", {}, { token: TOKEN })).status).toBe(200);
+    expect((await door.handle("POST", "/turn/hello", {}, { token: TOKEN })).status).toBe(200);
     expect((await door.handle("POST", "/turn/collect", auth, {})).status).toBe(200);
+    // Trust on FIRST use: a second, unauthenticated hello cannot steal the box.
+    expect((await door.handle("POST", "/turn/hello", {}, { token: "attacker" })).status).toBe(401);
+    expect((await door.handle("POST", "/turn/collect", auth, {})).status).toBe(200);
+  });
+
+  test("hello carries the turn's credential to the SDK, and nothing else does", async () => {
+    let saw: Record<string, string> | undefined;
+    const door = createTurnRoutes({
+      root: newRoot(), token: "", env: {},
+      runTurn: async (input: any) => { saw = input.env; },
+    }) as Routes;
+    await door.handle("POST", "/turn/hello", {}, { token: TOKEN, env: { ANTHROPIC_API_KEY: "k", NOPE: 7 } });
+    const { body } = await door.handle("POST", "/turn/start", auth, { prompt: "go" });
+    await door.turnPromise(body.turnId);
+    expect(saw).toEqual({ ANTHROPIC_API_KEY: "k" });
   });
 });
 

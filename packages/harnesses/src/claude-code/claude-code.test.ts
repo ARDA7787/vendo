@@ -78,7 +78,7 @@ function makeBox(
       const payload = req.body === undefined
         ? {}
         : JSON.parse(typeof req.body === "string" ? req.body : decoder.decode(req.body)) as Record<string, any>;
-      if (req.path === "/turn/token") { token = String(payload["token"]); return reply(200, { ok: true }); }
+      if (req.path === "/turn/hello") { token = String(payload["token"]); return reply(200, { ok: true }); }
       if (req.headers?.["x-vendo-box-token"] !== token || token === "") return reply(401, { error: "no token" });
 
       if (req.path === "/turn/workspace") {

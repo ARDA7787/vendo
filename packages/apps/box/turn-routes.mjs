@@ -58,7 +58,12 @@ const walk = (directory, out) => {
 export const createTurnRoutes = (options = {}) => {
   const root = options.root ?? process.env.VENDO_WORKSPACE_ROOT ?? "/workspace";
   let token = options.token ?? process.env.VENDO_BOX_TOKEN ?? "";
-  const baseEnv = options.env ?? process.env;
+  // What the SDK subprocess gets. Seeded from the machine's own env and
+  // REPLACED by every /turn/hello: the provider does not hand create-time envs
+  // to the template's start command (measured 2026-08-01 — the in-box SDK
+  // answered "Not logged in"), and a turn-scoped handoff is the better shape
+  // anyway: the credential arrives with the turn that needs it.
+  let sdkEnv = { ...(options.env ?? process.env) };
   const turns = new Map();
   let active;
 
@@ -105,7 +110,7 @@ export const createTurnRoutes = (options = {}) => {
           maxTurns: payload.maxTurns,
           resume: payload.resume,
           cwd: root,
-          env: { ...baseEnv },
+          env: { ...sdkEnv },
           callTool,
           emit,
           signal: state.abort.signal,
@@ -162,24 +167,41 @@ export const createTurnRoutes = (options = {}) => {
       if (method !== "POST") return { status: 405, body: { error: "POST only" } };
       // The token is the machine's whole defence: the provider exposes control
       // ports on an unguessable hostname, and this closes the rest.
-      if (pathname !== "/turn/token" && (token === "" || headers["x-vendo-box-token"] !== token)) {
+      // `hello` is open ONLY until a token exists — trust on first use, then
+      // every route including this one is closed. The provider already serves
+      // control ports on an unguessable per-machine hostname; this closes the
+      // rest, and it is the whole defence the machine has.
+      const claiming = pathname === "/turn/hello" && token === "";
+      if (!claiming && (token === "" || headers["x-vendo-box-token"] !== token)) {
         return { status: 401, body: { error: "bad or missing box token" } };
       }
 
-      if (pathname === "/turn/token") {
-        // A machine restored from a snapshot boots with the SNAPSHOT's env, so
-        // the host re-asserts the current token before anything else.
+      if (pathname === "/turn/hello") {
         if (typeof payload?.token !== "string" || payload.token === "") {
           return { status: 400, body: { error: "token must be a non-empty string" } };
         }
         token = payload.token;
+        // The turn-scoped credential handoff (design §9): a workspace copy, the
+        // inference key, and this token — nothing else ever enters the machine.
+        if (typeof payload.env === "object" && payload.env !== null) {
+          const next = {};
+          for (const [name, value] of Object.entries(payload.env)) {
+            if (typeof value === "string") next[name] = value;
+          }
+          sdkEnv = { ...sdkEnv, ...next };
+        }
         return { status: 200, body: { ok: true } };
       }
 
       if (pathname === "/turn/workspace") {
         if (payload?.reset === true) {
-          rmSync(root, { recursive: true, force: true });
+          // Empty the root's CONTENTS, never the root itself: the sandbox runs
+          // as a non-root user and cannot recreate a directory directly under
+          // `/` (measured 2026-08-01 — every materialize answered 500).
           mkdirSync(root, { recursive: true });
+          for (const entry of readdirSync(root)) {
+            rmSync(path.join(root, entry), { recursive: true, force: true });
+          }
         }
         for (const file of Array.isArray(payload?.files) ? payload.files : []) {
           if (typeof file?.path !== "string" || typeof file?.base64 !== "string") continue;
