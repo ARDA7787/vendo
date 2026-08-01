@@ -11,7 +11,7 @@
  * optional peer, so neither `tsc` nor a host who never opts in ever needs the
  * ~250MB platform binary on disk.
  */
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -59,11 +59,17 @@ export interface LocalMachineOptions {
 
 export async function localMachine(options: LocalMachineOptions): Promise<TurnMachine> {
   const home = homeFor(options.threadId);
-  await mkdir(home, { recursive: true });
-  // A fresh tree per turn: the STORE is the truth, and re-materializing is what
-  // makes "a different harness sees the identical workspace next turn" true.
-  const root = await mkdtemp(path.join(home, "ws-"));
+  // STABLE per thread, not a fresh mkdtemp per turn. The SDK files its session
+  // under `CLAUDE_CONFIG_DIR/projects/<slug of cwd>`, so a moving working
+  // directory means `resume` looks in a project folder that has never existed —
+  // measured: turn 2 of a live thread failed outright instead of remembering.
+  const root = path.join(home, "workspace");
   const configDir = path.join(home, "claude");
+  // Emptied, not appended to: the STORE is the truth, and re-materializing from
+  // it is what makes "a different harness sees the identical workspace next
+  // turn" true.
+  await rm(root, { recursive: true, force: true }).catch(() => undefined);
+  await mkdir(root, { recursive: true });
   await mkdir(configDir, { recursive: true });
 
   return {
@@ -113,10 +119,8 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
     },
 
     async release() {
-      // The workspace copy is scratch the moment the diff has landed; the config
-      // dir (and with it the native session) deliberately stays.
-      await rm(root, { recursive: true, force: true }).catch(() => undefined);
-      await stat(configDir).catch(() => undefined);
+      // Nothing to tear down: the next turn empties and re-materializes the tree,
+      // and the config dir (with it, the native session) deliberately stays.
     },
   };
 }
