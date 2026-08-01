@@ -268,6 +268,174 @@ describe("instant() — the honest refusal", () => {
   });
 });
 
+/**
+ * Both of these were found by running the real thing (Maple, 2026-08-01) after
+ * the unit suite above was already green. They are the regressions for what the
+ * live run showed, and neither is reachable from a scripted-happy-path test.
+ */
+describe("instant() — what the live run caught", () => {
+  it("says something when a build fails, instead of a banner and silence", async () => {
+    const guard = testGuard();
+    const registry = boundRegistry(
+      {
+        [VENDO_APPS_CREATE_TOOL]: {
+          descriptor: appsTool(VENDO_APPS_CREATE_TOOL),
+          execute: () => {
+            throw new Error("app build failed: generation failed");
+          },
+        },
+      },
+      guard,
+    );
+    const model = scriptedModel([toolCallTurn("route", { do: "create", prompt: "a dashboard" })]);
+
+    const { parts } = await runInstant({
+      registry,
+      guard,
+      model,
+      messages: [userMessage("m1", "build me a dashboard")],
+    });
+
+    // The build-failed banner is the shipped failure affordance and the bridge
+    // still raises it. What was missing is the assistant's own sentence.
+    expect(parts.some((part) => part.type === "data-vendo-build-failed")).toBe(true);
+    expect(saidBy(parts)).toContain("couldn't put that together");
+    // …and NOT a second, contentless error chunk on top of the banner.
+    expect(parts.some((part) => part.type === "error")).toBe(false);
+  });
+
+  it("passes the pipeline's own refusal through instead of shrugging", async () => {
+    const guard = testGuard();
+    const registry = boundRegistry(
+      {
+        [VENDO_APPS_CREATE_TOOL]: {
+          descriptor: appsTool(VENDO_APPS_CREATE_TOOL),
+          execute: () => {
+            // The shape apps/runtime.ts throws for an honest `cannot`: the
+            // sentences are the person's, verbatim.
+            throw new Error(
+              "app build failed: This host has machines disabled, so custom server code cannot run"
+              + " — the weekly Friday summary cannot be automated.",
+            );
+          },
+        },
+      },
+      guard,
+    );
+    const model = scriptedModel([toolCallTurn("route", { do: "create", prompt: "a weekly summary" })]);
+
+    const { parts } = await runInstant({
+      registry,
+      guard,
+      model,
+      messages: [userMessage("m1", "every Friday, summarise my spending")],
+    });
+
+    expect(saidBy(parts)).toContain("machines disabled");
+    expect(saidBy(parts)).not.toContain("couldn't put that together");
+  });
+
+  it("does not edit an app the conversation never produced", async () => {
+    const guard = testGuard();
+    const registry = appsRegistry(guard);
+    const model = scriptedModel([
+      // The router names an id that exists nowhere — what it does after a build
+      // has failed and there is nothing on screen.
+      toolCallTurn("route", { do: "edit", appId: "app_invented", instruction: "make it bigger" }),
+      textTurn("There's nothing on screen yet — want me to build it?"),
+    ]);
+
+    const { parts } = await runInstant({
+      registry,
+      guard,
+      model,
+      messages: [userMessage("m1", "make the amount bigger")],
+    });
+
+    expect(registry.invocations["vendo_apps_edit"]).toBeUndefined();
+    expect(saidBy(parts)).toContain("nothing on screen");
+  });
+
+  it("always ends with an answer, even when the acting steps are spent on tool calls", async () => {
+    const guard = testGuard();
+    const registry = appsRegistry(guard, {
+      maple_account: {
+        descriptor: readTool("maple_account"),
+        execute: (args) => {
+          // The first guess is wrong, exactly as it was live: an id the host
+          // does not have. The second call is the one that works — and it lands
+          // on the LAST acting step, so nothing is left to speak with.
+          if ((args as { id?: string }).id !== undefined) throw new Error("Account not found");
+          return { accounts: [{ name: "Maple Checking", balance: 941220 }] };
+        },
+      },
+    });
+    const model = scriptedModel([
+      toolCallTurn("route", { do: "act" }),
+      toolCallTurn("maple_account", { id: "acct_checking" }, "call_a"),
+      toolCallTurn("maple_account", {}, "call_b"),
+      textTurn("Your Maple Checking balance is $9,412.20."),
+    ]);
+
+    const { parts } = await runInstant({
+      registry,
+      guard,
+      model,
+      messages: [userMessage("m1", "what is my checking balance?")],
+    });
+
+    // Measured live (2026-08-01): the two acting steps went on a missed guess and
+    // the retry, the cap ended the loop, and the person got two tool calls and
+    // SILENCE while the answer sat in the tool result. A turn that acted and said
+    // nothing is a failed turn whatever the status code.
+    expect(saidBy(parts)).toContain("$9,412.20");
+  });
+
+  it("never refuses off a curated shortlist — the acting step is what looks", async () => {
+    const guard = testGuard();
+    // `find_tools` equipped means `list()` is a SUBSET. A router that answers
+    // "cannot" from it is refusing on ignorance: measured live, a deployment
+    // with Gmail connected but off the initial loadout answered "this product
+    // cannot send emails".
+    const registry = appsRegistry(guard, {
+      find_tools: { descriptor: readTool("find_tools"), execute: () => ({ found: [] }) },
+      maple_balance: { descriptor: readTool("maple_balance"), execute: () => ({ balance: 12 }) },
+    });
+    const model = scriptedModel([
+      toolCallTurn("route", { do: "cannot", reasons: ["This product cannot send emails."] }),
+      toolCallTurn("find_tools", { query: "email" }),
+      textTurn("I looked; there's no way to email from here."),
+    ]);
+
+    const { parts } = await runInstant({
+      registry,
+      guard,
+      model,
+      messages: [userMessage("m1", "email me my balance")],
+    });
+
+    // The router's blind refusal never reached the person…
+    expect(saidBy(parts)).not.toContain("This product cannot send emails.");
+    // …and the acting step actually searched before answering.
+    expect(registry.invocations["find_tools"]).toBe(1);
+  });
+
+  it("still refuses on the router's word when there is no discovery rail to consult", async () => {
+    const guard = testGuard();
+    const registry = appsRegistry(guard);
+    const model = scriptedModel([
+      toolCallTurn("route", { do: "cannot", reasons: ["Maple can't do that."] }),
+    ]);
+    const { parts } = await runInstant({
+      registry,
+      guard,
+      model,
+      messages: [userMessage("m1", "buy me a house")],
+    });
+    expect(saidBy(parts)).toContain("Maple can't do that.");
+  });
+});
+
 describe("instant() — the cheap exits", () => {
   it("spends nothing when the caller already hung up", async () => {
     const guard = testGuard();

@@ -31,12 +31,16 @@ import {
   type ToolListing,
   type Turn,
 } from "@vendoai/core";
-import { startTurn, wireErrorMessage } from "@vendoai/agent/internal";
+import { startTurn, turnModelMessages, wireErrorMessage } from "@vendoai/agent/internal";
 import { jsonSchema, streamText, tool, type LanguageModel, type ToolSet } from "ai";
 import { z } from "zod";
 import { defineHarness } from "./define.js";
 
 export const VENDO_APPS_EDIT_TOOL = "vendo_apps_edit";
+
+/** The runtime's discovery meta-tool. Its PRESENCE is the fact that matters
+ *  here: it means `turn.tools.list()` is a curated subset, not the world. */
+const FIND_TOOLS = "find_tools";
 
 /** The router's one tool. Never user-visible — it is how a closed answer space is
  *  made actually closed (the provider validates the arguments), where free text
@@ -202,8 +206,9 @@ async function routeAsk(
 ): Promise<Route | undefined> {
   const canBuild = equipped.some((listing) => listing.name === VENDO_APPS_CREATE_TOOL);
   const canEdit = equipped.some((listing) => listing.name === VENDO_APPS_EDIT_TOOL);
+  const canSearch = equipped.some((listing) => listing.name === FIND_TOOLS);
   const menu = equipped
-    .filter((listing) => !listing.name.startsWith("vendo_apps_"))
+    .filter((listing) => !listing.name.startsWith("vendo_apps_") && listing.name !== FIND_TOOLS)
     .map((listing) => `- ${listing.title || listing.name}: ${listing.description}`)
     .join("\n");
   const system = [
@@ -214,8 +219,13 @@ async function routeAsk(
     canEdit && appIds.length > 0
       ? `Apps already in this conversation, oldest first: ${appIds.join(", ")}. The one on screen is the last.`
       : "There is no app on screen yet, so \"edit\" is not available.",
-    menu.length === 0 ? "This product has no other tools." : `Everything else this product can do:\n${menu}`,
-    "Prefer \"act\" over \"cannot\": only answer \"cannot\" when nothing above can serve the request.",
+    menu.length === 0 ? "This product has no other tools." : `Some of what else this product can do:\n${menu}`,
+    canSearch
+      ? "That list is a SHORTLIST, not the whole product: more tools — connected email, calendars, "
+        + "messaging, the long tail of this product's own API — can be searched for and used. So a "
+        + "request the shortlist does not obviously cover is still \"act\". Never answer \"cannot\" "
+        + "because you did not see a matching tool."
+      : "Prefer \"act\" over \"cannot\": only answer \"cannot\" when nothing above can serve the request.",
   ].join("\n\n");
 
   try {
@@ -262,6 +272,8 @@ async function routeAsk(
  *  view IS the answer, so this is one line, not a narration. */
 const BUILT = "Here it is.";
 const CHANGED = "Updated.";
+const BUILD_FAILED = "I couldn't put that together. Try describing it a different way.";
+const EDIT_FAILED = "I couldn't make that change. Try describing it a different way.";
 const REFUSED_BY_GUARD =
   "I couldn't do that one — it isn't something I'm allowed to do here.";
 const NOTHING_TO_SAY =
@@ -289,24 +301,38 @@ export function instant(deps: InstantHarnessDeps = {}): Harness<InstantHarnessOp
         const result = await turn.tools.call(VENDO_APPS_CREATE_TOOL, {
           prompt: route.prompt?.trim() || latestAsk(turn),
         });
-        yield* speakToolResult(result, BUILT);
+        yield* speakToolResult(result, BUILT, BUILD_FAILED);
         return;
       }
 
       if (route?.do === "edit" && has(VENDO_APPS_EDIT_TOOL)) {
-        const appId = route.appId ?? appIds[appIds.length - 1];
+        // The id must be one this conversation actually produced. A router asked
+        // to name an app will name one whether or not it exists — measured live
+        // (2026-08-01): after a build failed, the follow-up edit was routed at an
+        // invented id and spent a real tool call on nothing. The transcript is
+        // the authority; no app in it means there is nothing to edit, and the
+        // acting step (which has the create tool too) is the honest recovery.
+        const named = route.appId !== undefined && appIds.includes(route.appId) ? route.appId : undefined;
+        const appId = named ?? appIds[appIds.length - 1];
         if (appId !== undefined) {
           yield { type: "status", label: "Changing it…" };
           const result = await turn.tools.call(VENDO_APPS_EDIT_TOOL, {
             appId,
             instruction: route.instruction?.trim() || latestAsk(turn),
           });
-          yield* speakToolResult(result, CHANGED);
+          yield* speakToolResult(result, CHANGED, EDIT_FAILED);
           return;
         }
       }
 
-      if (route?.do === "cannot") {
+      // A refusal is only honest if something LOOKED. `turn.tools.list()` is a
+      // curated shortlist whenever the discovery rail is equipped, so a router
+      // that answers "cannot" off it is refusing on ignorance — measured live
+      // (2026-08-01): "Email me my balance" got "this product cannot send
+      // emails" from a deployment with Gmail connected but off the initial
+      // loadout. The acting step can search, and the shipped capability-miss
+      // rail lives there, so the refusal is made where the looking happens.
+      if (route?.do === "cannot" && !has(FIND_TOOLS)) {
         const reasons = (route.reasons ?? []).filter((reason) => reason.trim().length > 0);
         // The sentences are the person's answer verbatim — the conductor's own
         // `<Cannot>` discipline. An empty refusal would be a silent turn.
@@ -319,12 +345,23 @@ export function instant(deps: InstantHarnessDeps = {}): Harness<InstantHarnessOp
   });
 }
 
-/** One line about a guarded call's outcome, in the consumer's voice. A refusal is
- *  not a failure and must never render as one (contract §1.1). */
+/**
+ * One line about a guarded apps call, in the consumer's voice.
+ *
+ * Three outcomes, three different things to say, and never nothing. A refusal is
+ * not a failure and must never render as one (contract §1.1). A build that
+ * failed already put today's `data-vendo-build-failed` banner on screen through
+ * the bridge — that IS the failure affordance, the same one `createAgent`
+ * raises — so the harness's job is the sentence beside it, not a second generic
+ * error chunk. Measured live (2026-08-01): raising the error event instead left
+ * the turn with a banner, an "an error occurred" string, and total silence from
+ * the assistant.
+ */
 function* speakToolResult(
   result: { status: string; reason?: string; error?: { message: string } },
   success: string,
-): Generator<{ type: "text"; delta: string } | { type: "error"; message: string; code?: string }> {
+  failure: string,
+): Generator<{ type: "text"; delta: string }> {
   if (result.status === "ok") {
     yield { type: "text", delta: success };
     return;
@@ -333,7 +370,26 @@ function* speakToolResult(
     yield { type: "text", delta: result.reason?.trim() || REFUSED_BY_GUARD };
     return;
   }
-  yield { type: "error", message: wireErrorMessage(new Error(result.error?.message ?? "")), code: "tool" };
+  yield { type: "text", delta: buildFailureSentence(result.error?.message) ?? failure };
+}
+
+/**
+ * The person-readable half of an apps failure, when there is one.
+ *
+ * `buildFailureReason` (apps/runtime.ts) produces a CLOSED set: the brain's own
+ * refusal sentences verbatim ("this host has machines disabled, so…"), the
+ * actionable model-unavailable line, `"timed out"`, `"quota exhausted"`, and
+ * `"generation failed"`. Only the last is a word that tells a person nothing —
+ * everything else is worth saying, and swallowing it is how "every Friday,
+ * summarise my spending" came back as a shrug instead of the true reason
+ * (measured live, 2026-08-01).
+ */
+function buildFailureSentence(message: string | undefined): string | undefined {
+  if (message === undefined) return undefined;
+  const reason = message.replace(/^app build failed:\s*/i, "").trim();
+  if (reason.length === 0 || reason === message) return undefined;
+  if (/^generation failed\.?$/i.test(reason)) return undefined;
+  return reason;
 }
 
 /**
@@ -382,13 +438,17 @@ async function* act(
     return;
   }
 
+  let said = false;
+  let failed = false;
   try {
     for await (const part of loop.result.fullStream) {
       switch (part.type) {
         case "text-delta":
+          said = said || part.text.trim().length > 0;
           yield { type: "text", delta: part.text };
           break;
         case "error":
+          failed = true;
           yield { type: "error", message: wireErrorMessage(part.error), code: "model" };
           break;
         case "tool-error":
@@ -419,5 +479,56 @@ async function* act(
     }
   } catch (error) {
     yield { type: "error", message: wireErrorMessage(error), code: "model" };
+    return;
+  }
+
+  // THE CLOSE. A turn that acted and said nothing is a failed turn whatever the
+  // status code — measured live (2026-08-01): "what is my checking balance?" spent
+  // its first acting step on a wrong account id and its second on the retry that
+  // WORKED, then hit the cap, so the person got two tool calls, no sentence, and
+  // the answer sat unread in the tool result.
+  //
+  // The fix is one tool-LESS call, not a bigger cap. Raising the cap buys another
+  // chance to act and still no guarantee of an answer; a call with no tools can
+  // only speak, so the invariant "instant() never ends a turn silently" holds by
+  // construction. Bounded and non-iterative: it happens at most once, never loops.
+  if (!said && !failed && !turn.signal.aborted) {
+    yield* close(turn, model, system, loop);
+  }
+}
+
+/** What the closing call is told. It has no tools, so its only move is to answer. */
+const CLOSE_INSTRUCTION =
+  "Answer the person now, in one or two sentences, using only what the tool results above actually "
+  + "returned. If something failed or is missing, say so plainly and say what they can do. Never "
+  + "mention tools, ids, or anything about how you work.";
+
+async function* close(
+  turn: Turn<InstantHarnessOptions>,
+  model: LanguageModel,
+  system: string,
+  loop: Awaited<ReturnType<typeof startTurn>>,
+): AsyncGenerator<{ type: "text"; delta: string }, void, void> {
+  try {
+    // `turnModelMessages` is the SHIPPED assembler — same history window, same
+    // cache breakpoints — so the closing call sees the conversation exactly as the
+    // acting call did, plus what the acting call produced.
+    const before = await turnModelMessages([...turn.messages], system, undefined);
+    const produced = (await loop.result.response).messages;
+    const closing = streamText({
+      model,
+      messages: [...before, ...produced, { role: "user", content: CLOSE_INSTRUCTION }],
+      maxRetries: 0,
+      abortSignal: turn.signal,
+    });
+    let spoke = false;
+    for await (const delta of closing.textStream) {
+      if (delta.trim().length > 0) spoke = true;
+      yield { type: "text", delta };
+    }
+    if (!spoke) yield { type: "text", delta: NOTHING_TO_SAY };
+  } catch {
+    // Even the close failing must not leave the turn silent.
+    yield { type: "text", delta: NOTHING_TO_SAY };
   }
 }
