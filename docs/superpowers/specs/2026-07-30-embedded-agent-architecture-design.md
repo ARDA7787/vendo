@@ -407,12 +407,22 @@ finance-dashboard:  org:acme → viewer · team:finance → editor · dana → o
   from ownership + memberships + grants, all rows — is the only permission
   logic; the workspace façade, the wire, and the MCP door all call it. Harnesses,
   packs, and tools are permission-blind: they just perceive a smaller world.
-- **Rows live behind the `store` adapter** — the host's own Postgres
-  (Supabase, RDS, whatever they wired) or Cloud's hosted store, as `vendo_*`
-  tables, host-SQL-queryable. Cloud provides *management* (console, SSO →
-  memberships, share dialog → grant rows), never the only copy of
-  enforcement. No key → org tables empty → `can()` degenerates to "is it
-  yours?"; share/promote throw `cloud-required`. No hidden branches.
+- **The host's identity system IS the org** (decided with Yousef
+  2026-08-01: don't overcomplicate). Memberships are never Vendo rows: the
+  same auth answer that names the user (`fromSession(getUser)`) also names
+  their orgs and teams — true on every request, straight from the host's
+  source of truth, no second org chart, no sync, no console channel into the
+  host's database. The only rows Vendo stores are the Vendo-specific part —
+  grants (app → principal → level) — written by the Share dialog inside the
+  embedded surface, behind the `store` adapter the host already wired
+  (their Postgres or Cloud's hosted store), host-SQL-queryable. Cloud's
+  console manages memberships only for hosted-tier customers with no
+  identity system to lend us — there it writes to its own hosted store.
+  Gating stays key + meter, nothing else: sharing is multi-party
+  coordination, so share/promote throw `cloud-required` without a key even
+  though the auth answer may already carry orgs; enforcement (`can()`) is
+  OSS and never key-conditional. No key → no grants can exist → `can()`
+  degenerates to "is it yours?". No hidden branches.
 - **For sandboxed harnesses, `can()` runs at exactly two moments** — there are
   no checks inside the box, so the box is born filtered:
   *checkout* — materialization is a query ("all files viewer+ reaches"),
@@ -584,7 +594,10 @@ grants are the authority, and a missing one fails the run with a card (§3).
 Sponsorship is invalidated by the sponsor leaving, their grants invalidating,
 **or anyone else editing the app** (the app-intent hash, §12); the automation
 stops and asks the app's editors+ to **adopt** — approving its reads and
-writes as themselves, one card. The automation labels its window ("runs with
+writes as themselves, one card. The ask is not a new approval primitive
+(approvals stay strictly self-subject): the stopped run is a card in the app
+itself, shown to whoever editor+ opens it next; the first to accept adopts.
+Nothing is pushed to a set of people. The automation labels its window ("runs with
 Dana's access") and names a wider editor set when one exists. Runs are visible
 in a consumer-voice history rendered from the audit rows — a render, not new
 machinery. No non-human principal ever acts.
