@@ -21,6 +21,13 @@ export const VENDO_APPS_TOOL_PREFIX = "vendo_apps_";
  *  partial views through the VENDO_VIEW_STREAM bridge seam (stream-parts). */
 export const VENDO_APPS_CREATE_TOOL = "vendo_apps_create";
 
+/** The create tool's twin: change an app that already exists. Named here for the
+ *  same reason its twin is — the apps runtime declares it, and a thinker has to
+ *  recognise it to route an edit ask at all (`instant()`'s router). Two sides
+ *  matching on the same identifier means the identifier is written once, here,
+ *  not string-matched from each side. */
+export const VENDO_APPS_EDIT_TOOL = "vendo_apps_edit";
+
 /**
  * The consumer-voice titles for the tools VENDO ITSELF projects (design §3:
  * "surfaces render tool titles and verbs, never names — rendering-layer law").

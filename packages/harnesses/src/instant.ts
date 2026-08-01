@@ -25,6 +25,7 @@
  */
 import {
   VENDO_APPS_CREATE_TOOL,
+  VENDO_APPS_EDIT_TOOL,
   modelToolDescription,
   type Harness,
   type Json,
@@ -35,8 +36,6 @@ import { startTurn, turnModelMessages, wireErrorMessage } from "@vendoai/agent/i
 import { jsonSchema, streamText, tool, type LanguageModel, type ToolSet } from "ai";
 import { z } from "zod";
 import { defineHarness } from "./define.js";
-
-export const VENDO_APPS_EDIT_TOOL = "vendo_apps_edit";
 
 /** The runtime's discovery meta-tool. Its PRESENCE is the fact that matters
  *  here: it means `turn.tools.list()` is a curated subset, not the world. */
@@ -125,7 +124,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * rather than kept in `turn.state`: state is cleared by a harness swap, and the
  * mid-conversation swap instant()→vendo()→instant() has to keep working.
  */
-export function appIdsInThread(messages: readonly { parts?: unknown }[]): string[] {
+function appIdsInThread(messages: readonly { parts?: unknown }[]): string[] {
   const ids: string[] = [];
   const visit = (value: unknown, depth: number): void => {
     if (depth > 4 || !isRecord(value)) return;

@@ -1,5 +1,6 @@
 import {
   VENDO_APPS_CREATE_TOOL,
+  VENDO_APPS_EDIT_TOOL,
   VENDO_TOOL_TITLES,
   VENDO_VIEW_STREAM,
   VendoError,
@@ -47,7 +48,7 @@ const descriptors = [
     risk: "read",
   },
   {
-    name: "vendo_apps_edit",
+    name: VENDO_APPS_EDIT_TOOL,
     description: "Edit an existing Vendo app with one natural-language instruction. If the result has failure.retryable=true, retry vendo_apps_edit on the same appId with a narrower instruction; do not rebuild it with vendo_apps_create.",
     inputSchema: {
       $schema: DRAFT_2020_12,
@@ -250,7 +251,7 @@ export const createAgentTools = (
           }) as unknown as Json,
         };
       }
-      if (call.tool === "vendo_apps_edit") {
+      if (call.tool === VENDO_APPS_EDIT_TOOL) {
         const args = input(call.args, ["appId", "instruction"]);
         const result = await runtime.edit(args.appId as string, args.instruction as string, ctx);
         return {
