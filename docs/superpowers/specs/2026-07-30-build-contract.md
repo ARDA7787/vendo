@@ -43,6 +43,13 @@ export interface Turn<Options = unknown> {
   readonly system?: string;
   /** Present iff the caller proved presence (a click/message/submit). */
   readonly interactive: boolean;
+  /** Amendment 2026-08-01 (wave 2, lane E ratification): the conversation's
+   *  stable identity RIDES THE TURN. Session-owning adapters need a stable
+   *  per-conversation key (machine pools, native session refs); lane E had to
+   *  derive one from `messages[0].id` — a client-minted value that history
+   *  edits can orphan. The runtime already holds threadId; passing it is
+   *  simply true. Adapters must treat it as opaque. */
+  readonly threadId: string;
 }
 ```
 
