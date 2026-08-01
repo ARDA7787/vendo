@@ -234,7 +234,11 @@ const attachPinFurnishings = (
  */
 export interface ServedSurface {
   enabled: boolean;
-  urlFor(app: AppDocument): Promise<string>;
+  /** Build contract §9.8 — takes the ctx because an ORG-owned served app is
+      answered with an authenticated PROXY url (checked per request) while a
+      personal one keeps the provider's own ingress url. The runtime decides;
+      this seam only hands it what it needs to. */
+  urlFor(app: AppDocument, ctx: RunContext): Promise<string>;
 }
 
 /** Wave 4 — the one refusal for every layer-3 path while the flag is off. */
@@ -304,7 +308,7 @@ export const createAppOpener = (
     // Wake-on-open: a sleeping machine resumes here (the accepted wake
     // latency; the host shows its ordinary loading state — no v1 cover or
     // screenshot machinery).
-    return { kind: "http", url: await served.urlFor(app) };
+    return { kind: "http", url: await served.urlFor(app, ctx) };
   }
 
   if (app.tree === undefined) {

@@ -186,6 +186,14 @@ export interface AppsConfig {
    */
   promoteApp?: (appId: AppId, fromSubject: string, orgId: string) => Promise<void>;
   /**
+   * Build contract §9.8 — where this deployment serves the authenticated proxy
+   * for an ORG-owned served app (`<wire base>/apps/<id>/serve/`). The wire owns
+   * its base path, so the umbrella fills this; unset, an org served app has no
+   * proxy to point at and `open()` refuses rather than handing out the
+   * provider's URL, which would bypass the per-request `can(viewer)`.
+   */
+  servedProxyPath?: (appId: AppId) => string;
+  /**
    * Build contract §9.9 (lane H's other half) — called after a successful
    * document persist, with the previous document, the next one, and the
    * editing subject. The automations side implements it (a sponsorship is
@@ -670,6 +678,16 @@ export interface AppsRuntime {
    * like `proxy`/`inClient` — not part of the frozen §1 method table. Lane B's
    * machine lifecycle owns the wake internals behind this door.
    */
+  /**
+   * Build contract §9.8 — the served-app door. One request forwarded into the
+   * app's machine after `can(viewer)` is re-checked against LIVE rows, so a
+   * mid-session revoke bites the next request even though what the session
+   * already rendered stands. Viewer-level by design: `viewer` is see + use.
+   *
+   * Separate from {@link AppsRuntime.box}.request, which is the editor-level fn
+   * door — the two have different callers and deliberately different levels.
+   */
+  serve(appId: AppId, request: BoxRequest, ctx: RunContext): Promise<BoxResponse>;
   box: {
     request(appId: AppId, request: BoxRequest, ctx: RunContext): Promise<BoxResponse>;
     /**
@@ -1003,6 +1021,17 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     const record = await apps.get(appId);
     if (record === null || !(await holds(appId, ctx, level, record))) return null;
     return documentFromRecord(record);
+  };
+
+  /** Build contract §9.5/§9.8 — is this app held by an ORG rather than by a
+      person? The row subject IS the org id for a promoted app (§9.5), so the
+      question is answered by matching it against the orgs the host asserted
+      for this caller. A personal app never matches. */
+  const servedThroughProxy = async (appId: AppId, ctx: RunContext): Promise<boolean> => {
+    const subject = (await apps.get(appId))?.refs?.subject;
+    return subject !== undefined
+      && subject !== ctx.principal.subject
+      && (ctx.memberships ?? []).some((membership) => membership.org === subject);
   };
 
   /** Build contract §9.6 — the ONE Cloud gate on this block. Sharing is
@@ -1353,7 +1382,24 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     // handoff (host theme tokens as a query param the served app MAY consume).
     {
       enabled: config.experimentalServedApps === true,
-      urlFor: async (app) => {
+      urlFor: async (app, ctx) => {
+        // Build contract §9.8 — an ORG-owned served app is a WIRE DOOR, not a
+        // snapshot handed to viewers: the registered URL is this deployment's
+        // proxy, which re-checks `can(viewer)` against live rows on every
+        // request. Personal served apps keep the provider URL exactly as before.
+        if (await servedThroughProxy(app.id, ctx)) {
+          const proxy = config.servedProxyPath;
+          if (proxy === undefined) {
+            throw new VendoError(
+              "not-implemented",
+              "this org app is served by a machine, and serving it needs the wire's authenticated proxy — mount the Vendo wire (createVendo().handler) so /apps/:appId/serve/** is reachable",
+            );
+          }
+          // No wake here: the proxy wakes the machine on the first forwarded
+          // request, AFTER it has re-checked access. Waking first would spend a
+          // machine on a caller the very next check might refuse.
+          return proxy(app.id);
+        }
         const machine = await lifecycle.wake(app);
         // Absorb the fresh-boot 502 race server-side so the iframe's first
         // paint is the app, not a provider error (the wake latency is the
@@ -1884,6 +1930,58 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
   };
 
 
+  /**
+   * Forward ONE already-authorized request into the app's machine. Extracted
+   * because §9.8's served door and the fn door differ ONLY in the level they
+   * require (`viewer` vs `editor`) — the wake, the egress pre-flight and the
+   * redaction guard are identical, and a second copy of them is exactly how the
+   * two would drift apart.
+   */
+  const forwardToBox = async (
+    app: AppDocument,
+    request: BoxRequest,
+    ctx: RunContext,
+  ): Promise<BoxResponse> => {
+    // Lane E — the fn door wakes the machine, so it carries the same
+    // egress pre-flight (and re-prompt on a grown declaration) as wake.
+    await ensureEgressApproved(app, ctx);
+    const machine = await lifecycle.wake(app);
+    // Lane E redaction guard — a box may echo its own env (fn responses
+    // are host-side artifacts that reach clients and logs): scrub every
+    // known secret value out of the response, and out of any error
+    // message crossing this seam. issue #566 — prefer the values already
+    // injected into THIS box (the lifecycle's per-box cache) so a value
+    // that entered the box is always redactable without a refetch that
+    // could fail; only names NOT injected fall back to a best-effort read.
+    const secretValues = await collectSecretValues(
+      app.secrets,
+      config.secrets,
+      lifecycle.injectedSecretValues(app.id),
+    );
+    try {
+      const answer = await machine.request(request);
+      if (secretValues.size === 0) return answer;
+      const text = new TextDecoder().decode(answer.body);
+      const scrubbed = redactSecretText(text, secretValues);
+      return {
+        status: answer.status,
+        headers: Object.fromEntries(Object.entries(answer.headers)
+          .map(([header, value]) => [header, redactSecretText(value, secretValues)])),
+        // Untouched bodies pass through byte-identical (binary safety).
+        body: scrubbed === text ? answer.body : new TextEncoder().encode(scrubbed),
+      };
+    } catch (error) {
+      if (error instanceof Error) {
+        // Mutate in place so the error keeps its type, stack, and code.
+        error.message = redactSecretText(error.message, secretValues);
+      }
+      if (error instanceof VendoError && error.detail !== undefined) {
+        error.detail = redactSecretJson(error.detail, secretValues);
+      }
+      throw error;
+    }
+  };
+
   const runtime: AppsRuntime = {
     async prewarm() {
       const models = [config.model, config.fill?.model].filter(
@@ -2209,9 +2307,17 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       if (record === null || from === undefined) throw new VendoError("not-found", `app not found: ${appId}`);
       if (from === orgId) return withoutSession(structuredClone(app));
       if (config.promoteApp === undefined) {
+        // Build contract §9.5, ruled 2026-08-01: promote is BYO-store-only for
+        // now. A promote crosses subjects AND moves workspace rows, which needs
+        // a local engine handle the Cloud-hosted store does not have — a
+        // hosted-store promote door is Cloud-console work. The refusal stays
+        // LOUD and never half-moves an app; it names the limit and the fix so
+        // nobody has to read this comment to get unstuck.
         throw new VendoError(
           "cloud-required",
-          "this deployment cannot promote apps: no store-backed promote seam is wired",
+          "moving an app into a team workspace isn't available on the hosted store yet — "
+          + "wire your own Postgres with createVendo({ store: createStore({ url }) }) to move it, "
+          + "or share a copy with fork instead",
         );
       }
       // "Share implies promote", so the promoter must not lock themselves out
@@ -2967,50 +3073,23 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       },
     },
 
+    async serve(appId, request, ctx) {
+      // §9.8 — LIVE rows, every request. `viewer` is the level because a
+      // viewer may see and USE a shared app; a caller who cannot see it stays
+      // masked, exactly as every other app door answers them.
+      await requireOwned(appId, ctx, "viewer");
+      // Payload only. The forwarded request is assembled here from method,
+      // path, content-type and body — nothing else can ride along, so no
+      // cookie, authorization or host header can cross the skin even if the
+      // caller sent one.
+      return await forwardToBox(await requireOwned(appId, ctx, "viewer"), request, ctx);
+    },
     box: {
       // v2 only: the fn door rides the machine lifecycle's wake — an
       // un-provisioned app fails loudly here (graduation provisions first);
       // the dying v1 session cache never serves a box request.
       async request(appId, request, ctx) {
-        const app = await requireOwned(appId, ctx);
-        // Lane E — the fn door wakes the machine, so it carries the same
-        // egress pre-flight (and re-prompt on a grown declaration) as wake.
-        await ensureEgressApproved(app, ctx);
-        const machine = await lifecycle.wake(app);
-        // Lane E redaction guard — a box may echo its own env (fn responses
-        // are host-side artifacts that reach clients and logs): scrub every
-        // known secret value out of the response, and out of any error
-        // message crossing this seam. issue #566 — prefer the values already
-        // injected into THIS box (the lifecycle's per-box cache) so a value
-        // that entered the box is always redactable without a refetch that
-        // could fail; only names NOT injected fall back to a best-effort read.
-        const secretValues = await collectSecretValues(
-          app.secrets,
-          config.secrets,
-          lifecycle.injectedSecretValues(appId),
-        );
-        try {
-          const answer = await machine.request(request);
-          if (secretValues.size === 0) return answer;
-          const text = new TextDecoder().decode(answer.body);
-          const scrubbed = redactSecretText(text, secretValues);
-          return {
-            status: answer.status,
-            headers: Object.fromEntries(Object.entries(answer.headers)
-              .map(([header, value]) => [header, redactSecretText(value, secretValues)])),
-            // Untouched bodies pass through byte-identical (binary safety).
-            body: scrubbed === text ? answer.body : new TextEncoder().encode(scrubbed),
-          };
-        } catch (error) {
-          if (error instanceof Error) {
-            // Mutate in place so the error keeps its type, stack, and code.
-            error.message = redactSecretText(error.message, secretValues);
-          }
-          if (error instanceof VendoError && error.detail !== undefined) {
-            error.detail = redactSecretJson(error.detail, secretValues);
-          }
-          throw error;
-        }
+        return await forwardToBox(await requireOwned(appId, ctx), request, ctx);
       },
 
       async redact(appId, value) {

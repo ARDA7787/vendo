@@ -46,6 +46,41 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | typeof 
   }
 }
 
+/** Build contract §9.8 — a served ORG app's registered URL is THIS route, so
+    the browser's every request re-checks `can(viewer)` against live rows. A
+    served process gets no cookies and no host credentials: only the payload
+    crosses, exactly as the fn proxy above. Modelled on it deliberately —
+    the skin has one shape, not two. */
+export const servedProxyRoutes: RouteEntry[] = [
+  route("*", "/apps/:appId/serve/*", async (wire) => {
+    const { request, params, deps, segments } = wire;
+    const appId = string(params["appId"], "app id");
+    const ctx = await wire.context("app");
+    // Everything after `/apps/<id>/serve` is the path INSIDE the box.
+    const inner = `/${segments.slice(3).join("/")}`;
+    const body = new Uint8Array(await request.arrayBuffer());
+    const contentType = request.headers.get("content-type");
+    // Forward ONLY the payload — no cookies, no authorization, no host
+    // headers cross the skin. `serve` re-checks can(viewer) against live rows
+    // BEFORE any machine work, so a revoked viewer's next request is refused
+    // even though what their session already rendered stands.
+    const answer = await deps.apps.serve(appId, {
+      method: request.method,
+      path: inner,
+      ...(contentType === null ? {} : { headers: { "content-type": contentType } }),
+      ...(body.byteLength === 0 ? {} : { body }),
+    }, ctx);
+    // Only content-type crosses back: no set-cookie or friends may be smuggled
+    // onto the host origin by a served process.
+    const relayType = Object.entries(answer.headers)
+      .find(([header]) => header.toLowerCase() === "content-type")?.[1];
+    return new Response(answer.body.byteLength === 0 ? null : (answer.body as BodyInit), {
+      status: answer.status,
+      ...(relayType === undefined ? {} : { headers: { "content-type": relayType } }),
+    });
+  }),
+];
+
 export const fnProxyRoutes: RouteEntry[] = [
   route("POST", "/apps/:appId/fn/:name", async ({ request, params, deps, context }) => {
     const appId = string(params["appId"], "app id");

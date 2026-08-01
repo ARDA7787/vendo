@@ -224,7 +224,7 @@ import {
   type WireDeps,
 } from "./wire/shared.js";
 import { appRoutes } from "./wire/apps.js";
-import { boxRoutes, fnProxyRoutes } from "./wire/box.js";
+import { boxRoutes, fnProxyRoutes, servedProxyRoutes } from "./wire/box.js";
 import { approvalRoutes, grantRoutes } from "./wire/approvals.js";
 import { automationRoutes, runRoutes } from "./wire/automations.js";
 import { connectionRoutes } from "./wire/connections.js";
@@ -1242,6 +1242,9 @@ const wireRoutes: readonly RouteEntry[] = [
   ...grantRoutes,
   ...orgsRoutes,
   ...fnProxyRoutes,
+  // Build contract §9.8 — ahead of the grouped /apps arm for the same reason
+  // the fn proxy is: /apps/:id/serve/** must resolve here, not fall through it.
+  ...servedProxyRoutes,
   ...appRoutes,
   ...automationRoutes,
   ...runRoutes,
@@ -1988,6 +1991,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       },
     }),
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+    // Build contract §9.8 — where the authenticated served-app proxy lives. The
+    // wire owns its base path, so it is filled here and nowhere else; the apps
+    // block never invents a URL for a door it does not mount.
+    servedProxyPath: (appId: AppId) => `${BASE_PATH}/apps/${encodeURIComponent(appId)}/serve/`,
     // execution-v2 Waves 4+9 — the layer-2/3 experimental opt-ins, host-config
     // only (never an env var: enabling machine-backed execution or a surface
     // that runs generated web apps is a deliberate per-project decision).

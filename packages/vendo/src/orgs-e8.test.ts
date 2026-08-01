@@ -264,6 +264,62 @@ describe("E8 — two principals, one org, over the real composition", () => {
   });
 });
 
+describe("E8 — §9.8: the served-app proxy is a wire door", () => {
+  let store: VendoStore;
+  let vendo: Vendo;
+
+  beforeEach(async () => {
+    store = await tempStore();
+    vendo = await boot(store);
+  });
+
+  it("refuses a non-viewer at the proxy BEFORE any machine work", async () => {
+    // A served org app whose machine does not even exist. The access check runs
+    // FIRST, so a stranger gets the mask while a granted viewer gets past the
+    // door and fails on the absent machine instead. Asserting BOTH is what makes
+    // this discriminating: an unmounted route would 404 everybody alike.
+    await seedApp(store, { ...seeded("app_served_door", "Kanban"), ui: "http" }, ORG);
+    await call(vendo, dana, "POST", "/apps/app_served_door/grants", {
+      principal: "user:kim",
+      level: "viewer",
+    });
+
+    const masked = await call(vendo, { kind: "user", subject: "stranger" }, "GET", "/apps/app_served_door/serve/");
+    expect(masked.status).toBe(404);
+    expect(masked.body.error.code).toBe("not-found");
+
+    const admitted = await call(vendo, kim, "GET", "/apps/app_served_door/serve/");
+    expect(admitted.status).not.toBe(404);
+  });
+
+  it("refuses the revoked viewer's next proxy request against live rows", async () => {
+    await seedApp(store, { ...seeded("app_served_revoke", "Kanban"), ui: "http" }, ORG);
+    await call(vendo, dana, "POST", "/apps/app_served_revoke/grants", {
+      principal: "user:kim",
+      level: "viewer",
+    });
+    // Granted: the door lets her through to the machine layer (which then fails
+    // on the absent machine — a 4xx/5xx that is NOT the access mask).
+    const granted = await call(vendo, kim, "GET", "/apps/app_served_revoke/serve/");
+    expect(granted.status).not.toBe(404);
+
+    await call(vendo, dana, "DELETE", "/apps/app_served_revoke/grants?principal=user%3Akim");
+    // Revoked: the very next request is masked again, decided on live rows.
+    expect((await call(vendo, kim, "GET", "/apps/app_served_revoke/serve/")).status).toBe(404);
+  });
+
+  it("leaves the PERSONAL served path untouched — no proxy route claims it", async () => {
+    // A personal served app is still reached the old way; the proxy route only
+    // ever answers for callers, and its access check is the same `can(viewer)`.
+    await seedApp(store, { ...seeded("app_served_own", "Mine"), ui: "http" }, "dana");
+    const own = await call(vendo, dana, "GET", "/apps/app_served_own/serve/");
+    // Dana owns it, so the door admits her (and the absent machine is what
+    // fails) — never a permission refusal.
+    expect(own.status).not.toBe(403);
+    expect(own.body?.error?.code).not.toBe("not-found");
+  });
+});
+
 describe("E8 — §9.6: the key gates the WRITES, never the enforcement", () => {
   it("refuses grant and promote with no key, while can() answers identically", async () => {
     const store = await tempStore();
