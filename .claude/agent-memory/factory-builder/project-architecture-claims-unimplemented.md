@@ -15,14 +15,17 @@ shipped behaviour. Three §3/§7 claims were checked:
   audit row. The true invariant is over *accountable* events (guarded
   calls, approvals, errors, hires, usage). Proposed narrower wording is
   in that file's header.
-- **Review failure protocol (§7) — ABSENT.** `edit()` in
-  `packages/apps/src/runtime.ts` calls `persistEdit` and only afterwards
-  filters blocking findings into an advisory `issues: string[]`; `create()`
-  `console.info`s them. No version status on `AppDocument`, no
-  served-version pointer, no failure card, no owner-override, and
-  `Finding` has no provenance so "except host-check failures" cannot even
-  be evaluated. Skipped tests naming the work:
-  `packages/apps/src/checking/review-failure-protocol.test.ts`.
+- **Review failure protocol (§7) — HALF BUILT since 2026-08-01.** The FAIL
+  half now exists as a REFUSAL, not a flagged version: a `block` surviving
+  the conductor's pre-land `FIX_ROUNDS` stops the write at the commit path
+  in `packages/apps/src/runtime.ts` (create fails the build before it
+  emits or persists; edit returns before `persistEdit`, so the previous
+  app stays in its row and keeps serving). Proven by
+  `packages/apps/src/checking/commit-gate.test.ts`. **Still absent:** the
+  flagged version itself, a post-land fix round, a failure card with two
+  choices, any owner override, and `Finding` provenance — so "except
+  host-check failures" still cannot be evaluated. Skipped tests naming the
+  remainder: `packages/apps/src/checking/review-failure-protocol.test.ts`.
 - **Failure-card per-firing dedupe + skipped-run count (§3) — ABSENT.**
   The `(appId, tool)` dedupe that exists is *enable-time* in
   `packages/automations/src/engine.ts` (already tested there). On the fire
