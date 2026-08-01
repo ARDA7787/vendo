@@ -483,3 +483,206 @@ future unattended behavior is a write). `validate` returns findings in its
 output, never a tool error. The host product-slug RENAME (applying the
 shipped prefix primitive across the extraction estate) is its own post-wave-1
 lane — mixed prefixes are worse than none.
+
+## 9. Wave-3 shapes (added 2026-08-01 by the wave-3 orchestrator; frozen)
+
+Everything here implements the 2026-08-01 LOCKED decisions (design spec §8,
+§13, §14; wave-3 brief). Same rule as the rest of this file: propose changes
+to the wave-3 orchestrator, never diverge locally.
+
+### 9.1 Memberships — asserted, never stored
+
+```ts
+// @vendoai/core — type only
+export interface Membership {
+  org: string;                 // host-issued org id, VERBATIM (it becomes the
+                               // workspace owner and the org-app row subject)
+  display?: string;            // consumer-voice org name
+  teams?: string[];            // host-issued team ids within this org
+  admin?: boolean;             // org admin ⇒ implicit owner of every org app
+}
+```
+
+The auth preset gains a fourth optional seam (`packages/vendo/src/auth-presets/shared.ts`):
+
+```ts
+memberships?: (principal: Principal) => Promise<Membership[]>;
+```
+
+Keyed on `Principal`, not `Request` — that is what makes it callable for
+unattended runs (host server code, same deployment, no session). All five
+presets accept it via `HostAuthPresetOptions` and the one
+`composeHostAuthPreset` return. `RunContext` gains an additive optional field
+`memberships?: Membership[]` (the schema is already `.passthrough()`): the
+wire resolves it once per request in `createContextResolver`; the automations
+engine and the app-schedules engine each take an optional
+`memberships(principal)` config seam and resolve it when building their fire
+`RunContext`. Absent field ⇒ no orgs asserted ⇒ `can()` degenerates to
+ownership. Memberships are NEVER persisted anywhere; a `kind:"org"` principal
+stays refused at the wire.
+
+### 9.2 App-access grants — the only rows Vendo stores
+
+Principal encoding (one string, ref-queryable):
+`user:<subject>` · `team:<orgId>/<teamId>` · `org:<orgId>`.
+
+```sql
+vendo_app_grants (
+  id         text primary key,     -- ag_<uuid>
+  app_id     text not null,
+  org_id     text not null,        -- the org whose workspace holds the app
+  principal  text not null,        -- encoding above
+  level      text not null,        -- viewer | editor | owner
+  created_by text not null,        -- granting subject, for audit
+  created_at timestamptz not null default now(),
+  unique (app_id, principal)
+);
+create index on vendo_app_grants (app_id);
+```
+
+One row per (app, principal); re-granting updates `level` in place. A
+reserved routed collection (the `vendo_effects` pattern — no generic-records
+fallback). Joins `ERASE_TABLES` and `byApp`; deliberately NOT in the
+anon-adoption path (ephemeral users cannot hold org grants). Grant writes are
+audited with the existing (never-yet-produced) `AuditEvent.kind: "share"`.
+
+### 9.3 `can()` — one function, and where it lives
+
+```ts
+// @vendoai/store
+export type AccessLevel = "viewer" | "editor" | "owner";   // closed, ordered
+export type CanThing = { app: AppId } | { path: string };
+
+export interface AppAccess {
+  can(ctx: RunContext, level: AccessLevel, thing: CanThing): Promise<boolean>;
+  levelFor(ctx: RunContext, appId: AppId): Promise<AccessLevel | null>;
+  grant(ctx: RunContext, appId: AppId, principal: string, level: AccessLevel): Promise<void>;
+  revoke(ctx: RunContext, appId: AppId, principal: string): Promise<void>;
+  list(ctx: RunContext, appId: AppId): Promise<AppGrantRecord[]>;
+}
+export const appAccess = (store: VendoStore): AppAccess;
+```
+
+Resolution = max of: ownership (`vendo_apps.subject === ctx.principal.subject`
+⇒ owner) · org-admin (an asserted membership with `admin: true` whose `org`
+equals the row subject ⇒ owner) · grant rows matched against
+`ctx.memberships` (user / team / org encodings). Memberships come from the
+ctx ONLY — `can()` never queries them. `grant`/`revoke` are owner-gated
+inside; `list` is viewer-gated. Path variant: `/user/**` → subject ownership
+as today; `/orgs/<orgId>/**` → requires an asserted membership in `<orgId>`,
+and under `/orgs/<orgId>/apps/<appId>/` the app grant governs
+(viewer = read, editor+ = write); `/orgs/<orgId>/policy.json` writes require
+`admin: true`. The apps runtime, wire, and MCP door all reach `can()`
+through the runtime (`requireOwned` is widened, not duplicated); the
+workspace façade calls it for `/orgs` reads and at commit.
+
+### 9.4 Access posture
+
+An app the caller cannot even view stays `not-found` (existence-masking, as
+today). A VIEWER denied an editor action gets the new error code
+`forbidden` (added to `VendoErrorCode`, wire-mapped to HTTP 403) — this code
+is thrown ONLY when the caller already provably sees the thing, and it is
+what the consumer-voice fork offer renders from. Never throw `forbidden` to
+a non-viewer.
+
+### 9.5 Org apps and promote
+
+A promoted app's row keeps the `vendo_apps` shape; `subject` becomes the org
+id verbatim (same convention as the workspace `owner` column, contract §3.3).
+`promote(appId, orgId, ctx)`: requires ownership of the app, an asserted
+membership in `orgId`, and the Cloud key (below); flips the row subject,
+moves the app's workspace rows `/user/apps/<id>/** → /orgs/<orgId>/apps/<id>/**`
+(owner + path rewrite, history follows), writes an `owner` grant for the
+promoter, audits an `app-lifecycle` event with new op `"promote"`. Fork of a
+visible app requires `can(viewer)` and lands in the forker's `/user` with
+fresh ids + `forkedFrom`, grants never travel (structural: own collection,
+fresh app id). The Share dialog is promote-if-personal + grant writes
+("share implies promote"). The existing `cloud.ts` share/publish (dead
+snapshots to the console) is a DIFFERENT verb and stays untouched.
+
+### 9.6 Cloud gating
+
+`createApps` config gains `multiParty?: boolean`, filled at the composition
+seam in `server.ts` from `cloudKeyOptions() !== undefined` (adapter-rule
+style: env read lives only at the seam). `grant`/`revoke`/`promote` and the
+Share dialog's wire routes throw `VendoError("cloud-required")` when unset.
+`can()` itself is OSS and never key-conditional — with no key no grant rows
+can exist, so it degenerates to ownership. No validate endpoint, no
+capability booleans beyond this one seam-filled flag.
+
+### 9.7 Workspace: `/orgs` mounts and the conflict outcome
+
+Owner derivation is a pure function of the path: `/user/**` → the bound
+subject (unchanged), `/orgs/<orgId>/**` → `orgId`. The façade opens with a
+mount set derived from `ctx.memberships` (org absent from assertions ⇒ mount
+absent). Commit policy per mount: `/user` = last-write-wins (today's re-aim
+loop); `/orgs` = strict CAS — a lost swap returns
+`{ status: "conflict", paths }` (the first construction of the
+`CommitResult` conflict branch; nothing throws). Hot-path render regex,
+readdir of `/`, the EACCES message, and the erase cascade all widen to
+`/orgs`. Erase-by-subject never deletes org-owned rows (the org outlives the
+person); erase-by-app matches both anchors.
+
+### 9.8 Served org apps
+
+Org-owned served apps go through an authenticated wire proxy
+(`/apps/:appId/serve/**`, modeled on `wire/box.ts` — payload only, no
+cookies/auth across the skin) that checks `can(viewer)` against live rows on
+EVERY request; `open()` returns the proxy URL for org apps. Personal served
+apps keep today's behavior unchanged.
+
+### 9.9 Sponsorship (lane H)
+
+Own routed-collection state, never on the app row (which stays two
+independent declarations that would drift):
+
+```ts
+// collection "automations:sponsorships", keyed by appId
+{ appId, sponsor: string,            // subject
+  intentHash: string,                // core intentHash over §7's AppIntent
+  status: "active" | "invalidated",
+  reason?: "edit" | "departure" | "grants",
+  invalidatedAt?: IsoDateTime }
+```
+
+Minted/refreshed at enable time (sponsor = the enabling subject). The
+engine's `runContext` resolves the run's principal from the active
+sponsorship (fallback: row subject). Fire-time check in `launchRun`:
+sponsorship active + sponsor still `can(editor)` (memberships resolved via
+the §9.1 engine seam) + `intentHash` matches the current doc — any failure
+stops the run BEFORE any tool call and marks the sponsorship invalidated.
+Third-party-edit invalidation hooks the `persistEdit` choke point via a new
+optional apps-config hook:
+
+```ts
+onDocumentEdit?: (previous: AppDocument, next: AppDocument, editor: string) => Promise<void>;
+```
+
+(apps runtime calls it after a successful persist; the automations side
+implements it — invalidate when `editor !== sponsor`.) The adoption ask is a
+card ON THE APP: additive venue state in the open payload (the
+`inclient.ts` `venueStateFor` pattern), served only to callers with
+`can(editor)`, listing the automation's reads/writes from its declared
+surface. Accepting routes through the EXISTING approvals door as the
+adopter themselves (approvals stay strictly self-subject), re-mints the
+grant set under the adopter, rewrites the sponsorship row. Nothing is
+pushed; the first editor+ to accept wins (CAS on the sponsorship row).
+
+### 9.10 Org-admin policy (lane H)
+
+File `/orgs/<orgId>/policy.json`, format tag `vendo/org-policy@1`, shape
+`{ format, rules: PolicyRule[] }` reusing the existing `PolicyRule` match
+vocabulary with `action` restricted to `"ask" | "block"` — tighten-only by
+construction; `"run"` fails parse. (No argument predicates — kill-list A4
+stands; the spec's "$10k" example is not expressible in v1 and is NOT being
+re-added.) Guard config gains
+`orgPolicy?: (ctx: RunContext) => Promise<PolicyRule[]>` (composed at the
+server seam: read the policy files of every asserted org through the store,
+union the rules). Evaluation is a post-pipeline strictness clamp in
+`#checkWithMetadata`, after the away-downgrade and before the breakers:
+`final = stricter(draft, orgOutcome)` on the rank `run < ask < block`. This
+deliberately binds grant-authorized drafts too ("between host policy and
+user approvals") while a host `block`/`ask` can never be loosened (host
+policy always wins). `decidedBy` gains member `"org"` (widen `GuardDecision`,
+`AuditEvent.decidedBy`, and the pipeline-conformance stage matrix). THE LAW's
+call-time gate stays after everything, untouched.
