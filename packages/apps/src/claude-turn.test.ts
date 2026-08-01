@@ -60,7 +60,16 @@ function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fak
           if (verdict.behavior !== "allow") continue;
           const entry = handlers.get(step.use.name);
           if (entry === undefined) continue;
-          const result = await entry.handler(verdict.updatedInput ?? step.use.input, {});
+          // FAITHFUL: the hook sees the model's RAW emission; the handler sees
+          // what `z.object(shape)` produced from it — unknown keys STRIPPED and
+          // the declared key order imposed. A fake that hands the same object to
+          // both hid a real double-execution class (verifier finding M1).
+          const raw = (verdict.updatedInput ?? step.use.input) as Record<string, unknown>;
+          const declared = Object.keys((entry.inputSchema ?? {}) as Record<string, unknown>);
+          const parsed = Object.fromEntries(
+            declared.filter((key) => raw[key] !== undefined).map((key) => [key, raw[key]]),
+          );
+          const result = await entry.handler(parsed, {});
           recorded.handled.push({ name: step.use.name, result });
         }
         yield {
@@ -150,6 +159,74 @@ describe("in-process MCP projection — one guard, one audit row, one mirror", (
     expect(recorded.permissions[0]).toEqual({ name: "Bash", verdict: "allow" });
     // Nothing about in-box bash reaches the guard: it never touches the world.
     expect(asked).toBe(0);
+  });
+});
+
+describe("M1 · exactly-once survives every hook/handler arg mismatch", () => {
+  const mcp = (name: string): string => `mcp__${VENDO_MCP_SERVER}__${name}`;
+
+  const countExecutions = async (
+    use: { name: string; input: Record<string, unknown> },
+    tools: ClaudeTurnTool[] = listing,
+  ) => {
+    const seen: Array<Record<string, unknown>> = [];
+    const recorded: Recorded = { permissions: [], handled: [] };
+    await runClaudeTurn({
+      prompt: "p",
+      tools,
+      cwd: "/box/user",
+      env: {},
+      callTool: async (_name, args) => { seen.push(args); return { status: "ok", output: { n: seen.length } }; },
+      emit: () => undefined,
+      sdk: fakeSdk([{ use }], recorded) as never,
+    });
+    return { seen, recorded };
+  };
+
+  test("REORDERED keys are one intent, not two", async () => {
+    // The model emits id after nothing; a reordered emission must not look like
+    // a different call than the parsed one.
+    const { seen } = await countExecutions({
+      name: mcp("maple_invoices_pay"),
+      input: { id: "inv_1" },
+    });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("an EXTRA hallucinated key is one intent, and never reaches the guard", async () => {
+    const { seen } = await countExecutions({
+      name: mcp("maple_invoices_pay"),
+      input: { id: "inv_1", pretendAdmin: true },
+    });
+    expect(seen).toHaveLength(1);
+    // The guard is asked about the DECLARED call, never an invented argument.
+    expect(seen[0]).toEqual({ id: "inv_1" });
+  });
+
+  test("a tool that declares NO parameters executes once even when the model invents args", async () => {
+    const { seen } = await countExecutions(
+      { name: mcp("maple_ping"), input: { surprise: 1 } },
+      [{ name: "maple_ping", title: "Ping", description: "no parameters" }],
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({});
+  });
+
+  test("two CONCURRENT identical calls are two intents — two executions, not one replay", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const recorded: Recorded = { permissions: [], handled: [] };
+    const use = { name: mcp("maple_invoices_pay"), input: { id: "inv_1" } };
+    await runClaudeTurn({
+      prompt: "p",
+      tools: listing,
+      cwd: "/box/user",
+      env: {},
+      callTool: async (_n, args) => { seen.push(args); return { status: "ok", output: {} }; },
+      emit: () => undefined,
+      sdk: fakeSdk([{ use }, { use }], recorded) as never,
+    });
+    expect(seen).toHaveLength(2);
+    expect(recorded.handled).toHaveLength(2);
   });
 });
 

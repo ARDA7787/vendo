@@ -45,6 +45,21 @@ describe("the box turn door refuses anything without the machine token", () => {
     expect((await door.handle("POST", "/turn/collect", auth, {})).status).toBe(200);
   });
 
+  test("B1 · the token holder may ROTATE it — which is what lets a woken box be used", async () => {
+    const door = createTurnRoutes({ root: newRoot(), token: TOKEN, env: {} }) as Routes;
+    // A woken machine restored its memory, so it still demands the OLD token.
+    // Presenting the NEW one alone is exactly the 401 that locked every idle
+    // thread out of its next message.
+    expect((await door.handle("POST", "/turn/hello", { "x-vendo-box-token": "fresh" }, { token: "fresh" })).status)
+      .toBe(401);
+    // Presenting the OLD one rotates to the new.
+    expect((await door.handle("POST", "/turn/hello", auth, { token: "fresh" })).status).toBe(200);
+    expect((await door.handle("POST", "/turn/collect", { "x-vendo-box-token": "fresh" }, {})).status).toBe(200);
+    // And the old token is dead the moment it has been spent.
+    expect((await door.handle("POST", "/turn/collect", auth, {})).status).toBe(401);
+    expect((await door.handle("POST", "/turn/hello", auth, { token: "attacker" })).status).toBe(401);
+  });
+
   test("hello carries the turn's credential to the SDK, and nothing else does", async () => {
     let saw: Record<string, string> | undefined;
     const door = createTurnRoutes({
@@ -120,8 +135,9 @@ describe("the inverted bridge — the host executes, the box never does", () => 
     const first = await door.handle("POST", `/turn/${turnId}/poll`, auth, { cursor, waitMs: 500 });
     cursor = first.body.cursor;
     expect(first.body.events).toEqual([{ type: "text", delta: "checking" }]);
-    expect(first.body.ask).toMatchObject({ name: "maple_invoices_list", args: { limit: 2 } });
-    seen = first.body.ask;
+    expect(first.body.asks).toHaveLength(1);
+    expect(first.body.asks[0]).toMatchObject({ name: "maple_invoices_list", args: { limit: 2 } });
+    seen = first.body.asks[0];
 
     await door.handle("POST", `/turn/${turnId}/answer`, auth, {
       id: (seen as { id: string }).id,
@@ -144,7 +160,7 @@ describe("the inverted bridge — the host executes, the box never does", () => 
     const { body } = await door.handle("POST", "/turn/start", auth, { prompt: "pay it" });
     const polled = await door.handle("POST", `/turn/${body.turnId}/poll`, auth, { cursor: 0, waitMs: 500 });
     await door.handle("POST", `/turn/${body.turnId}/answer`, auth, {
-      id: polled.body.ask.id,
+      id: polled.body.asks[0].id,
       result: { status: "denied", reason: "You'll need to approve that." },
     });
     await door.turnPromise(body.turnId);
@@ -158,11 +174,53 @@ describe("the inverted bridge — the host executes, the box never does", () => 
     const { body } = await door.handle("POST", "/turn/start", auth, { prompt: "go" });
     const polled = await door.handle("POST", `/turn/${body.turnId}/poll`, auth, { cursor: 0, waitMs: 500 });
     await door.handle("POST", `/turn/${body.turnId}/answer`, auth, {
-      id: polled.body.ask.id,
+      id: polled.body.asks[0].id,
       result: { status: "approve-everything", output: "trust me" },
     });
     await door.turnPromise(body.turnId);
     expect(got).toMatchObject({ status: "error" });
+  });
+
+  test("M2 · TWO concurrent projected calls are both handed out — neither starves", async () => {
+    const root = newRoot();
+    const answers: unknown[] = [];
+    const door = routes(root, async (input: any) => {
+      // The model emitted two tool_use blocks in one assistant turn; the SDK
+      // dispatches both MCP handlers before either resolves.
+      answers.push(...await Promise.all([
+        input.callTool("maple_invoices_list", { status: "open" }),
+        input.callTool("maple_invoices_list", { status: "paid" }),
+      ]));
+    });
+    const { body } = await door.handle("POST", "/turn/start", auth, { prompt: "both" });
+    const polled = await door.handle("POST", `/turn/${body.turnId}/poll`, auth, { cursor: 0, waitMs: 500 });
+    expect(polled.body.asks).toHaveLength(2);
+    for (const ask of polled.body.asks) {
+      await door.handle("POST", `/turn/${body.turnId}/answer`, auth, {
+        id: ask.id,
+        result: { status: "ok", output: ask.args },
+      });
+    }
+    await door.turnPromise(body.turnId);
+    expect(answers).toHaveLength(2);
+    expect(answers.map((a: any) => a.output.status).sort()).toEqual(["open", "paid"]);
+  });
+
+  test("M2 · an ask is handed out ONCE, so the host can never execute one intent twice", async () => {
+    const root = newRoot();
+    const door = routes(root, async (input: any) => { await input.callTool("x", {}); });
+    const { body } = await door.handle("POST", "/turn/start", auth, { prompt: "go" });
+    const first = await door.handle("POST", `/turn/${body.turnId}/poll`, auth, { cursor: 0, waitMs: 300 });
+    expect(first.body.asks).toHaveLength(1);
+    // A second poll before answering must NOT re-offer it.
+    const second = await door.handle("POST", `/turn/${body.turnId}/poll`, auth, {
+      cursor: first.body.cursor, waitMs: 50,
+    });
+    expect(second.body.asks ?? []).toHaveLength(0);
+    await door.handle("POST", `/turn/${body.turnId}/answer`, auth, {
+      id: first.body.asks[0].id, result: { status: "ok", output: 1 },
+    });
+    await door.turnPromise(body.turnId);
   });
 
   test("a turn that fails still ends, with a consumer-voice error and no dangling ask", async () => {
@@ -172,7 +230,7 @@ describe("the inverted bridge — the host executes, the box never does", () => 
     await door.turnPromise(body.turnId);
     const polled = await door.handle("POST", `/turn/${body.turnId}/poll`, auth, { cursor: 0, waitMs: 100 });
     expect(polled.body.done).toBe(true);
-    expect(polled.body.ask).toBeUndefined();
+    expect(polled.body.asks ?? []).toHaveLength(0);
     expect(JSON.stringify(polled.body.events)).not.toContain("ANTHROPIC_API_KEY");
     expect(polled.body.events[0]).toMatchObject({ type: "error" });
   });

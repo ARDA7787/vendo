@@ -77,9 +77,14 @@ export const createTurnRoutes = (options = {}) => {
     const turnId = `turn_${randomUUID()}`;
     const state = {
       events: [],
-      /** The ask the host must answer before the model can continue. */
-      ask: undefined,
-      answers: new Map(),
+      /**
+       * Every projected call waiting on the host, by id — a QUEUE, not a slot.
+       * The model emits parallel tool_use blocks (and a Task subagent's calls
+       * land concurrently too), so a single slot starved the second call until
+       * the turn budget expired. Each entry is handed out exactly ONCE, so the
+       * host can never execute one intent twice.
+       */
+      asks: new Map(),
       waiters: [],
       done: false,
       abort: new AbortController(),
@@ -98,8 +103,7 @@ export const createTurnRoutes = (options = {}) => {
     /** Park the call for the host and wait for its answer. */
     const callTool = (name, args) => new Promise((resolve) => {
       const id = `ask_${randomUUID()}`;
-      state.ask = { id, name, args };
-      state.answers.set(id, resolve);
+      state.asks.set(id, { id, name, args, resolve, handedOut: false });
       wake();
     });
 
@@ -127,12 +131,11 @@ export const createTurnRoutes = (options = {}) => {
         emit({ type: "error", message: "Something went wrong while I was working on that." });
       } finally {
         state.done = true;
-        // A turn that ended with an ask outstanding would hang the host's poll.
-        state.ask = undefined;
-        for (const resolve of state.answers.values()) {
-          resolve({ status: "error", message: "the turn ended" });
+        // A turn that ended with asks outstanding would hang the host's poll.
+        for (const ask of state.asks.values()) {
+          ask.resolve({ status: "error", message: "the turn ended" });
         }
-        state.answers.clear();
+        state.asks.clear();
         if (active === turnId) active = undefined;
         wake();
       }
@@ -145,12 +148,17 @@ export const createTurnRoutes = (options = {}) => {
     const deadline = Date.now() + Math.min(Math.max(waitMs ?? 0, 0), MAX_POLL_WAIT_MS);
     for (;;) {
       const fresh = state.events.slice(cursor);
-      if (fresh.length > 0 || state.ask !== undefined || state.done) {
+      const offered = [...state.asks.values()].filter((ask) => !ask.handedOut);
+      if (fresh.length > 0 || offered.length > 0 || state.done) {
+        // Handed out ONCE: a poll that re-offered an unanswered ask would have
+        // the host execute the same guarded call again.
+        for (const ask of offered) ask.handedOut = true;
         return {
           events: fresh,
           cursor: cursor + fresh.length,
-          ...(state.ask === undefined ? {} : { ask: state.ask }),
-          done: state.done && state.ask === undefined,
+          asks: offered.map(({ id, name, args }) => ({ id, name, args })),
+          // Only truly finished when nobody is still waiting on us.
+          done: state.done && state.asks.size === 0,
         };
       }
       const remaining = deadline - Date.now();
@@ -171,16 +179,17 @@ export const createTurnRoutes = (options = {}) => {
      */
     async handle(method, pathname, headers, payload) {
       if (method !== "POST") return { status: 405, body: { error: "POST only" } };
-      // `hello` is open ONLY until a token exists — trust on first use, then
-      // every route including this one is closed. The provider already serves
-      // control ports on an unguessable per-machine hostname; the token closes
-      // the rest, and together they are the whole defence the machine has.
-      const claiming = pathname === "/turn/hello" && token === "";
-      if (!claiming && (token === "" || headers["x-vendo-box-token"] !== token)) {
-        return { status: 401, body: { error: "bad or missing box token" } };
-      }
-
+      const presented = headers["x-vendo-box-token"];
       if (pathname === "/turn/hello") {
+        // Trust on FIRST use while the box is unclaimed; after that ONLY the
+        // holder of the current token may ROTATE it. Rotation is what makes a
+        // woken machine usable: a snapshot restores this module's memory, so the
+        // box comes back still demanding the token it slept with, while the host
+        // mints a fresh one per acquire. An attacker can still never claim a box
+        // that is in use — they hold neither token.
+        if (token !== "" && presented !== token) {
+          return { status: 401, body: { error: "bad or missing box token" } };
+        }
         if (typeof payload?.token !== "string" || payload.token === "") {
           return { status: 400, body: { error: "token must be a non-empty string" } };
         }
@@ -195,6 +204,11 @@ export const createTurnRoutes = (options = {}) => {
           sdkEnv = { ...sdkEnv, ...next };
         }
         return { status: 200, body: { ok: true } };
+      }
+
+      // Every other route needs the CURRENT token, always.
+      if (token === "" || presented !== token) {
+        return { status: 401, body: { error: "bad or missing box token" } };
       }
 
       if (pathname === "/turn/workspace") {
@@ -273,10 +287,9 @@ export const createTurnRoutes = (options = {}) => {
         return { status: 200, body: await poll(state, cursor, payload?.waitMs) };
       }
       if (match[2] === "answer") {
-        const resolve = state.answers.get(payload?.id);
-        if (resolve === undefined) return { status: 404, body: { error: "no such ask" } };
-        state.answers.delete(payload.id);
-        if (state.ask?.id === payload.id) state.ask = undefined;
+        const ask = state.asks.get(payload?.id);
+        if (ask === undefined) return { status: 404, body: { error: "no such ask" } };
+        state.asks.delete(payload.id);
         // Everything the host sends is DATA: only the declared shape passes, and
         // an unrecognised status reads as an error the model narrates.
         const raw = payload?.result ?? {};
@@ -285,7 +298,7 @@ export const createTurnRoutes = (options = {}) => {
           : raw.status === "denied"
             ? { status: "denied", reason: String(raw.reason ?? "That isn't something I can do right now.") }
             : { status: "error", message: String(raw.message ?? "That didn't work.") };
-        resolve(result);
+        ask.resolve(result);
         return { status: 200, body: { ok: true } };
       }
       state.abort.abort();

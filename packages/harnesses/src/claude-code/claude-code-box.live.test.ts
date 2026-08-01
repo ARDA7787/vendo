@@ -12,7 +12,7 @@ import { afterAll, describe, expect, test } from "vitest";
 import { createTurnState } from "../harness-state.js";
 import { testWorkspace, unusedModels, userMessage } from "../test-doubles.test-util.js";
 import { claudeCode } from "./index.js";
-import { disposeSessionMachines, type SandboxAdapterLike } from "./box.js";
+import { boxMachine, disposeSessionMachines, type SandboxAdapterLike } from "./box.js";
 
 const ready = process.env["E2B_API_KEY"] !== undefined
   && process.env["ANTHROPIC_API_KEY"] !== undefined
@@ -51,6 +51,13 @@ function harnessed(input: {
   } as unknown as Turn<never>;
   return { turn, workspace, calls, state };
 }
+
+/** The recorded v0 inference exception, and nothing else (design §9). */
+const liveEnv = (): Record<string, string> => ({
+  ANTHROPIC_API_KEY: process.env["ANTHROPIC_API_KEY"]!,
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  DISABLE_AUTOUPDATER: "1",
+});
 
 live("claudeCode() — live, in a real e2b box", () => {
   afterAll(async () => { await disposeSessionMachines(); });
@@ -105,6 +112,61 @@ live("claudeCode() — live, in a real e2b box", () => {
     }
     console.log("[live box session]", JSON.stringify({ carried, text }));
     expect(text).toContain("8823");
+  }, 600_000);
+
+  test("B1 · a thread idle past the TTL crosses the sweep and WAKES — no 401, no re-seed", async () => {
+    const adapter = sandbox();
+    const thread = `thr_live_sweep_${Date.now()}`;
+    const drive = async (
+      machine: Awaited<ReturnType<typeof boxMachine>>,
+      prompt: string,
+      resume?: string,
+    ) => {
+      let text = "";
+      let sessionId: string | undefined;
+      await machine.materialize([]);
+      await machine.run({
+        prompt,
+        systemPrompt: "Answer in as few words as possible.",
+        tools: [],
+        model: MODEL,
+        maxTurns: 4,
+        ...(resume === undefined ? {} : { resume }),
+        callTool: async () => ({ status: "ok", output: {} }),
+        emit: (event) => {
+          if (event.type === "text") text += event.delta;
+          if (event.type === "session") sessionId = event.sessionId;
+        },
+      });
+      return { text, sessionId };
+    };
+
+    // A short TTL so the sweep is crossed in seconds rather than five minutes.
+    // Everything else is the real path: real e2b snapshot, real destroy, real
+    // resume, real supervisor memory, real token gate.
+    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv(), idleTtlMs: 1_500 });
+    expect(first.carriesSession).toBe(false);
+    const opened = await drive(first, "Remember the number 7311. Just say ok.");
+    expect(opened.sessionId).toMatch(/.+/);
+    await first.release();
+
+    // Let the sweep snapshot and destroy the machine.
+    await new Promise((resolve) => setTimeout(resolve, 25_000));
+
+    // THE BLOCKER: this acquire used to throw "refused the turn handshake (401)",
+    // because a woken supervisor still demands the token it slept with while the
+    // host mints a fresh one.
+    const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    expect(second.carriesSession).toBe(true);
+    const recalled = await drive(
+      second,
+      "What number did I ask you to remember? Digits only.",
+      opened.sessionId,
+    );
+    console.log("[live sweep]", JSON.stringify({ session: opened.sessionId, recalled: recalled.text }));
+    // No re-seed: the native session came home on the snapshot, and the woken box
+    // let us resume it.
+    expect(recalled.text).toContain("7311");
   }, 600_000);
 
   test("E7 · a guarded call executes HOST-side, and the box env holds no credential but inference", async () => {

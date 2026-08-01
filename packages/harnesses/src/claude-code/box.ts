@@ -25,6 +25,7 @@
  * the store is untouched and the next turn recovers on a fresh machine.
  */
 import { VendoError } from "@vendoai/core";
+import type { GuardedResult } from "@vendoai/apps/internal";
 import type { CheckoutFile, SyncFile } from "../materialize.js";
 import type { TurnMachine, TurnRequest } from "./machine.js";
 
@@ -57,12 +58,28 @@ const decoder = new TextDecoder();
 
 interface PoolEntry {
   machine: SandboxMachineLike;
+  /**
+   * The control token this machine currently accepts.
+   *
+   * HONEST SCOPE (wave-1 law: no aspirational comments): it is machine-scoped and
+   * rotated on every ACQUIRE — so in practice one token per turn, because a turn
+   * acquires once, but a turn that reuses a warm pooled machine keeps the token
+   * the previous turn minted. It is NOT rotated mid-turn.
+   */
   token: string;
   /** Set while the machine is doing work nobody may reclaim under. */
   leased: boolean;
   timer?: ReturnType<typeof setTimeout>;
-  /** Where the machine went when the sweep took it. */
-  resumeRef?: string;
+  /** Where the machine went when the sweep took it, and the token it still holds. */
+  resume?: SessionRef;
+  /** Does this machine's disk carry the native session `turn.state` names? */
+  carriesSession: boolean;
+}
+
+/** A sleeping machine, and the token its restored memory will still demand. */
+export interface SessionRef {
+  ref: string;
+  token: string;
 }
 
 /** Module-scoped on purpose: one machine per THREAD for the life of the process,
@@ -78,17 +95,27 @@ const pool = new Map<string, PoolEntry>();
  * Exactly as durable as the pool itself — a process that restarts loses both,
  * and loses the machine with them, so the re-seed it then pays is honest.
  */
-const swept = new Map<string, string>();
+const swept = new Map<string, SessionRef>();
 
+/**
+ * The machine's control token.
+ *
+ * HONEST SCOPE (wave-1 law — no aspirational comments): minted per ACQUIRE and
+ * rotated into the box by the handshake, so in practice one token per turn
+ * (a turn acquires once) — but a turn that reuses a warm pooled machine keeps the
+ * token the previous turn minted, and nothing rotates mid-turn. The written
+ * "turn-scoped" of design §9 is therefore approximated, not achieved.
+ */
 const mintToken = (): string => `bxt_${globalThis.crypto.randomUUID()}`;
 
 async function control(
-  entry: PoolEntry,
+  machine: SandboxMachineLike,
+  presented: string,
   method: string,
   path: string,
   body?: unknown,
 ): Promise<{ status: number; json: unknown }> {
-  const answer = await entry.machine.request({
+  const answer = await machine.request({
     method,
     path,
     port: CONTROL_PORT,
@@ -96,7 +123,7 @@ async function control(
       "content-type": "application/json",
       // The box refuses any /turn route without it: the ONE thing the machine
       // holds besides a workspace copy and the inference key.
-      "x-vendo-box-token": entry.token,
+      "x-vendo-box-token": presented,
     },
     ...(body === undefined ? {} : { body: encoder.encode(JSON.stringify(body)) }),
   });
@@ -115,12 +142,19 @@ function armIdle(threadId: string, entry: PoolEntry, idleTtlMs: number): void {
   if (entry.timer !== undefined) clearTimeout(entry.timer);
   entry.timer = setTimeout(() => {
     void (async () => {
+      // A timer can outlive its entry (an eviction, a failed handshake). Without
+      // this it would delete whichever machine holds the slot NOW and publish a
+      // stale snapshot ref for it.
+      if (pool.get(threadId) !== entry) return;
       if (entry.leased) return;
       pool.delete(threadId);
       try {
         const ref = await entry.machine.snapshot();
-        entry.resumeRef = ref;
-        swept.set(threadId, ref);
+        // The token the sleeping box's MEMORY still holds travels with the ref:
+        // a resume restores the supervisor, so the next acquire has to present
+        // this one to be allowed to rotate to a fresh one.
+        entry.resume = { ref, token: entry.token };
+        swept.set(threadId, entry.resume);
       } catch {
         // No snapshot means the next turn starts fresh and re-seeds from our
         // transcript — disposable by contract.
@@ -136,8 +170,8 @@ export interface BoxMachineOptions {
   sandbox: SandboxAdapterLike;
   threadId: string;
   env: Record<string, string>;
-  /** The snapshot a previous idle sweep left behind (`turn.state`). */
-  resumeRef?: string;
+  /** The sleeping machine a previous idle sweep left behind (`turn.state`). */
+  resume?: SessionRef;
   /** Provider template; defaults to `VENDO_BOX_TEMPLATE`. */
   template?: string;
   /** Test seam; production uses {@link MACHINE_IDLE_TTL_MS}. */
@@ -146,62 +180,98 @@ export interface BoxMachineOptions {
 
 export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachine> {
   const idleTtlMs = options.idleTtlMs ?? MACHINE_IDLE_TTL_MS;
+  const template = options.template ?? globalThis.process?.env?.["VENDO_BOX_TEMPLATE"];
+
+  /** Boot a brand-new machine. Its disk carries no native session.
+   *
+   *  CLAUDE_CONFIG_DIR is deliberately unset: the SDK's default lives under $HOME,
+   *  and `/workspace` is emptied and re-materialized at the start of every turn —
+   *  parking the native session there would delete it on turn 2, which is the one
+   *  thing the session machine exists to prevent. */
+  const createMachine = async (token: string): Promise<SandboxMachineLike> =>
+    await options.sandbox.create({
+      ...(template === undefined ? {} : { template }),
+      env: { ...options.env, VENDO_BOX_TOKEN: token, VENDO_WORKSPACE_ROOT: "/workspace" },
+    });
+
+  /**
+   * The handshake, and the ONLY credential handoff. It ROTATES the token: the
+   * caller presents whatever the machine currently accepts and names the token it
+   * must accept from now on.
+   *
+   * Rotation is the whole fix for resume. A snapshot restores the supervisor's
+   * MEMORY, so a woken box still demands the token it held when it went to sleep,
+   * while the host mints a fresh one per acquire — presenting the new token to a
+   * woken box is a 401, and every thread idle past the TTL was locked out on its
+   * next message.
+   */
+  const hello = async (
+    machine: SandboxMachineLike,
+    presented: string,
+    next: string,
+  ): Promise<boolean> => {
+    const { status } = await control(machine, presented, "POST", "/turn/hello", {
+      token: next,
+      env: options.env,
+    }).catch(() => ({ status: 0, json: undefined }));
+    return status === 200;
+  };
+
   const existing = pool.get(options.threadId);
   let entry: PoolEntry;
   if (existing !== undefined) {
     if (existing.timer !== undefined) clearTimeout(existing.timer);
+    existing.timer = undefined;
+    // A machine already in the pool has served this thread, so whatever session
+    // the last turn wrote is still on its disk — warm reuse always carries it.
+    existing.carriesSession = true;
     entry = existing;
   } else {
-    const idleRef = swept.get(options.threadId);
-    const token = mintToken();
-    // Deliberately NOT setting CLAUDE_CONFIG_DIR: the SDK's default is under
-    // $HOME, and `/workspace` is EMPTIED and re-materialized at the start of
-    // every turn — parking the native session there would have deleted it on
-    // turn 2, which is the one thing the session machine exists to prevent. The
-    // snapshot carries the whole disk, so $HOME is where it belongs.
-    const env = {
-      ...options.env,
-      VENDO_BOX_TOKEN: token,
-      VENDO_WORKSPACE_ROOT: "/workspace",
-    };
-    let machine: SandboxMachineLike | undefined;
     // The sweep's own ref first: it is newer than anything a caller could carry.
-    const resumeFrom = idleRef ?? options.resumeRef;
-    if (resumeFrom !== undefined) {
+    const carried = swept.get(options.threadId) ?? options.resume;
+    const token = mintToken();
+    let machine: SandboxMachineLike | undefined;
+    let presented = token;
+    let carriesSession = false;
+    if (carried !== undefined) {
+      swept.delete(options.threadId);
       try {
-        machine = await options.sandbox.resume(resumeFrom);
-        swept.delete(options.threadId);
+        machine = await options.sandbox.resume(carried.ref);
+        presented = carried.token;
+        carriesSession = true;
       } catch {
         // A snapshot the provider dropped is a re-seed, not a failure.
         machine = undefined;
-        swept.delete(options.threadId);
       }
     }
-    if (machine === undefined) {
-      const template = options.template
-        ?? globalThis.process?.env?.["VENDO_BOX_TEMPLATE"];
-      machine = await options.sandbox.create({
-        ...(template === undefined ? {} : { template }),
-        env,
-      });
-    }
-    entry = { machine, token, leased: true };
-    pool.set(options.threadId, entry);
-    // The credential handoff, and the only one. The provider does NOT hand
-    // create-time envs to a template's start command, and a resumed machine
-    // boots with the snapshot's env rather than ours — so the inference key and
-    // the token both arrive here, with the turn that needs them.
-    const { status } = await control(entry, "POST", "/turn/hello", { token, env: options.env });
-    if (status !== 200) {
-      pool.delete(options.threadId);
+    if (machine === undefined) machine = await createMachine(token);
+
+    let ok = await hello(machine, presented, token);
+    if (!ok && carriesSession) {
+      // The woken box will not rotate — its memory holds a token we no longer
+      // have. Abandon it rather than strand the thread: a fresh machine costs a
+      // re-seed, and `carriesSession: false` is what tells the harness to pay it
+      // instead of resuming a session id no disk holds.
+      console.error("[vendo] claude-code: a woken workspace machine refused the token rotation; starting fresh");
       await machine.destroy().catch(() => undefined);
-      throw new VendoError("sandbox-unavailable", `the workspace machine refused the turn handshake (${status})`);
+      machine = await createMachine(token);
+      carriesSession = false;
+      ok = await hello(machine, token, token);
     }
+    if (!ok) {
+      await machine.destroy().catch(() => undefined);
+      throw new VendoError(
+        "sandbox-unavailable",
+        "the workspace machine refused the turn handshake",
+      );
+    }
+    entry = { machine, token, leased: true, carriesSession };
+    pool.set(options.threadId, entry);
   }
   entry.leased = true;
 
   const request = async (path: string, body?: unknown): Promise<Record<string, unknown>> => {
-    const { status, json } = await control(entry, "POST", path, body);
+    const { status, json } = await control(entry.machine, entry.token, "POST", path, body);
     if (status !== 200 && status !== 202) {
       // Carry the box's own sentence: a bare status turns every box problem
       // into a guessing game on the host side.
@@ -215,6 +285,8 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
   };
 
   return {
+    carriesSession: entry.carriesSession,
+
     async materialize(files: readonly CheckoutFile[]) {
       // Chunked so one oversized upload cannot blow the proxy's body limit.
       const CHUNK = 24;
@@ -271,8 +343,12 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
         }
         cursor = typeof polled["cursor"] === "number" ? polled["cursor"] : cursor;
 
-        const ask = polled["ask"] as { id?: unknown; name?: unknown; args?: unknown } | undefined;
-        if (ask !== undefined && typeof ask.id === "string" && typeof ask.name === "string") {
+        const asks = (Array.isArray(polled["asks"]) ? polled["asks"] : [])
+          .filter((ask): ask is { id: string; name: string; args?: unknown } => {
+            const candidate = ask as { id?: unknown; name?: unknown };
+            return typeof candidate.id === "string" && typeof candidate.name === "string";
+          });
+        if (asks.length > 0) {
           // §1.4, made real rather than declared: a guarded call may block up to
           // APPROVAL_WAIT_MS for a human tap, and no machine lease may outlive
           // that. So the lease is DROPPED and the idle sweep ARMED for the whole
@@ -281,15 +357,23 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
           // survives (nothing syncs, the next turn recovers on a fresh one).
           entry.leased = false;
           armIdle(options.threadId, entry, idleTtlMs);
-          let result;
+          let answered: Array<{ id: string; result: GuardedResult }>;
           try {
-            result = await turnRequest.callTool(ask.name, (ask.args ?? {}) as Record<string, unknown>);
+            // CONCURRENTLY: the model issued them together, and serializing would
+            // queue N approval waits behind each other. One call, one guard
+            // verdict, one answer — the box handed each ask out exactly once.
+            answered = await Promise.all(asks.map(async (ask) => ({
+              id: ask.id,
+              result: await turnRequest.callTool(ask.name, (ask.args ?? {}) as Record<string, unknown>),
+            })));
           } finally {
             if (entry.timer !== undefined) clearTimeout(entry.timer);
             entry.timer = undefined;
             entry.leased = true;
           }
-          await request(`/turn/${turnId}/answer`, { id: ask.id, result });
+          for (const { id, result } of answered) {
+            await request(`/turn/${turnId}/answer`, { id, result });
+          }
           continue;
         }
         if (polled["done"] === true) return;
@@ -299,12 +383,12 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
     async release() {
       entry.leased = false;
       armIdle(options.threadId, entry, idleTtlMs);
-      // The machine is warm, so there is usually nothing to carry — `resumeRef`
+      // The machine is warm, so there is usually nothing to carry — a `resume`
       // only becomes real once a sweep has taken it, and the in-process `swept`
-      // map is what the NEXT turn actually reads. Handing it up too lets a
-      // different replica pick the session up once one exists.
-      const ref = entry.resumeRef ?? swept.get(options.threadId);
-      return ref === undefined ? undefined : { resumeRef: ref };
+      // map is what the NEXT turn in THIS process reads. Handing it up too is
+      // what lets a restart, or another replica, wake the same session.
+      const resume = entry.resume ?? swept.get(options.threadId);
+      return resume === undefined ? undefined : { resume };
     },
   };
 }

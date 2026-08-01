@@ -40,12 +40,19 @@ export interface ClaudeCodeOptions {
   machine?: "local";
 }
 
-/** Declared, then overridable per turn (design §3, "Options are declared"). */
+/**
+ * Declared, then overridable per turn (design §3, "Options are declared").
+ *
+ * `machine` is deliberately NOT here. It is construction-time only
+ * (`claudeCode({ machine: "local" })`): a per-turn override would let a wire
+ * caller pull the ~250MB SDK onto the host's own server and run it there, which
+ * is a deployment decision, never a request's. The compose gate reads the
+ * constructor arg for the same reason.
+ */
 const optionsSchema = z.object({
   model: z.string().optional(),
   effort: z.enum(["low", "medium", "high"]).optional(),
   maxTurns: z.number().int().positive().optional(),
-  machine: z.literal("local").optional(),
 });
 
 /** Host-side dependencies arrive by factory closure (design §3), which is how a
@@ -139,8 +146,16 @@ const listingToTool = (listing: ToolListing): ClaudeTurnTool => ({
 interface ClaudeState {
   /** The SDK's native session id, so a next turn resumes instead of re-seeding. */
   sessionId?: string;
-  /** A snapshot ref for the machine the session lives on (sandbox path only). */
-  resumeRef?: string;
+  /**
+   * The sleeping machine the session lives on (sandbox path only), and the
+   * control token its restored memory will still demand.
+   *
+   * The token rides here because a woken supervisor keeps the one it slept with,
+   * so the next acquire must present it to be allowed to rotate. It is no new
+   * exposure: the `ref` beside it already lets its holder wake the machine and
+   * read the same workspace.
+   */
+  resume?: { ref: string; token: string };
   /** How long our transcript was when this session last answered. A SHORTER
    *  transcript next turn is a prefix truncation (§1.3) — the runtime keeps the
    *  state precisely so the harness can rewind natively. */
@@ -226,7 +241,10 @@ export function claudeCode(
     ...(options.machine === "local" ? {} : { requires: { sandbox: true } }),
 
     async *run(turn: Turn<ClaudeCodeOptions>): AsyncGenerator<HarnessEvent, void, void> {
-      const resolved = { ...options, ...(turn.options ?? {}) };
+      // Per-turn options may override the model knobs and NOTHING else: `machine`
+      // is read off the constructor, so a request can never move the SDK onto the
+      // host's server.
+      const resolved = { ...options, ...(turn.options ?? {}), machine: options.machine };
       const state = readState(turn.state.get());
       const checkout = await checkoutWorkspace(turn.workspace);
 
@@ -254,7 +272,7 @@ export function claudeCode(
           sandbox,
           threadId: threadOf(turn),
           env: inferenceEnv(),
-          ...(state.resumeRef === undefined ? {} : { resumeRef: state.resumeRef }),
+          ...(state.resume === undefined ? {} : { resume: state.resume }),
         });
       }
 
@@ -268,7 +286,10 @@ export function claudeCode(
         return next;
       };
 
-      const rewind = rewindFor(state, turn.messages.length);
+      // A machine whose disk does not carry the session cannot resume it — asking
+      // the SDK to would fail the turn outright, so the honest move is to re-seed
+      // from OUR transcript, which is the truth anyway.
+      const rewind = machine.carriesSession ? rewindFor(state, turn.messages.length) : {};
       let sessionId = rewind.resume;
       /** The newest assistant uuid this turn produced — the next rewind point. */
       let checkpoint: string | undefined;
@@ -359,7 +380,7 @@ export function claudeCode(
             console.error("[vendo] claude-code sync-back failed", error);
           });
         }
-        let released: { resumeRef?: string } | void = undefined;
+        let released: { resume?: { ref: string; token: string } } | void = undefined;
         try {
           released = await machine.release();
         } catch {
@@ -367,14 +388,16 @@ export function claudeCode(
         }
         // A rewind that landed replaces the ledger's tail: everything after the
         // rewind point is a branch the session no longer holds.
-        const kept = (state.rewind ?? []).filter((entry) => entry.at < turn.messages.length);
+        const kept = machine.carriesSession
+          ? (state.rewind ?? []).filter((entry) => entry.at < turn.messages.length)
+          : [];
         const ledger = checkpoint === undefined
           ? kept
           : [...kept, { at: turn.messages.length, uuid: checkpoint }].slice(-REWIND_LEDGER_LIMIT);
         const next: ClaudeState = {
           ...(sessionId === undefined ? {} : { sessionId, covers: turn.messages.length }),
           ...(ledger.length === 0 ? {} : { rewind: ledger }),
-          ...(released?.resumeRef === undefined ? {} : { resumeRef: released.resumeRef }),
+          ...(released?.resume === undefined ? {} : { resume: released.resume }),
         };
         if (next.sessionId === undefined) turn.state.clear();
         else turn.state.set(JSON.stringify(next));
@@ -397,13 +420,21 @@ async function callGuarded(
 }
 
 /**
- * The thread this turn belongs to. `Turn` deliberately does not carry a thread
- * id — a harness is permission-blind and thread-blind by contract — but the
- * machine pool needs a stable key per conversation, and the first message's id
- * is stable for the life of one thread and unguessable outside it.
+ * The thread this turn belongs to — the session machine's pool key.
+ *
+ * `Turn.threadId` is the real answer and the contract now carries it; until the
+ * runtime supplies it this falls back to the first message's id, which is stable
+ * for the life of one thread and unguessable outside it. A thread with NEITHER
+ * gets a per-turn random key: sharing a machine (and therefore a native session
+ * and a workspace copy) between two conversations because both happened to have
+ * no identity is the one outcome that must never happen.
  */
 function threadOf(turn: Turn<ClaudeCodeOptions>): string {
-  return turn.messages[0]?.id ?? "thread";
+  const named = (turn as { threadId?: unknown }).threadId;
+  if (typeof named === "string" && named !== "") return named;
+  const first = turn.messages[0]?.id;
+  if (typeof first === "string" && first !== "") return first;
+  return `anon_${globalThis.crypto.randomUUID()}`;
 }
 
 /** What the workspace brief calls the root. The box path pins it; local mints a

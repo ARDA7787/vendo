@@ -184,6 +184,42 @@ const textResult = (text: string, isError = false): Record<string, unknown> => (
 const asText = (output: unknown): string =>
   typeof output === "string" ? output : JSON.stringify(output ?? null);
 
+/** The properties a tool actually declares. Nothing else is part of its input. */
+const declaredKeys = (schema: unknown): string[] => {
+  const node = (typeof schema === "object" && schema !== null ? schema : {}) as JsonSchemaNode;
+  return Object.keys(node.properties ?? {});
+};
+
+/**
+ * The ONE args value for a call: the model's emission projected onto the tool's
+ * DECLARED properties.
+ *
+ * This is what makes exactly-once hold. `z.object(shape)` strips unknown keys and
+ * imposes its own key order, so the permission hook (which sees the raw
+ * emission) and the MCP handler (which sees the parsed object) were handed
+ * DIFFERENT objects for one call — a reordered emission, an invented extra key,
+ * or a tool declaring no properties all made the handler miss the hook's queued
+ * result and execute the guarded call a SECOND time: two guard verdicts, two
+ * audit rows, two executions of one intent. (The effect ledger cannot save this:
+ * it keys on a run id an interactive turn does not have.)
+ *
+ * Normalizing here also means an argument the tool never declared can never
+ * reach the guard, which is the honest reading of the descriptor.
+ */
+export function normalizeArgs(schema: unknown, raw: unknown): Record<string, unknown> {
+  const source = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  const args: Record<string, unknown> = {};
+  for (const key of declaredKeys(schema)) {
+    if (source[key] !== undefined) args[key] = source[key];
+  }
+  return args;
+}
+
+/** Key-order-independent identity for one call. Both sides compute it from the
+ *  SAME normalized args, so the queue can never be missed. */
+const callKey = (name: string, args: Record<string, unknown>): string =>
+  `${name}\u0000${JSON.stringify(Object.entries(args).sort(([left], [right]) => (left < right ? -1 : 1)))}`;
+
 /**
  * `canUseTool` is where a projected call actually executes.
  *
@@ -195,13 +231,16 @@ const asText = (output: unknown): string =>
  * error the model reads as a bug. The handler then returns the result the hook
  * already fetched.
  *
- * Correlation is by name + input rather than by a tool_use id, because
- * `CanUseTool` is not handed one. Two identical concurrent calls would share a
- * slot; they would also share an answer, so the collision is not observable.
+ * Correlation is by name + NORMALIZED input, because `CanUseTool` is not handed a
+ * tool_use id. Both sides normalize through the tool's declared schema
+ * (`normalizeArgs`), so the two views of one call cannot diverge. Two identical
+ * CONCURRENT calls queue two results and consume one each — two intents, two
+ * executions, two audit rows, which is correct.
  */
 function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
   const prefix = `mcp__${VENDO_MCP_SERVER}__`;
   const settled = new Map<string, GuardedResult[]>();
+  const schemas = new Map(input.tools.map((listed) => [listed.name, listed.inputSchema]));
   const slot = (name: string, args: unknown): string => `${name} ${JSON.stringify(args ?? {})}`;
 
   const execute = async (bare: string, args: Record<string, unknown>): Promise<GuardedResult> => {
@@ -220,8 +259,9 @@ function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
       // The title is the consumer-voice name; the model needs both.
       listed.title === undefined ? listed.description : `${listed.title}. ${listed.description}`,
       jsonSchemaToZodShape(listed.inputSchema, z),
-      async (args) => {
-        const key = slot(listed.name, args);
+      async (rawArgs) => {
+        const args = normalizeArgs(listed.inputSchema, rawArgs);
+        const key = callKey(listed.name, args);
         const queued = settled.get(key);
         // Normally the hook already ran this exact call. If an SDK build
         // pre-approves MCP tools and never consults the hook, execute here —
@@ -240,24 +280,27 @@ function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
 
   const canUseTool = async (
     name: string,
-    args: Record<string, unknown>,
+    rawArgs: Record<string, unknown>,
   ): Promise<Record<string, unknown>> => {
     if (!name.startsWith(prefix)) {
       // The box IS the permission: its own file/bash work touches a COPY with no
       // credentials on it, and reality happens at commit.
-      return { behavior: "allow", updatedInput: args };
+      return { behavior: "allow", updatedInput: rawArgs };
     }
     const bare = name.slice(prefix.length);
+    const args = normalizeArgs(schemas.get(bare), rawArgs);
     const result = await execute(bare, args);
     if (result.status === "denied") {
       // The native denial path: the model explains and moves on. Our approval
       // card is already on the user's screen — the runtime raised it (§1.4).
       return { behavior: "deny", message: result.reason };
     }
-    const key = slot(bare, args);
+    const key = callKey(bare, args);
     const queued = settled.get(key);
     if (queued === undefined) settled.set(key, [result]);
     else queued.push(result);
+    // Hand the SDK the normalized args, so the handler is asked about exactly the
+    // call the guard already answered.
     return { behavior: "allow", updatedInput: args };
   };
 

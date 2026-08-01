@@ -1,5 +1,12 @@
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { VendoError, type HarnessEvent, type Json, type ToolResult, type Turn } from "@vendoai/core";
 import { afterEach, describe, expect, test } from "vitest";
+// The REAL box door, driven over a fake transport — see the block comment below.
+// A package subpath, not a relative climb: the door is the wire contract between
+// these two blocks, and `harnesses → apps` is a layer-legal edge.
+import { createTurnRoutes } from "@vendoai/apps/box-door";
 import { assertHarnessComposable } from "../compose.js";
 import { createTurnState } from "../harness-state.js";
 import { provideHarnessAdapters } from "../harness-sandbox.js";
@@ -16,20 +23,52 @@ const encoder = new TextEncoder();
  * our driver and our sync-back — never a mock of our own code. The SDK loop is
  * the one thing scripted, because a unit test cannot run a model.
  */
+/**
+ * A stand-in for a real box that speaks the REAL protocol: the fake machine's
+ * `request()` is a thin transport adapter over the ACTUAL box door
+ * (`packages/apps/box/turn-routes.mjs`), with only the SDK loop scripted.
+ *
+ * A hand-written fake let a live BLOCKER hide: it accepted `hello`
+ * unconditionally, so it modelled a protocol the real box does not implement and
+ * the resume-after-sweep 401 was invisible here. Driving the real door means that
+ * class cannot come back.
+ *
+ * Two provider behaviours are modelled deliberately, because both are load
+ * bearing: a CREATED machine boots with NO token (create-time envs never reach a
+ * template's start command), and a RESUMED machine restores the supervisor's
+ * MEMORY — so it comes back still holding the token it last accepted.
+ */
 type BoxScript = (box: {
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   emit: (event: Record<string, unknown>) => void;
+  /** Writes even over a read-only `/host` bind — the box's chmod is advisory, so
+   *  an agent that defeats it is exactly the case the sync-back seam must catch. */
   write: (workspacePath: string, text: string) => void;
   read: (workspacePath: string) => string | undefined;
+  /** The provider reaping the machine mid-turn. A script that merely THROWS is a
+   *  failing thinker, which is a different fact. */
+  kill: () => void;
   resume?: string;
 }) => Promise<void>;
 
 interface FakeBox extends SandboxMachineLike {
-  files: Map<string, string>;
+  /** The materialized workspace on this machine's disk. */
+  root: string;
+  /** The token this box currently accepts — the memory a resume restores. */
+  lastToken: string;
   destroyed: boolean;
   snapshots: number;
+  snapshotRef?: string;
   env: Record<string, string>;
 }
+
+const boxRoots: string[] = [];
+afterEach(() => {
+  for (const root of boxRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+const diskPath = (root: string, workspacePath: string): string =>
+  path.join(root, workspacePath.replace(/^\/+/, ""));
 
 function fakeSandbox(script: BoxScript): SandboxAdapterLike & {
   boxes: FakeBox[];
@@ -46,7 +85,9 @@ function fakeSandbox(script: BoxScript): SandboxAdapterLike & {
     async resume(ref: string) {
       adapter.resumedFrom.push(ref);
       if (adapter.failResume) throw new VendoError("not-found", "snapshot gone");
-      return makeBox(adapter, script, {});
+      const source = adapter.boxes.find((box) => box.snapshotRef === ref);
+      if (source === undefined) throw new VendoError("not-found", `no snapshot ${ref}`);
+      return makeBox(adapter, script, {}, source);
     },
     async destroy() { /* sleeping-machine teardown; nothing to do here */ },
   };
@@ -57,90 +98,81 @@ function makeBox(
   adapter: { boxes: FakeBox[] },
   script: BoxScript,
   env: Record<string, string>,
+  source?: FakeBox,
 ): FakeBox {
-  const files = new Map<string, string>();
-  let token = env["VENDO_BOX_TOKEN"] ?? "";
-  const events: Array<Record<string, unknown>> = [];
-  let ask: { id: string; name: string; args: unknown } | undefined;
-  const answers = new Map<string, (value: unknown) => void>();
-  let done = false;
-  let running: Promise<void> | undefined;
+  const root = mkdtempSync(path.join(tmpdir(), "vendo-fakebox-"));
+  boxRoots.push(root);
+  // A resumed machine comes back with the disk it was snapshotted with.
+  if (source !== undefined) cpSync(source.root, root, { recursive: true });
 
-  const box: FakeBox = {
+  const box = {
     id: `box_${adapter.boxes.length}`,
-    files,
+    root,
+    // A CREATED machine boots with NO token: the provider does not hand
+    // create-time envs to a template's start command. A RESUMED one restores the
+    // supervisor's memory, token included.
+    lastToken: source?.lastToken ?? "",
     env,
     destroyed: false,
     snapshots: 0,
-    async snapshot() { box.snapshots += 1; return `fake:${box.id}`; },
-    async destroy() { box.destroyed = true; },
-    async request(req) {
-      const reply = (status: number, body: unknown) => ({
-        status,
-        headers: {},
-        body: encoder.encode(JSON.stringify(body)),
-      });
-      if (box.destroyed) throw new VendoError("not-found", "machine is gone");
-      const payload = req.body === undefined
-        ? {}
-        : JSON.parse(typeof req.body === "string" ? req.body : decoder.decode(req.body)) as Record<string, any>;
-      if (req.path === "/turn/hello") { token = String(payload["token"]); return reply(200, { ok: true }); }
-      if (req.headers?.["x-vendo-box-token"] !== token || token === "") return reply(401, { error: "no token" });
+  } as FakeBox;
 
-      if (req.path === "/turn/workspace") {
-        if (payload["reset"] === true) files.clear();
-        for (const file of payload["files"] ?? []) {
-          files.set(file.path, Buffer.from(file.base64, "base64").toString("utf8"));
+  const routes = createTurnRoutes({
+    root,
+    token: box.lastToken,
+    env: {},
+    runTurn: async (input: {
+      callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+      emit: (event: Record<string, unknown>) => void;
+      resume?: string;
+    }) => script({
+      callTool: input.callTool,
+      emit: input.emit,
+      write: (workspacePath, text) => {
+        const target = diskPath(root, workspacePath);
+        mkdirSync(path.dirname(target), { recursive: true });
+        try {
+          chmodSync(target, 0o644);
+        } catch {
+          // Not there yet, or already writable.
         }
-        return reply(200, { ok: true });
-      }
-      if (req.path === "/turn/collect") {
-        const wanted: string[] | undefined = payload["paths"];
-        const out = [...files.entries()]
-          .filter(([path]) => (wanted === undefined ? path.startsWith("/user/") : wanted.includes(path)))
-          .map(([path, text]) => ({ path, base64: Buffer.from(text).toString("base64") }));
-        return reply(200, { files: out });
-      }
-      if (req.path === "/turn/start") {
-        done = false;
-        running = script({
-          callTool: (name, args) => new Promise((resolve) => {
-            const id = `ask_${answers.size}`;
-            ask = { id, name, args };
-            answers.set(id, resolve);
-          }),
-          emit: (event) => events.push(event),
-          write: (path, text) => files.set(path, text),
-          read: (path) => files.get(path),
-          ...(payload["resume"] === undefined ? {} : { resume: String(payload["resume"]) }),
-        }).catch(() => { box.destroyed = true; }).finally(() => { done = true; });
-        return reply(202, { turnId: "turn_1" });
-      }
-      if (req.path.endsWith("/poll")) {
-        // Let the scripted turn make progress before answering, exactly as a
-        // real box's held-open poll does.
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        const cursor: number = payload["cursor"] ?? 0;
-        const fresh = events.slice(cursor);
-        return reply(200, {
-          events: fresh,
-          cursor: cursor + fresh.length,
-          ...(ask === undefined ? {} : { ask }),
-          done: done && ask === undefined,
-        });
-      }
-      if (req.path.endsWith("/answer")) {
-        const resolve = answers.get(payload["id"]);
-        if (ask?.id === payload["id"]) ask = undefined;
-        answers.delete(payload["id"]);
-        resolve?.(payload["result"]);
-        await Promise.resolve();
-        return reply(200, { ok: true });
-      }
-      if (req.path.endsWith("/abort")) { await running?.catch(() => undefined); return reply(200, { ok: true }); }
-      return reply(404, { error: req.path });
-    },
+        writeFileSync(target, text);
+      },
+      kill: () => { box.destroyed = true; },
+      read: (workspacePath) => {
+        try {
+          return readFileSync(diskPath(root, workspacePath), "utf8");
+        } catch {
+          return undefined;
+        }
+      },
+      ...(input.resume === undefined ? {} : { resume: input.resume }),
+    }),
+  }) as {
+    handle: (method: string, pathname: string, headers: Record<string, string>, payload: unknown)
+      => Promise<{ status: number; body: unknown }>;
   };
+
+  box.snapshot = async () => {
+    box.snapshots += 1;
+    box.snapshotRef = `fake:${box.id}`;
+    return box.snapshotRef;
+  };
+  box.destroy = async () => { box.destroyed = true; };
+  box.request = async (req) => {
+    if (box.destroyed) throw new VendoError("not-found", "machine is gone");
+    const payload = req.body === undefined
+      ? {}
+      : JSON.parse(typeof req.body === "string" ? req.body : decoder.decode(req.body)) as Record<string, unknown>;
+    const answer = await routes.handle(req.method, req.path, (req.headers ?? {}) as Record<string, string>, payload);
+    // The host is the only caller, so it can observe what the box now accepts —
+    // which is how a resumed box knows the token its memory carries.
+    if (req.path === "/turn/hello" && answer.status === 200 && typeof payload["token"] === "string") {
+      box.lastToken = payload["token"];
+    }
+    return { status: answer.status, headers: {}, body: encoder.encode(JSON.stringify(answer.body)) };
+  };
+
   adapter.boxes.push(box);
   return box;
 }
@@ -220,9 +252,19 @@ describe("the boot gate — a spawned harness with no machine to live on (design
 });
 
 describe("options — declared, then overridable per turn", () => {
-  test("the four v1 knobs are declared and nothing else is", () => {
+  test("only the model knobs are per-turn overridable", () => {
     const shape = (claudeCode().optionsSchema as never as { shape: Record<string, unknown> }).shape;
-    expect(Object.keys(shape).sort()).toEqual(["effort", "machine", "maxTurns", "model"]);
+    expect(Object.keys(shape).sort()).toEqual(["effort", "maxTurns", "model"]);
+  });
+
+  test("m1 · `machine` is construction-time only — a per-turn option cannot move the SDK onto the host", async () => {
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "boxed" }); });
+    const { turn } = makeTurn();
+    // A wire caller smuggling the deployment knob into a request.
+    (turn as unknown as { options: unknown }).options = { machine: "local" };
+    expect(await drain(claudeCode({ sandbox }), turn)).toContainEqual({ type: "text", delta: "boxed" });
+    // A box was still used: the SDK never came near the host's own server.
+    expect(sandbox.boxes).toHaveLength(1);
   });
 });
 
@@ -340,6 +382,79 @@ describe("the session machine — one per thread, idle-TTL disposed (design §9)
     expect(sandbox.boxes[0]?.snapshots).toBe(0);
   });
 
+  test("B1 · a woken box that refuses the rotation is abandoned, and the turn re-seeds", async () => {
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "session", sessionId: "sess_new" }); });
+    const first = await boxMachine({ sandbox, threadId: "thr_stubborn", env: {}, idleTtlMs: 5 });
+    await first.release();
+    await wait(60);
+    // The woken supervisor forgets the token it slept with — a rotation it cannot
+    // authenticate. The thread must NOT be stranded.
+    const woken = sandbox.boxes[0]!;
+    woken.lastToken = "a-token-the-host-never-had";
+    const second = await boxMachine({ sandbox, threadId: "thr_stubborn", env: {} });
+    // A fresh machine took over, and it says so — the harness re-seeds instead of
+    // asking the SDK to resume a session no disk holds.
+    expect(second.carriesSession).toBe(false);
+    expect(sandbox.boxes.filter((box) => !box.destroyed)).toHaveLength(1);
+  });
+
+  test("B1 · a woken box the host CAN authenticate keeps its session — no re-seed", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const first = await boxMachine({ sandbox, threadId: "thr_woken", env: {}, idleTtlMs: 5 });
+    await first.release();
+    await wait(60);
+    const second = await boxMachine({ sandbox, threadId: "thr_woken", env: {} });
+    expect(sandbox.resumedFrom).toEqual(["fake:box_0"]);
+    expect(second.carriesSession).toBe(true);
+  });
+
+  test("m3 · a machine acquired while an older sweep is mid-snapshot is left alone", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const first = await boxMachine({ sandbox, threadId: "thr_slow", env: {}, idleTtlMs: 5 });
+    const old = sandbox.boxes[0]!;
+    let releaseSnapshot = (): void => undefined;
+    const held = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    old.snapshot = async () => {
+      old.snapshots += 1;
+      old.snapshotRef = `fake:${old.id}`;
+      await held;
+      return old.snapshotRef;
+    };
+    await first.release();
+    await wait(60);
+    // The sweep has taken the slot but is still snapshotting. A turn arriving now
+    // must get a machine of its own that the finishing sweep does not touch.
+    const second = await boxMachine({ sandbox, threadId: "thr_slow", env: {} });
+    releaseSnapshot();
+    await wait(40);
+    expect(sandbox.boxes).toHaveLength(2);
+    expect(sandbox.boxes[1]?.destroyed).toBe(false);
+    await second.release();
+  });
+
+  test("m4 · the pool keys on turn.threadId when the runtime supplies one", async () => {
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "hi" }); });
+    const harness = claudeCode({ sandbox });
+    for (const messageId of ["m_a", "m_b"]) {
+      const { turn } = makeTurn({ thread: messageId });
+      // Two different first messages, ONE conversation.
+      (turn as unknown as { threadId: string }).threadId = "thr_named";
+      await drain(harness, turn);
+    }
+    expect(sandbox.boxes).toHaveLength(1);
+  });
+
+  test("m4 · two threads with NO identity never share a machine, a session, or a workspace", async () => {
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "hi" }); });
+    const harness = claudeCode({ sandbox });
+    for (let index = 0; index < 2; index += 1) {
+      const { turn } = makeTurn();
+      (turn as unknown as { messages: unknown[] }).messages = [];
+      await drain(harness, turn);
+    }
+    expect(sandbox.boxes).toHaveLength(2);
+  });
+
   test("§1.4 · no machine lease is held while a guarded call waits", async () => {
     const sandbox = fakeSandbox(async () => undefined);
     let leasedDuringCall: boolean | undefined;
@@ -355,7 +470,7 @@ describe("the session machine — one per thread, idle-TTL disposed (design §9)
           status: 200,
           headers: {},
           body: encoder.encode(JSON.stringify({
-            events: [], cursor: 0, ask: { id: "a1", name: "t", args: {} }, done: false,
+            events: [], cursor: 0, asks: [{ id: "a1", name: "t", args: {} }], done: false,
           })),
         };
       }
@@ -551,8 +666,9 @@ describe("a turn on a real box wire", () => {
   test("killing the sandbox mid-turn leaves the store untouched, and the next turn recovers", async () => {
     const sandbox = fakeSandbox(async (box) => {
       box.write("/user/apps/app_1/app.vendo", "<App>half</App>");
-      // The provider's dead-machine signal, mid-turn.
-      throw new VendoError("not-found", "machine is gone");
+      // The provider reaps the machine mid-turn: every later request throws
+      // not-found, so the half-written app can never be read back.
+      box.kill();
     });
     const { turn, workspace } = makeTurn({ files: { "/user/apps/app_1/app.vendo": "<App/>" } });
     await drain(claudeCode({ sandbox }), turn);

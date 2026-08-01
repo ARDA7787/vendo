@@ -76,6 +76,10 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
   await mkdir(configDir, { recursive: true });
 
   return {
+    // The config dir is per thread and outlives the turn, so a session written
+    // last turn is still on this disk.
+    carriesSession: true,
+
     async materialize(files) {
       for (const file of files) {
         const target = toDisk(root, file.path);
