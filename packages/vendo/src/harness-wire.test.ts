@@ -37,6 +37,23 @@ async function tempStore(prefix: string): Promise<VendoStore> {
   return store;
 }
 
+/**
+ * A store the way a HOST supplies one: the whole public `VendoStore` surface,
+ * delegating to a real store so records and blobs genuinely work — but not the
+ * handle `@vendoai/store` minted, so it is absent from the package's internals
+ * WeakMap (`dbFor`) and has no SQL handle. That is the same shape the Cloud
+ * hosted store presents to `storeServesHarnessTurns`, without needing the Cloud.
+ */
+function nonSqlStore(backing: VendoStore): VendoStore {
+  return {
+    records: (collection) => backing.records(collection),
+    blobs: (namespace) => backing.blobs(namespace),
+    ensureSchema: () => backing.ensureSchema(),
+    close: () => backing.close(),
+    raw: () => backing.raw(),
+  };
+}
+
 const request = (path: string, body: unknown): Request =>
   new Request(`https://host.test/api/vendo${path}`, {
     method: "POST",
@@ -249,19 +266,99 @@ describe("createVendo({ harness }) — a turn served through the composed runtim
     } as Parameters<typeof createVendo>[0])).toThrow(/boxed needs a sandbox adapter/);
   });
 
-  it("leaves POST /threads on the shipped agent path when no harness is named", async () => {
-    let ranHarness = false;
-    const { vendo } = await compose();
-    // The default harness exists and is reachable directly...
+  /**
+   * THE FLIP (wave 2). `POST /threads` goes through the harness runtime for every
+   * host, named harness or not — the wave-1 ruling that kept the default on
+   * `agent.stream` is spent, because both paths now carry the same four discovery
+   * rails and the same assembled prompt.
+   *
+   * The discriminator is the audit plane, not the prose: only the harness runtime
+   * writes a `run` row naming the harness that ran (`reportRun`). A turn that
+   * quietly fell back to `agent.stream` produces no such row, so this cannot pass
+   * by accident.
+   */
+  it("routes POST /threads through the harness runtime when NO harness is named", async () => {
+    const { vendo, store } = await compose();
+    // The default harness exists and is reachable directly…
     expect(vendo.harness).toBeDefined();
-    // ...but the wire route did not switch under a host that named nothing.
+    // …and the wire route now runs it. The model double is empty, so `vendo()`
+    // fails honestly — which is itself the failure the audit row records.
     const turn = await vendo.handler(request("/threads", {
       threadId: "thr_default", message: userMessage("m1", "hello"),
     }));
-    // The scripted harness was never installed, so any 200 here came from
-    // `agent.stream` reaching the (empty) model double and failing honestly.
-    expect(ranHarness).toBe(false);
-    expect([200, 400, 500]).toContain(turn.status);
+    expect(turn.status).toBe(200);
+    await turn.text();
+
+    const { records } = await store.records("vendo_audit").list({ refs: { subject: principal.subject } });
+    const runs = records
+      .map((record) => (record.data as { kind?: string; detail?: { harness?: string } }))
+      .filter((row) => row.kind === "run");
+    expect(runs.map((row) => row.detail?.harness)).toContain("vendo");
+  });
+
+  it("still prefers the harness the host DID name", async () => {
+    const { vendo, store } = await compose({
+      harness: scriptedHarness(async function* () {
+        yield { type: "text", delta: "the named one ran" };
+      }),
+    });
+    const turn = await vendo.handler(request("/threads", {
+      threadId: "thr_named", message: userMessage("m1", "hello"),
+    }));
+    expect(await turn.text()).toContain("the named one ran");
+    const { records } = await store.records("vendo_audit").list({ refs: { subject: principal.subject } });
+    const harnesses = records
+      .map((record) => (record.data as { kind?: string; detail?: { harness?: string } }))
+      .filter((row) => row.kind === "run")
+      .map((row) => row.detail?.harness);
+    expect(harnesses).not.toContain("vendo");
+  });
+
+  /**
+   * THE FLIP'S ONE EXCEPTION, exercised. A store with no SQL handle — the Cloud
+   * hosted store, or a host's own adapter behind the public `VendoStore` surface —
+   * cannot serve the transcript and workspace TABLES a harness turn needs, so it
+   * keeps `agent.stream`. Untested, that branch is exactly the kind of fallback
+   * that rots into "every chat turn is a boot-shaped error" for the deployments
+   * least able to notice.
+   *
+   * Two-sided, so it cannot pass by accident:
+   *  - the harness path is provably IMPOSSIBLE on this store (driving the door
+   *    directly raises the not-implemented refusal), and yet
+   *  - the route answers 200 and writes NO `run` row, the audit row only the
+   *    harness runtime writes — and the marker text of the harness that WAS
+   *    named is absent from the body, which the named-harness case above proves
+   *    would otherwise be there.
+   */
+  it("keeps POST /threads on agent.stream when the store has no SQL handle", async () => {
+    const backing = await tempStore("vendo-harness-nonsql-");
+    const { vendo } = await compose({
+      store: nonSqlStore(backing),
+      harness: scriptedHarness(async function* () {
+        yield { type: "text", delta: "HARNESS-RAN" };
+      }),
+    });
+
+    const turn = await vendo.handler(request("/threads", {
+      threadId: "thr_nonsql", message: userMessage("m1", "hello"),
+    }));
+    expect(turn.status).toBe(200);
+    expect(await turn.text()).not.toContain("HARNESS-RAN");
+
+    const { records } = await backing.records("vendo_audit").list({ refs: { subject: principal.subject } });
+    const runs = records
+      .map((record) => (record.data as { kind?: string }))
+      .filter((row) => row.kind === "run");
+    expect(runs).toEqual([]);
+
+    // The other side of the oracle: the harness door is composed and reachable,
+    // and it is the STORE that cannot serve it. So the 200 above is a routing
+    // fact, not a harness that happened to stay silent.
+    await expect(vendo.harness.stream({
+      threadId: "thr_nonsql" as never,
+      message: userMessage("m2", "hello"),
+      ctx: { principal } as never,
+    })).rejects.toThrow(/needs a SQL-backed store/);
   });
 });
 

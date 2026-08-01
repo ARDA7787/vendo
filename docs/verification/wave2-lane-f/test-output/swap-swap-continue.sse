@@ -1,0 +1,10 @@
+data: {"type":"text-start","id":"txt_1_bf30d18d-c24e-4c6c-8bb5-60860b10266e"}
+
+data: {"type":"text-delta","id":"txt_1_bf30d18d-c24e-4c6c-8bb5-60860b10266e","delta":"The first thing you"}
+
+data: {"type":"text-delta","id":"txt_1_bf30d18d-c24e-4c6c-8bb5-60860b10266e","delta":" asked was: \"Build me a simple view of my savings balance.\""}
+
+data: {"type":"text-end","id":"txt_1_bf30d18d-c24e-4c6c-8bb5-60860b10266e"}
+
+data: [DONE]
+

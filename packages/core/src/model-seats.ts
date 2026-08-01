@@ -1,4 +1,4 @@
-/** Build contract §4 — the four model seats. A seat is a JOB, not a model: the
+/** Build contract §4 — the five model seats. A seat is a JOB, not a model: the
  *  same model may fill several, and swapping one never renames the others. */
 export type Seat = "default" | "reviewer" | "judge" | "fill" | "verifier";
 

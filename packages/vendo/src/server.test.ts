@@ -105,6 +105,12 @@ function stubRouteBlocks(vendo: Vendo): void {
   vi.spyOn(vendo.agent, "stream").mockResolvedValue(new Response("event: done\n\n", {
     headers: { "content-type": "text/event-stream" },
   }));
+  // Wave 2 flipped `POST /threads` onto the harness runtime for every host, so
+  // the chat door these route tests drive is `harness.stream`. Both are stubbed:
+  // the agent door still serves the thread list/get/delete routes below.
+  vi.spyOn(vendo.harness, "stream").mockResolvedValue(new Response("event: done\n\n", {
+    headers: { "content-type": "text/event-stream" },
+  }));
   vi.spyOn(vendo.agent.threads, "list").mockResolvedValue([]);
   vi.spyOn(vendo.agent.threads, "get").mockResolvedValue({
     id: "thr_x", subject: principal.subject, messages: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -187,7 +193,7 @@ describe("09 §3 public wire", () => {
     }
   });
 
-  it("wires client disconnect to the agent turn: POST /threads hands the request signal to agent.stream (AGENT-3)", async () => {
+  it("wires client disconnect to the chat turn: POST /threads hands the request signal to the served turn (AGENT-3)", async () => {
     const { vendo } = await setup();
     stubRouteBlocks(vendo);
     const controller = new AbortController();
@@ -198,7 +204,9 @@ describe("09 §3 public wire", () => {
       signal: controller.signal,
     });
     await vendo.handler(disconnectable);
-    const streamInput = vi.mocked(vendo.agent.stream).mock.calls[0]?.[0];
+    // The served door, post-flip. The invariant is unchanged: whoever runs the
+    // turn is handed a signal live-wired to the request.
+    const streamInput = vi.mocked(vendo.harness.stream).mock.calls[0]?.[0];
     expect(streamInput?.signal).toBeInstanceOf(AbortSignal);
     expect(streamInput?.signal?.aborted).toBe(false);
     // The handed signal is live-wired to the request: a client disconnect
@@ -3178,11 +3186,13 @@ describe("ENG-353 — turn liveness: heartbeat-armed idle abort for disconnects 
   // milliseconds, and a spurious idle-abort here would flake the suite.
   const IDLE_MS = 1_000;
 
-  /** agent.stream stub whose SSE body stays open until the handed signal
-   *  aborts — a long-generating turn. */
+  /** A stub of the served chat door (post-flip: `harness.stream`) whose SSE body
+   *  stays open until the handed signal aborts — a long-generating turn.
+   *  Liveness is the wire route's, not the thinker's, so what runs the turn is
+   *  incidental here; it just has to be the door `POST /threads` actually calls. */
   function streamingTurnStub(vendo: Vendo, threadId = "thr_live"): { signals: AbortSignal[] } {
     const signals: AbortSignal[] = [];
-    vi.spyOn(vendo.agent, "stream").mockImplementation(async (input: { signal?: AbortSignal }) => {
+    vi.spyOn(vendo.harness, "stream").mockImplementation(async (input: { signal?: AbortSignal }) => {
       signals.push(input.signal!);
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -3284,7 +3294,7 @@ describe("ENG-353 — turn liveness: heartbeat-armed idle abort for disconnects 
 
   it("a completed turn unregisters: beats after the stream drained report inactive", async () => {
     const { vendo } = await setup();
-    vi.spyOn(vendo.agent, "stream").mockResolvedValue(new Response(
+    vi.spyOn(vendo.harness, "stream").mockResolvedValue(new Response(
       new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
