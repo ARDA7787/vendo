@@ -23,6 +23,10 @@ import path from "node:path";
 
 const RUNNER = "/opt/vendo-box/claude-turn.mjs";
 const MAX_POLL_WAIT_MS = 25_000;
+/** Finished turns stay pollable for a little while (a host retrying its last
+ *  poll), then go. A session machine lives for many turns, and every turn's
+ *  event buffer kept forever is a slow leak in a long-lived box. */
+const TURNS_RETAINED = 4;
 
 /** Workspace path → disk path under the root. The frozen layout (§3.1) is kept
  *  verbatim one level down, so `/user/apps/a/app.vendo` reads the same on both
@@ -81,6 +85,7 @@ export const createTurnRoutes = (options = {}) => {
       abort: new AbortController(),
     };
     turns.set(turnId, state);
+    for (const stale of [...turns.keys()].slice(0, -TURNS_RETAINED)) turns.delete(stale);
     active = turnId;
 
     const wake = () => {
