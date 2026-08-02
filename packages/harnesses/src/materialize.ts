@@ -101,12 +101,25 @@ export interface WorkspaceCheckout {
 const syncable = (path: string): boolean =>
   pathAccess(path) === "rw" && !under(path, SCRATCH_MOUNT);
 
+/**
+ * The box door's whole-tree walk skips files over this to protect the proxy's
+ * body limit (`packages/apps/box/turn-routes.mjs`), so a machine can report a
+ * checked-out file ABSENT while still holding it. Under the default files
+ * store (5 MiB cap) no checked-out file reaches this size; a BYO adapter (s3)
+ * has no cap. Absent-means-deleted must not apply to such a file: keeping a
+ * stale copy after a rare real in-box `rm` beats destroying the store's only
+ * copy on every turn that touches nothing.
+ */
+const WALK_SKIP_BYTES = 8 * 1024 * 1024;
+
 export async function checkoutWorkspace(workspace: WorkspaceFs): Promise<WorkspaceCheckout> {
   const files: CheckoutFile[] = [];
   /** Path → hash of what the STORE holds, as far as this checkout knows. A
    *  mid-turn sync updates it, so turn end does not re-commit what already
    *  landed. */
   const hashes = new Map<string, string>();
+  /** Checked-out files the box walk cannot carry back — see WALK_SKIP_BYTES. */
+  const oversized = new Set<string>();
 
   for (const path of workspace.getAllPaths()) {
     const access = pathAccess(path);
@@ -121,7 +134,10 @@ export async function checkoutWorkspace(workspace: WorkspaceFs): Promise<Workspa
       continue;
     }
     files.push({ path, bytes, readOnly: access === "ro" });
-    if (syncable(path)) hashes.set(path, contentHash(bytes));
+    if (syncable(path)) {
+      hashes.set(path, contentHash(bytes));
+      if (bytes.length > WALK_SKIP_BYTES) oversized.add(path);
+    }
   }
 
   const apply = async (
@@ -147,6 +163,9 @@ export async function checkoutWorkspace(workspace: WorkspaceFs): Promise<Workspa
     if (options.deleteMissing) {
       for (const path of hashes.keys()) {
         if (seen.has(path)) continue;
+        // Absent because the walk cannot carry it, not because anyone deleted
+        // it — see WALK_SKIP_BYTES.
+        if (oversized.has(path)) continue;
         await workspace.rm(path, { force: true });
         removed.push(path);
       }

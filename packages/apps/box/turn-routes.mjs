@@ -293,11 +293,13 @@ export const createTurnRoutes = (options = {}) => {
             const workspacePath = toWorkspace(root, diskPath);
             if (!workspacePath.startsWith("/user/")) continue;
             try {
-              // Above any file the workspace itself can hold (FILES_STORE_MAX_BYTES
-              // is 5 MiB), so a CHECKED-OUT file can never be skipped here — which
-              // matters because an absent path reads as a deletion at turn end.
-              // Only something the box invented can be this big, and that is not a
-              // document the store was ever asked to keep.
+              // Too big for the wire — the proxy's body limit is what this
+              // protects. Under the DEFAULT files store (5 MiB cap) no
+              // checked-out file reaches this size; a BYO files adapter has no
+              // cap, so the host's sync-back seam exempts oversized
+              // checked-out files from absent-means-deleted (materialize.ts,
+              // WALK_SKIP_BYTES — the same 8 MiB) instead of reading this skip
+              // as an erasure.
               if (statSync(diskPath).size > 8 * 1024 * 1024) continue;
               files.push({ path: workspacePath, base64: readFileSync(diskPath).toString("base64") });
             } catch {

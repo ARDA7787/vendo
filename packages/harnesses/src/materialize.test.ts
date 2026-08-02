@@ -137,6 +137,27 @@ describe("syncHot — the skeleton renders mid-turn (§3.5)", () => {
   });
 });
 
+describe("an OVERSIZED checked-out file survives absent-means-deleted", () => {
+  test("a file the box walk would skip is never deleted for being absent", async () => {
+    // The box door's whole-tree walk skips anything over 8 MiB to protect the
+    // proxy body limit. Under the default files store (5 MiB cap) that skip is
+    // unreachable for a checked-out file, but a BYO files adapter (s3) has no
+    // cap — and reading the skip as an erasure silently destroyed the one copy
+    // the store held. Preserving beats propagating a rare real in-box rm.
+    const big = "x".repeat(8 * 1024 * 1024 + 1);
+    const workspace = testWorkspace({
+      "/user/uploads/big.bin": big,
+      "/user/memory/small.md": "small",
+    });
+    const checkout = await checkoutWorkspace(workspace);
+    // The box read back neither file: big was walk-skipped, small was deleted.
+    const changed = await checkout.syncAll([]);
+    expect(changed).toEqual(["/user/memory/small.md"]);
+    expect(await workspace.exists("/user/uploads/big.bin")).toBe(true);
+    expect(await workspace.exists("/user/memory/small.md")).toBe(false);
+  });
+});
+
 describe("contentHash", () => {
   test("is stable and content-addressed", () => {
     expect(contentHash(bytes("a"))).toBe(contentHash(bytes("a")));
