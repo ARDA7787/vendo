@@ -1,0 +1,54 @@
+data: {"type":"text-start","id":"txt_1_97e1d7f4-c19a-4c0b-b7e5-819b69466504"}
+
+data: {"type":"text-delta","id":"txt_1_97e1d7f4-c19a-4c0b-b7e5-819b69466504","delta":"Let"}
+
+data: {"type":"text-delta","id":"txt_1_97e1d7f4-c19a-4c0b-b7e5-819b69466504","delta":" me look up your app right away."}
+
+data: {"type":"text-end","id":"txt_1_97e1d7f4-c19a-4c0b-b7e5-819b69466504"}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_10_3407f239-0160-4942-897c-a67931e5f98e","toolName":"host_demo_chips_list","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_10_3407f239-0160-4942-897c-a67931e5f98e","toolName":"host_demo_chips_list","input":{},"dynamic":true}
+
+data: {"type":"data-vendo-approval","data":{"toolCallId":"hcall_10_3407f239-0160-4942-897c-a67931e5f98e","risk":"write","approvalId":"apr_d08ce198-e862-4059-8677-e34c0d42f295"}}
+
+data: {"type":"tool-output-denied","toolCallId":"hcall_10_3407f239-0160-4942-897c-a67931e5f98e"}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_11_a829163e-9b1a-4f57-bf34-e73578bf5aec","toolName":"find_tools","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_11_a829163e-9b1a-4f57-bf34-e73578bf5aec","toolName":"find_tools","input":{"query":"open Spending This Month app"},"dynamic":true}
+
+data: {"type":"tool-output-available","toolCallId":"hcall_11_a829163e-9b1a-4f57-bf34-e73578bf5aec","output":{"loaded":["vendo_apps_open","slack_SLACK_OPEN_DM","slack_SLACK_OPEN_OR_RESUME_DIRECT_OR_MULTI_PERSON_MESSAGES","vendo_apps_rebase_pin","host_getSpendingInsights","vendo_apps_create","vendo_apps_data_delete","vendo_apps_data_list","vendo_apps_data_put","vendo_apps_edit"],"tools":[{"name":"vendo_apps_open","description":"Open the latest serving surface for a Vendo app.","risk":"read"},{"name":"slack_SLACK_OPEN_DM","description":"Opens or resumes a slack direct message (dm) or multi-person direct message (mpim) by providing either user ids or an existing channel id.","risk":"write","toolkit":"slack","connectRequired":true},{"name":"slack_SLACK_OPEN_OR_RESUME_DIRECT_OR_MULTI_PERSON_MESSAGES","description":"Deprecated: opens or resumes a slack direct message (dm) or multi-person direct message (mpim). use `open dm` instead.","risk":"write","toolkit":"slack","connectRequired":true},{"name":"vendo_apps_rebase_pin","description":"Rebase one drifted remixed pin of a Vendo app onto the host's updated component: re-fork the new captured baseline and replay the recorded edit intents in order. Use when an edit result or open() payload reports drifted pins and the user asks to update the remix. If the result has status \"failed\", nothing was changed; it lists which intents replayed and which failed.","risk":"write"},{"name":"host_getSpendingInsights","description":"Spending by category for the current period. Amounts are integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying, including any totals you compute.","risk":"read"},{"name":"vendo_apps_create","description":"Create a Vendo app from a natural-language prompt. Pass the user's request (with any clarifying context) as the prompt. Never bake data values you computed or fetched (counts, totals, amounts) into the prompt — the app binds live host data itself and hardcoded figures fail its build. Never specify fonts, colors, or branding — the app inherits the host theme.","risk":"read"},{"name":"vendo_apps_data_delete","description":"Delete a record from a declared Vendo app data collection.","risk":"write"},{"name":"vendo_apps_data_list","description":"List records from a declared Vendo app data collection.","risk":"read"},{"name":"vendo_apps_data_put","description":"Create or replace a record in a declared Vendo app data collection.","risk":"write"},{"name":"vendo_apps_edit","description":"Edit an existing Vendo app with one natural-language instruction. If the result has failure.retryable=true, retry vendo_apps_edit on the same appId with a narrower instruction; do not rebuild it with vendo_apps_create.","risk":"read"}]},"dynamic":true}
+
+data: {"type":"text-start","id":"txt_2_2147cdbf-7e28-4e96-b46d-1d8d713dd518"}
+
+data: {"type":"text-delta","id":"txt_2_2147cdbf-7e28-4e96-b46d-1d8d713dd518","delta":"I need"}
+
+data: {"type":"text-delta","id":"txt_2_2147cdbf-7e28-4e96-b46d-1d8d713dd518","delta":" the app's ID to open it. Let me check the pinned chips for your saved apps"}
+
+data: {"type":"text-delta","id":"txt_2_2147cdbf-7e28-4e96-b46d-1d8d713dd518","delta":"."}
+
+data: {"type":"text-end","id":"txt_2_2147cdbf-7e28-4e96-b46d-1d8d713dd518"}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_12_7442aef5-f281-4a5a-a6b6-e4d1ba06b182","toolName":"host_demo_chips_list","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_12_7442aef5-f281-4a5a-a6b6-e4d1ba06b182","toolName":"host_demo_chips_list","input":{},"dynamic":true}
+
+data: {"type":"data-vendo-approval","data":{"toolCallId":"hcall_12_7442aef5-f281-4a5a-a6b6-e4d1ba06b182","risk":"write","approvalId":"apr_4b01a8a6-9f97-4d02-9730-c601518cbac3"}}
+
+data: {"type":"tool-output-denied","toolCallId":"hcall_12_7442aef5-f281-4a5a-a6b6-e4d1ba06b182"}
+
+data: {"type":"text-start","id":"txt_3_1b105123-27bd-4d78-89ef-399c7cae9818"}
+
+data: {"type":"text-delta","id":"txt_3_1b105123-27bd-4d78-89ef-399c7cae9818","delta":"It"}
+
+data: {"type":"text-delta","id":"txt_3_1b105123-27bd-4d78-89ef-399c7cae9818","delta":" looks like the request to fetch your saved apps is waiting on an approval that t"}
+
+data: {"type":"text-delta","id":"txt_3_1b105123-27bd-4d78-89ef-399c7cae9818","delta":"imed out. Could you share the app ID for your \"Spending This Month\" app, or try again"}
+
+data: {"type":"text-delta","id":"txt_3_1b105123-27bd-4d78-89ef-399c7cae9818","delta":" in a moment? Once I have the ID, I can open it right away."}
+
+data: {"type":"text-end","id":"txt_3_1b105123-27bd-4d78-89ef-399c7cae9818"}
+
+data: [DONE]
+

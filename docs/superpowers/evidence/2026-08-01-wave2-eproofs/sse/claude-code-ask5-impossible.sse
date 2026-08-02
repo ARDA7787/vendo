@@ -1,0 +1,14 @@
+data: {"type":"tool-input-start","toolCallId":"hcall_16_218cb353-2dcc-49f9-b117-4b05d609dfb3","toolName":"vendo_report_capability_miss","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_16_218cb353-2dcc-49f9-b117-4b05d609dfb3","toolName":"vendo_report_capability_miss","input":{"kind":"no-matching-tool","toolsConsidered":["host_getProfile","host_getAccount","host_listAccounts","host_getSpendingInsights","host_getCashflowInsights"]},"dynamic":true}
+
+data: {"type":"tool-output-available","toolCallId":"hcall_16_218cb353-2dcc-49f9-b117-4b05d609dfb3","output":{"reported":true},"dynamic":true}
+
+data: {"type":"text-start","id":"txt_1_5a6fcb6f-db0f-4dba-81e4-5c5b7d746992"}
+
+data: {"type":"text-delta","id":"txt_1_5a6fcb6f-db0f-4dba-81e4-5c5b7d746992","delta":"I'm not able to show a credit score. Maple keeps track of your accounts, cards, transactions, spending, and goals, but it doesn't include credit score tracking, so there's no monthly history for me to pull.\n\nIf it would help, I can show your balance trend over the year, your spending by category, or your cash flow month to month instead — just let me know."}
+
+data: {"type":"text-end","id":"txt_1_5a6fcb6f-db0f-4dba-81e4-5c5b7d746992"}
+
+data: [DONE]
+

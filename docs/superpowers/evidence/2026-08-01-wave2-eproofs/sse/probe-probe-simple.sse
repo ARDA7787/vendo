@@ -1,0 +1,10 @@
+data: {"type":"tool-input-start","toolCallId":"hcall_9_43d39652-beb0-4f85-98e4-53e8cf1cd9f9","toolName":"vendo_apps_create","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_9_43d39652-beb0-4f85-98e4-53e8cf1cd9f9","toolName":"vendo_apps_create","input":{"prompt":"A simple app that lists the user's recent transactions. For each transaction show the merchant name, date, and amount. Fetch from host_listTransactions. Keep the layout minimal — just a clean list, nothing extra."},"dynamic":true}
+
+data: {"type":"data-vendo-build-failed","data":{"toolCallId":"hcall_9_43d39652-beb0-4f85-98e4-53e8cf1cd9f9","reason":"app build failed: generation failed"}}
+
+data: {"type":"tool-output-error","toolCallId":"hcall_9_43d39652-beb0-4f85-98e4-53e8cf1cd9f9","errorText":"app build failed: generation failed","dynamic":true}
+
+data: [DONE]
+

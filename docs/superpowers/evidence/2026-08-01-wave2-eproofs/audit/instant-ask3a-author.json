@@ -1,0 +1,122 @@
+[
+  {
+    "at": "2026-08-02T03:11:19.867Z",
+    "id": "aud_d029f695-d73e-41a7-b687-33cf765d950b",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T03:11:28.442Z",
+    "id": "aud_e4496755-ed43-4c10-af1f-f80c3f19cd6b",
+    "kind": "tool-call",
+    "tool": "host_listAccounts",
+    "appId": "app_14080dbe-96d7-4996-957e-cb3eadaadd3c",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listAccounts {}"
+  },
+  {
+    "at": "2026-08-02T03:11:28.443Z",
+    "id": "aud_65f94c8d-828f-40ed-bd05-9639b0bcecf8",
+    "kind": "tool-call",
+    "tool": "host_listTransactions",
+    "appId": "app_14080dbe-96d7-4996-957e-cb3eadaadd3c",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listTransactions {\"limit\":30}"
+  },
+  {
+    "at": "2026-08-02T03:11:28.447Z",
+    "id": "aud_58c95bdd-5dbc-44e6-ac11-0154dbc5378e",
+    "kind": "tool-call",
+    "tool": "host_listAccounts",
+    "appId": "app_14080dbe-96d7-4996-957e-cb3eadaadd3c",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listAccounts {}"
+  },
+  {
+    "at": "2026-08-02T03:11:28.448Z",
+    "id": "aud_9c2a1679-c8cc-46e8-801b-319127289717",
+    "kind": "tool-call",
+    "tool": "host_listTransactions",
+    "appId": "app_14080dbe-96d7-4996-957e-cb3eadaadd3c",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listTransactions {\"limit\":30}"
+  },
+  {
+    "at": "2026-08-02T03:11:59.970Z",
+    "id": "aud_c3fcacc5-64fd-4f68-9691-c365ad6b5119",
+    "kind": "tool-call",
+    "tool": "vendo_apps_create",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_create {\"prompt\":\"Build a daily balance-check app for Maple banking. Every day, fetch the checking account balance using the host accounts data. If the balance falls below $2,000, display a prominent in-app notification card alerting the user that their checking balance is below $2,000, showing the actual current balance. If the balance is at or above $2,000, show a calm confirmation card with the current balance and a green status indicator. Always show the current checking balance \u2026"
+  },
+  {
+    "at": "2026-08-02T03:12:01.939Z",
+    "id": "aud_02a9a8e5-7cd6-4554-b3a4-f543b5f487a2",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 41256,
+        "outputTokens": 214,
+        "cacheReadTokens": 40910
+      },
+      "harness": "instant"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

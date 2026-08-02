@@ -16,3 +16,5 @@
 - [What the reviewer blocks](project-reviewer-block-severity.md) — 4 block categories; "quietly dropped work" is judgment-shaped and now costs the person their app (open product call)
 - [store/index.ts exports must mirror postgres.ts](gotcha-store-postgres-export-mirror.md) — a surface test fails far from the file you changed
 - [e2b template + env gotchas](gotcha-e2b-template-and-env.md) — copy() resolves from the script dir; create({envs}) never reaches the start command
+- [nohup dev servers get reaped](gotcha-nohup-dev-server-reaped.md) — start long-lived servers with run_in_background:true, or they die mid-proof with no crash log
+- [claudeCode() in demo-bank needs a rig patch](gotcha-claudecode-in-nextjs-host.md) — Turbopack refuses every dynamic form and the static import can't resolve the SDK from @vendoai/apps

@@ -1,0 +1,47 @@
+[
+  {
+    "step": "probe-trigger",
+    "kind": "turn",
+    "thread": "thr_probe_trig",
+    "http": 200,
+    "seconds": 9.4,
+    "first_view_s": null,
+    "views": 0,
+    "build_failed": 0,
+    "approval": 0,
+    "connect": 0,
+    "tools": [
+      "vendo_apps_edit"
+    ],
+    "appIds": [
+      "app_demo_lowbalance_vendo-demo"
+    ],
+    "said": "The edit was rejected and marked as not retryable. The app's build reports that the schedule change could not be applied \u2014 it appears the app's trigger definition isn't in a form the editor can modify directly right now.  Here's what you can try to resolve this:  - **Rebuild the app** with the updated schedule baked in from the start. If you'd like, I can create a new version of the Low Balance Alert app that runs every minute instead of daily at 8 AM, keeping everything else identical.  Just say the word and I'll rebuild it.",
+    "audit": [
+      {
+        "kind": "tool-call",
+        "tool": "validate",
+        "outcome": "error",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "vendo_apps_edit",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "run",
+        "tool": null,
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  }
+]

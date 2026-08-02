@@ -1,0 +1,101 @@
+[
+  {
+    "at": "2026-08-02T03:42:16.772Z",
+    "id": "aud_35f69229-f96e-458b-8e60-4b3a466ed376",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "subject": "anonymous_665d2f77408f1f44493445c1ea781e90",
+      "ephemeral": true
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T03:42:16.880Z",
+    "id": "aud_ac1065ed-1188-468c-b728-6da7e491ae41",
+    "kind": "tool-call",
+    "tool": "host_listItems",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "subject": "anonymous_665d2f77408f1f44493445c1ea781e90",
+      "ephemeral": true
+    },
+    "inputPreview": "host_listItems {}"
+  },
+  {
+    "at": "2026-08-02T03:42:21.359Z",
+    "id": "aud_23999083-3092-4733-884a-fecfc21931a9",
+    "kind": "tool-call",
+    "tool": "host_listItems",
+    "appId": "app_1febf852-7a0e-4b3d-9ce1-0b72d896fa0e",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "subject": "anonymous_665d2f77408f1f44493445c1ea781e90",
+      "ephemeral": true
+    },
+    "inputPreview": "host_listItems {\"limit\":50}"
+  },
+  {
+    "at": "2026-08-02T03:42:21.362Z",
+    "id": "aud_fbc77169-bd2e-4d3c-a71c-15f75c333663",
+    "kind": "tool-call",
+    "tool": "host_listItems",
+    "appId": "app_1febf852-7a0e-4b3d-9ce1-0b72d896fa0e",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "subject": "anonymous_665d2f77408f1f44493445c1ea781e90",
+      "ephemeral": true
+    },
+    "inputPreview": "host_listItems {\"limit\":50}"
+  },
+  {
+    "at": "2026-08-02T03:42:30.153Z",
+    "id": "aud_df48579a-edd3-4ad0-9420-ea2e27c3e577",
+    "kind": "app-lifecycle",
+    "appId": "app_1febf852-7a0e-4b3d-9ce1-0b72d896fa0e",
+    "venue": "chat",
+    "detail": {
+      "operation": "create"
+    },
+    "outcome": "ok",
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "subject": "anonymous_665d2f77408f1f44493445c1ea781e90",
+      "ephemeral": true
+    }
+  },
+  {
+    "at": "2026-08-02T03:42:30.154Z",
+    "id": "aud_cb077a43-6347-4b7a-91bf-10a04364fe00",
+    "kind": "tool-call",
+    "tool": "vendo_apps_create",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "subject": "anonymous_665d2f77408f1f44493445c1ea781e90",
+      "ephemeral": true
+    },
+    "inputPreview": "vendo_apps_create {\"prompt\":\"Make me a view of my recent transactions.\"}"
+  }
+]

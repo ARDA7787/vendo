@@ -1,0 +1,275 @@
+[
+  {
+    "step": "reset",
+    "kind": "reset",
+    "revoked": [
+      [
+        "grt_bf9a409d-af97-4e79-8bc4-b469207fc7ac",
+        "host_listTransactions",
+        200
+      ],
+      [
+        "grt_7856f222-777f-4e12-8689-bcb77b7e29e3",
+        "host_listAccounts",
+        200
+      ],
+      [
+        "grt_a2c833a8-00f1-43f2-92cd-c7c73c5acf9d",
+        "host_getSpendingInsights",
+        200
+      ],
+      [
+        "grt_ae995233-5e23-435d-910a-7d4e27ee732f",
+        "host_listTransactions",
+        200
+      ],
+      [
+        "grt_bce422bb-d054-4dcf-8a59-9902b77cede0",
+        "host_listAccounts",
+        200
+      ],
+      [
+        "grt_40c778e7-5bef-4ebd-b9d5-70780239d9f8",
+        "host_getSpendingInsights",
+        200
+      ]
+    ],
+    "disabled": [
+      [
+        "app_demo_lowbalance_vendo-demo",
+        200
+      ],
+      [
+        "app_demo_weekly_vendo-demo",
+        200
+      ]
+    ],
+    "audit": [
+      {
+        "kind": "approval",
+        "tool": "host_listTransactions",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "approval",
+        "tool": "host_listAccounts",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "approval",
+        "tool": "host_getSpendingInsights",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "approval",
+        "tool": "host_listTransactions",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "approval",
+        "tool": "host_listAccounts",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "approval",
+        "tool": "host_getSpendingInsights",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  },
+  {
+    "step": "ask3b-arm",
+    "kind": "automations",
+    "phases": [
+      {
+        "phase": "list",
+        "http": 200,
+        "body": "[{\"app\":{\"format\":\"vendo/app@1\",\"id\":\"app_demo_lowbalance_vendo-demo\",\"name\":\"Low balance alert\",\"description\":\"Every morning at 8:00 AM, check Maple Checking and draft an alert if the balance is below $2,000, ready for you to send.\",\"trigger\":{\"on\":{\"kind\":\"schedule\",\"cron\":\"0 8 * * *\"},\"run\":{\"kind\":\"steps\",\"steps\":[{\"id\":\"balance\",\"tool\":\"host_listAccounts\"}]}}},\"enabled\":false},{\"app\":{\"format"
+      },
+      {
+        "phase": "enable",
+        "appId": "app_demo_lowbalance_vendo-demo",
+        "http": 200,
+        "body": "{\"enabled\":true,\"missing\":[{\"id\":\"apr_c0b6c416-2bf4-4b35-9afd-f6c6e9c4c789\",\"call\":{\"id\":\"call_48c28663-4e25-4ed6-937d-46ceee6a930b\",\"tool\":\"host_listAccounts\",\"args\":{}},\"descriptor\":{\"name\":\"host_listAccounts\",\"description\":\"List the user's bank accounts with balances.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"risk\":\"read\",\"title\":\"List your accounts\"},\"inputPreview\":\"Allow \\\"Low balance"
+      },
+      {
+        "phase": "dry-run",
+        "appId": "app_demo_lowbalance_vendo-demo",
+        "http": 200,
+        "body": "{\"steps\":[{\"id\":\"balance\",\"tool\":\"host_listAccounts\",\"wouldAsk\":true}],\"grantsMissing\":[\"host_listAccounts\"]}"
+      },
+      {
+        "phase": "enable",
+        "appId": "app_demo_weekly_vendo-demo",
+        "http": 200,
+        "body": "{\"enabled\":true,\"missing\":[{\"id\":\"apr_a9110738-c68d-4a5b-8d14-48c613c346fc\",\"call\":{\"id\":\"call_428b7c27-98ae-4b7b-8569-3ddf129e9298\",\"tool\":\"host_getSpendingInsights\",\"args\":{}},\"descriptor\":{\"name\":\"host_getSpendingInsights\",\"description\":\"Spending by category for the current period. Amounts are integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying, including any t"
+      },
+      {
+        "phase": "dry-run",
+        "appId": "app_demo_weekly_vendo-demo",
+        "http": 200,
+        "body": "{\"steps\":[{\"id\":\"spending\",\"tool\":\"host_getSpendingInsights\",\"wouldAsk\":true},{\"id\":\"transactions\",\"tool\":\"host_listTransactions\",\"wouldAsk\":true}],\"grantsMissing\":[\"host_getSpendingInsights\",\"host_listTransactions\"]}"
+      },
+      {
+        "phase": "approvals",
+        "http": 200,
+        "ids": [
+          "apr_b9896ff3-7d55-46f8-bfc1-27ca542ee00f",
+          "apr_a9110738-c68d-4a5b-8d14-48c613c346fc",
+          "apr_c0b6c416-2bf4-4b35-9afd-f6c6e9c4c789"
+        ]
+      },
+      {
+        "phase": "decide",
+        "http": 200,
+        "body": "{}"
+      },
+      {
+        "phase": "dry-run-granted",
+        "appId": "app_demo_lowbalance_vendo-demo",
+        "http": 200,
+        "body": "{\"steps\":[{\"id\":\"balance\",\"tool\":\"host_listAccounts\",\"wouldAsk\":false}],\"grantsMissing\":[]}"
+      },
+      {
+        "phase": "dry-run-granted",
+        "appId": "app_demo_weekly_vendo-demo",
+        "http": 200,
+        "body": "{\"steps\":[{\"id\":\"spending\",\"tool\":\"host_getSpendingInsights\",\"wouldAsk\":false},{\"id\":\"transactions\",\"tool\":\"host_listTransactions\",\"wouldAsk\":false}],\"grantsMissing\":[]}"
+      },
+      {
+        "phase": "runs",
+        "http": 200,
+        "body": "{\"runs\":[]}"
+      }
+    ],
+    "audit": [
+      {
+        "kind": "approval",
+        "tool": "host_getSpendingInsights",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "automation"
+      },
+      {
+        "kind": "approval",
+        "tool": "host_listTransactions",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "automation"
+      },
+      {
+        "kind": "approval",
+        "tool": "host_listAccounts",
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "automation"
+      }
+    ]
+  },
+  {
+    "step": "ask4-connector",
+    "kind": "turn",
+    "thread": "thr_e1conn_vendo2",
+    "http": 200,
+    "seconds": 10.0,
+    "first_view_s": null,
+    "views": 0,
+    "build_failed": 0,
+    "approval": 0,
+    "connect": 1,
+    "tools": [],
+    "appIds": [],
+    "said": "Let me grab your spending data and Gmail address at the same time.Now I'll send the summary email to your Gmail address.Your Gmail account isn't connected to Maple yet. To send email summaries like this, you'll need to connect Gmail \u2014 a connect card should have appeared for you to authorize it. Once that's done, I can send this right over.",
+    "audit": [
+      {
+        "kind": "tool-call",
+        "tool": "host_getSpendingInsights",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "host_getProfile",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "gmail_GMAIL_SEND_EMAIL",
+        "outcome": "connect-required",
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "run",
+        "tool": null,
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  },
+  {
+    "step": "ask5-impossible",
+    "kind": "turn",
+    "thread": "thr_e1imp_vendo2",
+    "http": 200,
+    "seconds": 6.6,
+    "first_view_s": null,
+    "views": 0,
+    "build_failed": 0,
+    "approval": 0,
+    "connect": 0,
+    "tools": [
+      "vendo_knowledge_search",
+      "vendo_report_capability_miss"
+    ],
+    "appIds": [],
+    "said": "Credit score tracking isn't part of Maple's current feature set \u2014 there's no credit score data available through this account, so I can't show a current score or monthly history.  If you're looking for financial health insights I can help with, I can show your spending by category, cash flow trends, account balances, or savings goal progress.",
+    "audit": [
+      {
+        "kind": "tool-call",
+        "tool": "vendo_knowledge_search",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "run",
+        "tool": null,
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  }
+]

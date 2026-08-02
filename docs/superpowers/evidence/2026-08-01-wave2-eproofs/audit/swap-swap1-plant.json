@@ -1,0 +1,22 @@
+[
+  {
+    "at": "2026-08-02T03:37:39.980Z",
+    "id": "aud_02b4c936-c2c5-4e7f-bd35-abdc102aed42",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 41403,
+        "outputTokens": 4,
+        "cacheWriteTokens": 41055
+      },
+      "harness": "vendo"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

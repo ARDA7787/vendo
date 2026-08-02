@@ -1,0 +1,56 @@
+[
+  {
+    "at": "2026-08-02T03:23:07.488Z",
+    "id": "aud_e5ebe86d-c087-4dbe-8444-c5000186f027",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T03:23:11.051Z",
+    "id": "aud_0b53f684-0f6d-4773-b781-534423c10652",
+    "kind": "tool-call",
+    "tool": "vendo_apps_edit",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_edit {\"appId\":\"app_demo_spending_vendo-demo\",\"instruction\":\"Change the heading text to \\\"claude-code edited this\\\" and change nothing else.\"}"
+  },
+  {
+    "at": "2026-08-02T03:23:12.820Z",
+    "id": "aud_09e74576-d756-4cc9-a2de-10af2155f2c0",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "model": "claude-opus-4-8",
+        "inputTokens": 3,
+        "outputTokens": 145,
+        "cacheReadTokens": 72085,
+        "cacheWriteTokens": 2501
+      },
+      "harness": "claude-code"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

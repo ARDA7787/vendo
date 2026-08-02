@@ -1,0 +1,55 @@
+[
+  {
+    "at": "2026-08-02T03:02:46.825Z",
+    "id": "aud_3585730a-7985-4bdf-87cf-5cd7ee9b04c4",
+    "kind": "tool-call",
+    "tool": "host_getSpendingInsights",
+    "appId": "app_demo_spending_vendo-demo",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getSpendingInsights {}"
+  },
+  {
+    "at": "2026-08-02T03:02:46.827Z",
+    "id": "aud_dd267478-61f5-47ac-8505-43e450b912a7",
+    "kind": "tool-call",
+    "tool": "vendo_apps_open",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_open {\"appId\":\"app_demo_spending_vendo-demo\"}"
+  },
+  {
+    "at": "2026-08-02T03:02:48.977Z",
+    "id": "aud_7cd036e5-d3df-41b6-b3d6-b7ff3f86027d",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 85604,
+        "outputTokens": 93,
+        "cacheReadTokens": 82110
+      },
+      "harness": "vendo"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

@@ -1,0 +1,8 @@
+data: {"type":"text-start","id":"txt_1_ca1e7c99-a4a5-48c0-81e8-d2688ab372b3"}
+
+data: {"type":"text-delta","id":"txt_1_ca1e7c99-a4a5-48c0-81e8-d2688ab372b3","delta":"Something went wrong on my side, so I stopped."}
+
+data: {"type":"text-end","id":"txt_1_ca1e7c99-a4a5-48c0-81e8-d2688ab372b3"}
+
+data: [DONE]
+

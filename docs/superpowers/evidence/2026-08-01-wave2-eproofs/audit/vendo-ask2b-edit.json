@@ -1,0 +1,55 @@
+[
+  {
+    "at": "2026-08-02T03:06:24.005Z",
+    "id": "aud_ca8bba82-5800-40c7-98ab-9df33e0120cc",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T03:06:27.317Z",
+    "id": "aud_745f999d-b6d0-4873-bbee-44a424886304",
+    "kind": "tool-call",
+    "tool": "vendo_apps_edit",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_edit {\"appId\":\"app_demo_spending_vendo-demo\",\"instruction\":\"Change the heading text to \\\"vendo edited this\\\" and change nothing else.\"}"
+  },
+  {
+    "at": "2026-08-02T03:06:28.948Z",
+    "id": "aud_38c1e456-2663-44a7-8509-763cb0d27c86",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 98893,
+        "outputTokens": 118,
+        "cacheReadTokens": 93378,
+        "cacheWriteTokens": 3726
+      },
+      "harness": "vendo"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

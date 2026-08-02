@@ -1,0 +1,10 @@
+data: {"type":"tool-input-start","toolCallId":"hcall_1_1e54b909-7c31-4224-ac20-6976d0d6e259","toolName":"vendo_apps_create","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_1_1e54b909-7c31-4224-ac20-6976d0d6e259","toolName":"vendo_apps_create","input":{"prompt":"Build a table of this month's transactions showing date, merchant/description, category, and amount. Fetch transactions using the search transactions tool filtered to the current month. Display as a clean, readable table sorted by date descending. Amount should be formatted as currency. Include a header with the current month and year. Allow the user to reopen and refresh the data."},"dynamic":true}
+
+data: {"type":"data-vendo-build-failed","data":{"toolCallId":"hcall_1_1e54b909-7c31-4224-ac20-6976d0d6e259","reason":"app build failed: generation failed"}}
+
+data: {"type":"tool-output-error","toolCallId":"hcall_1_1e54b909-7c31-4224-ac20-6976d0d6e259","errorText":"app build failed: generation failed","dynamic":true}
+
+data: [DONE]
+

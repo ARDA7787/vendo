@@ -1,0 +1,66 @@
+{
+  "step": "ask3b-arm",
+  "kind": "automations",
+  "phases": [
+    {
+      "phase": "list",
+      "http": 200,
+      "body": "[{\"app\":{\"format\":\"vendo/app@1\",\"id\":\"app_demo_lowbalance_vendo-demo\",\"name\":\"Low balance alert\",\"description\":\"Every morning at 8:00 AM, check Maple Checking and draft an alert if the balance is below $2,000, ready for you to send.\",\"trigger\":{\"on\":{\"kind\":\"schedule\",\"cron\":\"0 8 * * *\"},\"run\":{\"kind\":\"steps\",\"steps\":[{\"id\":\"balance\",\"tool\":\"host_listAccounts\"}]}}},\"enabled\":false},{\"app\":{\"format\":\"vendo/app@1\",\"id\":\"app_demo_weekly_vendo-demo\",\"name\":\"Weekly spending summary\",\"description\":\"Every Friday at 5:00 PM, prepare a digest of that week's spending by category, drafted and ready for you to send.\",\"trigger\":{\"on\":{\"kind\":\"schedule\",\"cron\":\"0 17 * * 5\"},\"run\":{\"kind\":\"steps\",\"steps\":[{\"id\":\"spending\",\"tool\":\"host_getSpendingInsights\"},{\"id\":\"transactions\",\"tool\":\"host_listTransactions\"}]}}},\"enabled\":false}]"
+    },
+    {
+      "phase": "enable",
+      "appId": "app_demo_lowbalance_vendo-demo",
+      "http": 200,
+      "body": "{\"enabled\":true,\"missing\":[{\"id\":\"apr_430c3249-ff9a-4443-b052-68ea4219501b\",\"call\":{\"id\":\"call_6b051930-2b14-470b-9fa6-59db09a0b1ec\",\"tool\":\"host_listAccounts\",\"args\":{}},\"descriptor\":{\"name\":\"host_listAccounts\",\"description\":\"List the user's bank accounts with balances.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"risk\":\"read\",\"title\":\"List your accounts\"},\"inputPreview\":\"Allow \\\"Low balance alert\\\" to use host_listAccounts while you're away (standing, this app only)\",\"ctx\":{\"principal\":{\"kind\":\"user\",\"subject\":\"vendo-demo\",\"display\":\"Yousef Helal\"},\"venue\":\"automation\",\"presence\":\"present\",\"appId\":\"app_demo_lowbalance_vendo-demo\"},\"createdAt\":\"2026-08-02T03:12:02.024Z\"}],\"grantSetId\":\"gset_01dce96f-929a-4309-8027-ea9905ef4144\"}"
+    },
+    {
+      "phase": "dry-run",
+      "appId": "app_demo_lowbalance_vendo-demo",
+      "http": 200,
+      "body": "{\"steps\":[{\"id\":\"balance\",\"tool\":\"host_listAccounts\",\"wouldAsk\":true}],\"grantsMissing\":[\"host_listAccounts\"]}"
+    },
+    {
+      "phase": "enable",
+      "appId": "app_demo_weekly_vendo-demo",
+      "http": 200,
+      "body": "{\"enabled\":true,\"missing\":[{\"id\":\"apr_df068652-9141-4fb5-a27b-9d3571f061c1\",\"call\":{\"id\":\"call_d4a30d40-9b70-4f22-8547-d19d4147f18f\",\"tool\":\"host_getSpendingInsights\",\"args\":{}},\"descriptor\":{\"name\":\"host_getSpendingInsights\",\"description\":\"Spending by category for the current period. Amounts are integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying, including any totals you compute.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"risk\":\"read\",\"title\":\"Show spending by category\"},\"inputPreview\":\"Allow \\\"Weekly spending summary\\\" to use host_getSpendingInsights while you're away (standing, this app only)\",\"ctx\":{\"principal\":{\"kind\":\"user\",\"subject\":\"vendo-demo\",\"display\":\"Yousef Helal\"},\"venue\":\"automation\",\"presence\":\"present\",\"appId\":\"app_demo_weekly_vendo-demo\"},\"createdAt\":\"2026-08-02T03:12:02.071Z\"},{\"id\":\"apr_6e357ee3-1f84-49b7-bc90-71260e4a3142\",\"call\":{\"id\":\"call_d46b341a-e479-4403-8514-b8bd38d9b1ba\",\"tool\":\"host_listTransactions\",\"args\":{}},\"descriptor\":{\"name\":\"host_listTransactions\",\"description\":\"Search and list transactions across all accounts, with filters, sorting and cursor pagination.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"search\":{\"type\":\"string\",\"description\":\"Free-text match on merchant/descriptor\"},\"category\":{\"type\":\"string\",\"description\":\"Category, e.g. dining, groceries, coffee, transport, subscriptions\"},\"accountId\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"description\":\"pending | authorized | posted\"},\"from\":{\"type\":\"string\",\"description\":\"ISO date lower bound\"},\"to\":{\"type\":\"string\",\"description\":\"ISO date upper bound\"},\"min\":{\"type\":\"number\",\"description\":\"Minimum absolute amount in cents\"},\"max\":{\"type\":\"number\",\"description\":\"Maximum absolute amount in cents\"},\"sort\":{\"type\":\"string\",\"description\":\"date_desc | date_asc | amount_desc | amount_asc\"},\"limit\":{\"type\":\"number\"},\"cursor\":{\"type\":\"string\"}}},\"risk\":\"read\",\"title\":\"Search transactions\"},\"inputPreview\":\"Allow \\\"Weekly spending summary\\"
+    },
+    {
+      "phase": "dry-run",
+      "appId": "app_demo_weekly_vendo-demo",
+      "http": 200,
+      "body": "{\"steps\":[{\"id\":\"spending\",\"tool\":\"host_getSpendingInsights\",\"wouldAsk\":true},{\"id\":\"transactions\",\"tool\":\"host_listTransactions\",\"wouldAsk\":true}],\"grantsMissing\":[\"host_getSpendingInsights\",\"host_listTransactions\"]}"
+    },
+    {
+      "phase": "approvals",
+      "http": 200,
+      "ids": [
+        "apr_6e357ee3-1f84-49b7-bc90-71260e4a3142",
+        "apr_df068652-9141-4fb5-a27b-9d3571f061c1",
+        "apr_430c3249-ff9a-4443-b052-68ea4219501b"
+      ]
+    },
+    {
+      "phase": "decide",
+      "http": 200,
+      "body": "{}"
+    },
+    {
+      "phase": "dry-run-granted",
+      "appId": "app_demo_lowbalance_vendo-demo",
+      "http": 200,
+      "body": "{\"steps\":[{\"id\":\"balance\",\"tool\":\"host_listAccounts\",\"wouldAsk\":false}],\"grantsMissing\":[]}"
+    },
+    {
+      "phase": "dry-run-granted",
+      "appId": "app_demo_weekly_vendo-demo",
+      "http": 200,
+      "body": "{\"steps\":[{\"id\":\"spending\",\"tool\":\"host_getSpendingInsights\",\"wouldAsk\":false},{\"id\":\"transactions\",\"tool\":\"host_listTransactions\",\"wouldAsk\":false}],\"grantsMissing\":[]}"
+    },
+    {
+      "phase": "runs",
+      "http": 200,
+      "body": "{\"runs\":[]}"
+    }
+  ]
+}

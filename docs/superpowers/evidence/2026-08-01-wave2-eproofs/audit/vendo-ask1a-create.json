@@ -1,0 +1,246 @@
+[
+  {
+    "at": "2026-08-02T03:05:55.552Z",
+    "id": "aud_def92313-628a-475c-8a3b-7502b6dfb0ed",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.660Z",
+    "id": "aud_3fbaed87-7fd5-4822-92ea-c64aea344302",
+    "kind": "tool-call",
+    "tool": "host_getBudgets",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getBudgets {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.661Z",
+    "id": "aud_32e76529-de02-4322-981a-6ad290e1a534",
+    "kind": "tool-call",
+    "tool": "host_getCashflowInsights",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getCashflowInsights {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.676Z",
+    "id": "aud_7eb0c92e-edd7-4ddc-9351-3583f3e104c8",
+    "kind": "tool-call",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getSpendingInsights {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.678Z",
+    "id": "aud_e7d49f4c-da37-4097-ac7e-532e425a7db5",
+    "kind": "tool-call",
+    "tool": "host_getRecurringInsights",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getRecurringInsights {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.707Z",
+    "id": "aud_bffcf8bd-0e77-4e43-9421-9ce03f665ddb",
+    "kind": "tool-call",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listAccounts {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.722Z",
+    "id": "aud_56a4824a-1391-4c38-a8fe-7b99cb39bf97",
+    "kind": "tool-call",
+    "tool": "host_listCards",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listCards {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.723Z",
+    "id": "aud_8ce05b56-ba29-49cb-a906-ae6ab9c7e977",
+    "kind": "tool-call",
+    "tool": "host_listGoals",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listGoals {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.725Z",
+    "id": "aud_fa08a93a-0a92-4d59-80a5-8e6ad2fae60e",
+    "kind": "tool-call",
+    "tool": "host_listNotifications",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listNotifications {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.770Z",
+    "id": "aud_98224e9d-02f2-4a8e-8f6d-4262f8f2bf3c",
+    "kind": "tool-call",
+    "tool": "host_listPayees",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listPayees {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.771Z",
+    "id": "aud_4347075c-6849-46a5-b88b-4050bb476122",
+    "kind": "tool-call",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listTransactions {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.772Z",
+    "id": "aud_632a60e4-5a00-42f8-9d06-10747941cf94",
+    "kind": "tool-call",
+    "tool": "host_listScheduledPayments",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listScheduledPayments {}"
+  },
+  {
+    "at": "2026-08-02T03:05:55.774Z",
+    "id": "aud_5e75b177-ad70-4af0-a028-7aff8b2abfaa",
+    "kind": "tool-call",
+    "tool": "host_getProfile",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getProfile {}"
+  },
+  {
+    "at": "2026-08-02T03:05:59.074Z",
+    "id": "aud_168972bf-58fe-4f35-9f0c-f037748f4264",
+    "kind": "tool-call",
+    "tool": "vendo_apps_create",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_create {\"prompt\":\"A simple list of the user's recent transactions. For each transaction show the merchant name, date, and amount. Fetch transactions using the list transactions tool. Keep the layout minimal \u2014 just a clean, readable list, nothing extra.\"}"
+  },
+  {
+    "at": "2026-08-02T03:05:59.081Z",
+    "id": "aud_75d02305-aa9c-438c-af4f-65e1b01f7911",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 41395,
+        "outputTokens": 102,
+        "cacheReadTokens": 41055
+      },
+      "harness": "vendo"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

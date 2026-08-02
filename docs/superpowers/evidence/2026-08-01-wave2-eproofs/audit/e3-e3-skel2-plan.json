@@ -1,0 +1,24 @@
+[
+  {
+    "at": "2026-08-02T03:30:11.965Z",
+    "id": "aud_f0f88ef8-3df0-4cdd-99bf-484789143530",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "model": "claude-opus-4-8",
+        "inputTokens": 6,
+        "outputTokens": 420,
+        "cacheReadTokens": 54350,
+        "cacheWriteTokens": 27474
+      },
+      "harness": "claude-code"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

@@ -1,0 +1,246 @@
+[
+  {
+    "at": "2026-08-02T02:55:01.245Z",
+    "id": "aud_2c342b0b-580d-49ba-a045-d279ecacd984",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.520Z",
+    "id": "aud_41ec5751-35a8-4a46-9825-d912fed05107",
+    "kind": "tool-call",
+    "tool": "host_listCards",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listCards {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.521Z",
+    "id": "aud_bd14191e-872e-46b2-94f6-86a2f9277532",
+    "kind": "tool-call",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listAccounts {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.522Z",
+    "id": "aud_b1f2b1c4-a4ec-42b5-9b52-5fd6f07ed200",
+    "kind": "tool-call",
+    "tool": "host_getRecurringInsights",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getRecurringInsights {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.522Z",
+    "id": "aud_e60cc223-b966-4e62-83ed-db65ab30f9e8",
+    "kind": "tool-call",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getSpendingInsights {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.523Z",
+    "id": "aud_f738d400-e8b0-4995-a8f3-8921be6dec7d",
+    "kind": "tool-call",
+    "tool": "host_getBudgets",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getBudgets {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.524Z",
+    "id": "aud_fae2d1db-23fa-41e6-9062-a448521289c2",
+    "kind": "tool-call",
+    "tool": "host_getCashflowInsights",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getCashflowInsights {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.526Z",
+    "id": "aud_a9036fd5-abed-4e3a-ac24-08b35281ae61",
+    "kind": "tool-call",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listTransactions {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.527Z",
+    "id": "aud_7f4a1302-f8bd-48d1-b75e-bcc542c9fb18",
+    "kind": "tool-call",
+    "tool": "host_listScheduledPayments",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listScheduledPayments {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.528Z",
+    "id": "aud_356301fd-18f6-4f6e-8f13-a027bc80dcc8",
+    "kind": "tool-call",
+    "tool": "host_listNotifications",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listNotifications {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.528Z",
+    "id": "aud_945e2b32-e97f-4b0d-a8d5-34bd77cc3597",
+    "kind": "tool-call",
+    "tool": "host_listPayees",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listPayees {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.528Z",
+    "id": "aud_e3c62c03-0038-4f3a-b8a6-20bbe76b4ea0",
+    "kind": "tool-call",
+    "tool": "host_listGoals",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listGoals {}"
+  },
+  {
+    "at": "2026-08-02T02:55:01.531Z",
+    "id": "aud_55b5de3b-d0c8-4fa5-a6ef-85e48c646bab",
+    "kind": "tool-call",
+    "tool": "host_getProfile",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getProfile {}"
+  },
+  {
+    "at": "2026-08-02T02:55:08.523Z",
+    "id": "aud_0aa5d16b-9741-4a2d-ba53-4d0d6df3d5bd",
+    "kind": "tool-call",
+    "tool": "vendo_apps_create",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_create {\"prompt\":\"Build a table of this month's transactions showing date, merchant/description, category, and amount. Fetch transactions using the search transactions tool filtered to the current month. Display as a clean, readable table sorted by date descending. Amount should be formatted as currency. Include a header with the current month and year. Allow the user to reopen and refresh the data.\"}"
+  },
+  {
+    "at": "2026-08-02T02:55:08.531Z",
+    "id": "aud_a7e36cb4-939e-45cb-beff-f9f9970852c8",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 41402,
+        "outputTokens": 130,
+        "cacheWriteTokens": 41055
+      },
+      "harness": "vendo"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]
