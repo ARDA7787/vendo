@@ -251,6 +251,56 @@ describe("§9.5–§9.6 — promote", () => {
     expect((row?.data as { enabled: boolean }).enabled).toBe(false);
   });
 
+  it("restores the promoter's PREVIOUS level when the move fails, never deleting the grant", async () => {
+    // "Undo only what THIS call did" has two halves, and this is the one no
+    // integration test reaches: the promoter already held a grant, so a failed
+    // promote must put that level back rather than take the grant away. Reading
+    // the level AFTER the mint cannot tell "I made this" from "it was already
+    // here", which is why `heldBefore` is read first.
+    const { runtime, store } = setup({
+      promoteApp: async () => { throw new VendoError("conflict", "the move refused"); },
+    });
+    await seedAppRow(store, doc("app_prior_level"), "dana");
+    await seedGrants(store, "app_prior_level", { "user:dana": "viewer" });
+
+    await expect(runtime.promote("app_prior_level", "acme", { ...ctx("dana"), memberships: [{ org: "acme" }] }))
+      .rejects.toMatchObject({ code: "conflict" });
+
+    const rows = await store.records("vendo_app_grants").list({ refs: { app_id: "app_prior_level" } });
+    expect(rows.records).toHaveLength(1);
+    expect((rows.records[0]?.data as { level: AccessLevel }).level).toBe("viewer");
+  });
+
+  it("keeps the grant when another promote flipped the row before this one failed", async () => {
+    // The lost race, at the runtime level: the row no longer names `from`, so
+    // the grant now admits the promoter to the app that just moved. Revoking it
+    // would lock her out of her own app — the round-2 blocker.
+    const { runtime, store } = setup({
+      promoteApp: async (appId, _from, orgId) => {
+        // The winner's flip, exactly as the store's own door does it (rows never
+        // cross subjects, so the row is replaced, not updated in place)...
+        const record = await store.records("vendo_apps").get(appId);
+        await store.records("vendo_apps").delete(appId);
+        await store.records("vendo_apps").put({
+          id: appId,
+          data: { ...record?.data as object, subject: orgId },
+          refs: { subject: orgId },
+        });
+        // ...and then THIS call's own flip losing to it.
+        throw new VendoError("conflict", `app ${appId} belongs to another subject`);
+      },
+    });
+    await seedAppRow(store, doc("app_lost_race"), "dana");
+
+    await expect(runtime.promote("app_lost_race", "acme", { ...ctx("dana"), memberships: [{ org: "acme" }] }))
+      .rejects.toMatchObject({ code: "conflict" });
+
+    const rows = await store.records("vendo_app_grants").list({ refs: { app_id: "app_lost_race" } });
+    expect(rows.records.map((row) => (row.data as { principal: string }).principal)).toEqual(["user:dana"]);
+    // ...and she still reaches the app the winner moved.
+    expect(await runtime.access.levelFor("app_lost_race", ctx("dana"))).toBe("owner");
+  });
+
   it("requires an asserted membership in the target org", async () => {
     const { runtime, store } = setup();
     await seedAppRow(store, doc("app_promote2"), "dana");

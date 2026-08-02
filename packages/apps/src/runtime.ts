@@ -6,6 +6,7 @@ import {
   compileWire,
   deriveShapeCard,
   effectiveBuildWatchdogMs,
+  encodeGrantPrincipal,
   safeErrorMessage,
   validateAppDocument,
   type AccessLevel,
@@ -2354,7 +2355,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // afterwards the row belongs to the org and the owner gate on `grant`
       // would have nothing to admit them by — the promoter is not necessarily
       // an org admin.
-      const promoter = `user:${ctx.principal.subject}`;
+      const promoter = encodeGrantPrincipal({ kind: "user", subject: ctx.principal.subject });
       // Mint-then-KNOW: what the promoter held BEFORE this call, so a failure
       // takes back exactly what this call added and nothing else. Inferring it
       // afterwards cannot tell "I minted this" from "someone else did".

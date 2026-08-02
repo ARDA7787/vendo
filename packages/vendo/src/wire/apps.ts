@@ -262,7 +262,18 @@ export const appRoutes: RouteEntry[] = [
       if (request.method === "DELETE") {
         const principal = wire.url.searchParams.get("principal");
         await deps.apps.access.revoke(appId, string(principal, "principal"), ctx);
-        return json({ grants: await deps.apps.access.list(appId, ctx) });
+        // The revoke LANDED. Reading the list back is a courtesy for the dialog,
+        // and a caller who just removed their OWN last grant may no longer read
+        // it — that is §9.4's masking answering a different question, not a
+        // failed removal, and reporting it as one told them to retry work that
+        // was already done. Answer with what they can still legitimately see:
+        // nothing. Any other failure is a real one and still surfaces.
+        const remaining = await deps.apps.access.list(appId, ctx).catch((reason: unknown) => {
+          const code = (reason as { code?: string } | null)?.code;
+          if (code === "not-found" || code === "forbidden") return [];
+          throw reason;
+        });
+        return json({ grants: remaining });
       }
     }
     if (request.method === "POST" && operation === "promote" && segments.length === 3) {

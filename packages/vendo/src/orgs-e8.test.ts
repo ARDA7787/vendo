@@ -175,6 +175,39 @@ describe("E8 — two principals, one org, over the real composition", () => {
     expect(await solo.readdir("/")).toEqual(["host", "user"]);
   });
 
+  it("removing your OWN last grant succeeds honestly — the work landed, so say so", async () => {
+    // The route read the grant list back to build its answer, and reading it is
+    // viewer-gated: a caller who just removed their own last grant got a 404 for
+    // a removal that had already happened, which the Share dialog renders as an
+    // error. A mutation that landed must never report failure.
+    await seedApp(store, seeded("app_selfrevoke", "Kim's own"), "kim");
+    expect((await call(vendo, kim, "POST", "/apps/app_selfrevoke/promote", { orgId: ORG })).status).toBe(200);
+
+    const removed = await call(vendo, kim, "DELETE", "/apps/app_selfrevoke/grants?principal=user%3Akim");
+    expect(removed.status).toBe(200);
+    // An empty list is the honest answer: it is what she can still legitimately
+    // see, not a fabricated list of who else reaches the app.
+    expect(removed.body.grants).toEqual([]);
+    // The removal really landed, and she really did give up her access.
+    expect((await store.records("vendo_app_grants").list({ refs: { app_id: "app_selfrevoke" } })).records)
+      .toEqual([]);
+    expect((await call(vendo, kim, "GET", "/apps/app_selfrevoke")).status).toBe(404);
+  });
+
+  it("a stranger's DELETE is masked and mutates NOTHING", async () => {
+    await seedApp(store, seeded("app_strangerdel", "Team app"), ORG);
+    await call(vendo, dana, "POST", "/apps/app_strangerdel/grants", { principal: "user:kim", level: "viewer" });
+
+    const stranger: Principal = { kind: "user", subject: "stranger" };
+    const refused = await call(vendo, stranger, "DELETE", "/apps/app_strangerdel/grants?principal=user%3Akim");
+    expect(refused.status).toBe(404);
+    expect(refused.body.error.code).toBe("not-found");
+    // The refusal happens at the owner gate, BEFORE the delete.
+    expect((await store.records("vendo_app_grants").list({ refs: { app_id: "app_strangerdel" } })).records)
+      .toHaveLength(1);
+    expect((await call(vendo, kim, "GET", "/apps/app_strangerdel")).status).toBe(200);
+  });
+
   it("two simultaneous promotes: one wins, and the LOSER undoes nothing of the winner's", async () => {
     // The dangerous shape is not the collision — it is the rollback. A promote
     // that loses the row flip must not reverse the document move the winner made
