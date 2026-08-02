@@ -1854,6 +1854,12 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
   border: 1px solid var(--vendo-border); border-radius: 9px; background: var(--vendo-bg); color: inherit; }
 .fl-share-level { padding: 7px 9px; font: inherit; border: 1px solid var(--vendo-border);
   border-radius: 9px; background: var(--vendo-bg); color: inherit; }
+/* One labelled control that appears mid-task (who exactly, which team). Tighter
+   than the dialog's own 12px gap, so the label belongs to ITS field rather than
+   floating between two. The basis reset is load-bearing: .fl-share-input carries
+   flex-basis 180px for the horizontal row, which in a column would be a height. */
+.fl-share-field { display: flex; flex-direction: column; gap: 6px; }
+.fl-share-field .fl-share-input { flex: 0 0 auto; }
 .fl-share-error { margin: 0; color: var(--vendo-danger); font-size: 12.5px; }
 .fl-share-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .fl-share-empty { color: var(--vendo-fg-muted); font-size: 12.5px; padding: 6px 0; }

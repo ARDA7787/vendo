@@ -24,11 +24,41 @@ const LEVELS: Array<{ value: AccessLevel; label: string; blurb: string }> = [
     Re-exported here because the chrome surface has always offered it. */
 export { encodeGrantPrincipal };
 
-/** Which org a chosen principal names — the org a personal app moves into.
-    `user:` names a person, not a team, so it moves nothing. */
-function orgOf(encoded: string): string | undefined {
-  const named = parseGrantPrincipal(encoded);
-  return named === undefined || named.kind === "user" ? undefined : named.org;
+/** The picker's value for "a specific person". It is deliberately not a
+    principal encoding: a person has to be typed (Vendo has no org chart of its
+    own, §9.1), and the encoding is minted from what they type. */
+const PERSON = "person";
+
+/**
+ * The consumer's half of a refusal. Every sentence the wire throws is written
+ * for the HOST DEVELOPER — one names an environment variable, another is a
+ * TypeScript snippet — and rendering `reason.message` put both on a bank
+ * customer's screen, on every keyless (default OSS) deployment. The developer
+ * sentence stays where developers read it (the server's own error); the person
+ * reading this dialog is told what it means for THEM (design §3, the consumer
+ * voice law).
+ */
+function refusalCopy(reason: unknown, phase: "move" | "share" | "remove"): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  if (code === "forbidden") return "Only an owner can change who this app is shared with.";
+  if (code === "not-found") return "This app isn’t available any more.";
+  if (phase === "move") {
+    if (code === "cloud-required") {
+      return "Moving this app into a team isn’t available here yet."
+        + " You can still hand someone a copy of it instead.";
+    }
+    if (code === "validation") return "This app can’t be moved into that team.";
+    return "The move didn’t go through. Nothing changed.";
+  }
+  if (phase === "remove") {
+    if (code === "cloud-required") {
+      return "Changing who this app is shared with isn’t turned on for this workspace yet.";
+    }
+    return "That access wasn’t removed — try again in a moment.";
+  }
+  if (code === "cloud-required") return "Sharing with your team isn’t turned on for this workspace yet.";
+  if (code === "validation") return "This app can’t be shared with them yet.";
+  return "Sharing didn’t go through — try again in a moment.";
 }
 
 /** Consumer voice, not the encoding: "the finance team", not "team:acme/finance". */
@@ -60,6 +90,10 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
   // "share implies promote" never fired in the shipped surface.
   const { level, grants, personal, isLoading, share, unshare, promote } = useAppGrants(appId);
   const [target, setTarget] = useState("");
+  const [person, setPerson] = useState("");
+  /** Which org a person-share moves the app into, when the caller belongs to
+      more than one and the choice is therefore theirs to make. */
+  const [moveInto, setMoveInto] = useState("");
   const [nextLevel, setNextLevel] = useState<AccessLevel>("viewer");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -69,44 +103,90 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
 
   const canShare = level === "owner";
   const orgs = memberships.map((membership) => membership.org);
+  const nameOf = (org: string): string =>
+    memberships.find((membership) => membership.org === org)?.display ?? org;
+  /** Human labels, always — the §9.2 encoding rides underneath as the option's
+      value, where nobody has to read it (F12: the old input put
+      `team:acme/finance` in front of the person using it). */
   const options: Array<{ value: string; label: string }> = [
     ...memberships.flatMap((membership) => [
-      { value: encodeGrantPrincipal({ kind: "org", org: membership.org }), label: `Everyone at ${membership.display ?? membership.org}` },
+      { value: encodeGrantPrincipal({ kind: "org", org: membership.org }), label: `Everyone at ${nameOf(membership.org)}` },
       ...(membership.teams ?? []).map((team) => ({
         value: encodeGrantPrincipal({ kind: "team", org: membership.org, team }),
         label: `The ${team} team`,
       })),
     ]),
+    // The option the old placeholder promised and never offered.
+    { value: PERSON, label: "A specific person…" },
   ];
+  /** A personal app has to MOVE before anyone else can reach it live (§9.5), and
+      with no team asserted there is nowhere for it to go. */
+  const nowhereToShare = personal && orgs.length === 0;
+  /** A person-share of a personal app needs an org, and with several asserted
+      the dialog asks rather than picking one. */
+  const asksWhichTeam = personal && target === PERSON && orgs.length > 1;
 
-  const run = async (work: () => Promise<void>): Promise<void> => {
+  const run = async (
+    phase: "move" | "share" | "remove",
+    work: () => Promise<void>,
+  ): Promise<void> => {
     setBusy(true);
     setError(undefined);
     try {
       await work();
     } catch (reason) {
-      // The wire's own sentence, verbatim: `cloud-required` and `forbidden`
-      // both already say what to do, and paraphrasing them loses that.
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalCopy(reason, phase));
     } finally {
       setBusy(false);
     }
   };
 
   const submit = async (): Promise<void> => {
-    const principal = target.trim();
-    if (principal === "") return;
-    const named = orgOf(principal);
-    await run(async () => {
-      // §9.5 — share implies promote: a personal app moves into the org THIS
-      // SHARE NAMES (never "the first org you belong to") before the grant is
-      // written, so everyone lands on ONE app, in the right team.
-      if (personal && named !== undefined) {
-        await promote(named);
-        setMoved(named);
-      }
+    const chosen = target.trim();
+    if (chosen === "") {
+      setError("Choose who to share this with.");
+      return;
+    }
+    // A person is typed, not listed, so this is the one place an unusable value
+    // can arrive — and it is refused here rather than becoming a grant row that
+    // could never match anyone (F12).
+    const subject = person.trim();
+    if (chosen === PERSON && subject === "") {
+      setError("Say who you’re sharing this with — their name or email at work.");
+      return;
+    }
+    const named = chosen === PERSON
+      ? { kind: "user" as const, subject }
+      : parseGrantPrincipal(chosen);
+    if (named === undefined) {
+      setError("That isn’t someone this app can be shared with.");
+      return;
+    }
+    // §9.5 — "share implies promote", for EVERY principal (design §8: live
+    // sharing implies the org workspace). A team share moves the app into the
+    // org THAT SHARE NAMES; a person share has no org in it, so it moves into
+    // the caller's one asserted org, or the one they chose.
+    const into = named.kind === "user" ? (orgs.length === 1 ? orgs[0] : moveInto) : named.org;
+    if (personal && (into === undefined || into === "")) {
+      setError("Choose which team this app should live in first.");
+      return;
+    }
+    const principal = encodeGrantPrincipal(named);
+    if (personal && into !== undefined && into !== "") {
+      let landed = false;
+      await run("move", async () => {
+        await promote(into);
+        setMoved(into);
+        landed = true;
+      });
+      // The app did not move, so a grant on top of it would name a workspace it
+      // is not in — and the person has already been told why.
+      if (!landed) return;
+    }
+    await run("share", async () => {
       await share(principal, nextLevel);
       setTarget("");
+      setPerson("");
     });
   };
 
@@ -132,48 +212,95 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
 
       {canShare && personal && orgs.length > 0 ? (
         <p className="fl-share-note">
-          This is your own copy. Sharing it with a team moves it there, so everyone works on
+          This is your own copy. Sharing it moves it into your team, so everyone works on
           the same one.
           {automation ? " Its automation turns off in the move — automations run with a person’s"
             + " access, so it stays off until someone turns it back on." : ""}
         </p>
       ) : null}
 
+      {/* The permission-shaped empty state: a personal app can only be shared
+          live by moving into a team, and there is no team here. The spec's own
+          fallback, in the person's words rather than the API's. */}
+      {canShare && nowhereToShare ? (
+        <p className="fl-share-note">
+          This app is just yours. Sharing it live needs a team workspace, and there isn’t one
+          here — you can still hand someone a copy of it instead.
+        </p>
+      ) : null}
+
       {moved === undefined ? null : (
         <p className="fl-share-note" role="status">
-          Moved into <b>{memberships.find((entry) => entry.org === moved)?.display ?? moved}</b>.
+          Moved into <b>{nameOf(moved)}</b>.
           {automation ? " Its automation is off until someone turns it back on — automations run"
             + " with a person’s access." : ""}
         </p>
       )}
 
-      {canShare ? (
-        <div className="fl-share-add">
-          <input
-            className="fl-share-input"
-            value={target}
-            list={`fl-share-options-${appId}`}
-            placeholder="Person, team, or everyone"
-            aria-label="Who to share with"
-            disabled={busy}
-            onChange={(event) => setTarget(event.target.value)}
-          />
-          <datalist id={`fl-share-options-${appId}`}>
-            {options.map((option) => <option key={option.value} value={option.value} label={option.label} />)}
-          </datalist>
-          <select
-            className="fl-share-level"
-            value={nextLevel}
-            aria-label="Access level"
-            disabled={busy}
-            onChange={(event) => setNextLevel(event.target.value as AccessLevel)}
-          >
-            {LEVELS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
-          </select>
-          <button type="button" className="fl-btn fl-btn--primary" disabled={busy || target.trim() === ""} onClick={() => void submit()}>
-            Share
-          </button>
-        </div>
+      {canShare && !nowhereToShare ? (
+        <>
+          <div className="fl-share-add">
+            <select
+              className="fl-share-input"
+              value={target}
+              aria-label="Who to share with"
+              disabled={busy}
+              onChange={(event) => { setTarget(event.target.value); setError(undefined); }}
+            >
+              <option value="">Choose who…</option>
+              {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <select
+              className="fl-share-level"
+              value={nextLevel}
+              aria-label="Access level"
+              disabled={busy}
+              onChange={(event) => setNextLevel(event.target.value as AccessLevel)}
+            >
+              {LEVELS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+            </select>
+            <button type="button" className="fl-btn fl-btn--primary" disabled={busy || target === ""} onClick={() => void submit()}>
+              Share
+            </button>
+          </div>
+
+          {/* Vendo has no directory of its own (§9.1), so a person is typed. The
+              field appears with its own label rather than as a placeholder,
+              because it arrives mid-task and has to explain itself. */}
+          {target === PERSON ? (
+            <div className="fl-share-field">
+              <label className="fl-share-note" htmlFor={`fl-share-person-${appId}`}>
+                Their name or email at work
+              </label>
+              <input
+                id={`fl-share-person-${appId}`}
+                className="fl-share-input"
+                value={person}
+                autoComplete="off"
+                disabled={busy}
+                onChange={(event) => { setPerson(event.target.value); setError(undefined); }}
+              />
+            </div>
+          ) : null}
+
+          {asksWhichTeam ? (
+            <div className="fl-share-field">
+              <label className="fl-share-note" htmlFor={`fl-share-org-${appId}`}>
+                Which team to move it into
+              </label>
+              <select
+                id={`fl-share-org-${appId}`}
+                className="fl-share-input"
+                value={moveInto}
+                disabled={busy}
+                onChange={(event) => { setMoveInto(event.target.value); setError(undefined); }}
+              >
+                <option value="">Choose a team…</option>
+                {orgs.map((org) => <option key={org} value={org}>{nameOf(org)}</option>)}
+              </select>
+            </div>
+          ) : null}
+        </>
       ) : null}
 
       {error === undefined ? null : <p className="fl-share-error" role="alert">{error}</p>}
@@ -192,7 +319,7 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
                 type="button"
                 className="fl-btn fl-btn--ghost fl-share-revoke"
                 disabled={busy}
-                onClick={() => void run(() => unshare(grant.principal))}
+                onClick={() => void run("remove", () => unshare(grant.principal))}
               >
                 Remove
               </button>

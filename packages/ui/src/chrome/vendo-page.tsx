@@ -138,25 +138,32 @@ function OpenApp({ appId }: { appId: string }) {
 }
 
 function AppsWorkspace() {
-  const { apps, create, fork, remove } = useApps();
+  const { client } = useVendoContext();
+  const { apps, create, fork, remove, refresh } = useApps();
   // §9.1 — the orgs the host asserted for this caller; the Share dialog offers
   // them by name. Empty on a single-player deployment, which is the point.
   const { memberships } = useVendoStatus();
   const [selected, setSelected] = useState<string>();
   const [sharing, setSharing] = useState<string>();
-  const [denied, setDenied] = useState<string>();
+  /** §9.4 — the app whose CHANGE was refused, and what was asked for, so the
+      fork offer can name it back ("…to make it dark — but I can make you your
+      own"). */
+  const [denied, setDenied] = useState<{ appId: string; instruction?: string }>();
+  const [changing, setChanging] = useState<string>();
+  const [instruction, setInstruction] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string>();
-  const during = async (action: () => Promise<void>, appId?: string) => {
+  const during = async (action: () => Promise<void>, appId?: string, asked?: string) => {
     setError(undefined);
     setDenied(undefined);
     try {
       await action();
     } catch (reason) {
       // §9.4 — `forbidden` means they can see it but not do this to it, which
-      // is answerable: offer the fork instead of showing them a wall.
+      // is answerable: offer the fork instead of showing them a wall. The code
+      // is thrown ONLY to a proven viewer, which is what makes the offer safe.
       if (appId !== undefined && (reason as { code?: string })?.code === "forbidden") {
-        setDenied(appId);
+        setDenied({ appId, ...(asked === undefined ? {} : { instruction: asked }) });
         return;
       }
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -177,8 +184,9 @@ function AppsWorkspace() {
       {error ? <div role="alert" className="fl-error">{error}</div> : null}
       {denied ? (
         <ForkOffer
+          {...(denied.instruction === undefined ? {} : { instruction: denied.instruction })}
           onFork={() => during(async () => {
-            const copy = await fork(denied);
+            const copy = await fork(denied.appId);
             setDenied(undefined);
             setSelected(copy.id);
           })}
@@ -215,6 +223,13 @@ function AppsWorkspace() {
             </div>
             <div className="fl-auto-flow" style={{ gap: 8 }}>
               <button className="fl-btn fl-btn-primary" type="button" onClick={() => setSelected(app.id)}>Open</button>
+              {/* §9.4 — the EDIT path is the one `forbidden` was invented for: a
+                  viewer who asks for a change gets the consumer-voice fork offer
+                  instead of a refusal. The offer mounted only off Remove, so the
+                  case the code exists for never reached it. */}
+              <button className="fl-btn" type="button" onClick={() => { setChanging(changing === app.id ? undefined : app.id); setInstruction(""); }}>
+                {changing === app.id ? "Cancel change" : "Change"}
+              </button>
               <button className="fl-btn" type="button" onClick={() => void during(async () => { await fork(app.id); })}>Fork</button>
               {/* Build contract §9.2-§9.6 — the Share dialog is the ONE surface
                   that writes grants. It opens for anyone; the dialog itself
@@ -232,6 +247,30 @@ function AppsWorkspace() {
                 }
               }}>Remove</button>
             </div>
+            {changing === app.id ? (
+              <form
+                className="fl-picker-toprow"
+                style={{ padding: "0 12px 12px" }}
+                aria-label={`Change ${app.name}`}
+                onSubmit={event => {
+                  event.preventDefault();
+                  const asked = instruction.trim();
+                  if (!asked) return;
+                  void during(async () => {
+                    await client.apps.edit(app.id, asked);
+                    setInstruction("");
+                    setChanging(undefined);
+                    await refresh();
+                  }, app.id, asked);
+                }}
+              >
+                <label style={{ flex: 1 }}>
+                  <span className="fl-picker-group" style={{ display: "block", margin: "0 2px 7px" }}>What should change?</span>
+                  <input className="fl-picker-search" value={instruction} onChange={event => setInstruction(event.currentTarget.value)} />
+                </label>
+                <button className="fl-btn fl-btn-primary" type="submit" disabled={!instruction.trim()}>Save</button>
+              </form>
+            ) : null}
             {sharing === app.id ? (
               <div style={{ padding: 12 }}>
                 <ShareDialog

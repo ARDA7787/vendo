@@ -206,12 +206,37 @@ export interface AgentToolsDataDependencies {
   requireOwned(appId: AppId, ctx: RunContext, level?: AccessLevel): Promise<AppDocument>;
 }
 
-const errorOutcome = (error: unknown): ToolOutcome => ({
-  status: "error",
-  error: error instanceof VendoError
-    ? { code: error.code, message: error.message }
-    : { code: "internal", message: error instanceof Error ? error.message : "unknown apps error" },
-});
+/**
+ * Build contract §9.4 + the consumer voice law (design §3) — `forbidden` is
+ * thrown for exactly one situation, and it is an ANSWERABLE one: the caller
+ * provably sees the app and may not change it. The runtime's sentence names the
+ * level and the app id ("editor access is required for app_7c2f…") because a
+ * host developer reads it in a log; the MODEL relays what it is handed to a
+ * person, so what it is handed here is the fork offer the level vocabulary
+ * exists to make possible. The code is untouched: machines match on the code,
+ * people read the message.
+ */
+// Deliberately DIRECTS rather than promises: there is no fork tool in this
+// registry (create · edit · rebase_pin · open · data_*), so a message saying "I
+// will make you one" would have the model claim a capability it does not have.
+const FORK_OFFER = "I can’t change the team’s copy of this app. Say so plainly, and offer them"
+  + " their own copy instead — forking the app from its card gives them one I can change freely.";
+
+const errorOutcome = (error: unknown): ToolOutcome => {
+  if (error instanceof VendoError) {
+    return {
+      status: "error",
+      error: {
+        code: error.code,
+        message: error.code === "forbidden" ? FORK_OFFER : error.message,
+      },
+    };
+  }
+  return {
+    status: "error",
+    error: { code: "internal", message: error instanceof Error ? error.message : "unknown apps error" },
+  };
+};
 
 /** 06-apps §§1,5 — unbound Vendo app capabilities; the umbrella binds this registry. */
 export const createAgentTools = (
