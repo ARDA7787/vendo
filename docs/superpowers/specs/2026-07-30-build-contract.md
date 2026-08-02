@@ -532,9 +532,20 @@ Amendment 2026-08-02 (wave-3 close, ratified): the auth preset gains a second
 optional companion seam, mirroring `memberships` in shape and rationale —
 
 ```ts
-resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
+resolvePerson?: (query: string, asker: Principal) => Promise<ResolvedPerson | null>;
 export interface ResolvedPerson { subject: string; display?: string }
 ```
+
+The `asker` is not optional garnish (amendment 2026-08-02, before the seam was
+published): keyed on the query alone, a host CANNOT implement "resolve only
+people in the asker's own org" — they are not told who is asking — and the
+check proved a signed-in user with zero memberships probing the host's
+directory from their own personal app. `memberships` is principal-keyed for
+the same reason. The door additionally requires the asker to hold at least one
+asserted membership: a person-share implies an org workspace (§9.5), so a
+caller in no org can never complete the share the lookup exists for, and
+answering them is pure directory exposure. That refusal happens BEFORE the
+host's callback is reached.
 
 Vendo holds no directory (the host's identity system IS the org), so it cannot
 turn a typed name into a person and must not pretend to. Without this seam the
