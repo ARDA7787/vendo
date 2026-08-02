@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  createClaudeSession,
   jsonSchemaToZodShape,
-  runClaudeTurn,
   VENDO_MCP_SERVER,
   type ClaudeTurnEvent,
   type ClaudeTurnTool,
@@ -14,6 +14,11 @@ import {
  * matching in-process MCP handler only when the verdict allows, and yields the
  * message shapes the real stream yields. Nothing here is a mock of OUR code —
  * it simulates the SDK, which is the boundary we cannot run in a unit test.
+ *
+ * cc-native: the session is STREAMING-INPUT now, so the fake drains the input
+ * iterable and plays the script for the first user message. Everything these
+ * tests assert — the projection, exactly-once, the permission hook, the event
+ * vocabulary — is unchanged by that; only the entry point moved.
  */
 interface ScriptStep {
   say?: string;
@@ -32,7 +37,7 @@ function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fak
     createSdkMcpServer: (options: { name: string; tools?: unknown[] }) => ({
       __tools: options.tools ?? [],
     }),
-    query: ({ options }: { prompt: unknown; options: Record<string, any> }) => ({
+    query: ({ prompt, options }: { prompt: unknown; options: Record<string, any> }) => ({
       async *[Symbol.asyncIterator]() {
         yield { type: "system", subtype: "init", session_id: sessionId };
         const handlers = new Map<string, any>(
@@ -40,6 +45,10 @@ function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fak
             (entry) => [`mcp__${VENDO_MCP_SERVER}__${entry.name}`, entry],
           ),
         );
+        // One scripted turn per user message pushed in; the stream stays open
+        // until the caller closes it.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _message of prompt as AsyncIterable<any>) {
         for (const step of script) {
           if (step.say !== undefined) {
             yield { type: "assistant", message: { content: [{ type: "text", text: step.say }] } };
@@ -78,6 +87,7 @@ function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fak
           session_id: sessionId,
           usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 3 },
         };
+        }
       },
     }),
   };
@@ -98,6 +108,7 @@ const listing: ClaudeTurnTool[] = [
   },
 ];
 
+/** ONE message through a live session — the shape every test below wants. */
 async function run(
   script: ScriptStep[],
   callTool: GuardedCall,
@@ -105,8 +116,7 @@ async function run(
 ) {
   const events: ClaudeTurnEvent[] = [];
   const recorded: Recorded = { permissions: [], handled: [] };
-  await runClaudeTurn({
-    prompt: "do the thing",
+  const session = createClaudeSession({
     tools: listing,
     cwd: "/box/user",
     env: {},
@@ -115,6 +125,8 @@ async function run(
     sdk: fakeSdk(script, recorded) as never,
     ...extra,
   });
+  await session.send("do the thing");
+  await session.end();
   return { events, recorded };
 }
 
@@ -135,8 +147,7 @@ describe("the composed brief reaches the SDK — the D2 plumbing question", () =
     let seen: Record<string, any> = {};
     const recorded: Recorded = { permissions: [], handled: [] };
     const inner = fakeSdk([{ say: "ok" }], recorded);
-    await runClaudeTurn({
-      prompt: "do the thing",
+    const session = createClaudeSession({
       tools: listing,
       cwd: "/box/user",
       env: {},
@@ -151,6 +162,8 @@ describe("the composed brief reaches the SDK — the D2 plumbing question", () =
         },
       } as never,
     });
+    await session.send("do the thing");
+    await session.end();
     return seen;
   };
 
@@ -253,8 +266,7 @@ describe("M1 · exactly-once survives every hook/handler arg mismatch", () => {
   ) => {
     const seen: Array<Record<string, unknown>> = [];
     const recorded: Recorded = { permissions: [], handled: [] };
-    await runClaudeTurn({
-      prompt: "p",
+    const session = createClaudeSession({
       tools,
       cwd: "/box/user",
       env: {},
@@ -262,6 +274,8 @@ describe("M1 · exactly-once survives every hook/handler arg mismatch", () => {
       emit: () => undefined,
       sdk: fakeSdk([{ use }], recorded) as never,
     });
+    await session.send("p");
+    await session.end();
     return { seen, recorded };
   };
 
@@ -298,8 +312,7 @@ describe("M1 · exactly-once survives every hook/handler arg mismatch", () => {
     const seen: Array<Record<string, unknown>> = [];
     const recorded: Recorded = { permissions: [], handled: [] };
     const use = { name: mcp("maple_invoices_pay"), input: { id: "inv_1" } };
-    await runClaudeTurn({
-      prompt: "p",
+    const session = createClaudeSession({
       tools: listing,
       cwd: "/box/user",
       env: {},
@@ -307,6 +320,8 @@ describe("M1 · exactly-once survives every hook/handler arg mismatch", () => {
       emit: () => undefined,
       sdk: fakeSdk([{ use }, { use }], recorded) as never,
     });
+    await session.send("p");
+    await session.end();
     expect(seen).toHaveLength(2);
     expect(recorded.handled).toHaveLength(2);
   });
@@ -351,8 +366,7 @@ describe("guard asks ride the native permission hook", () => {
       [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_pay`, input: { id: "x" } } }],
       recorded,
     ) as any;
-    await runClaudeTurn({
-      prompt: "p",
+    const session = createClaudeSession({
       tools: listing,
       cwd: "/box/user",
       env: {},
@@ -365,6 +379,8 @@ describe("guard asks ride the native permission hook", () => {
         query: ({ prompt, options }: any) => sdk.query({ prompt, options: { ...options, canUseTool: undefined } }),
       },
     });
+    await session.send("p");
+    await session.end();
     expect(executions).toBe(1);
     expect(recorded.handled[0]?.result).toMatchObject({ isError: true });
     expect(JSON.stringify(recorded.handled[0]?.result)).toContain("needs a tap");
