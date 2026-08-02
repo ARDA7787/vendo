@@ -1,24 +1,23 @@
 import { describe, expect, test } from "vitest";
 import {
   createClaudeSession,
-  jsonSchemaToZodShape,
   VENDO_MCP_SERVER,
   type ClaudeTurnEvent,
-  type ClaudeTurnTool,
-  type GuardedCall,
 } from "./claude-turn.js";
 
 /**
- * A faithful stand-in for the CLI's own permission + MCP dispatch: for every
- * scripted tool use it consults `canUseTool` exactly as the SDK does, runs the
- * matching in-process MCP handler only when the verdict allows, and yields the
- * message shapes the real stream yields. Nothing here is a mock of OUR code —
- * it simulates the SDK, which is the boundary we cannot run in a unit test.
+ * A faithful stand-in for the CLI's own permission dispatch: for every scripted
+ * tool use it consults `canUseTool` exactly as the SDK does, and yields the
+ * message shapes the real stream yields. Nothing here mocks OUR code — it
+ * simulates the SDK, which is the boundary a unit test cannot run.
  *
- * cc-native: the session is STREAMING-INPUT now, so the fake drains the input
- * iterable and plays the script for the first user message. Everything these
- * tests assert — the projection, exactly-once, the permission hook, the event
- * vocabulary — is unchanged by that; only the entry point moved.
+ * **What this fake no longer needs to do.** It used to also stand in for an
+ * in-process MCP server: build the projected handler map, run the handler after
+ * the hook allowed, and reproduce zod's key-stripping so the two views of one
+ * call could be compared. door-ctx moved the tools to the host's own MCP door,
+ * so an `mcp__vendo__*` use is just a use the hook allows and the ENGINE
+ * dispatches over HTTP — out of this file's reach, and covered end-to-end by
+ * `packages/vendo/src/mcp-door-parity.e2e.test.ts` instead.
  */
 interface ScriptStep {
   say?: string;
@@ -27,24 +26,13 @@ interface ScriptStep {
 
 interface Recorded {
   permissions: Array<{ name: string; verdict: string; message?: string }>;
-  handled: Array<{ name: string; result: unknown }>;
 }
 
 function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fake") {
   return {
-    tool: (name: string, description: string, inputSchema: unknown, handler: unknown) =>
-      ({ name, description, inputSchema, handler }),
-    createSdkMcpServer: (options: { name: string; tools?: unknown[] }) => ({
-      __tools: options.tools ?? [],
-    }),
     query: ({ prompt, options }: { prompt: unknown; options: Record<string, any> }) => ({
       async *[Symbol.asyncIterator]() {
         yield { type: "system", subtype: "init", session_id: sessionId };
-        const handlers = new Map<string, any>(
-          ((options.mcpServers?.[VENDO_MCP_SERVER]?.__tools ?? []) as any[]).map(
-            (entry) => [`mcp__${VENDO_MCP_SERVER}__${entry.name}`, entry],
-          ),
-        );
         // One scripted turn per user message pushed in; the stream stays open
         // until the caller closes it.
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -66,20 +54,6 @@ function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fak
             verdict: verdict.behavior,
             ...(verdict.message === undefined ? {} : { message: verdict.message }),
           });
-          if (verdict.behavior !== "allow") continue;
-          const entry = handlers.get(step.use.name);
-          if (entry === undefined) continue;
-          // FAITHFUL: the hook sees the model's RAW emission; the handler sees
-          // what `z.object(shape)` produced from it — unknown keys STRIPPED and
-          // the declared key order imposed. A fake that hands the same object to
-          // both hid a real double-execution class (verifier finding M1).
-          const raw = (verdict.updatedInput ?? step.use.input) as Record<string, unknown>;
-          const declared = Object.keys((entry.inputSchema ?? {}) as Record<string, unknown>);
-          const parsed = Object.fromEntries(
-            declared.filter((key) => raw[key] !== undefined).map((key) => [key, raw[key]]),
-          );
-          const result = await entry.handler(parsed, {});
-          recorded.handled.push({ name: step.use.name, result });
         }
         yield {
           type: "result",
@@ -93,44 +67,33 @@ function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fak
   };
 }
 
-const listing: ClaudeTurnTool[] = [
-  {
-    name: "maple_invoices_list",
-    title: "List invoices",
-    description: "List the signed-in user's invoices",
-    inputSchema: { type: "object", properties: { limit: { type: "number" } } },
-  },
-  {
-    name: "maple_invoices_pay",
-    title: "Pay an invoice",
-    description: "Pay one invoice",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
-  },
-];
+const TOOL_DOOR = { url: "https://app.example.com/api/vendo/mcp", token: "vtk_secret" };
 
 /** ONE message through a live session — the shape every test below wants. */
 async function run(
   script: ScriptStep[],
-  callTool: GuardedCall,
-  extra: { allowedBoxTools?: string[] } = {},
+  extra: { allowedBoxTools?: string[]; toolDoor?: { url: string; token: string } } = {},
 ) {
   const events: ClaudeTurnEvent[] = [];
-  const recorded: Recorded = { permissions: [], handled: [] };
+  const recorded: Recorded = { permissions: [] };
+  const opened: Array<Record<string, any>> = [];
+  const sdk = fakeSdk(script, recorded);
   const session = createClaudeSession({
-    tools: listing,
     cwd: "/box/user",
     env: {},
-    callTool,
     emit: (event) => events.push(event),
-    sdk: fakeSdk(script, recorded) as never,
+    sdk: {
+      query: (params: any) => {
+        opened.push(params.options);
+        return sdk.query(params);
+      },
+    } as never,
     ...extra,
   });
   await session.send("do the thing");
   await session.end();
-  return { events, recorded };
+  return { events, recorded, options: opened[0]! };
 }
-
-const ok: GuardedCall = async () => ({ status: "ok", output: { invoices: [] } });
 
 describe("the composed brief reaches the SDK — the D2 plumbing question", () => {
   /**
@@ -145,13 +108,11 @@ describe("the composed brief reaches the SDK — the D2 plumbing question", () =
    */
   const captureOptions = async (systemPrompt: string | undefined): Promise<Record<string, any>> => {
     let seen: Record<string, any> = {};
-    const recorded: Recorded = { permissions: [], handled: [] };
+    const recorded: Recorded = { permissions: [] };
     const inner = fakeSdk([{ say: "ok" }], recorded);
     const session = createClaudeSession({
-      tools: listing,
       cwd: "/box/user",
       env: {},
-      callTool: ok,
       emit: () => undefined,
       ...(systemPrompt === undefined ? {} : { systemPrompt }),
       sdk: {
@@ -190,258 +151,88 @@ describe("the composed brief reaches the SDK — the D2 plumbing question", () =
   });
 });
 
-describe("in-process MCP projection — one guard, one audit row, one mirror", () => {
-  test("every equipped tool is projected under the vendo server", async () => {
-    const calls: string[] = [];
+describe("the tools are the HOST's MCP door — the projection is gone", () => {
+  test("the session points at the door's URL and carries the turn credential as a Bearer", async () => {
+    const { options } = await run([], { toolDoor: TOOL_DOOR });
+    expect(options.mcpServers).toEqual({
+      [VENDO_MCP_SERVER]: {
+        type: "http",
+        url: TOOL_DOOR.url,
+        headers: { Authorization: `Bearer ${TOOL_DOOR.token}` },
+        alwaysLoad: true,
+      },
+    });
+  });
+
+  test("`alwaysLoad` — our tools are already curated, so the engine must not defer them behind its own tool search", async () => {
+    const { options } = await run([], { toolDoor: TOOL_DOOR });
+    expect(options.mcpServers[VENDO_MCP_SERVER].alwaysLoad).toBe(true);
+  });
+
+  test("no door, no MCP server — a host that never opened one gets the box's own hands and nothing else", async () => {
+    const { options } = await run([]);
+    expect(options.mcpServers).toBeUndefined();
+  });
+
+  test("a door tool is ALLOWED by the hook, because the guard decides at the door", async () => {
     const { recorded } = await run(
       [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, input: { limit: 2 } } }],
-      async (name) => { calls.push(name); return { status: "ok", output: [] }; },
+      { toolDoor: TOOL_DOOR },
     );
-    // The BARE name reaches turn.tools.call — the mcp__ prefix is the SDK's
-    // wire name, never ours.
-    expect(calls).toEqual(["maple_invoices_list"]);
-    expect(recorded.permissions[0]?.verdict).toBe("allow");
-  });
-
-  test("a projected call executes host-side EXACTLY once, even though the permission hook and the handler both run", async () => {
-    let executions = 0;
-    await run(
-      [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, input: {} } }],
-      async () => { executions += 1; return { status: "ok", output: { n: 1 } }; },
-    );
-    expect(executions).toBe(1);
-  });
-
-  test("the ok output reaches the model as the tool's content", async () => {
-    const { recorded } = await run(
-      [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, input: {} } }],
-      async () => ({ status: "ok", output: { invoices: ["inv_1"] } }),
-    );
-    expect(JSON.stringify(recorded.handled[0]?.result)).toContain("inv_1");
+    expect(recorded.permissions).toEqual([
+      { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, verdict: "allow" },
+    ]);
   });
 
   test("the box's own file/bash work is auto-allowed — the box IS the permission", async () => {
-    let asked = 0;
-    const { recorded } = await run(
-      [{ use: { name: "Bash", input: { command: "ls" } } }],
-      async () => { asked += 1; return { status: "ok", output: {} }; },
-    );
-    expect(recorded.permissions[0]).toEqual({ name: "Bash", verdict: "allow" });
-    // Nothing about in-box bash reaches the guard: it never touches the world.
-    expect(asked).toBe(0);
+    const { recorded } = await run([
+      { use: { name: "Bash", input: { command: "ls" } } },
+      { use: { name: "Write", input: { file_path: "/box/user/a.txt" } } },
+    ]);
+    expect(recorded.permissions.every((entry) => entry.verdict === "allow")).toBe(true);
   });
 
   test("a tool nobody named — a future SDK built-in — is DENIED, never auto-allowed", async () => {
-    // The hook is an ALLOW-list. A deny-list here meant an SDK upgrade shipping
-    // a new built-in with egress would be silently allowed; unnamed = denied.
-    let asked = 0;
     const { recorded } = await run(
-      [{ use: { name: "NetworkProbe", input: { host: "169.254.169.254" } } }],
-      async () => { asked += 1; return { status: "ok", output: {} }; },
+      [{ use: { name: "BrandNewEgressTool", input: {} } }],
+      { allowedBoxTools: ["Bash"] },
+    );
+    expect(recorded.permissions).toEqual([
+      { name: "BrandNewEgressTool", verdict: "deny", message: "BrandNewEgressTool isn't available in this workspace." },
+    ]);
+  });
+
+  test("another server's MCP tools are denied — only OUR door's prefix is allowed", async () => {
+    const { recorded } = await run(
+      [{ use: { name: "mcp__somebody_else__exfiltrate", input: {} } }],
+      { toolDoor: TOOL_DOOR },
     );
     expect(recorded.permissions[0]?.verdict).toBe("deny");
-    expect(recorded.permissions[0]?.message).toContain("NetworkProbe");
-    // Denied at the hook: it never reaches the guard, and never executes.
-    expect(asked).toBe(0);
-    expect(recorded.handled).toEqual([]);
   });
 
   test("the SDK's subagent door stays open — a Task dispatch is allowed", async () => {
-    // A Task grants nothing by itself: the subagent's inner calls come back
-    // through this same hook one by one.
-    const { recorded } = await run(
-      [{ use: { name: "Task", input: { prompt: "survey the workspace" } } }],
-      ok,
-    );
-    expect(recorded.permissions[0]).toEqual({ name: "Task", verdict: "allow" });
-  });
-});
-
-describe("M1 · exactly-once survives every hook/handler arg mismatch", () => {
-  const mcp = (name: string): string => `mcp__${VENDO_MCP_SERVER}__${name}`;
-
-  const countExecutions = async (
-    use: { name: string; input: Record<string, unknown> },
-    tools: ClaudeTurnTool[] = listing,
-  ) => {
-    const seen: Array<Record<string, unknown>> = [];
-    const recorded: Recorded = { permissions: [], handled: [] };
-    const session = createClaudeSession({
-      tools,
-      cwd: "/box/user",
-      env: {},
-      callTool: async (_name, args) => { seen.push(args); return { status: "ok", output: { n: seen.length } }; },
-      emit: () => undefined,
-      sdk: fakeSdk([{ use }], recorded) as never,
-    });
-    await session.send("p");
-    await session.end();
-    return { seen, recorded };
-  };
-
-  test("REORDERED keys are one intent, not two", async () => {
-    // The model emits id after nothing; a reordered emission must not look like
-    // a different call than the parsed one.
-    const { seen } = await countExecutions({
-      name: mcp("maple_invoices_pay"),
-      input: { id: "inv_1" },
-    });
-    expect(seen).toHaveLength(1);
-  });
-
-  test("an EXTRA hallucinated key is one intent, and never reaches the guard", async () => {
-    const { seen } = await countExecutions({
-      name: mcp("maple_invoices_pay"),
-      input: { id: "inv_1", pretendAdmin: true },
-    });
-    expect(seen).toHaveLength(1);
-    // The guard is asked about the DECLARED call, never an invented argument.
-    expect(seen[0]).toEqual({ id: "inv_1" });
-  });
-
-  test("a tool that declares NO parameters executes once even when the model invents args", async () => {
-    const { seen } = await countExecutions(
-      { name: mcp("maple_ping"), input: { surprise: 1 } },
-      [{ name: "maple_ping", title: "Ping", description: "no parameters" }],
-    );
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toEqual({});
-  });
-
-  test("two CONCURRENT identical calls are two intents — two executions, not one replay", async () => {
-    const seen: Array<Record<string, unknown>> = [];
-    const recorded: Recorded = { permissions: [], handled: [] };
-    const use = { name: mcp("maple_invoices_pay"), input: { id: "inv_1" } };
-    const session = createClaudeSession({
-      tools: listing,
-      cwd: "/box/user",
-      env: {},
-      callTool: async (_n, args) => { seen.push(args); return { status: "ok", output: {} }; },
-      emit: () => undefined,
-      sdk: fakeSdk([{ use }, { use }], recorded) as never,
-    });
-    await session.send("p");
-    await session.end();
-    expect(seen).toHaveLength(2);
-    expect(recorded.handled).toHaveLength(2);
-  });
-});
-
-describe("guard asks ride the native permission hook", () => {
-  test("a denial comes back as a permission DENY the model can narrate, not a crash", async () => {
-    const { recorded } = await run(
-      [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_pay`, input: { id: "inv_1" } } }],
-      async () => ({ status: "denied", reason: "You'll need to approve paying that invoice." }),
-    );
-    expect(recorded.permissions[0]?.verdict).toBe("deny");
-    expect(recorded.permissions[0]?.message).toBe("You'll need to approve paying that invoice.");
-    // Denied means NOT executed: the handler never ran.
-    expect(recorded.handled).toEqual([]);
-  });
-
-  test("a denied call is never retried behind the model's back", async () => {
-    let executions = 0;
-    await run(
-      [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_pay`, input: { id: "inv_1" } } }],
-      async () => { executions += 1; return { status: "denied", reason: "no" }; },
-    );
-    expect(executions).toBe(1);
-  });
-
-  test("a tool ERROR is allowed through and lands as a narratable error result", async () => {
-    const { recorded } = await run(
-      [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, input: {} } }],
-      async () => ({ status: "error", message: "The invoice service is unavailable." }),
-    );
-    expect(recorded.permissions[0]?.verdict).toBe("allow");
-    expect(recorded.handled[0]?.result).toMatchObject({ isError: true });
-    expect(JSON.stringify(recorded.handled[0]?.result)).toContain("unavailable");
-  });
-
-  test("an SDK that skips the hook for MCP tools still executes exactly once, and a denial still narrates", async () => {
-    let executions = 0;
-    const events: ClaudeTurnEvent[] = [];
-    const recorded: Recorded = { permissions: [], handled: [] };
-    const sdk = fakeSdk(
-      [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_pay`, input: { id: "x" } } }],
-      recorded,
-    ) as any;
-    const session = createClaudeSession({
-      tools: listing,
-      cwd: "/box/user",
-      env: {},
-      callTool: async () => { executions += 1; return { status: "denied", reason: "needs a tap" }; },
-      emit: (event) => events.push(event),
-      // The hook is stripped from the options the fake sees, standing in for an
-      // SDK build that pre-approves MCP tools.
-      sdk: {
-        ...sdk,
-        query: ({ prompt, options }: any) => sdk.query({ prompt, options: { ...options, canUseTool: undefined } }),
-      },
-    });
-    await session.send("p");
-    await session.end();
-    expect(executions).toBe(1);
-    expect(recorded.handled[0]?.result).toMatchObject({ isError: true });
-    expect(JSON.stringify(recorded.handled[0]?.result)).toContain("needs a tap");
+    const { recorded } = await run([{ use: { name: "Task", input: { prompt: "go" } } }]);
+    expect(recorded.permissions).toEqual([{ name: "Task", verdict: "allow" }]);
   });
 });
 
 describe("events — the closed vocabulary (§1.5)", () => {
   test("assistant text becomes text deltas", async () => {
-    const { events } = await run([{ say: "Here you go." }], ok);
+    const { events } = await run([{ say: "Here you go." }]);
     expect(events.filter((e) => e.type === "text")).toEqual([{ type: "text", delta: "Here you go." }]);
   });
 
   test("the native session id is reported so turn.state can carry it", async () => {
-    const { events } = await run([], ok);
+    const { events } = await run([]);
     expect(events).toContainEqual({ type: "session", sessionId: "sess_fake" });
   });
 
   test("the result's usage is reported for metering", async () => {
-    const { events } = await run([], ok);
+    const { events } = await run([]);
     expect(events.find((e) => e.type === "usage")).toMatchObject({
       inputTokens: 11,
       outputTokens: 7,
       cacheReadTokens: 3,
     });
-  });
-});
-
-describe("jsonSchemaToZodShape", () => {
-  const z = {
-    string: () => ({ kind: "string", optional() { return { ...this, opt: true }; }, describe() { return this; } }),
-    number: () => ({ kind: "number", optional() { return { ...this, opt: true }; }, describe() { return this; } }),
-    boolean: () => ({ kind: "boolean", optional() { return { ...this, opt: true }; }, describe() { return this; } }),
-    array: (inner: unknown) => ({ kind: "array", inner, optional() { return { ...this, opt: true }; }, describe() { return this; } }),
-    any: () => ({ kind: "any", optional() { return { ...this, opt: true }; }, describe() { return this; } }),
-    enum: (values: string[]) => ({ kind: "enum", values, optional() { return { ...this, opt: true }; }, describe() { return this; } }),
-  };
-
-  test("required properties stay required, the rest are optional", () => {
-    const shape = jsonSchemaToZodShape(
-      { type: "object", properties: { id: { type: "string" }, limit: { type: "number" } }, required: ["id"] },
-      z as never,
-    ) as Record<string, { kind: string; opt?: boolean }>;
-    expect(shape["id"]).toMatchObject({ kind: "string" });
-    expect(shape["id"]?.opt).toBeUndefined();
-    expect(shape["limit"]).toMatchObject({ kind: "number", opt: true });
-  });
-
-  test("an enum keeps its members and an array keeps its item type", () => {
-    const shape = jsonSchemaToZodShape(
-      {
-        type: "object",
-        properties: { status: { enum: ["open", "paid"] }, ids: { type: "array", items: { type: "string" } } },
-        required: ["status", "ids"],
-      },
-      z as never,
-    ) as Record<string, { kind: string; values?: string[]; inner?: { kind: string } }>;
-    expect(shape["status"]).toMatchObject({ kind: "enum", values: ["open", "paid"] });
-    expect(shape["ids"]).toMatchObject({ kind: "array", inner: { kind: "string" } });
-  });
-
-  test("a tool with no schema projects no parameters", () => {
-    expect(jsonSchemaToZodShape(undefined, z as never)).toEqual({});
   });
 });

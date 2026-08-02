@@ -13,14 +13,16 @@
  * created — materialize it and re-seed the thread from our transcript) or WARM
  * (its disk already carries both the files and the native session).
  */
-import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedCall } from "@vendoai/apps/claude-turn";
+import type { ClaudeTurnEvent } from "@vendoai/apps/claude-turn";
 import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
 
-/** What opening a session needs. Fixed for the life of the session, except that
- *  a changed tool listing reopens it (resuming its own id). */
+/** What opening a session needs. Fixed for the life of the session.
+ *
+ *  `tools` is deliberately absent: the session reaches the host's tools through
+ *  the MCP door (`toolDoor`), which LISTS them live, so there is no snapshot to
+ *  keep in step and no reopen when the equipped set changes. */
 export interface SessionOpen {
   systemPrompt?: string;
-  tools: readonly ClaudeTurnTool[];
   model?: string;
   effort?: string;
   maxTurns?: number;
@@ -31,6 +33,15 @@ export interface SessionOpen {
   /** Exactly which skills to enable, by name — OURS, never "all" (which would
    *  also enable whatever the machine's own home directory carries). */
   skillNames?: readonly string[];
+  /**
+   * The host's MCP door and this conversation's credential — the ONLY way
+   * anything reaches the world (10-mcp §3b).
+   *
+   * Absent means the deployment opened no door, and the session runs with the
+   * box's own hands only. `claudeCode()` refuses the turn rather than pass a
+   * door it knows the machine cannot reach.
+   */
+  toolDoor?: { url: string; token: string };
 }
 
 export interface SessionMessage extends SessionOpen {
@@ -44,7 +55,6 @@ export interface SessionMessage extends SessionOpen {
    * deleted. The prompt then carries the full re-seed from our transcript.
    */
   reopen?: boolean;
-  callTool: GuardedCall;
   emit: (event: ClaudeTurnEvent) => void;
   /** A file the turn wrote, from the SDK's native PostToolUse hook. `undefined`
    *  means a write whose path we cannot know (`Bash`). */

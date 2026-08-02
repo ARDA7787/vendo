@@ -38,7 +38,10 @@ const encoder = new TextEncoder();
  * conversation box is destroyed rather than snapshotted.
  */
 type BoxScript = (box: {
-  callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  /** The host's MCP door and this conversation's credential, as they reached the
+   *  session. Where a projected `callTool` port used to be: the box now speaks to
+   *  the door itself, so what the driver HANDS it is the whole of the contract. */
+  toolDoor?: { url: string; token: string };
   emit: (event: Record<string, unknown>) => void;
   /** What the box was told to think with — `Turn.system` plus the workspace
    *  brief, as it arrives through the real door. */
@@ -109,17 +112,17 @@ function makeBox(
     env: {},
     /** The live session. Opened once per box; `send()` plays the script. */
     openSession: (input: {
-      callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
       emit: (event: Record<string, unknown>) => void;
       onFileWritten?: (path: string | undefined) => void;
       resume?: string;
       systemPrompt?: string;
+      toolDoor?: { url: string; token: string };
     }) => ({
       async send(prompt: string) {
         box.messages += 1;
         await script({
           prompt,
-          callTool: input.callTool,
+          ...(input.toolDoor === undefined ? {} : { toolDoor: input.toolDoor }),
           emit: input.emit,
           ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
           write: (workspacePath, text) => {
@@ -374,7 +377,7 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
     const first = await boxMachine({ sandbox, threadId: "thr_warm", env: {}, idleTtlMs: 5_000 });
     // A box only becomes warm once it has answered a message.
     expect(first.carriesSession).toBe(false);
-    await first.send({ prompt: "hi", tools: [], callTool: async () => ({ status: "ok", output: {} }), emit: () => undefined });
+    await first.send({ prompt: "hi", emit: () => undefined });
     await first.release();
 
     const second = await boxMachine({ sandbox, threadId: "thr_warm", env: {} });
@@ -385,7 +388,7 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
   test("a box the provider reaped is replaced, and the replacement says it carries nothing", async () => {
     const sandbox = fakeSandbox(async () => undefined);
     const first = await boxMachine({ sandbox, threadId: "thr_reaped", env: {}, idleTtlMs: 5_000 });
-    await first.send({ prompt: "hi", tools: [], callTool: async () => ({ status: "ok", output: {} }), emit: () => undefined });
+    await first.send({ prompt: "hi", emit: () => undefined });
     await first.release();
     // Gone without us asking — a provider reap, an idle policy on their side.
     sandbox.boxes[0]!.destroyed = true;
@@ -420,41 +423,36 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
     expect(sandbox.boxes).toHaveLength(2);
   });
 
-  test("§1.4 · no box is held immune while a guarded call waits for a human", async () => {
+  test("§1.4 · a box IS now held while a guarded call waits — the wait moved to the door", async () => {
+    // RECORDED, not celebrated. The approval wait used to happen in THIS driver,
+    // which armed the idle timer across it so a wait outliving the idle budget
+    // lost the box (and losing it mid-turn is a case the store survives). It now
+    // happens inside the door, on the host, and from out here it is
+    // indistinguishable from a slow tool — so the box survives the whole window,
+    // bounded by MESSAGE_BUDGET_MS. Better for the user (an approved call
+    // resumes on the same session), worse for cost. The lane's close note calls
+    // it out as a deviation; this test is what stops it being invisible.
     const sandbox = fakeSandbox(async () => undefined);
-    let aliveDuringCall: boolean | undefined;
     const machine = await boxMachine({ sandbox, threadId: "thr_lease", env: {}, idleTtlMs: 20 });
-    // The driver arms the idle timer around every host-side call, so a box may be
-    // reclaimed under an approval wait exactly as it may under an idle gap.
     const box = sandbox.boxes[0]!;
     const request = box.request.bind(box);
+    let slowPollDone = false;
     box.request = async (req) => {
-      if (req.path.endsWith("/poll")) {
-        // Park an ask so the driver goes and executes it host-side.
+      if (req.path.endsWith("/poll") && !slowPollDone) {
+        // A door call blocking on a human tap looks exactly like this from here.
+        await wait(60);
+        slowPollDone = true;
         return {
           status: 200,
           headers: {},
-          body: encoder.encode(JSON.stringify({
-            events: [], cursor: 0, asks: [{ id: "a1", name: "t", args: {} }], done: false,
-          })),
+          body: encoder.encode(JSON.stringify({ events: [], cursor: 0, done: false })),
         };
       }
       return request(req);
     };
-    const running = machine.send({
-      prompt: "p",
-      tools: [],
-      callTool: async () => {
-        // NOTHING releases the box here — the driver itself must have armed the
-        // idle timer for the duration of the call.
-        await wait(60);
-        aliveDuringCall = !sandbox.boxes[0]!.destroyed;
-        return { status: "ok", output: {} };
-      },
-      emit: () => undefined,
-    }).catch(() => undefined);
-    await running;
-    expect(aliveDuringCall).toBe(false);
+    await machine.send({ prompt: "p", emit: () => undefined });
+    // Three times the idle budget later, the box is still there.
+    expect(sandbox.boxes[0]!.destroyed).toBe(false);
   });
 });
 
@@ -550,25 +548,63 @@ describe("a turn on a real box wire", () => {
     expect(JSON.parse(state.pending().value!)).toMatchObject({ sessionId: "sess_1" });
   });
 
-  test("a projected tool executes HOST-side, once, through turn.tools.call", async () => {
-    let answered: unknown;
-    const sandbox = fakeSandbox(async (box) => {
-      answered = await box.callTool("maple_invoices_list", { limit: 3 });
+  test("the driver mints a credential and hands the box the door — the only way it reaches the world", async () => {
+    let seen: { url: string; token: string } | undefined;
+    const sandbox = fakeSandbox(async (box) => { seen = box.toolDoor; });
+    const harness = claudeCode({ sandbox });
+    const minted: string[] = [];
+    provideHarnessAdapters(harness, {
+      toolDoor: {
+        url: "https://app.example.com/api/vendo/mcp",
+        mint: (threadId: string) => {
+          minted.push(threadId);
+          return `vtk_for_${threadId}`;
+        },
+        revoke: () => undefined,
+      },
     });
-    const { turn, calls } = makeTurn();
-    await drain(claudeCode({ sandbox }), turn);
-    expect(calls).toEqual([{ name: "maple_invoices_list", args: { limit: 3 } }]);
-    expect(answered).toEqual({ status: "ok", output: { ok: true } });
+    const { turn } = makeTurn({ threadId: "thr_mint" });
+    await drain(harness, turn);
+
+    // Minted for THIS conversation, and named by nothing else: the registry
+    // reads the subject off the turn in flight (`turn-credentials.ts`).
+    expect(minted).toEqual(["thr_mint"]);
+    expect(seen).toEqual({
+      url: "https://app.example.com/api/vendo/mcp",
+      token: "vtk_for_thr_mint",
+    });
   });
 
-  test("a guard denial reaches the box as a denial it can narrate", async () => {
-    let answered: unknown;
-    const sandbox = fakeSandbox(async (box) => { answered = await box.callTool("maple_invoices_pay", {}); });
-    const { turn } = makeTurn({
-      answer: () => ({ status: "denied", reason: "You'll need to approve that." }),
+  test("ONE credential per conversation — a warm machine's second message reuses it, because a live session's headers are fixed at open", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const harness = claudeCode({ sandbox });
+    let issued = 0;
+    provideHarnessAdapters(harness, {
+      toolDoor: {
+        url: "https://app.example.com/api/vendo/mcp",
+        mint: () => `vtk_${(issued += 1)}`,
+        revoke: () => undefined,
+      },
     });
-    await drain(claudeCode({ sandbox }), turn);
-    expect(answered).toEqual({ status: "denied", reason: "You'll need to approve that." });
+    await drain(harness, makeTurn({ threadId: "thr_one_cred" }).turn);
+    await drain(harness, makeTurn({ threadId: "thr_one_cred" }).turn);
+
+    // A second mint per turn would leak a live credential per message. Safe
+    // because the AUTHORITY is per turn regardless of how old the token is.
+    expect(issued).toBe(1);
+  });
+
+  test("a door with no reachable URL REFUSES the turn — a model with a workspace and no hands is not a degradation to ship", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const harness = claudeCode({ sandbox });
+    provideHarnessAdapters(harness, {
+      toolDoor: { url: undefined, mint: () => "vtk_x", revoke: () => undefined },
+    });
+    const events = await drain(harness, makeTurn().turn);
+    expect(events).toContainEqual({
+      type: "error",
+      message: "I can't use this product's actions right now.",
+    });
   });
 
   test("D2 · Turn.system reaches the box WHOLE, with the embedding note after it", async () => {
@@ -588,27 +624,29 @@ describe("a turn on a real box wire", () => {
     expect(brief).toContain("app.vendo");
   });
 
-  test("the tool listing the box sees is the CURATED one, with its schemas", async () => {
-    let projected: unknown;
+  test("NO tool listing travels to the box any more — the door lists live, so nothing can go stale", async () => {
+    let payload: Record<string, unknown> | undefined;
     const sandbox = fakeSandbox(async () => undefined);
     const { turn } = makeTurn();
-    // Intercept what the driver sends to /session/message.
     const original = sandbox.create.bind(sandbox);
     sandbox.create = async (spec) => {
       const box = await original(spec);
       const request = box.request.bind(box);
       box.request = async (req) => {
         if (req.path === "/session/message" && req.body !== undefined) {
-          projected = JSON.parse(decoder.decode(req.body as Uint8Array))["tools"];
+          payload = JSON.parse(decoder.decode(req.body as Uint8Array)) as Record<string, unknown>;
         }
         return request(req);
       };
       return box;
     };
     await drain(claudeCode({ sandbox }), turn);
-    expect(projected).toEqual([
-      { name: "maple_invoices_list", title: "List invoices", description: "d" },
-    ]);
+    // The snapshot-once limitation died with the projection: an SDK MCP server's
+    // tool set is fixed at session open, so a tool `find_tools` equipped
+    // mid-conversation used to cost a session REOPEN. `tools/list` at the door
+    // is answered from `turn.tools.list()` on every ask.
+    expect(payload).toBeDefined();
+    expect(payload!["tools"]).toBeUndefined();
   });
 
   test("/user/scratch never leaves the box, and /host is never written back", async () => {

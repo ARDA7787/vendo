@@ -2320,9 +2320,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // rather than opening a session that would 401 on its first tool call.
     ...(mcpOptions === undefined ? {} : {
       toolDoor: {
-        url: configuredBaseUrl === undefined
+        // The SAME origin the door itself is configured with, or a machine would
+        // be pointed at a URL discovery never advertises.
+        url: (mcpOptions.baseUrl ?? configuredBaseUrl) === undefined
           ? undefined
-          : new URL(MCP_MOUNT, configuredBaseUrl).toString(),
+          : new URL(MCP_MOUNT, mcpOptions.baseUrl ?? configuredBaseUrl).toString(),
         mint: (threadId: string) => turnCredentials.mint(threadId),
         revoke: (token: string) => turnCredentials.revoke(token),
       },

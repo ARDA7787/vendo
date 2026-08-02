@@ -17,15 +17,13 @@
 import type {
   Harness,
   HarnessEvent,
-  Json,
-  ToolListing,
   Turn,
 } from "@vendoai/core";
-import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedResult } from "@vendoai/apps/claude-turn";
+import type { ClaudeTurnEvent } from "@vendoai/apps/claude-turn";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { defineHarness } from "../define.js";
-import { harnessAdapters } from "../harness-sandbox.js";
+import { harnessAdapters, type ToolDoorPort } from "../harness-sandbox.js";
 import { checkoutWorkspace, type SyncFile } from "../materialize.js";
 import { HOT_PATH_FILES } from "../render-seam.js";
 import type { SessionMachine } from "./machine.js";
@@ -145,13 +143,6 @@ function embeddingBrief(root: string): string {
     + ` if one comes back refused, say so plainly and move on. UI you build goes in \`app.vendo\`.`;
 }
 
-const listingToTool = (listing: ToolListing): ClaudeTurnTool => ({
-  name: listing.name,
-  title: listing.title,
-  description: listing.description,
-  ...(listing.inputSchema === undefined ? {} : { inputSchema: listing.inputSchema }),
-});
-
 /** `turn.state` — the opaque blob (§1.3). Ours to shape, nobody else's to read. */
 interface ClaudeState {
   /**
@@ -200,6 +191,18 @@ const readState = (raw: string | undefined): ClaudeState => {
     return {};
   }
 };
+
+/**
+ * One door credential per CONVERSATION, held exactly as long as its machine is.
+ *
+ * Not per turn, because the session's `mcpServers` headers are fixed when the
+ * SDK session opens and a warm machine never reopens. That is safe because the
+ * credential's AUTHORITY is per turn regardless: it resolves to the turn in
+ * flight on this thread and to nothing between turns (`turn-credentials.ts`).
+ * A machine that is not carrying a session is about to open a fresh one, so its
+ * old credential is revoked here rather than left to the registry's idle sweep.
+ */
+const doorTokens = new Map<string, string>();
 
 /** A callback-driven producer, consumed by the generator that must `yield`. */
 function eventQueue<T>() {
@@ -286,6 +289,39 @@ export function claudeCode(
         !machine.carriesSession,
       );
 
+      // The host's MCP door — the ONLY way this harness reaches the world now
+      // that the in-process projection is gone (10-mcp §3b).
+      const doorPort = harnessAdapters(harness).toolDoor as ToolDoorPort | undefined;
+      let door: { url: string; token: string } | undefined;
+      if (doorPort !== undefined) {
+        if (doorPort.url === undefined) {
+          // A door exists but nothing can reach it. Loud for the operator,
+          // because only they can fix it, and one plain sentence for the user —
+          // the same shape as the missing-sandbox branch above. Running on
+          // anyway would hand the model a workspace and no hands, which is the
+          // polite-refusal-at-HTTP-200 failure this codebase refuses to ship.
+          console.error(
+            "[vendo] claudeCode() cannot reach the MCP door: set VENDO_BASE_URL (or "
+            + "`mcp: { baseUrl }`) to the deployment's public origin. The agent's tools "
+            + "travel over that door, so without it the model has no way to act.",
+          );
+          yield { type: "error", message: "I can't use this product's actions right now." };
+          return;
+        }
+        const conversation = threadOf(turn);
+        if (!machine.carriesSession) {
+          const previous = doorTokens.get(conversation);
+          if (previous !== undefined) doorPort.revoke(previous);
+          doorTokens.delete(conversation);
+        }
+        let token = doorTokens.get(conversation);
+        if (token === undefined) {
+          token = doorPort.mint(conversation);
+          if (token !== undefined) doorTokens.set(conversation, token);
+        }
+        if (token !== undefined) door = { url: doorPort.url, token };
+      }
+
       const events = eventQueue<ClaudeTurnEvent>();
       /** One sync at a time: the façade stages in memory, and two overlapping
        *  commits would race each other's staging set. */
@@ -322,7 +358,6 @@ export function claudeCode(
           }).catch(() => undefined);
         };
 
-        const tools = (await turn.tools.list()).map(listingToTool);
         // `Turn.skills` finally reaches this harness. Before cc-native the pack
         // skills were materialized onto the box's disk and NOTHING pointed the
         // model at them — they were files it might stumble on. Naming them here
@@ -333,7 +368,7 @@ export function claudeCode(
         const running = machine.send({
           prompt: promptFor(turn.messages, sessionId !== undefined),
           systemPrompt: `${turn.system ?? ""}${embeddingBrief(rootHintFor(resolved))}`,
-          tools,
+          ...(door === undefined ? {} : { toolDoor: door }),
           ...(resolved.model === undefined ? {} : { model: resolved.model }),
           ...(resolved.effort === undefined ? {} : { effort: resolved.effort }),
           ...(resolved.maxTurns === undefined ? {} : { maxTurns: resolved.maxTurns }),
@@ -347,7 +382,6 @@ export function claudeCode(
           ...(skillNames.length === 0
             ? {}
             : { pluginPath: machine.pluginPath, skillNames }),
-          callTool: (name, args) => callGuarded(turn, name, args),
           emit: (event) => events.push(event),
           onFileWritten: () => syncHotNow(),
           signal: turn.signal,
@@ -402,18 +436,6 @@ export function claudeCode(
     },
   });
   return harness;
-}
-
-/** Contract §1.1's three statuses, flattened for the wire the machine speaks. */
-async function callGuarded(
-  turn: Turn<ClaudeCodeOptions>,
-  name: string,
-  args: Record<string, unknown>,
-): Promise<GuardedResult> {
-  const result = await turn.tools.call(name, args as Json);
-  if (result.status === "ok") return { status: "ok", output: result.output };
-  if (result.status === "denied") return { status: "denied", reason: result.reason };
-  return { status: "error", message: result.error.message };
 }
 
 /**

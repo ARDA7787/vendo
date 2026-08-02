@@ -190,28 +190,32 @@ describe("one session per conversation, chat in / stream out", () => {
       .toEqual(["re: alpha", "re: beta"]);
   });
 
-  test("the in-process tool projection still runs, unchanged, inside a live session", async () => {
-    const called: string[] = [];
+  test("the host's door rides the SESSION, so every message of a conversation reaches the same tools", async () => {
+    const toolDoor = { url: "https://app.example.com/api/vendo/mcp", token: "vtk_live" };
     const { session, record } = openSession(
       (_prompt, index) => (index === 0
         ? [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, input: { limit: 2 } } }]
         : [{ say: "done" }]),
-      {
-        callTool: async (name: string) => {
-          called.push(name);
-          return { status: "ok", output: [] };
-        },
-      },
+      { toolDoor },
     );
     await session.send("list them");
     await session.send("thanks");
     await session.end();
 
-    // The BARE name reaches turn.tools.call, exactly as before — the parity gate
-    // said the door is not a substitute, so this projection is unchanged.
-    expect(called).toEqual(["maple_invoices_list"]);
+    // ONE `query()` for the conversation, so the door's URL and credential are
+    // set once and serve every message. The credential survives that because its
+    // AUTHORITY is per turn, not per token (`turn-credentials.ts`).
+    expect(record.options["mcpServers"]).toEqual({
+      [VENDO_MCP_SERVER]: {
+        type: "http",
+        url: toolDoor.url,
+        headers: { Authorization: `Bearer ${toolDoor.token}` },
+        alwaysLoad: true,
+      },
+    });
+    // The hook allows it and the ENGINE dispatches it over HTTP — nothing
+    // executes in this process, which is what deleted the bridge.
     expect(record.permissions[0]?.verdict).toBe("allow");
-    expect(record.options["mcpServers"]).toHaveProperty(VENDO_MCP_SERVER);
   });
 
   test("two CONCURRENT sends are serialized — both settle, in order, and neither hangs", async () => {

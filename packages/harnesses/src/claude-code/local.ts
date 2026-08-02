@@ -2,10 +2,15 @@
  * `machine: "local"` — build list item 7.
  *
  * The explicit opt-in that runs the Agent SDK on the host's own server: the
- * workspace materializes to a temp dir, the SAME sync-back seam lands the diff,
- * and `callTool` is a direct call instead of a bridge hop. Never the default — a
- * spawned-CLI harness without a sandbox is a boot error (design §9), and this is
- * the escape hatch a host chooses on purpose.
+ * workspace materializes to a temp dir, and the SAME sync-back seam lands the
+ * diff. Never the default — a spawned-CLI harness without a sandbox is a boot
+ * error (design §9), and this is the escape hatch a host chooses on purpose.
+ *
+ * Tools reach the host's MCP door exactly as the box's do (10-mcp §3b), over a
+ * real HTTP round trip to the deployment's own base URL. That is deliberate
+ * sameness: `machine: "local"` is an opt-in about WHERE the SDK runs, and making
+ * it a second tool transport is what turned it into a second implementation of
+ * the same harness before.
  *
  * The SDK arrives by DYNAMIC import, bundler-ignored: it is an optional peer, so
  * neither `tsc`, nor a host's BUILD, nor a host who never opts in ever needs the
@@ -98,8 +103,6 @@ async function walk(directory: string, out: string[] = []): Promise<string[]> {
 interface LocalSession {
   /** The live `ClaudeSession`, once the first message has opened it. */
   session?: { send(prompt: string): Promise<void>; interrupt(): Promise<void>; end(): Promise<void> };
-  /** The tool listing the session was opened with, as one comparable string. */
-  openedWith: string;
   /** Has this thread's workspace been materialized in this process? */
   warm: boolean;
   /** What this thread's disk holds — the sync-back baseline, per conversation. */
@@ -109,20 +112,14 @@ interface LocalSession {
    * allowed to close over.
    *
    * A session outlives the turn that opened it, so capturing that turn's `emit`
-   * and `callTool` directly sent every later turn's text and tool calls to a
-   * queue nobody was draining — measured live 2026-08-02: the user's second
-   * message came back completely empty. The box path routes through whichever
-   * message is in flight for exactly this reason; local mode does the same.
+   * directly sent every later turn's text to a queue nobody was draining —
+   * measured live 2026-08-02: the user's second message came back completely
+   * empty. The box path routes through whichever message is in flight for
+   * exactly this reason; local mode does the same.
    */
-  live?: Pick<SessionMessage, "callTool" | "emit" | "onFileWritten">;
+  live?: Pick<SessionMessage, "emit" | "onFileWritten">;
 }
 const locals = new Map<string, LocalSession>();
-
-/** An in-process MCP server's tool set is fixed when the session opens, but OUR
- *  equipped set can grow mid-conversation (`find_tools`). The session is REOPENED
- *  on the rare message where the listing actually changed. */
-const fingerprint = (tools: readonly { name: string }[]): string =>
-  tools.map((tool) => tool.name).sort().join(" ");
 
 export interface LocalMachineOptions {
   threadId: string;
@@ -141,7 +138,7 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
   // measured: turn 2 of a live thread failed outright instead of remembering.
   const root = path.join(home, "workspace");
   const configDir = path.join(home, "claude");
-  const held = locals.get(options.threadId) ?? { openedWith: "", warm: false, tree: emptyTree() };
+  const held = locals.get(options.threadId) ?? { warm: false, tree: emptyTree() };
   locals.set(options.threadId, held);
   // A FRESH thread gets an emptied tree: the STORE is the truth, and
   // re-materializing from it is what makes "a different harness sees the
@@ -205,15 +202,14 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
     async send(message: SessionMessage) {
       // Point the session's sinks at THIS turn before anything can arrive.
       held.live = {
-        callTool: message.callTool,
         emit: message.emit,
         ...(message.onFileWritten === undefined ? {} : { onFileWritten: message.onFileWritten }),
       };
-      const wanted = fingerprint(message.tools);
       // `reopen` is a TRUNCATION: the session remembers an answer the user threw
-      // away, so it must not survive. A changed tool listing is the other reason
-      // to reopen, and that one keeps its memory (the caller still passes resume).
-      if (held.session !== undefined && (message.reopen === true || wanted !== held.openedWith)) {
+      // away, so it must not survive. It used to ALSO fire on a changed tool
+      // listing, because an in-process MCP server's tool set is fixed at open;
+      // the door lists live, so that reason is gone.
+      if (held.session !== undefined && message.reopen === true) {
         const closing = held.session;
         held.session = undefined;
         await closing.end().catch(() => undefined);
@@ -224,13 +220,13 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
         const sdk = options.openSession === undefined ? await loadAgentSdk() : undefined;
         held.session = createClaudeSession({
           systemPrompt: message.systemPrompt,
-          tools: message.tools,
           model: message.model,
           effort: message.effort,
           maxTurns: message.maxTurns,
           ...(message.resume === undefined ? {} : { resume: message.resume }),
           ...(message.pluginPath === undefined ? {} : { pluginPath: message.pluginPath }),
           ...(message.skillNames === undefined ? {} : { skillNames: message.skillNames }),
+          ...(message.toolDoor === undefined ? {} : { toolDoor: message.toolDoor }),
           cwd: root,
           // CLAUDE_CONFIG_DIR is the whole handoff: the SDK reads it from the
           // environment, so the runner is told nothing about where the session lands.
@@ -239,15 +235,10 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
           // outlives the turn that opened it (see LocalSession.live). Between
           // turns nothing is in flight, and anything arriving then is dropped
           // rather than attributed to the next turn.
-          callTool: async (name: string, args: Record<string, unknown>) =>
-            held.live === undefined
-              ? { status: "error" as const, message: "That didn't work." }
-              : held.live.callTool(name, args),
           emit: (event: ClaudeTurnEvent) => held.live?.emit(event),
           onFileWritten: (written: string | undefined) => held.live?.onFileWritten?.(written),
           ...(sdk === undefined ? {} : { sdk }),
         });
-        held.openedWith = wanted;
       }
       held.warm = true;
       if (message.signal?.aborted === true) {

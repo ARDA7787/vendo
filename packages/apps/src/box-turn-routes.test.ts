@@ -30,8 +30,8 @@ type Any = any;
 /**
  * A session double. The real `createClaudeSession` opens ONE query and answers
  * each pushed message; this stands in for it by running `body` per `send()`, so
- * the door's own halves — the parked ask, the poll cursor, the message registry —
- * are the only things under test.
+ * the door's own halves — the poll cursor, the message registry, the credential
+ * hand-off — are the only things under test.
  */
 const scripted = (body: (input: Any, prompt: string) => Promise<void>) => {
   const opens: Any[] = [];
@@ -204,9 +204,9 @@ describe("one live session, many messages", () => {
     const prompts: string[] = [];
     const door = routes(root, async (_input, prompt) => { prompts.push(prompt); });
 
-    const first = await send(door, "what do I owe?", { tools: [{ name: "a" }] });
+    const first = await send(door, "what do I owe?");
     await door.messagePromise(first.body.messageId);
-    const second = await send(door, "and the oldest?", { tools: [{ name: "a" }] });
+    const second = await send(door, "and the oldest?");
     await door.messagePromise(second.body.messageId);
 
     expect(prompts).toEqual(["what do I owe?", "and the oldest?"]);
@@ -214,23 +214,34 @@ describe("one live session, many messages", () => {
     expect(door.__opens).toHaveLength(1);
   });
 
-  test("a CHANGED tool listing reopens the session, resuming its own id so nothing is forgotten", async () => {
+  test("a changed tool set NO LONGER reopens the session — the door lists live", async () => {
     const root = newRoot();
     const door = routes(root, async (input) => {
       input.emit({ type: "session", sessionId: "sess_box" });
     });
 
-    const first = await send(door, "one", { tools: [{ name: "a" }] });
-    await door.messagePromise(first.body.messageId);
-    // `find_tools` equipped something new, so the in-process MCP server has to be
-    // rebuilt — an SDK MCP server's tool set is fixed at session open.
-    const second = await send(door, "two", { tools: [{ name: "a" }, { name: "b" }] });
-    await door.messagePromise(second.body.messageId);
+    await door.messagePromise((await send(door, "one")).body.messageId);
+    // `find_tools` equipping something new used to force a reopen, because an
+    // in-process MCP server's tool set is fixed at session open. The host's door
+    // answers `tools/list` fresh on every ask, so there is nothing to rebuild.
+    await door.messagePromise((await send(door, "two")).body.messageId);
+
+    expect(door.__opens).toHaveLength(1);
+    expect(door.__opens[0].__ended).toBeUndefined();
+  });
+
+  test("a TRUNCATION still reopens, and the fresh session resumes nothing", async () => {
+    const root = newRoot();
+    const door = routes(root, async (input) => {
+      input.emit({ type: "session", sessionId: "sess_box" });
+    });
+    await door.messagePromise((await send(door, "one")).body.messageId);
+    await door.messagePromise((await send(door, "two", { reopen: true })).body.messageId);
 
     expect(door.__opens).toHaveLength(2);
-    // The reopen carries the session id forward, so a new tool costs a restart
-    // and never a memory.
-    expect(door.__opens[1].resume).toBe("sess_box");
+    // §1.3: the session remembered an answer the user threw away, so it must NOT
+    // come back with its memory — the host's prompt carries the re-seed.
+    expect(door.__opens[1].resume).toBeUndefined();
     expect(door.__opens[0].__ended).toBe(true);
   });
 
@@ -262,141 +273,48 @@ describe("one live session, many messages", () => {
   });
 });
 
-describe("the inverted bridge — the host executes, the box never does", () => {
-  test("a projected call is parked, handed out on the next poll, and answered", async () => {
+describe("the host's MCP door, forwarded as DATA", () => {
+  test("the credential and the door URL reach the session verbatim, and the box asserts nothing about them", async () => {
     const root = newRoot();
-    let seen: { name: string; args: unknown } | undefined;
-    let answered: unknown;
-    const door = routes(root, async (input) => {
-      input.emit({ type: "text", delta: "checking" });
-      answered = await input.callTool("maple_invoices_list", { limit: 2 });
-      input.emit({ type: "text", delta: "done" });
-    });
+    const door = routes(root, async () => undefined);
+    const toolDoor = { url: "https://app.example.com/api/vendo/mcp", token: "vtk_abc123" };
 
-    const started = await send(door, "hi");
-    expect(started.status).toBe(202);
-    const messageId = started.body.messageId as string;
-
-    let cursor = 0;
-    const first = await door.handle("POST", `/session/${messageId}/poll`, auth, { cursor, waitMs: 500 });
-    cursor = first.body.cursor;
-    expect(first.body.events).toEqual([{ type: "text", delta: "checking" }]);
-    expect(first.body.asks).toHaveLength(1);
-    expect(first.body.asks[0]).toMatchObject({ name: "maple_invoices_list", args: { limit: 2 } });
-    seen = first.body.asks[0];
-
-    await door.handle("POST", `/session/${messageId}/answer`, auth, {
-      id: (seen as { id: string }).id,
-      result: { status: "ok", output: { invoices: [] } },
-    });
-    expect(answered).toEqual({ status: "ok", output: { invoices: [] } });
-
-    await door.messagePromise(messageId);
-    const last = await door.handle("POST", `/session/${messageId}/poll`, auth, { cursor, waitMs: 100 });
-    expect(last.body.events).toEqual([{ type: "text", delta: "done" }]);
-    expect(last.body.done).toBe(true);
-  });
-
-  test("a denial from the host reaches the model verbatim, as a denial", async () => {
-    const root = newRoot();
-    let got: unknown;
-    const door = routes(root, async (input) => {
-      got = await input.callTool("maple_invoices_pay", { id: "inv_1" });
-    });
-    const { body } = await send(door, "pay it");
-    const polled = await door.handle("POST", `/session/${body.messageId}/poll`, auth, { cursor: 0, waitMs: 500 });
-    await door.handle("POST", `/session/${body.messageId}/answer`, auth, {
-      id: polled.body.asks[0].id,
-      result: { status: "denied", reason: "You'll need to approve that." },
-    });
+    const { body } = await send(door, "what do I owe?", { toolDoor });
     await door.messagePromise(body.messageId);
-    expect(got).toEqual({ status: "denied", reason: "You'll need to approve that." });
+
+    // Handed straight to `createClaudeSession`. The box cannot mint one, cannot
+    // inspect one, and has no path to the host except this URL — which is the
+    // whole of what replaced the inverted bridge.
+    expect(door.__opens[0].toolDoor).toEqual(toolDoor);
   });
 
-  test("anything the host sends is DATA — an unknown status degrades to a narratable error", async () => {
+  test("a message with NO door opens a session with none — a host that never opened one is a real deployment", async () => {
     const root = newRoot();
-    let got: unknown;
-    const door = routes(root, async (input) => { got = await input.callTool("x", {}); });
-    const { body } = await send(door, "go");
-    const polled = await door.handle("POST", `/session/${body.messageId}/poll`, auth, { cursor: 0, waitMs: 500 });
-    await door.handle("POST", `/session/${body.messageId}/answer`, auth, {
-      id: polled.body.asks[0].id,
-      result: { status: "approve-everything", output: "trust me" },
-    });
+    const door = routes(root, async () => undefined);
+    const { body } = await send(door, "hello");
     await door.messagePromise(body.messageId);
-    expect(got).toMatchObject({ status: "error" });
+    expect(door.__opens[0].toolDoor).toBeUndefined();
   });
 
-  test("M2 · TWO concurrent projected calls are both handed out — neither starves", async () => {
+  test("there is no /answer route left to post a tool result to", async () => {
     const root = newRoot();
-    const answers: unknown[] = [];
-    const door = routes(root, async (input) => {
-      // The model emitted two tool_use blocks in one assistant turn; the SDK
-      // dispatches both MCP handlers before either resolves.
-      answers.push(...await Promise.all([
-        input.callTool("maple_invoices_list", { status: "open" }),
-        input.callTool("maple_invoices_list", { status: "paid" }),
-      ]));
-    });
-    const { body } = await send(door, "both");
-    const polled = await door.handle("POST", `/session/${body.messageId}/poll`, auth, { cursor: 0, waitMs: 500 });
-    expect(polled.body.asks).toHaveLength(2);
-    for (const ask of polled.body.asks) {
-      await door.handle("POST", `/session/${body.messageId}/answer`, auth, {
-        id: ask.id,
-        result: { status: "ok", output: ask.args },
-      });
-    }
-    await door.messagePromise(body.messageId);
-    expect(answers).toHaveLength(2);
-    expect(answers.map((a: Any) => a.output.status).sort()).toEqual(["open", "paid"]);
-  });
-
-  test("M2 · an ask is handed out ONCE, so the host can never execute one intent twice", async () => {
-    const root = newRoot();
-    const door = routes(root, async (input) => { await input.callTool("x", {}); });
-    const { body } = await send(door, "go");
-    const first = await door.handle("POST", `/session/${body.messageId}/poll`, auth, { cursor: 0, waitMs: 300 });
-    expect(first.body.asks).toHaveLength(1);
-    // A second poll before answering must NOT re-offer it.
-    const second = await door.handle("POST", `/session/${body.messageId}/poll`, auth, {
-      cursor: first.body.cursor, waitMs: 50,
-    });
-    expect(second.body.asks ?? []).toHaveLength(0);
-    await door.handle("POST", `/session/${body.messageId}/answer`, auth, {
-      id: first.body.asks[0].id, result: { status: "ok", output: 1 },
-    });
-    await door.messagePromise(body.messageId);
-  });
-
-  test("a message that fails still ends, with a consumer-voice error and no dangling ask", async () => {
-    const root = newRoot();
-    const door = routes(root, async () => { throw new Error("ANTHROPIC_API_KEY missing"); });
+    const door = routes(root, async () => undefined);
     const { body } = await send(door, "go");
     await door.messagePromise(body.messageId);
-    const polled = await door.handle("POST", `/session/${body.messageId}/poll`, auth, { cursor: 0, waitMs: 100 });
-    expect(polled.body.done).toBe(true);
-    expect(polled.body.asks ?? []).toHaveLength(0);
-    expect(JSON.stringify(polled.body.events)).not.toContain("ANTHROPIC_API_KEY");
-    expect(polled.body.events[0]).toMatchObject({ type: "error" });
+    const answered = await door.handle("POST", `/session/${body.messageId}/answer`, auth, { id: "ask_1" });
+    expect(answered.status).toBe(404);
   });
 
   test("one message at a time per box", async () => {
     const root = newRoot();
-    const door = routes(root, async (input) => { await input.callTool("x", {}); });
-    await send(door, "one");
-    expect((await send(door, "two")).status).toBe(409);
-  });
-
-  test("a tool call arriving between messages is refused rather than misattributed", async () => {
-    const root = newRoot();
-    let escaped: unknown;
-    const door = routes(root, async () => undefined);
-    const { body } = await send(door, "go");
-    await door.messagePromise(body.messageId);
-    // The live session outlives the message, so a late handler CAN still fire.
-    // It must not land in the next message's ask queue.
-    escaped = await door.__opens[0].callTool("maple_invoices_pay", { id: "inv_1" });
-    expect(escaped).toMatchObject({ status: "error" });
+    let release: (() => void) | undefined;
+    const door = routes(root, async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+    });
+    const first = await send(door, "one");
+    const second = await door.handle("POST", "/session/message", auth, { prompt: "two" });
+    expect(second.status).toBe(409);
+    release?.();
+    await door.messagePromise(first.body.messageId);
   });
 });
