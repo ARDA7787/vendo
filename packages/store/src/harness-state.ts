@@ -26,13 +26,18 @@ import { dbFor, type VendoStore } from "./store.js";
  * sits BELOW `@vendoai/harnesses` in the layering (contract §2) — the shape is
  * the contract, as it is for `threadMessageStore`.
  */
+/** The synthetic `app_id` a thread's harness state rides under. Shared with the
+ *  thread delete path (`helpers/threads.ts`), which sweeps the row so no
+ *  native-session ref outlives its thread. */
+export const harnessStateKey = (threadId: string): string => `harness_state:${threadId}`;
+
 export function harnessStateStore(store: VendoStore): {
   get(threadId: string, harnessName: string): Promise<string | undefined>;
   set(threadId: string, harnessName: string, value: string | undefined): Promise<void>;
   clear(threadId: string): Promise<void>;
 } {
   const db = dbFor(store);
-  const key = (threadId: string): string => `harness_state:${threadId}`;
+  const key = harnessStateKey;
 
   const ownerOf = async (threadId: string): Promise<string> => {
     const result = await db.query("SELECT subject FROM vendo_threads WHERE id = $1", [threadId]);

@@ -1,4 +1,5 @@
 import { VendoError, type Json, type Principal, type ThreadId } from "@vendoai/core";
+import { harnessStateKey } from "../harness-state.js";
 import { dbFor, type VendoStore } from "../store.js";
 import type { ThreadRow } from "./types.js";
 import { putThreadRow, THREAD_MESSAGES_AGGREGATE, threadFromRow } from "./rows.js";
@@ -61,7 +62,17 @@ export function threadStore(store: VendoStore): {
       }));
     },
     async delete(principal, id) {
-      await db.query("DELETE FROM vendo_threads WHERE id = $1 AND subject = $2", [id, principal.subject]);
+      const deleted = await db.query(
+        "DELETE FROM vendo_threads WHERE id = $1 AND subject = $2 RETURNING id",
+        [id, principal.subject],
+      );
+      // The thread's harness state (a native-session ref) rides `vendo_state`
+      // under a synthetic app_id, so no table cascade covers it — without this
+      // sweep the ref outlives its thread until a subject-level erase. Guarded
+      // on the RETURNING row: a foreign principal's no-op delete sweeps nothing.
+      if (deleted.rows.length > 0) {
+        await db.query("DELETE FROM vendo_state WHERE app_id = $1", [harnessStateKey(id)]);
+      }
     },
 
     /**
