@@ -31,6 +31,13 @@ the time the useless grant landed.
 | 3 | Same workspace with a host that wired NO directory | The picker offers *"Everyone at Maple Bank"* and *"The support team"* and **no person option at all**. Teams and orgs are untouched by the absence. | `05` | **PASS** |
 | 4 | Yousef removed *Rate watch* in one tab, then clicked **Remove** on it in a second, stale tab | The page says *"This app isn't available any more."* It used to render the wire's own sentence — `app not found: app_b1_stale` — verbatim. | `06` | **PASS** |
 
+**Captured at commit `07b8cffbf`.** Two later commits touch this surface and
+neither changes any shot above: `a134d13ed` moves a comment and stops showing the
+"Shared with …" note for TEAM and ORG shares (every shot here is the person path,
+where it still shows), and nothing after that touches the dialog. Said out loud
+because the E8 evidence next door had to be annotated for exactly this
+(`../2026-08-01-wave3-e8/README.md`, annotations A1–A5).
+
 ## Which half was UI, which was API
 
 Everything decisive was UI. Two notes, stated plainly:
