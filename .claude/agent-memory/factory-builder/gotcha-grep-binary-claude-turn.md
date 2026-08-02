@@ -19,6 +19,20 @@ symbol you have other evidence exists (e.g. `internal.ts` re-exports it), re-run
 with `grep -a` before concluding anything. `grep -a -n "Symbol" <file>` works
 normally. `Read` also works fine — it renders the NUL as a space.
 
+**You can also CREATE this trap yourself.** 2026-08-02: writing `"ma ple"` in an
+Edit `new_string` landed a raw NUL in `packages/vendo/src/org-policy.test.ts`.
+Every later `Edit` on that region failed with "String to replace not found" (the
+NUL never round-trips through the tool's matcher), and `grep` went silent on the
+whole file. The tell is `file <path>` printing `data` instead of
+`… text`. Fix it out of band:
+
+```
+python3 -c "b=open(P,'rb').read(); open(P,'wb').write(b.replace(b'\x00', b'…'))"
+```
+
+Write control bytes as escapes (the two characters backslash-zero), never as literal bytes, and run
+`file` on any source file whose Edit mysteriously stops matching.
+
 Related: [[gotcha-stale-dist-phantom-results]] — the sibling trap where `dist`
 has the symbol and `src` appears not to. Both look like "this capability does not
 exist"; neither is true.

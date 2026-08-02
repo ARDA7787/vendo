@@ -21,3 +21,14 @@ be observed, and by another rebuild after reverting.
 parallel vitest runs EPIPE-crash each other. Known pre-existing failures that
 are space-in-path artifacts, not real: 3 core `packaging.e2e`, 2 vendo
 dev-creds/model, 2 store durability drills.
+
+**The sibling hazard, in a SHARED worktree:** dist can also change *underneath*
+a suite that is already running, when another agent in the same worktree runs
+`pnpm build`. Wave-3 fix agent B saw one integration test fail in two
+consecutive full runs and pass in isolation; `stat` on
+`packages/apps/dist/runtime.js` and `packages/automations/dist/engine.js` showed
+both rewritten inside the failing window, minutes before the sibling's commits.
+So before believing a full-suite failure in a shared worktree, check the dist
+mtimes of the packages the test crosses against the run's start time — and
+prefer scoped runs, which are short enough to sit between the sibling's builds.
+See [[feedback-revert-check-in-shared-worktree]].
