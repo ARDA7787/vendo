@@ -12,6 +12,7 @@ import {
   type Json,
   type PermissionGrant,
   type Principal,
+  type RecordStore,
   type RunContext,
   type RunId,
   type Step,
@@ -25,6 +26,21 @@ import {
 import { Cron } from "croner";
 import jsonata from "jsonata";
 import { z } from "zod";
+import { adoptionCard, type AdoptionCard } from "./adoption.js";
+import {
+  claimSponsorship,
+  currentIntentHash,
+  declaredSurface,
+  markSponsored,
+  readSponsorship,
+  SPONSORED,
+  SPONSORSHIPS,
+  sponsorName,
+  sponsorshipSchema,
+  wasSponsored,
+  writeSponsorship,
+  type Sponsorship,
+} from "./sponsorship.js";
 import type {
   AutomationsConfig,
   AutomationsEngine,
@@ -154,6 +170,42 @@ const runRowDataSchema = z.object({
   startedAt: z.string(),
   finishedAt: z.string().optional(),
 });
+
+/** §9.9 — what a stopped automation says, in the consumer's voice. It names the
+ *  person it used to run as and what anyone who can edit the app may do about
+ *  it; the machinery (hashes, grants, principals) stays out of the sentence.
+ *
+ *  `who` is absent exactly when the sponsor's row is gone (their data was
+ *  erased), and then the sentence stays anonymous rather than inventing a name
+ *  or resurrecting an identifier the erase removed. */
+const SPONSORSHIP_STOP: Record<
+  NonNullable<Sponsorship["reason"]>,
+  (name: string, who: string | undefined) => string
+> = {
+  edit: (name, who) =>
+    `stopped: ${name} changed after ${who ?? "the person who set it up"} allowed it`
+    + " — anyone who can edit this app can take it on",
+  departure: (name, who) => (who === undefined
+    ? `stopped: the person ${name} ran as no longer has access to it`
+    : `stopped: ${who} no longer has access to ${name}`)
+    + " — anyone who can edit this app can take it on",
+  grants: (name, who) =>
+    `stopped: ${who ?? "the person who set it up"}'s permissions for ${name} were removed`
+    + " — anyone who can edit this app can take it on",
+};
+
+/** Captures are a GENERIC collection, and the 02-store §5 erase cascade finds
+ *  generic rows by their refs — so an unref'd capture outlives both the person
+ *  who was asked and the app that asked. (Approvals need none: `vendo_approvals`
+ *  is reserved, derives its own refs, and is erased by its subject column.) */
+const captureRefs = (subject: string, appId: string): Record<string, string> =>
+  ({ subject, app_id: appId });
+
+/** §9.9 — what a run says when the automation changed hands while it waited. The
+ *  automation itself is fine; it is this RUN that belongs to a sponsor who no
+ *  longer holds it, and re-running is the whole remedy. */
+const SPONSOR_CHANGED = (who: string): string =>
+  `stopped: this run was waiting with ${who}'s access, which has changed — run it again to continue`;
 
 const clone = <T>(value: T): T => globalThis.structuredClone(value);
 const id = (prefix: string): string => `${prefix}${globalThis.crypto.randomUUID()}`;
@@ -380,9 +432,16 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     return record === null ? null : { record, row: parseAppRow(record) };
   };
 
-  const ownedApp = async (appId: string, subject: string): Promise<{ record: VendoRecord; row: AppRow }> => {
+  /** The app, for a caller allowed to CHANGE it. §8's editor = edit, and §13's
+   *  adoption makes an editor the person an automation runs as, so arming,
+   *  disarming and previewing are theirs too — not the owner's alone. With no
+   *  access seam configured this is exactly the ownership check it replaces.
+   *  Existence-masking is unchanged: someone who cannot edit hears "not found". */
+  const editableApp = async (appId: string, ctx: RunContext): Promise<{ record: VendoRecord; row: AppRow }> => {
     const found = await appRecord(appId);
-    if (found === null || found.row.subject !== subject) throw new VendoError("not-found", `app not found: ${appId}`);
+    if (found === null || !await canEdit(ctx, found.row, appId)) {
+      throw new VendoError("not-found", `app not found: ${appId}`);
+    }
     return found;
   };
 
@@ -470,21 +529,107 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     return true;
   };
 
-  /** Build contract §9.1 — an unattended fire resolves the SAME host org query
-      an attended request does. It is host server code in this deployment, so
-      the absence of a session is not in its way; unset seam ⇒ no assertion. */
+  const sponsorships = (): RecordStore => config.store.records(SPONSORSHIPS);
+  const sponsoredEra = (): RecordStore => config.store.records(SPONSORED);
+
+  /** The sponsorship as the gates see it: the row, or — when the row is gone but
+   *  the app was sponsored once — the fact that its sponsor was ERASED. */
+  const sponsorshipState = async (
+    appId: string,
+  ): Promise<
+    | { kind: "none" }
+    | { kind: "erased" }
+    | { kind: "row"; row: Sponsorship; revision?: string }
+  > => {
+    const found = await readSponsorship(sponsorships(), appId);
+    if (found !== undefined) return { kind: "row", ...found };
+    return await wasSponsored(sponsoredEra(), appId) ? { kind: "erased" } : { kind: "none" };
+  };
+
+  /** §9.3's `can(editor)`, through the config seam. With no seam configured the
+   *  deployment has no app-access grants at all, so editor degenerates to
+   *  ownership — exactly the wave-1 rule, and the reason this stays optional. */
+  const canEdit = async (ctx: RunContext, row: AppRow, appId: string): Promise<boolean> =>
+    config.appAccess === undefined
+      ? row.subject === ctx.principal.subject
+      : await config.appAccess.can(ctx, "editor", { app: appId });
+
+  /** §9.9 — the run's identity is its SPONSOR: an automation always runs as a
+   *  named person. The app row's subject is the fallback for automations armed
+   *  before sponsorship existed, and for a sponsorship that has lapsed (the
+   *  fire-time gate below stops those runs anyway). */
+  /** The run's context before any seam is consulted — a pure function of the run
+   *  and a subject, so it cannot fail. It is what a failed identity resolution
+   *  still audits under (F10: a fire that cannot even resolve who it runs as
+   *  must leave a record, not vanish). */
+  const baseRunContext = (run: InternalRunRecord, subject: string): RunContext => ({
+    principal: { kind: "user", subject },
+    venue: "automation",
+    presence: "away",
+    sessionId: `sess_${run.id}`,
+    appId: run.appId,
+    trigger: { runId: run.id, kind: run.trigger.kind },
+  });
+
   const runContext = async (run: InternalRunRecord, subject: string): Promise<RunContext> => {
-    const principal: Principal = { kind: "user", subject };
+    const sponsorship = await readSponsorship(sponsorships(), run.appId);
+    const ctx = baseRunContext(
+      run,
+      sponsorship?.row.status === "active" ? sponsorship.row.sponsor : subject,
+    );
+    const principal = ctx.principal;
+    // §9.1 — memberships are ASSERTED per run, never stored: an unattended fire
+    // has no session, so the engine resolves them from the host's own callback
+    // and rides them on the ctx (the schema is passthrough, like `inClient` on
+    // the open payload). `can()` reads them from there and never queries them.
     const memberships = await config.memberships?.(principal);
-    return {
-      principal,
-      venue: "automation",
-      presence: "away",
-      sessionId: `sess_${run.id}`,
-      appId: run.appId,
-      trigger: { runId: run.id, kind: run.trigger.kind },
-      ...(memberships === undefined ? {} : { memberships }),
+    if (memberships !== undefined) {
+      (ctx as RunContext & { memberships?: readonly unknown[] }).memberships = memberships;
+    }
+    return ctx;
+  };
+
+  /** §9.9's fire-time gate, in ONE place: a run may proceed only while the
+   *  sponsorship is active, the stored intent still matches the live document,
+   *  and the sponsor can still edit the app. Any failure marks the sponsorship
+   *  invalidated — which IS the adoption card (the card is derived state, not a
+   *  second row) — and the caller stops the run loudly before any tool call.
+   *
+   *  No sponsorship row at all means an automation armed before sponsorship
+   *  shipped: it keeps running as its owner rather than being stopped by a
+   *  feature it predates. */
+  const sponsorshipRefusal = async (
+    app: AppRow,
+    ctx: RunContext,
+  ): Promise<{ reason: NonNullable<Sponsorship["reason"]>; summary: string } | undefined> => {
+    const state = await sponsorshipState(app.doc.id);
+    // Never sponsored: an automation armed before sponsorship shipped keeps
+    // running as its owner rather than being stopped by a feature it predates.
+    if (state.kind === "none") return undefined;
+    // The sponsor's data was erased. Fail CLOSED — nothing is written here (a
+    // write would re-create the row an erase just removed), and the card is
+    // derived from this same state below.
+    if (state.kind === "erased") {
+      return { reason: "departure", summary: SPONSORSHIP_STOP.departure(app.doc.name, undefined) };
+    }
+    const { row } = state;
+    const refusal = (reason: NonNullable<Sponsorship["reason"]>) => ({
+      reason,
+      summary: SPONSORSHIP_STOP[reason](app.doc.name, sponsorName(row)),
+    });
+    if (row.status !== "active") return refusal(row.reason ?? "edit");
+    const invalidate = async (reason: NonNullable<Sponsorship["reason"]>) => {
+      await writeSponsorship(sponsorships(), {
+        ...row,
+        status: "invalidated",
+        reason,
+        invalidatedAt: iso(),
+      });
+      return refusal(reason);
     };
+    if (row.intentHash !== currentIntentHash(app.doc)) return await invalidate("edit");
+    if (!await canEdit(ctx, app, app.doc.id)) return await invalidate("departure");
+    return undefined;
   };
 
   const terminal = async (
@@ -724,6 +869,38 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       // without blocking on any single automation.
       const ctx = await runContext(record, app.subject);
       try {
+        // §9.9's gate runs BEFORE any step or agentic dispatch, and its two
+        // outcomes both end the run LOUDLY — a persisted error row plus its own
+        // audit event — because an automation that quietly stops firing is
+        // indistinguishable from one nobody needs:
+        //  - a lapsed sponsorship (the gate said no), and
+        //  - a gate that could not ANSWER, because the host's memberships
+        //    callback or access seam threw. That throw used to escape here, and
+        //    the schedule path swallows a rejected run, so the whole firing
+        //    vanished: no row, no audit, nothing to look at.
+        let ctx = baseRunContext(record, app.subject);
+        let stop: { reason?: NonNullable<Sponsorship["reason"]>; summary: string } | undefined;
+        try {
+          ctx = await runContext(record, app.subject);
+          stop = await sponsorshipRefusal(app, ctx);
+        } catch (error) {
+          stop = {
+            summary: `stopped: ${app.doc.name} could not check who it runs as (${message(error)})`,
+          };
+        }
+        if (stop !== undefined) {
+          await writeRun(record);
+          await audit(
+            ctx,
+            stop.reason === undefined ? "sponsorship-check-failed" : "sponsorship-invalidated",
+            { ...(stop.reason === undefined ? {} : { reason: stop.reason }), summary: stop.summary },
+          );
+          await terminal(record, ctx, "error", stop.summary, {
+            code: stop.reason === undefined ? "error" : "blocked",
+            message: stop.summary,
+          });
+          return;
+        }
         await writeRun(record);
         await audit(ctx, "running");
         active.add(runId);
@@ -876,12 +1053,30 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
 
       const appFound = await appRecord(run.appId);
       if (appFound === null) {
-        const ctx = await runContext(run, approvalData.request.ctx.principal.subject);
+        // The app is gone, so there is no sponsorship left to resolve and no
+        // seam worth asking — the approval's own subject is the honest voice for
+        // this terminal row, and it cannot throw.
+        const ctx = baseRunContext(run, approvalData.request.ctx.principal.subject);
         await terminal(run, ctx, "stopped", "app deleted before resume");
         await dropPark();
         return;
       }
-      const ctx = await runContext(run, appFound.row.subject);
+      // The run is already CLAIMED ("running"), so an identity seam that throws
+      // here must not strand it: land the loud terminal row under the row
+      // subject instead (F10, the resume half).
+      let ctx: RunContext;
+      try {
+        ctx = await runContext(run, appFound.row.subject);
+      } catch (error) {
+        const fallback = baseRunContext(run, appFound.row.subject);
+        await audit(fallback, "sponsorship-check-failed", { summary: message(error) });
+        await terminal(run, fallback, "error", `stopped at resume: ${message(error)}`, {
+          code: "error",
+          message: message(error),
+        });
+        await dropPark();
+        return;
+      }
       if (!appFound.row.enabled || appFound.row.doc.trigger === undefined) {
         await terminal(run, ctx, "stopped", "automation disabled before resume");
         await dropPark();
@@ -921,6 +1116,38 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       let step: Step;
       let outcome: ToolOutcome;
       try {
+        // §9.9 — the fire-time gate AGAIN, here, because a resume is a second
+        // firing through a different door: the run parked, time passed, and the
+        // document it is about to act on is re-read from the store. Without this
+        // a third party could edit the automation while the run sat parked and
+        // have the SPONSOR's identity execute the edited call on approval
+        // (proved: inv_42 → inv_EVIL as user_dana). A throw from the seams lands
+        // on the catch below, which is why it sits inside this block.
+        const refusal = await sponsorshipRefusal(appFound.row, ctx);
+        if (refusal !== undefined) {
+          await audit(ctx, "sponsorship-invalidated", { reason: refusal.reason, summary: refusal.summary });
+          await terminal(run, ctx, "error", refusal.summary, { code: "blocked", message: refusal.summary });
+          await dropPark();
+          return;
+        }
+        // …and the gate above is not enough on its own, because it asks about
+        // the automation NOW while this run belongs to an earlier era. An
+        // adoption completing between park and resume satisfies every current
+        // check — active sponsorship, matching intent, an editor who can edit —
+        // yet the parked approval belongs to the sponsor who is gone: resuming it
+        // would execute a call the new sponsor never saw under THEIR identity,
+        // against an intent that may no longer contain that step, and mint the
+        // grant under the OLD sponsor. A run may only be resumed by the very
+        // person who was asked, so a changed hand ends it: nothing runs, nothing
+        // is granted, and the automation simply runs again from the top.
+        const parked = approvalData.request.ctx.principal;
+        if (parked.subject !== ctx.principal.subject) {
+          const summary = SPONSOR_CHANGED(parked.display ?? parked.subject);
+          await audit(ctx, "sponsorship-changed", { parked: parked.subject, summary });
+          await terminal(run, ctx, "error", summary, { code: "blocked", message: summary });
+          await dropPark();
+          return;
+        }
         await mintGrant(approvalData.request);
         trigger = validateTrigger(appFound.row.doc.trigger);
         if (trigger.run.kind !== "steps") throw new VendoError("validation", "parked agentic run is invalid");
@@ -1077,20 +1304,26 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     return captures;
   };
 
-  const enable: AutomationsEngine["enable"] = async (appId, ctx) => {
-    const found = await ownedApp(appId, ctx.principal.subject);
-    if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
-    const trigger = validateTrigger(found.row.doc.trigger);
-    const byName = await descriptors(ctx);
-    const surface = trigger.run.kind === "steps"
-      ? [...new Set(trigger.run.steps.map((step) => step.tool).filter((tool) => !tool.startsWith("fn:")))]
-      // PR flag: without a model seat, agentic capture conservatively exposes every bound descriptor.
-      : [...byName.keys()];
+  /** The tools a consent moment has to ask THIS subject about: the automation's
+   *  surface minus whatever they already hold a live standing grant for.
+   *
+   *  Two callers, one routine (07 §3): enable(), where the owner arms the
+   *  automation, and adopt() (§9.9), where an editor takes a stopped one on —
+   *  approving its reads and writes AS THEMSELVES, which is exactly the same
+   *  capture under a different subject. */
+  const captureGrants = async (
+    doc: AppDocument,
+    surface: readonly string[],
+    byName: Map<string, ToolDescriptor>,
+    ctx: RunContext,
+  ): Promise<{ missing: ApprovalRequest[]; grantSetId: string }> => {
+    const appId = doc.id;
+    const subject = ctx.principal.subject;
     // One grant SET per automation: re-enables reuse the app's still-pending
     // asks (and their set id) instead of minting duplicates for the same
     // (appId, tool); a fresh set id is minted only when nothing is pending.
     const pendingForApp = new Map(
-      (await pendingCaptures(found.row.subject))
+      (await pendingCaptures(subject))
         .filter((capture) => capture.data.appId === appId)
         .map((capture) => [capture.data.tool, capture]),
     );
@@ -1101,7 +1334,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     for (const tool of surface) {
       const descriptor = byName.get(tool);
       if (descriptor === undefined) throw new VendoError("validation", `unknown tool in automation: ${tool}`);
-      if (await liveGrant(found.row.subject, appId, descriptor)) continue;
+      if (await liveGrant(subject, appId, descriptor)) continue;
       const pending = pendingForApp.get(tool);
       if (pending !== undefined) {
         const approval = await config.store.records(APPROVALS).get(pending.id);
@@ -1110,7 +1343,11 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
           // Adopt pre-set rows (and any stray sibling) into THE app's set so
           // one decision can settle everything outstanding.
           if (pending.data.grantSetId !== grantSetId) {
-            await config.store.records(CAPTURES).put({ id: pending.id, data: { ...pending.data, grantSetId } });
+            await config.store.records(CAPTURES).put({
+              id: pending.id,
+              data: { ...pending.data, grantSetId },
+              refs: captureRefs(pending.data.subject, pending.data.appId),
+            });
           }
           missing.push(clone(parsed.data.request));
           continue;
@@ -1123,7 +1360,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         id: id("apr_"),
         call: { id: id("call_"), tool, args: {} },
         descriptor: clone(descriptor),
-        inputPreview: `Allow "${found.row.doc.name}" to use ${tool} while you're away (standing, this app only)`,
+        inputPreview: `Allow "${doc.name}" to use ${tool} while you're away (standing, this app only)`,
         ctx: {
           principal: clone(ctx.principal),
           venue: "automation",
@@ -1138,10 +1375,45 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       });
       await config.store.records(CAPTURES).put({
         id: request.id,
-        data: { appId, subject: found.row.subject, tool, descriptorHash: descriptorHash(descriptor), grantSetId },
+        data: { appId, subject, tool, descriptorHash: descriptorHash(descriptor), grantSetId },
+        refs: captureRefs(subject, appId),
       });
       missing.push(request);
     }
+    return { missing, grantSetId };
+  };
+
+  /** The tools a consent moment covers. Steps DECLARE their surface; without a
+   *  model seat, agentic capture conservatively exposes every bound descriptor
+   *  (PR flag, unchanged). */
+  const consentSurface = (trigger: Trigger, byName: Map<string, ToolDescriptor>): string[] =>
+    trigger.run.kind === "steps" ? declaredSurface(trigger) : [...byName.keys()];
+
+  const enable: AutomationsEngine["enable"] = async (appId, ctx) => {
+    const found = await editableApp(appId, ctx);
+    if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
+    const trigger = validateTrigger(found.row.doc.trigger);
+    const byName = await descriptors(ctx);
+    const { missing, grantSetId } = await captureGrants(
+      found.row.doc,
+      consentSurface(trigger, byName),
+      byName,
+      ctx,
+    );
+    // §9.9 — enabling is what names the sponsor: the person arming an
+    // automation is the person it runs as, bound to the intent they just saw.
+    // A re-enable refreshes both, which is how an invalidated automation its
+    // OWNER re-arms comes back without an adoption card.
+    await writeSponsorship(sponsorships(), {
+      appId,
+      sponsor: ctx.principal.subject,
+      ...(ctx.principal.display === undefined ? {} : { display: ctx.principal.display }),
+      intentHash: currentIntentHash(found.row.doc),
+      status: "active",
+    });
+    // The era marker outlives an erase of the sponsor, so a vanished row can
+    // never be misread as "never sponsored" (§9.9 fails closed).
+    await markSponsored(sponsoredEra(), appId, iso());
     found.row.enabled = true;
     await writeApp(found.record, found.row);
     if (trigger.on.kind === "schedule") {
@@ -1161,36 +1433,182 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
   };
 
   const disable: AutomationsEngine["disable"] = async (appId, ctx) => {
-    const found = await ownedApp(appId, ctx.principal.subject);
+    const found = await editableApp(appId, ctx);
     found.row.enabled = false;
     await writeApp(found.record, found.row);
   };
 
+  /** Every sponsorship row for a set of apps, in ONE query. */
+  const sponsorshipsFor = async (appIds: string[]): Promise<Map<string, Sponsorship>> => {
+    if (appIds.length === 0) return new Map();
+    const rows = await allRecords(sponsorships(), { ids: appIds });
+    const byApp = new Map<string, Sponsorship>();
+    for (const record of rows) {
+      const parsed = sponsorshipSchema.safeParse(record.data);
+      if (parsed.success) byApp.set(parsed.data.appId, parsed.data);
+    }
+    return byApp;
+  };
+
   const list: AutomationsEngine["list"] = async (ctx) => {
-    const records = await allRecords(config.store.records(APPS), { refs: { subject: ctx.principal.subject } });
+    const subject = ctx.principal.subject;
+    const records = await allRecords(config.store.records(APPS), { refs: { subject } });
+    const rows = records.map(parseAppRow).filter((row) => row.subject === subject);
+    const ownedIds = new Set(rows.map((row) => row.doc.id));
+    // An adopted automation runs as its SPONSOR, who may not own the app — and
+    // the person it runs as has to be able to see it (§8: editor = edit). The
+    // sponsorship rows are ref'd by subject, so this is one indexed query, never
+    // a scan of everybody's apps.
+    const sponsoredElsewhere = (await allRecords(sponsorships(), { refs: { subject } }))
+      .map((record) => sponsorshipSchema.safeParse(record.data))
+      .filter((parsed) => parsed.success && parsed.data.status === "active")
+      .map((parsed) => (parsed as { data: Sponsorship }).data.appId)
+      .filter((appId) => !ownedIds.has(appId));
+    for (const record of sponsoredElsewhere.length === 0
+      ? []
+      : await allRecords(config.store.records(APPS), { ids: sponsoredElsewhere })) {
+      const row = parseAppRow(record);
+      // Sponsoring is not access: an editor whose grant was revoked keeps the
+      // row but loses the door, so `can(editor)` still decides.
+      if (await canEdit(ctx, row, row.doc.id)) rows.push(row);
+    }
     // Pending-captures projection: an enabled row with outstanding standing-grant
     // asks is NOT plain enabled — surfaces render "waiting on N permissions"
     // from here (reload-safe; never from an enable() result held in memory).
     const outstanding = new Map<string, { pendingGrants: number; grantSetId?: string }>();
-    for (const capture of await pendingCaptures(ctx.principal.subject)) {
+    for (const capture of await pendingCaptures(subject)) {
       const entry = outstanding.get(capture.data.appId) ?? { pendingGrants: 0 };
       entry.pendingGrants += 1;
       entry.grantSetId ??= capture.data.grantSetId;
       outstanding.set(capture.data.appId, entry);
     }
-    return records.map(parseAppRow)
-      .filter((row) => row.subject === ctx.principal.subject && row.doc.trigger !== undefined)
-      .map((row) => {
-        const pending = outstanding.get(row.doc.id);
-        return {
-          app: row.doc,
-          enabled: row.enabled,
-          ...(pending === undefined ? {} : {
-            pendingGrants: pending.pendingGrants,
-            ...(pending.grantSetId === undefined ? {} : { grantSetId: pending.grantSetId }),
-          }),
-        };
+    const automations = rows.filter((row) => row.doc.trigger !== undefined);
+    const sponsorRows = await sponsorshipsFor(automations.map((row) => row.doc.id));
+    const entries: Awaited<ReturnType<AutomationsEngine["list"]>> = [];
+    for (const row of automations) {
+      const pending = outstanding.get(row.doc.id);
+      // §13's window label — "runs with Dana's access". The name rides the
+      // sponsorship row (captured from their own Principal when they took the
+      // automation on), so it reads the same for everyone; Vendo still holds no
+      // directory and invents no name for anybody.
+      const sponsorship = sponsorRows.get(row.doc.id);
+      const sponsor = sponsorship?.sponsor ?? row.subject;
+      const display = sponsorship?.display ?? (sponsor === subject ? ctx.principal.display : undefined);
+      // "…and names a wider editor set when one exists": the count comes from
+      // the grants themselves, so a deployment with no access seam says nothing
+      // rather than implying the automation is private.
+      const editors = config.appAccess?.list === undefined
+        ? undefined
+        : (await config.appAccess.list(ctx, row.doc.id)).length;
+      entries.push({
+        app: row.doc,
+        enabled: row.enabled,
+        sponsor: { subject: sponsor, ...(display === undefined ? {} : { display }) },
+        ...(editors === undefined ? {} : { editors }),
+        ...(pending === undefined ? {} : {
+          pendingGrants: pending.pendingGrants,
+          ...(pending.grantSetId === undefined ? {} : { grantSetId: pending.grantSetId }),
+        }),
       });
+    }
+    return entries;
+  };
+
+  /** §9.9 — invalidation on a third party's edit. Called by the apps runtime
+   *  after a successful persist (the `onDocumentEdit` config hook), so the
+   *  choke point stays where the write already is. */
+  const onDocumentEdit: AutomationsEngine["onDocumentEdit"] = async (_previous, next, editor) => {
+    const found = await readSponsorship(sponsorships(), next.id);
+    if (found === undefined || found.row.status !== "active") return;
+    if (editor !== found.row.sponsor) {
+      await writeSponsorship(sponsorships(), {
+        ...found.row,
+        status: "invalidated",
+        reason: "edit",
+        invalidatedAt: iso(),
+      });
+      return;
+    }
+    // The sponsor editing their OWN automation does not invalidate sponsorship
+    // (§13) — but the intent it was minted over just changed, so re-bind it
+    // here. Without this the fire-time hash check would stop the automation for
+    // an edit its own sponsor made, which is the same stop for the opposite
+    // reason. Their GRANT set may still be invalidated by the change; that is
+    // the automations-pack session's half, and it fails at the guard with a
+    // card rather than here.
+    const hash = currentIntentHash(next);
+    if (hash !== found.row.intentHash) {
+      await writeSponsorship(sponsorships(), { ...found.row, intentHash: hash });
+    }
+  };
+
+  const adoption: AutomationsEngine["adoption"] = async (appId, ctx) => {
+    const state = await sponsorshipState(appId);
+    const waiting = state.kind === "erased"
+      // The sponsor's row was erased with their data: the ask is real, and it is
+      // anonymous — the name went with the erase and must not come back.
+      ? { reason: "departure" as const, sponsor: undefined }
+      : state.kind === "row" && state.row.status === "invalidated"
+        ? { reason: state.row.reason ?? "edit", sponsor: sponsorName(state.row) }
+        : undefined;
+    if (waiting === undefined) return undefined;
+    const found = await appRecord(appId);
+    // Served ONLY to editors+: a viewer sees the app, not the ask. Nothing is
+    // pushed to anybody — the card waits here for whoever opens the app next.
+    if (found === null || !await canEdit(ctx, found.row, appId)) return undefined;
+    return adoptionCard(
+      found.row.doc,
+      {
+        reason: waiting.reason,
+        ...(waiting.sponsor === undefined ? {} : { sponsor: waiting.sponsor }),
+        ...(state.kind === "row" && state.row.invalidatedAt !== undefined
+          ? { stoppedAt: state.row.invalidatedAt }
+          : {}),
+      },
+      await descriptors(ctx),
+    );
+  };
+
+  const adopt: AutomationsEngine["adopt"] = async (appId, ctx) => {
+    const found = await appRecord(appId);
+    if (found === null || !await canEdit(ctx, found.row, appId)) {
+      // Existence-masking, as everywhere else: someone who cannot edit the app
+      // learns nothing about it from this door.
+      throw new VendoError("not-found", `app not found: ${appId}`);
+    }
+    const state = await sponsorshipState(appId);
+    // Adoptable from either stopped shape: an invalidated row, or an erased
+    // sponsor who left no row behind.
+    const claimable = state.kind === "erased"
+      || (state.kind === "row" && state.row.status === "invalidated");
+    if (!claimable) return { adopted: false, missing: [], reason: "already-adopted" };
+    if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
+    const trigger = validateTrigger(found.row.doc.trigger);
+    const byName = await descriptors(ctx);
+    // Approvals stay strictly SELF-SUBJECT: the adopter approves the
+    // automation's reads and writes as themselves, through the existing
+    // approvals door, and the grant set is minted under their subject.
+    const { missing, grantSetId } = await captureGrants(
+      found.row.doc,
+      consentSurface(trigger, byName),
+      byName,
+      ctx,
+    );
+    const swapped = await claimSponsorship(sponsorships(), {
+      appId,
+      sponsor: ctx.principal.subject,
+      ...(ctx.principal.display === undefined ? {} : { display: ctx.principal.display }),
+      intentHash: currentIntentHash(found.row.doc),
+      status: "active",
+    }, state.kind === "erased"
+      ? { kind: "erased" }
+      : { kind: "row", ...(state.revision === undefined ? {} : { revision: state.revision }) });
+    // First editor+ to complete wins; the loser is told the truth rather than
+    // silently overwriting the winner. Their own asks stand — they are that
+    // person's standing grants for an app they can edit, and the engine already
+    // projects them as "waiting on N permissions".
+    if (!swapped) return { adopted: false, missing: [], reason: "already-adopted" };
+    return { adopted: true, missing, ...(missing.length === 0 ? {} : { grantSetId }) };
   };
 
   const sweepParked = async (): Promise<void> => {
@@ -1430,7 +1848,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
   };
 
   const dryRun: AutomationsEngine["dryRun"] = async (appId, ctx, event) => {
-    const found = await ownedApp(appId, ctx.principal.subject);
+    const found = await editableApp(appId, ctx);
     if (found.row.doc.trigger === undefined) throw new VendoError("validation", "app has no trigger");
     const trigger = validateTrigger(found.row.doc.trigger);
     const byName = await descriptors(ctx);
@@ -1486,22 +1904,24 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     if (stored === null) return null;
     const run = parseRunRow(stored).record;
     const app = await appRecord(run.appId);
-    return app === null || app.row.subject !== ctx.principal.subject ? null : publicRun(run);
+    // §8 editor = edit: the person the automation RUNS AS sees its history, not
+    // only the app's owner. Ownership-only when no access seam is configured.
+    return app === null || !await canEdit(ctx, app.row, run.appId) ? null : publicRun(run);
   };
 
   const runsList: AutomationsEngine["runs"]["list"] = async (filter, ctx) => {
     // Scope BEFORE paginating: filtering after the page both under-fills pages
-    // and leaks a cursor (an existence oracle) to non-owners.
+    // and leaks a cursor (an existence oracle) to non-viewers.
     if (filter.appId !== undefined) {
       const app = await appRecord(filter.appId);
-      if (app === null || app.row.subject !== ctx.principal.subject) return { runs: [] };
+      if (app === null || !await canEdit(ctx, app.row, filter.appId)) return { runs: [] };
     }
     const refs = {
       ...(filter.appId === undefined ? {} : { app_id: filter.appId }),
       ...(filter.status === undefined ? {} : { status: filter.status }),
     };
     const runs: RunRecord[] = [];
-    const owned = new Map<string, boolean>();
+    const visible = new Map<string, boolean>();
     let cursor = filter.cursor;
     // Without an appId scope, walk store pages until a page is filled with the
     // caller's runs — bounded so a foreign-heavy table cannot be scanned
@@ -1516,11 +1936,11 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       });
       for (const stored of page.records) {
         const run = parseRunRow(stored).record;
-        let mine = owned.get(run.appId);
+        let mine = visible.get(run.appId);
         if (mine === undefined) {
           const app = await appRecord(run.appId);
-          mine = app !== null && app.row.subject === ctx.principal.subject;
-          owned.set(run.appId, mine);
+          mine = app !== null && await canEdit(ctx, app.row, run.appId);
+          visible.set(run.appId, mine);
         }
         if (mine) runs.push(publicRun(run));
       }
@@ -1535,7 +1955,9 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     if (stored === null) throw new VendoError("not-found", `run not found: ${runId}`);
     const run = parseRunRow(stored).record;
     const app = await appRecord(run.appId);
-    if (app === null || app.row.subject !== ctx.principal.subject) throw new VendoError("not-found", `run not found: ${runId}`);
+    if (app === null || !await canEdit(ctx, app.row, run.appId)) {
+      throw new VendoError("not-found", `run not found: ${runId}`);
+    }
     if (run.status !== "running" && run.status !== "pending-approval") {
       throw new VendoError("conflict", `run cannot be stopped from status ${run.status}`);
     }
@@ -1558,5 +1980,8 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     webhook,
     runs: { get: runsGet, list: runsList, stop: runsStop },
     dryRun,
+    onDocumentEdit,
+    adoption,
+    adopt,
   };
 };

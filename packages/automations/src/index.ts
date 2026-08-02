@@ -25,6 +25,26 @@ import type {
 import type { AppsRuntime } from "@vendoai/apps";
 import { createAutomationsEngine } from "./engine.js";
 
+import type { AdoptionCard } from "./adoption.js";
+
+export type { AdoptionCard, AdoptionNeed } from "./adoption.js";
+export { appIntentOf, SPONSORSHIPS, type Sponsorship } from "./sponsorship.js";
+
+/** Build contract §9.3's `can()`, as much of it as the engine needs — taken as
+ *  config so this package never reaches sideways into the store. Lane G's
+ *  `appAccess(store)` satisfies it as-is; absent, `can(editor)` degenerates to
+ *  ownership, which is exactly the rule before app-access grants existed. */
+export interface AppAccessSeam {
+  can(
+    ctx: RunContext,
+    level: "viewer" | "editor" | "owner",
+    thing: { app: AppId },
+  ): Promise<boolean>;
+  /** The app's grant rows. Only their COUNT is read here (the window label's
+   *  wider editor set), so the row shape stays lane G's to define. */
+  list?(ctx: RunContext, appId: AppId): Promise<readonly unknown[]>;
+}
+
 /** 07 §1 — createAutomations config. */
 export interface AutomationsConfig {
   apps: AppsRuntime;
@@ -52,9 +72,13 @@ export interface AutomationsConfig {
    *  kinds for the same data (Vendo Cloud's scheduler + Composio delivery, under the hosted
    *  store — see packages/vendo/src/server.ts) so the two never double-run one automation. */
   localTriggerKinds?: ReadonlySet<"schedule" | "external">;
+  /** Build contract §9.3 — the access seam the fire-time sponsorship check and
+   *  the adoption card ask `can(editor)` through. Absent → ownership only. */
+  appAccess?: AppAccessSeam;
   /** Build contract §9.1 — the SAME host org query the wire resolves per
-   *  request, resolved here per fire. Keyed on Principal precisely so an
-   *  unattended run can call it with no session; unset → no orgs asserted →
+   *  request, resolved here per fire. Keyed on Principal (never on a Request)
+   *  precisely so an UNATTENDED run can call it with no session. Ridden onto
+   *  the RunContext for `can()`, never persisted; unset → no orgs asserted →
    *  `can()` degenerates to ownership, which is today's behavior exactly. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
 }
@@ -95,7 +119,19 @@ export interface AutomationsEngine {
    *  07 §1 amendment parked) project the app's still-undecided standing-grant
    *  asks, so surfaces can show "waiting on N permissions" after a reload
    *  instead of trusting an enable() result held in memory. */
-  list(ctx: RunContext): Promise<Array<{ app: AppDocument; enabled: boolean; pendingGrants?: number; grantSetId?: string }>>;
+  list(ctx: RunContext): Promise<Array<{
+    app: AppDocument;
+    enabled: boolean;
+    pendingGrants?: number;
+    grantSetId?: string;
+    /** §13 — who the automation runs as, for its window label ("runs with
+     *  Dana's access"). `display` only when the caller IS the sponsor: Vendo
+     *  holds no directory, and a name for anyone else would be invented. */
+    sponsor?: { subject: string; display?: string };
+    /** How many principals hold a grant on the app, when an access seam is
+     *  configured — the "wider editor set" the label names when one exists. */
+    editors?: number;
+  }>>;
 
   // trigger ingestion — three kinds
   /** Schedules: call on a timer or from a serverless cron. */
@@ -118,6 +154,41 @@ export interface AutomationsEngine {
   };
   /** Preview: what would run, nothing executes. */
   dryRun(appId: AppId, ctx: RunContext, event?: Json): Promise<RunPlan>;
+
+  /** Build contract §9.9 — the apps runtime's `onDocumentEdit` hook, from this
+   *  side: an edit by anyone other than the sponsor invalidates sponsorship;
+   *  the sponsor's own edit re-binds the intent instead. */
+  onDocumentEdit(previous: AppDocument, next: AppDocument, editor: string): Promise<void>;
+
+  /** Build contract §9.9 — the adoption card as additive venue state on the
+   *  app's open payload. `undefined` when nothing is waiting or the caller
+   *  cannot edit the app: nothing is pushed, the card waits IN the app.
+   *
+   *  THE COMPOSITION CONTRACT, stated here because two packages have to agree on
+   *  it: the card rides the open payload under the key **`adoption`** —
+   *  `payload.adoption` — which is exactly what `@vendoai/ui`'s tree renderer
+   *  reads (`ADOPTION_VENUE_KEY` in `chrome/adoption-card.tsx`, asserted by its
+   *  own test). The venue-state provider the apps runtime calls is therefore:
+   *
+   *  ```ts
+   *  async (app, ctx) => {
+   *    const card = await automations.adoption(app.id, ctx);
+   *    return card === undefined ? undefined : { adoption: card };
+   *  }
+   *  ```
+   *
+   *  Any other key attaches a card nobody ever sees. */
+  adoption(appId: AppId, ctx: RunContext): Promise<AdoptionCard | undefined>;
+
+  /** Take a stopped automation on: approve its reads and writes as YOURSELF
+   *  (approvals stay strictly self-subject) and become its sponsor. The first
+   *  editor+ to complete wins; the loser hears `already-adopted`. */
+  adopt(appId: AppId, ctx: RunContext): Promise<{
+    adopted: boolean;
+    missing: ApprovalRequest[];
+    grantSetId?: string;
+    reason?: "already-adopted";
+  }>;
 }
 
 /** 07 §1 — the engine. */

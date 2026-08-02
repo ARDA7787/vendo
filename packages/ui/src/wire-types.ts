@@ -14,6 +14,7 @@ import type {
   AuditEvent,
   IsoDateTime,
   Membership,
+  RiskLabel,
   RunId,
   ThreadId,
   TriggerSource,
@@ -54,6 +55,43 @@ export interface PendingSurface {
 export type InClientVenue =
   | { granted: true; versionHash: string; approvedBy: string; at: IsoDateTime }
   | { granted: false; versionHash: string; reason: "version-changed" };
+
+/**
+ * Build contract §9.9 — the adoption ask riding a tree payload
+ * (`payload.adoption`): an automation whose sponsorship lapsed has stopped, and
+ * the card WAITS in the app for whoever can edit it to take it on. Nothing is
+ * pushed to anybody. SERVER-AUTHORITATIVE: the runtime only attaches it for a
+ * caller with `can(editor)`, so its presence is itself the permission check.
+ */
+export interface AdoptionVenue {
+  appId: AppId;
+  /** The automation's user-visible name. */
+  automation: string;
+  /** Who it used to run as, named as they asserted themselves. ABSENT once that
+   *  person's data is erased — the name went with the erase, and the card says
+   *  "someone else" rather than resurrecting an identifier. */
+  sponsor?: string;
+  reason: "edit" | "departure" | "grants";
+  stoppedAt?: IsoDateTime;
+  /** One entry per read and write — never one summary line for a compound. */
+  needs: Array<{
+    tool: string;
+    title: string;
+    description?: string;
+    risk: RiskLabel;
+    args?: Record<string, string>;
+  }>;
+}
+
+/** Build contract §9.9 — what `POST /automations/:id/adopt` returns. `adopted:
+ *  false` with `reason: "already-adopted"` is the honest answer for the editor
+ *  who lost the race; `missing` carries the adopter's own grant-set asks. */
+export interface AdoptResult {
+  adopted: boolean;
+  missing: ApprovalRequest[];
+  grantSetId?: string;
+  reason?: "already-adopted";
+}
 
 /**
  * 06-apps §8 — one drifted pin riding a tree payload (`payload.pinDrift`):
@@ -197,6 +235,13 @@ export interface AutomationEntry {
   enabled: boolean;
   pendingGrants?: number;
   grantSetId?: string;
+  /** §13 — whose access it runs with. `display` only when the caller IS the
+   *  sponsor: Vendo holds no directory, so a name for anyone else would be
+   *  invented; the subject is the honest fallback. */
+  sponsor?: { subject: string; display?: string };
+  /** How many principals hold a grant on the app, when the deployment has an
+   *  access seam at all — the wider editor set the label names. */
+  editors?: number;
 }
 
 /** 07-automations §1 — what `POST /automations/:id/enable` returns.

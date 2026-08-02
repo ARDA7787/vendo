@@ -6,7 +6,7 @@ import { useApprovals } from "../hooks/use-approvals.js";
 import { useAutomations } from "../hooks/use-automations.js";
 import type { RunPlan, RunRecord, RunStatus } from "../wire-types.js";
 import { formatAuditTime } from "./activity-semantics.js";
-import { automationFlow } from "./automation-card.js";
+import { automationFlow, sponsorLabel } from "./automation-card.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { GrantSetCard } from "./grant-set-card.js";
 
@@ -341,6 +341,15 @@ export function AutomationsPanel() {
                       </>
                     )}
                   </div>
+                  {/* §13 — an automation always runs as a named person, and its
+                      window says so. */}
+                  {sponsorLabel(entry.sponsor, entry.editors) === null
+                    ? null
+                    : (
+                      <div className="fl-auto-sub" style={{ display: "block" }}>
+                        {sponsorLabel(entry.sponsor, entry.editors)}
+                      </div>
+                    )}
                 </div>
                 <button
                   className="fl-auto-toggle"
