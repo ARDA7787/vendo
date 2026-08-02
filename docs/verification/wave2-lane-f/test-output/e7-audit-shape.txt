@@ -1,8 +1,0 @@
-E7 slice — the audit shape, from the REAL store (apps/demo-bank/.vendo/data)
-
-run rows by harness: {'vendo': 7, 'instant': 16}
-run row key set (instant): ['at', 'detail', 'id', 'kind', 'presence', 'principal', 'venue']
-run row key set (vendo):   ['at', 'detail', 'id', 'kind', 'presence', 'principal', 'venue']
-detail key set (instant):  ['error', 'harness', 'usage']
-detail key set (vendo):    ['harness', 'usage']
-tool-call row key set:     ['appId', 'at', 'decidedBy', 'id', 'inputPreview', 'kind', 'outcome', 'presence', 'principal', 'tool', 'venue']

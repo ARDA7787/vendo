@@ -1,8 +1,0 @@
-data: {"type":"text-start","id":"txt_1_56d5723a-44f0-4c03-9f0a-7fed1f448d79"}
-
-data: {"type":"text-delta","id":"txt_1_56d5723a-44f0-4c03-9f0a-7fed1f448d79","delta":"Something went wrong on my side, so I stopped."}
-
-data: {"type":"text-end","id":"txt_1_56d5723a-44f0-4c03-9f0a-7fed1f448d79"}
-
-data: [DONE]
-

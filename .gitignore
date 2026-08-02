@@ -103,3 +103,14 @@ docs/verification/w4-pipeline/samples.ndjson
 # throwaway design exploration (never committed)
 design-canvas/
 packages/apps/box/claude-turn.mjs
+
+# Agent working notes and factory process exhaust — useful locally, not shipped.
+# Lane contracts, raw proof logs, and eval run dumps stay on their branches;
+# only frozen specs (cited by source comments) live in the tree.
+.claude/
+docs/verification/
+docs/superpowers/evidence/
+docs/superpowers/plans/
+docs/superpowers/lanes/
+docs/eval/runs/
+docs/eval/knowledge/
