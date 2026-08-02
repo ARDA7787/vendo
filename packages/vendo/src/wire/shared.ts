@@ -51,9 +51,10 @@ const STATUS_BY_CODE: Record<VendoErrorCode, number> = {
 
 export interface WireDeps {
   principal: (req: Request) => Promise<Principal | null>;
-  /** Build contract §9.1 — the host's own org query, resolved ONCE per request
-      in createContextResolver and stashed on the ctx. Unset → no orgs asserted
-      → `can()` degenerates to ownership. */
+  /** Build contract §9.1 — the host's own org query, resolved once per context
+      resolution in createContextResolver and stashed on the ctx, so every door
+      downstream of one `context()` call reads the same answer. Unset → no orgs
+      asserted → `can()` degenerates to ownership. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
   /** Build contract §9.1 companion — the host's own directory lookup, behind the
       owner gate on the Share dialog's door. Takes the ASKER so the host can scope

@@ -20,15 +20,20 @@ import { ChromeRoot } from "./chrome-root.js";
  * two drifting copies. The dialog says so before it does it.
  */
 
-const LEVELS: Array<{ value: AccessLevel; label: string; blurb: string }> = [
-  { value: "viewer", label: "Can view", blurb: "See it and use it." },
-  { value: "editor", label: "Can edit", blurb: "Change what it does." },
-  { value: "owner", label: "Can share", blurb: "Edit, share, and delete it." },
+const LEVELS: Array<{ value: AccessLevel; label: string }> = [
+  { value: "viewer", label: "Can view" },
+  { value: "editor", label: "Can edit" },
+  { value: "owner", label: "Can share" },
 ];
 
+/** Said in two places — the standing note when a non-owner opens the dialog, and
+    the refusal when a write comes back `forbidden`. One string, so the two can
+    never tell the same person two different things. */
+const OWNER_ONLY = "Only an owner can change who this app is shared with.";
+
 /** The frozen §9.2 encoding lives in core, next to the parser that reads it —
-    ONE encoder, so a surface can never write a shape `can()` cannot match.
-    Re-exported here because the chrome surface has always offered it. */
+    ONE encoder, so a surface can never write a shape `can()` cannot match. The
+    dialog re-exports it because the pinned chrome surface names it here. */
 export { encodeGrantPrincipal };
 
 /** The picker's value for "a specific person". It is deliberately not a
@@ -47,6 +52,8 @@ const PERSON = "person";
  */
 function refusalCopy(reason: unknown, phase: "move" | "share" | "remove" | "name"): string {
   const code = (reason as { code?: unknown } | null)?.code;
+  // A vanished app reads the same in every phase, naming included.
+  if (code === "not-found") return "This app isn’t available any more.";
   // The NAMING step answers for itself, before the shared codes: `forbidden`
   // there does not mean "only an owner may do this" — the person asking IS the
   // owner. It means the door refused because they hold no asserted org, so a
@@ -61,11 +68,9 @@ function refusalCopy(reason: unknown, phase: "move" | "share" | "remove" | "name
       return "You’re not in a team here, so there’s nobody to share it with"
         + " — you can hand them a copy instead.";
     }
-    if (code === "not-found") return "This app isn’t available any more.";
     return "We couldn’t look them up just now — try again in a moment.";
   }
-  if (code === "forbidden") return "Only an owner can change who this app is shared with.";
-  if (code === "not-found") return "This app isn’t available any more.";
+  if (code === "forbidden") return OWNER_ONLY;
   if (phase === "move") {
     if (code === "cloud-required") {
       return "Moving this app into a team isn’t available here yet."
@@ -268,9 +273,7 @@ export function ShareDialog({
             it told every caller they had no access for as long as the fetch took. */}
         {canShare || isLoading ? null : (
           <p className="fl-share-note">
-            {level === null
-              ? "You don’t have access to this app."
-              : "Only an owner can change who this app is shared with."}
+            {level === null ? "You don’t have access to this app." : OWNER_ONLY}
           </p>
         )}
 

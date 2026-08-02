@@ -18,10 +18,7 @@ interface AppGrantsState {
 
 const EMPTY: AppGrantsState = { level: null, grants: [], personal: false };
 
-export function useAppGrants(appId: AppId | undefined, options?: PollOptions): {
-  level: AccessLevel | null;
-  grants: AppGrantRecord[];
-  personal: boolean;
+export function useAppGrants(appId: AppId | undefined, options?: PollOptions): AppGrantsState & {
   error: Error | undefined;
   isLoading: boolean;
   refresh(): Promise<void>;
@@ -68,9 +65,7 @@ export function useAppGrants(appId: AppId | undefined, options?: PollOptions): {
   }, [client, appId]);
 
   return {
-    level: data.level,
-    grants: data.grants,
-    personal: data.personal,
+    ...data,
     error,
     isLoading,
     refresh,

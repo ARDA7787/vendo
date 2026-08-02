@@ -2066,6 +2066,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // which run after createVendo returns, so the closure reference is safe —
   // same pattern as the connections loadout seed).
   let automationsForArming: AutomationsEngine | undefined;
+  // Build contract §9.3 — ONE `can()` over the host's store, held by the apps
+  // runtime and the automations engine alike, so one rule answers both sides.
+  const access = appAccess(store);
   const apps = createApps({
     store,
     guard,
@@ -2078,7 +2081,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // three writes that create sharing; `promoteApp` is the store's sanctioned
     // cross-subject door; `memberships` lets an unattended schedule fire assert
     // the same orgs a request does.
-    appAccess: appAccess(store),
+    appAccess: access,
     multiParty,
     // §9.5's order and its rollback rule live in promote-app.ts, where the
     // failure interleavings are testable; the getters keep `dbFor` lazy.
@@ -2608,11 +2611,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     store,
     runner: agent.asRunner(),
     // Build contract §9.3 — the fire-time sponsorship gate and the adoption
-    // card ask `can(editor)` through this seam. Same `appAccess(store)` the
-    // apps runtime holds, so one rule answers both sides; unwired it would
-    // silently fall back to ownership and an editor-adopted automation would
-    // stop dead at its next fire.
-    appAccess: appAccess(store),
+    // card ask `can(editor)` through this seam. Unwired it would silently fall
+    // back to ownership and an editor-adopted automation would stop dead at its
+    // next fire.
+    appAccess: access,
     // Build contract §9.1 — an away run asserts the owner's orgs the same way a
     // request does; the callback is host server code in this deployment, so the
     // absence of a session is not in its way.

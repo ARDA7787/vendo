@@ -271,6 +271,7 @@ export function AutomationsPanel() {
           const appId = entry.app.id;
           const appRuns = runs[appId];
           const flow = automationFlow(entry.app.trigger);
+          const runsAs = sponsorLabel(entry.sponsor, entry.editors);
           // The set-card rows come from the persisted pending queue; the count
           // prefers the engine's own projection (they agree modulo poll skew).
           const pendingAsks = pendingByApp.get(appId) ?? [];
@@ -363,13 +364,9 @@ export function AutomationsPanel() {
                   )}
                   {/* §13 — an automation always runs as a named person, and its
                       window says so. */}
-                  {sponsorLabel(entry.sponsor, entry.editors) === null
+                  {runsAs === null
                     ? null
-                    : (
-                      <div className="fl-auto-sub" style={{ display: "block" }}>
-                        {sponsorLabel(entry.sponsor, entry.editors)}
-                      </div>
-                    )}
+                    : <div className="fl-auto-sub" style={{ display: "block" }}>{runsAs}</div>}
                 </div>
                 <button
                   className="fl-auto-toggle"

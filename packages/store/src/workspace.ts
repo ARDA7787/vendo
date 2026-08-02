@@ -2,7 +2,7 @@ import { VendoError, type FilesAdapter, type Membership, type Principal, type Ru
 import { storeFiles } from "./files-store.js";
 import { appAccess, orgOfPath } from "./helpers/app-access.js";
 import { dbFor, type VendoStore } from "./store.js";
-import { HOST_MOUNT, normalizePath, WorkspaceStoreFs } from "./workspace-fs.js";
+import { HOST_MOUNT, normalizePath, pathForbidden, pathNotFound, WorkspaceStoreFs } from "./workspace-fs.js";
 import { workspaceRows, type AppMount, type UndoOutcome, type WorkspaceHistoryEntry } from "./workspace-rows.js";
 
 /** Build contract §9.7 — what the façade needs to know about the caller: who
@@ -94,21 +94,10 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
   const canWrite = async (caller: WorkspaceCaller, path: string): Promise<boolean> =>
     await access.can(runContextOf(caller), "editor", { path });
 
-  /** Build contract §9.4 — what a caller who cannot even VIEW a path is told:
-      exactly what a path that isn't there is told. Existence-masking is the
-      default posture, and a `forbidden` handed to a non-viewer inverts it into
-      an oracle ("this org has an app by that id"). */
-  const notFound = (path: string): VendoError =>
-    new VendoError("not-found", `no such path: ${path}`, { path });
-
-  /** §9.4's other half: a caller who provably SEES the path but may not change
-      it gets `forbidden` — the code the consumer-voice fork offer renders from.
-      Keeping "forbidden implies caller is >= viewer" true is what makes that
-      offer safe to show. */
-  const refusal = async (caller: WorkspaceCaller, path: string): Promise<VendoError> => {
-    if (!(await canRead(caller, path))) return notFound(path);
-    return new VendoError("forbidden", `you cannot write ${path}`, { path });
-  };
+  /** §9.4's two codes, chosen by a LIVE viewer read: see `pathNotFound` and
+      `pathForbidden`, which own the words both doors refuse in. */
+  const refusal = async (caller: WorkspaceCaller, path: string): Promise<VendoError> =>
+    await canRead(caller, path) ? pathForbidden(path) : pathNotFound(path);
 
   /** Build contract §9.7 — owner derivation is a PURE FUNCTION OF THE PATH, in
       every door and not just the façade: the org for `/orgs/<org>/**`, the
@@ -168,7 +157,7 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
       if (!(await canRead(caller, normalized))) {
         // The failing predicate IS the viewer check, so this is never
         // `forbidden` — see `refusal`.
-        throw notFound(normalized);
+        throw pathNotFound(normalized);
       }
       return await rows.history(ownerOfPath(caller, normalized), normalized);
     },

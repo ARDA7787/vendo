@@ -61,7 +61,7 @@ const needFor = (
  *  because that is what §12 means by never summarizing a compound. An agentic
  *  run declares no steps, so it lists the tools adoption would actually grant:
  *  whatever the registry binds for it. */
-export const adoptionNeeds = (
+const adoptionNeeds = (
   doc: AppDocument,
   descriptors: Map<string, ToolDescriptor>,
 ): AdoptionNeed[] => {

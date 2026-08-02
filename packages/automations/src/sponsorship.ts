@@ -89,8 +89,6 @@ export const appIntentOf = (doc: AppDocument): AppIntent => ({
 
 export const currentIntentHash = (doc: AppDocument): string => intentHash(appIntentOf(doc));
 
-const rowOf = (records: RecordStore, appId: string) => records.get(appId);
-
 /** The stored sponsorship, or undefined when there is none (an automation
  *  enabled before sponsorship shipped) or the row is unreadable. A corrupt row
  *  is not a sponsorship — it degenerates to the pre-sponsorship behavior of
@@ -99,7 +97,7 @@ export const readSponsorship = async (
   records: RecordStore,
   appId: string,
 ): Promise<{ row: Sponsorship; revision?: string } | undefined> => {
-  const record = await rowOf(records, appId);
+  const record = await records.get(appId);
   if (record === null) return undefined;
   const parsed = sponsorshipSchema.safeParse(record.data);
   if (!parsed.success) return undefined;

@@ -150,8 +150,9 @@ function OpenApp({ appId }: { appId: string }) {
  */
 function refusalSentence(reason: unknown): string {
   const code = (reason as { code?: unknown } | null)?.code;
-  // `forbidden` normally becomes the fork offer; this is the leg with no app id
-  // to offer a fork OF (Create).
+  // `forbidden` normally becomes the fork offer; this is the leg for the calls
+  // that pass no app id to offer a fork OF — Create, and a fork that itself
+  // came back refused.
   if (code === "forbidden") return "You can look at this app, but not change it.";
   if (code === "not-found") return "This app isn’t available any more.";
   if (code === "cloud-required") return "That isn’t turned on for this workspace yet.";

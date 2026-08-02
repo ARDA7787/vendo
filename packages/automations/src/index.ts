@@ -60,10 +60,11 @@ export interface AutomationsConfig {
   /** Max automations a single tick executes concurrently (default 4). A small pool keeps
    *  one tenant's fired runs from serializing behind another's while bounding fan-out. */
   tickConcurrency?: number;
-  /** Per-run wall-clock budget (ms) the tick waits before moving on. The run is NOT
-   *  cancelled (there is no abort seam) — it finishes and persists its terminal state in
-   *  the background; the tick just stops blocking on it so a hung run (sandbox wake, LLM
-   *  stall) cannot overrun the tick interval or starve other tenants. Absent → wait fully. */
+  /** Per-run wall-clock budget (ms) the tick waits before moving on. This timeout does NOT
+   *  cancel the run (only `runs.stop` aborts one) — it finishes and persists its terminal
+   *  state in the background; the tick just stops blocking on it so a hung run (sandbox
+   *  wake, LLM stall) cannot overrun the tick interval or starve other tenants.
+   *  Absent → wait fully. */
   runTimeoutMs?: number;
   /** Which of {schedule, external} this engine instance fires itself. Absent (default) →
    *  both fire locally, today's behavior. host-event is never listed here: `emit` is called
@@ -125,8 +126,9 @@ export interface AutomationsEngine {
     pendingGrants?: number;
     grantSetId?: string;
     /** §13 — who the automation runs as, for its window label ("runs with
-     *  Dana's access"). `display` only when the caller IS the sponsor: Vendo
-     *  holds no directory, and a name for anyone else would be invented. */
+     *  Dana's access"). `display` rides the sponsorship row, captured from the
+     *  sponsor's own Principal when they took the automation on, so it reads the
+     *  same for everyone: Vendo still holds no directory and invents no name. */
     sponsor?: { subject: string; display?: string };
     /** §9.9 — set exactly while the automation is STOPPED and waiting to be
      *  adopted. `summary` is the same consumer sentence the adoption card and

@@ -136,9 +136,10 @@ const statOf = (kind: "file" | "directory", size: number, mtime: Date): FsStat =
  * loop writing one file forty times is one row, one revision, one history
  * entry.
  *
- * The namespace is exactly the two mounts. A write anywhere else is refused
+ * The namespace is exactly the mounts the host asserted: `/user`, plus one
+ * `/orgs/<org>` per asserted membership. A write anywhere else is refused
  * (`EACCES`) rather than accepted into memory and dropped at commit — bash's
- * own scratch belongs in `/user/scratch`, which the layout reserves for it.
+ * own scratch belongs in the `scratch` directory each mount reserves for it.
  *
  * `/host/**` is a read-only overlay the caller supplies per turn, not store
  * rows: pack skills and host knowledge are code-defined (`PackSkill.body`,
@@ -165,20 +166,34 @@ export interface WorkspaceMounts {
   canView?: (path: string) => Promise<boolean>;
 }
 
+/** Build contract §9.4 — what a caller who cannot even VIEW a path is told:
+    exactly what a path that isn't there is told. Existence-masking is the
+    default posture, and a `forbidden` handed to a non-viewer inverts it into an
+    oracle ("this org has an app by that id"). Both doors that refuse a path —
+    the façade and the staged-commit gate below — say it in these words, from
+    here, because two copies of a refusal are two refusals that drift. */
+export const pathNotFound = (path: string): VendoError =>
+  new VendoError("not-found", `no such path: ${path}`, { path });
+
+/** §9.4's other half: a caller who provably SEES the path but may not change it
+    gets `forbidden` — the code the consumer-voice fork offer renders from.
+    Keeping "forbidden implies caller is >= viewer" true is what makes that offer
+    safe to show. */
+export const pathForbidden = (path: string): VendoError =>
+  new VendoError("forbidden", `you cannot write ${path}`, { path });
+
 export class WorkspaceStoreFs implements WorkspaceFs {
   private readonly staged = new Map<string, Staged>();
   private readonly removed = new Set<string>();
   private readonly directories = new Set<string>();
   private readonly index: Map<string, WorkspaceFileMeta>;
-  private readonly mounts: WorkspaceMounts;
 
   constructor(
     private readonly rows: WorkspaceRows,
-    mounts: WorkspaceMounts | string,
+    private readonly mounts: WorkspaceMounts,
     index: WorkspaceFileMeta[],
     private readonly host: Map<string, Uint8Array>,
   ) {
-    this.mounts = typeof mounts === "string" ? { subject: mounts, orgs: [] } : mounts;
     this.index = new Map(index.map((meta) => [meta.path, meta]));
   }
 
@@ -475,8 +490,9 @@ export class WorkspaceStoreFs implements WorkspaceFs {
   }
 
   /**
-   * Build contract §3.2 — land the turn's writes. `/user` is last-write-wins;
-   * `/orgs`' compare-and-swap (and the `conflict` outcome) arrives in wave 3.
+   * Build contract §3.2 — land the turn's writes. Commit policy is per mount:
+   * `/user` is last-write-wins, `/orgs` is strict compare-and-swap against the
+   * revision the turn opened with, and a lost swap returns `conflict`.
    *
    * **Preflighted.** Every staged file's content is placed first; only when the
    * whole set is placeable does any row change. A commit therefore either lands
@@ -502,9 +518,9 @@ export class WorkspaceStoreFs implements WorkspaceFs {
           // view the path gets what a path that isn't there gets, or the code
           // itself becomes an existence oracle for every org app id.
           if (this.mounts.canView !== undefined && !(await this.mounts.canView(path))) {
-            throw new VendoError("not-found", `no such path: ${path}`, { path });
+            throw pathNotFound(path);
           }
-          throw new VendoError("forbidden", `you cannot write ${path}`, { path });
+          throw pathForbidden(path);
         }
       }
     }

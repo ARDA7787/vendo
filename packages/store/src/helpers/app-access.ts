@@ -21,7 +21,7 @@ import type { VendoStore } from "../store.js";
  *  stand-in resolves access through the very same functions; only the ROW
  *  reading is here, because only the store can do it. */
 export type { AccessLevel, AppAccess, AppGrantRecord, CanThing, GrantPrincipal } from "@vendoai/core";
-export { appOfOrgPath, isGrantPrincipal, orgOfPath, parseGrantPrincipal } from "@vendoai/core";
+export { isGrantPrincipal, orgOfPath, parseGrantPrincipal } from "@vendoai/core";
 
 const membershipIn = (ctx: RunContext, org: string): Membership | undefined =>
   (ctx.memberships ?? []).find((entry) => entry.org === org);
@@ -136,7 +136,8 @@ export function appAccess(store: VendoStore): AppAccess {
 
     async grant(ctx, appId, principal, level) {
       // §9.2's grammar is checked HERE, by the door, before anything is written
-      // — not in one store's SQL. The local engine's routing layer refused an
+      // — and not ONLY in the local engine's row validator, which a hosted or
+      // BYO records adapter never runs. That validator refused an
       // unparseable principal (`parseAppGrantData`) and the hosted store posted
       // it straight to the console, so the same share was refused on Postgres
       // and accepted on Cloud's own default; which store is wired may never

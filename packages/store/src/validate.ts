@@ -157,9 +157,13 @@ export function parseEffectData(value: unknown, id: string): { subject: string; 
   return { subject, outcome: requireJson(input["outcome"], "effect outcome") };
 }
 
-/** Build contract §9.2 — one app-access grant. The principal encoding is
- *  enforced at the door so a doctored row can never name a shape `can()`
- *  cannot match (and so `team:` never smuggles a second slash). */
+/** Build contract §9.2 — one app-access grant. Re-checks the principal encoding
+ *  the `appAccess` door already checked, because a caller can reach the local
+ *  engine's row door directly (`records("vendo_app_grants").put()`) without
+ *  passing it. Belt and braces on purpose: this is the last place a doctored row
+ *  can be stopped from naming a shape `can()` cannot match (and from letting
+ *  `team:` smuggle a second slash) — but only for THIS engine. A hosted or BYO
+ *  records adapter never runs it, which is why the door checks too. */
 export function parseAppGrantData(value: unknown, id: string): {
   appId: string;
   orgId: string;

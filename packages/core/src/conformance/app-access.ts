@@ -1,7 +1,6 @@
 import type { AccessLevel, AppAccess } from "../app-access.js";
 import type { AppId } from "../ids.js";
-import type { Membership } from "../run-context.js";
-import type { RunContext } from "../run-context.js";
+import type { Membership, RunContext } from "../run-context.js";
 import type { ConformanceCase, ConformanceSuite } from "./index.js";
 
 /**

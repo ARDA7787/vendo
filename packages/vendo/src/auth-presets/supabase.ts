@@ -247,10 +247,10 @@ export function supabase(options: SupabaseHostAuthPresetOptions = {}): HostAuthP
 
   return composeHostAuthPreset({
     sessionClaims,
-    // Build contract §9.1 — forwarded verbatim: the org chart is the HOST's.
-    ...(memberships === undefined ? {} : { memberships }),
-    // §9.1 companion — same rule, same reason: only the host has a directory.
-    ...(resolvePerson === undefined ? {} : { resolvePerson }),
+    // Build contract §9.1 (+ its companion) — handed straight through: the org
+    // chart and the directory are the HOST's, and no preset interprets either.
+    memberships,
+    resolvePerson,
     resolveUser: makeUserResolver(user, supabaseUser),
     // Away + MCP execution: the shipped Supabase minting preset (04 §2.1),
     // fed the same secret and identity this preset resolves sessions with —

@@ -6,9 +6,10 @@ import { resolveMapleSession } from "@/vendo/auth"
 
 export const dynamic = "force-dynamic"
 
-/** The avatar is part of the IDENTITY, not of the shared financial seed: the
- *  route replaced name and email and left the seed's initials, so the sidebar
- *  and the account switcher both read "YH" for whoever signed in. */
+/** The avatar is part of the IDENTITY, not of the shared financial seed, so the
+ *  initials are derived from the signed-in display name. Before this, the route
+ *  replaced name and email but left the seed's initials, and the sidebar and the
+ *  account switcher both read "YH" for whoever signed in. */
 function initialsOf(display: string, fallback: string): string {
   const letters = display.trim().split(/\s+/).map((word) => word[0]).filter(Boolean)
   return letters.length === 0 ? fallback : letters.slice(0, 2).join("").toUpperCase()

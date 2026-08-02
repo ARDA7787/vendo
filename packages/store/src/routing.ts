@@ -213,12 +213,13 @@ async function insertEffect(
 function appGrantRecord(row: Record<string, unknown>): VendoRecord {
   const at = iso(row["created_at"]);
   const appId = text(row["app_id"]);
+  const orgId = text(row["org_id"]);
   const principal = text(row["principal"]);
   const level = text(row["level"]);
   return {
     id: text(row["id"]),
-    data: { appId, orgId: text(row["org_id"]), principal, level, createdBy: text(row["created_by"]) },
-    refs: { app_id: appId, org_id: text(row["org_id"]), principal, level },
+    data: { appId, orgId, principal, level, createdBy: text(row["created_by"]) },
+    refs: { app_id: appId, org_id: orgId, principal, level },
     createdAt: at,
     updatedAt: at,
   };

@@ -246,7 +246,7 @@ export function eraseStore(store: VendoStore, options: { files: FilesAdapter }):
       const user = `/user/apps/${escapeLike(appId)}`;
       const org = `/orgs/%/apps/${escapeLike(appId)}`;
       const anchors = [`${user}/%`, user, `${org}/%`, org];
-      const where = [1, 2, 3, 4].map((n) => `path LIKE $${n} ESCAPE '\\'`).join(" OR ");
+      const where = anchors.map((_, index) => `path LIKE $${index + 1} ESCAPE '\\'`).join(" OR ");
       await delWorkspace(report, "vendo_workspace_files", where, anchors);
       await delWorkspace(report, "vendo_workspace_history", where, anchors);
       return report;

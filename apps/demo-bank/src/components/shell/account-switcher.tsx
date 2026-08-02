@@ -77,16 +77,19 @@ export function AccountSwitcher() {
             Switching unavailable
           </DropdownItem>
         ) : (
-          staff.map((member) => (
-            <DropdownItem
-              key={member.subject}
-              onSelect={() => (member.email === data?.email ? undefined : switchTo(member.email))}
-            >
-              <UserRound className="h-4 w-4 text-muted" />
-              {member.display}
-              {member.email === data?.email ? <span className="ml-auto text-[11px] text-muted">Current</span> : null}
-            </DropdownItem>
-          ))
+          staff.map((member) => {
+            const isCurrent = member.email === data?.email
+            return (
+              <DropdownItem
+                key={member.subject}
+                onSelect={() => (isCurrent ? undefined : switchTo(member.email))}
+              >
+                <UserRound className="h-4 w-4 text-muted" />
+                {member.display}
+                {isCurrent ? <span className="ml-auto text-[11px] text-muted">Current</span> : null}
+              </DropdownItem>
+            )
+          })
         )}
         <DropdownSeparator />
         <DropdownItem onSelect={() => void signout()}>

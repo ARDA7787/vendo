@@ -28,10 +28,11 @@ function loginPage(request: Request, message?: string): Response {
   // switching people is one click plus the shared demo password — which stays
   // server-side, exactly as it does for a first sign-in.
   const asked = url.searchParams.get("email")?.trim().toLowerCase();
-  const prefill = mapleDemoUsers().some((user) => user.email === asked) && asked !== undefined
+  const users = mapleDemoUsers();
+  const prefill = asked !== undefined && users.some((user) => user.email === asked)
     ? asked
     : mapleDemoEmail();
-  const demoUsers = mapleDemoUsers().map((user) => escapeHtml(user.email)).join(" · ");
+  const demoUsers = users.map((user) => escapeHtml(user.email)).join(" · ");
   const html = `<!doctype html>
 <html lang="en">
 <head>

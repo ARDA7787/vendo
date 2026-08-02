@@ -5,7 +5,6 @@ import {
   VENDO_VIEW_STREAM,
   VendoError,
   vendoViewStreamId,
-  type AccessLevel,
   type AppDocument,
   type AppId,
   type Json,
@@ -203,7 +202,7 @@ const optionalLimit = (value: Json | undefined): number | undefined => {
 
 export interface AgentToolsDataDependencies {
   data: AppDataAccess;
-  requireOwned(appId: AppId, ctx: RunContext, level?: AccessLevel): Promise<AppDocument>;
+  requireOwned(appId: AppId, ctx: RunContext): Promise<AppDocument>;
 }
 
 /**

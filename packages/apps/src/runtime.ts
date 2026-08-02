@@ -685,14 +685,6 @@ export interface AppsRuntime {
     ctx: RunContext,
   ): Promise<{ appId: AppId; cron: string; enabled: boolean; missing: number }>;
   /**
-   * execution-v2 skin contract (Lane C) — the box door the wire's fn proxy
-   * route rides: wake the app's machine on demand and proxy ONE HTTP request
-   * to its $PORT (the box serves `POST /fn/<name>` per the contract; the
-   * caller shapes the path). Owner-scoped like every app surface. Additive
-   * like `proxy`/`inClient` — not part of the frozen §1 method table. Lane B's
-   * machine lifecycle owns the wake internals behind this door.
-   */
-  /**
    * Build contract §9.8 — the served-app door. One request forwarded into the
    * app's machine after `can(viewer)` is re-checked against LIVE rows, so a
    * mid-session revoke bites the next request even though what the session
@@ -703,6 +695,15 @@ export interface AppsRuntime {
    */
   serve(appId: AppId, request: BoxRequest, ctx: RunContext): Promise<BoxResponse>;
   box: {
+    /**
+     * execution-v2 skin contract (Lane C) — the box door the wire's fn proxy
+     * route rides: wake the app's machine on demand and proxy ONE HTTP request
+     * to its $PORT (the box serves `POST /fn/<name>` per the contract; the
+     * caller shapes the path). Editor-scoped: writing through someone else's
+     * app is an edit. Additive like `proxy`/`inClient` — not part of the frozen
+     * §1 method table. Lane B's machine lifecycle owns the wake internals
+     * behind this door.
+     */
     request(appId: AppId, request: BoxRequest, ctx: RunContext): Promise<BoxResponse>;
     /**
      * Lane E — scrub the app's known secret values out of a JSON-ish value
@@ -784,7 +785,8 @@ export interface AppsRuntime {
      * app counts as machine activity (re-arms the idle timer and rides any
      * provider TTL extension). A sleeping machine wakes and reports "woke" —
      * the embed's signal that its URL is stale and it should re-open once
-     * awake. Owner-scoped like every machine surface.
+     * awake. Viewer-scoped, like `serve`: a keepalive for an embed someone was
+     * shared is theirs to send, and it grants no more than seeing the app does.
      */
     ping(appId: AppId, ctx: RunContext): Promise<{ state: "awake" | "woke" }>;
   };
@@ -794,8 +796,9 @@ export interface AppsRuntime {
    * authenticated scheduler endpoint calls on every external-cron hit: it
    * fires due `vendo.json` schedules exactly once per cron window (see
    * schedules.ts for the store-claimed idempotency rule). `sync` is the
-   * owner-scoped manifest re-read (the Wave-3 in-box agent's edit-complete
-   * hook); `report` feeds the doctor's machine/schedule reporting.
+   * editor-scoped manifest re-read (the Wave-3 in-box agent's edit-complete
+   * hook — re-reading a shared app's manifest is part of editing it);
+   * `report` feeds the doctor's machine/schedule reporting.
    */
   schedules: {
     tick(at?: Date): Promise<ScheduleTickReport>;
@@ -1603,6 +1606,28 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     await config.guard.report(appLifecycleEvent(ctx.principal, ctx, appId, { operation, ...extra }));
   };
 
+  /** The one mint for the `share` kind. It has existed in core since 01 §7 and
+   *  had ZERO producers until sharing shipped; the activity feed's semantics
+   *  already render it. Separate from `appLifecycleEvent` because that mint
+   *  stamps `kind: "app-lifecycle"` and an `outcome`, and a share event carries
+   *  neither. */
+  const reportShare = async (
+    appId: AppId,
+    ctx: RunContext,
+    detail: Record<string, Json>,
+  ): Promise<void> => {
+    await config.guard.report({
+      id: `aud_${globalThis.crypto.randomUUID()}`,
+      at: new Date().toISOString(),
+      kind: "share",
+      principal: ctx.principal,
+      venue: ctx.venue,
+      presence: ctx.presence,
+      appId,
+      detail,
+    });
+  };
+
   // verify-v2 fixes / v2 spec §3 — shape cards from live samples: each read
   // tool is sampled once per runtime (empty input, the calling user's
   // authority — the same call the app's queries make); the derived shape
@@ -2349,9 +2374,8 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           `you are not a member of ${orgId}, so this app cannot be promoted into it`,
         );
       }
-      const record = await apps.get(appId);
-      const from = record?.refs?.subject;
-      if (record === null || from === undefined) throw new VendoError("not-found", `app not found: ${appId}`);
+      const from = (await apps.get(appId))?.refs?.subject;
+      if (from === undefined) throw new VendoError("not-found", `app not found: ${appId}`);
       if (from === orgId) return withoutSession(structuredClone(app));
       if (config.promoteApp === undefined) {
         // Build contract §9.5, ruled 2026-08-01: promote is BYO-store-only for
@@ -2410,7 +2434,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       const moved = await apps.get(appId);
       const movedRow = moved === null ? null : rowFromRecord(moved);
       const disarmed = movedRow?.enabled === true;
-      if (disarmed && movedRow !== null) {
+      if (disarmed) {
         await apps.put(appRecordInput(movedRow.doc, orgId, false, sessionOf(movedRow.doc)));
       }
       await reportLifecycle("promote", appId, ctx, { orgId, from, ...(disarmed ? { disarmed } : {}) });
@@ -2436,36 +2460,18 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       async grant(appId, principal, level, ctx) {
         requireMultiParty("sharing");
         await requireAccess().grant(ctx, appId, principal, level);
-        await config.guard.report({
-          id: `aud_${globalThis.crypto.randomUUID()}`,
-          at: new Date().toISOString(),
-          // The `share` kind has existed in core since 01 §7 and had ZERO
-          // producers until now; the activity feed's semantics already render it.
-          kind: "share",
-          principal: ctx.principal,
-          venue: ctx.venue,
-          presence: ctx.presence,
-          appId,
-          detail: { operation: "grant", principal, level },
-        });
+        await reportShare(appId, ctx, { operation: "grant", principal, level });
       },
       async revoke(appId, principal, ctx) {
         requireMultiParty("sharing");
         await requireAccess().revoke(ctx, appId, principal);
-        await config.guard.report({
-          id: `aud_${globalThis.crypto.randomUUID()}`,
-          at: new Date().toISOString(),
-          kind: "share",
-          principal: ctx.principal,
-          venue: ctx.venue,
-          presence: ctx.presence,
-          appId,
-          detail: { operation: "revoke", principal },
-        });
+        await reportShare(appId, ctx, { operation: "revoke", principal });
       },
       async levelFor(appId, ctx) {
         if (config.appAccess === undefined) {
-          return (await apps.get(appId))?.refs?.subject === ctx.principal.subject ? "owner" : null;
+          // No seam ⇒ no grant row can exist, so ownership is the only level —
+          // which is exactly what `holds` degenerates to, at one store read.
+          return await holds(appId, ctx, "owner") ? "owner" : null;
         }
         return await config.appAccess.levelFor(ctx, appId);
       },
@@ -2523,8 +2529,8 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       if (input.appId === undefined) {
         throw new VendoError("validation", "validate needs an appId or a document to check");
       }
-      // Owner-scoped, like every app surface: validating someone else's app would
-      // leak its shape.
+      // Editor-scoped, like edit itself: checking the shape of an app you may
+      // change is part of changing it, and a mere viewer is masked as ever.
       const document = await requireOwned(input.appId, ctx);
       // The SAME floor create and edit run, with the host's and every pack's
       // plugged checks. `request` is empty because a verb call carries no user
@@ -3185,10 +3191,11 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // viewer may see and USE a shared app; a caller who cannot see it stays
       // masked, exactly as every other app door answers them.
       //
-      // Payload only. The forwarded request is assembled here from method,
-      // path, content-type and body — nothing else can ride along, so no
-      // cookie, authorization or host header can cross the skin even if the
-      // caller sent one.
+      // The BoxRequest is forwarded as given. Keeping the browser's cookies,
+      // authorization and host headers off the skin is the WIRE route's job:
+      // `servedProxyRoutes` assembles the request from method, path,
+      // content-type and body alone. A direct caller of this door — the host's
+      // own code — chooses its own headers.
       return await forwardToBox(await requireOwned(appId, ctx, "viewer"), request, ctx);
     },
     box: {

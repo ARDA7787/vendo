@@ -494,9 +494,10 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
       }
       let moved = 0;
       for (const table of WORKSPACE_TABLES) {
-        // `overlay` rewrites only the anchored prefix, so a path that merely
-        // CONTAINS the app id deeper down is untouched — and the LIKE keeps the
-        // statement anchored at the mount for the same reason erase.byApp is.
+        // The rewrite replaces exactly the leading `before` prefix and keeps the
+        // rest of the path verbatim, so a path that merely CONTAINS the app id
+        // deeper down is untouched; the LIKE keeps the statement anchored at the
+        // mount for the same reason erase.byApp is.
         const result = await db.query(
           `UPDATE ${table}
               SET owner = $3, path = $4 || substring(path FROM ${before.length + 1})

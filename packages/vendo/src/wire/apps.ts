@@ -145,12 +145,13 @@ export const appRoutes: RouteEntry[] = [
             // learned whether a team app was real, at HTTP 200, while the same
             // request without the flag correctly 404'd. A non-viewer now gets
             // exactly what a non-existent app gets.
+            const probe = await probeUnownedAppRecord(deps.store, appId);
             if (await deps.apps.access.levelFor(appId, ctx) === null) {
               // The principal-mismatch diagnosis (0.4.1 E2E cert B4) is a HOST
               // wiring problem in a developer's voice, so it keeps its signal
               // where only the host reads it — the server log — instead of
               // being served to whoever asked.
-              if ((await probeUnownedAppRecord(deps.store, appId)).exists) {
+              if (probe.exists) {
                 console.warn(
                   `[vendo] GET /apps/${appId}/open answered not-found, but a record with that id `
                   + "exists under another subject: this wire route's principal must resolve the same "
@@ -159,7 +160,6 @@ export const appRoutes: RouteEntry[] = [
               }
               return json({ kind: "pending" });
             }
-            const probe = await probeUnownedAppRecord(deps.store, appId);
             // A terminal build failure is terminal for EVERY caller: pass the
             // server-written reason through instead of masking it as a build
             // still in progress (0.4.6 cert defect D2).
@@ -208,12 +208,14 @@ export const appRoutes: RouteEntry[] = [
     }
     // 06-apps §8–§9 — additive: the reviewable diff of what this app ships
     // relative to the captured host baselines, hash-pinned to the version
-    // an in-client approval would cover. Owner-scoped like every app route.
+    // an in-client approval would cover. Viewer-scoped: reading what a shared
+    // app ships is part of seeing it (the runtime owns the level, as ever).
     if (request.method === "GET" && operation === "ship-diff" && segments.length === 3) {
       return json(await deps.apps.inClient.shipDiff(appId, ctx));
     }
-    // 06-apps §8 — additive drift→rebase surface, owner-scoped like every
-    // app route. A rebase rewrites content, so it is only ever invoked
+    // 06-apps §8 — additive drift→rebase surface. `drift` only reads, so it is
+    // viewer-scoped; a rebase rewrites content and is editor-scoped. The
+    // runtime owns both levels. A rebase is only ever invoked
     // explicitly here or via the vendo_apps_rebase_pin agent tool — drift
     // detection never auto-rebases.
     if (request.method === "GET" && operation === "pin-drift" && segments.length === 3) {
@@ -224,7 +226,7 @@ export const appRoutes: RouteEntry[] = [
       return json(await deps.apps.pins.rebase({ appId, slot: string(body["slot"], "slot") }, ctx));
     }
     // 06-apps §8 — the same gesture fork landing in an EXISTING app (the
-    // filled-slot / driver surface). Owner-scoped like every app route.
+    // filled-slot / driver surface). Editor-scoped: it lands a change.
     if (request.method === "POST" && operation === "fork-pin" && segments.length === 3) {
       const body = await requestJson(request);
       return json(await deps.apps.pins.fork({

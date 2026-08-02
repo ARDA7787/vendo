@@ -384,7 +384,7 @@ export const createScheduleEngine = (config: ScheduleEngineConfig): ScheduleEngi
       });
       await recordOutcome(row.id, fn, cron, status);
       await config.audit?.(appLifecycleEvent(
-        { kind: "user", subject: row.subject },
+        principal,
         { venue: "app", presence: "away" },
         row.id,
         { operation: "schedule-fire", fn, cron, scheduledFor },

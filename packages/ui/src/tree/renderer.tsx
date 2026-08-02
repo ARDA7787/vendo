@@ -570,8 +570,6 @@ function StatefulTreeView({
   // component sources (a payload extra, like furnishings).
   const componentTools = (tree as WalkTree & { componentTools?: Record<string, string[]> }).componentTools;
   const inClient = (tree as WalkTree & { inClient?: InClientVenue }).inClient;
-  // Tolerate a malformed field (like every other payload extra): only an
-  // array of well-formed entries renders the notice.
   // §9.9 — the adoption ask, when the server attached one for THIS caller (it
   // only does so for an editor+). Read through the shared key constant, so the
   // provider side and this side cannot drift into a card nobody ever sees.
@@ -583,6 +581,8 @@ function StatefulTreeView({
     && Array.isArray((adoptionRaw as AdoptionVenue).needs)
     ? adoptionRaw as AdoptionVenue
     : undefined;
+  // Tolerate a malformed field (like every other payload extra): only an
+  // array of well-formed entries renders the notice.
   const pinDriftRaw = (tree as WalkTree & { pinDrift?: unknown }).pinDrift;
   const pinDrift = (Array.isArray(pinDriftRaw) ? pinDriftRaw : [])
     .filter((entry): entry is PinDrift =>

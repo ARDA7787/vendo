@@ -82,9 +82,10 @@ export function parseGrantPrincipal(encoded: string): GrantPrincipal | undefined
   if (kind === "org") return rest.includes("/") ? undefined : { kind: "org", org: rest };
   if (kind === "team") {
     const slash = rest.indexOf("/");
+    if (slash === -1) return undefined;
     const org = rest.slice(0, slash);
     const team = rest.slice(slash + 1);
-    if (slash === -1 || org === "" || team === "" || team.includes("/")) return undefined;
+    if (org === "" || team === "" || team.includes("/")) return undefined;
     return { kind: "team", org, team };
   }
   return undefined;

@@ -1,7 +1,6 @@
 import {
   VendoError,
   validateAppDocument,
-  type AccessLevel,
   type AppDocument,
   type AppId,
   type Guard,
@@ -128,7 +127,7 @@ export interface AppInterchangeDependencies {
   store: StoreAdapter;
   guard: Guard;
   pinBaselines?: readonly PinBaseline[];
-  requireOwned(appId: AppId, ctx: RunContext, level?: AccessLevel): Promise<AppDocument>;
+  requireOwned(appId: AppId, ctx: RunContext): Promise<AppDocument>;
 }
 
 /** Public interchange methods wired into AppsRuntime. */

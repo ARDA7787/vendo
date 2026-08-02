@@ -106,6 +106,7 @@ export function sponsorLabel(
 export function AutomationCard({ name, enabled, trigger, description, pendingGrants = 0, sponsor, editors }: AutomationCardProps) {
   const flow = automationFlow(trigger);
   const waiting = enabled && pendingGrants > 0;
+  const runsAs = sponsorLabel(sponsor, editors);
   return (
     <ChromeRoot>
       <article className="fl-automation" data-vendo-automation-card="" aria-label={`Automation — ${name}`}>
@@ -126,9 +127,9 @@ export function AutomationCard({ name, enabled, trigger, description, pendingGra
                 : "Disabled"}
             </div>
             {description ? <div className="fl-auto-sub" style={{ display: "block" }}>{description}</div> : null}
-            {sponsorLabel(sponsor, editors) === null
+            {runsAs === null
               ? null
-              : <div className="fl-auto-sub" style={{ display: "block" }}>{sponsorLabel(sponsor, editors)}</div>}
+              : <div className="fl-auto-sub" style={{ display: "block" }}>{runsAs}</div>}
           </div>
         </div>
         {flow ? (
