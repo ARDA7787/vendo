@@ -173,22 +173,25 @@ const REWIND_LEDGER_LIMIT = 24;
 /**
  * §1.3's prefix truncation, through the SDK's own rewind.
  *
- * A shorter incoming transcript means the user edited a past message and resent.
- * Resuming the session unchanged would leave the model remembering exactly what
- * they removed, so this picks the checkpoint that predates the edit and hands it
- * to `resumeSessionAt`. With no usable checkpoint the session is dropped and the
- * turn re-seeds from our transcript — never wrong, only slower.
+ * What reaches here with state intact is a REGENERATE or a delete-from-here:
+ * a real edit never does, because the runtime already CLEARS the state for one
+ * (`classifyHistory` calls a differing overlap an arbitrary edit). Resuming the
+ * session unchanged would leave the model remembering exactly what the user
+ * removed, so this picks the checkpoint that predates the removal and hands it
+ * to `resumeSessionAt`. With no usable checkpoint the session is dropped and
+ * the turn re-seeds from our transcript — never wrong, only slower.
  */
 export function rewindFor(
   state: ClaudeState,
   messageCount: number,
 ): { resume?: string; resumeAt?: string } {
   if (state.sessionId === undefined) return {};
-  // STRICTLY shorter. An equal-length history is either an untouched re-send or
-  // an edit of the last message — and the runtime already CLEARS the state for
-  // the latter (`classifyHistory` calls a differing overlap an arbitrary edit),
-  // so treating equality as a truncation only threw away good sessions.
-  if (state.covers === undefined || messageCount >= state.covers) return { resume: state.sessionId };
+  // STRICTLY longer is the only plain resume. `covers` counts the answering
+  // turn's INPUTS — its reply lands at transcript index `covers` — so an
+  // EQUAL-length history means that reply was thrown away (a regenerate), and
+  // resuming unrewound left the model remembering the answer the user just
+  // deleted. Rewind past it like any other truncation.
+  if (state.covers === undefined || messageCount > state.covers) return { resume: state.sessionId };
   const point = [...(state.rewind ?? [])]
     .filter((entry) => entry.at < messageCount)
     .sort((left, right) => left.at - right.at)

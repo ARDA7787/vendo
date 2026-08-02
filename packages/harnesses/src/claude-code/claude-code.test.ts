@@ -504,9 +504,18 @@ describe("§1.3 · a prefix truncation uses the SDK's NATIVE rewind", () => {
       .toEqual({ resume: "s" });
   });
 
-  test("an EQUAL-length history is not a truncation — the runtime clears a real last-message edit", () => {
-    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 1, uuid: "u1" }] }, 3))
-      .toEqual({ resume: "s" });
+  test("an EQUAL-length history is a REGENERATE — rewind past the reply the user threw away", () => {
+    // `covers` counts the answering turn's inputs, so the discarded reply sits
+    // at transcript index `covers` and its own checkpoint (at 3) is unusable:
+    // resuming there still remembers the deleted answer. The previous turn's
+    // checkpoint is the target. (A real last-message EDIT never reaches here —
+    // the runtime clears the state for a differing overlap.)
+    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 1, uuid: "u1" }, { at: 3, uuid: "u3" }] }, 3))
+      .toEqual({ resume: "s", resumeAt: "u1" });
+  });
+
+  test("a regenerate with no checkpoint before the discarded reply drops the session and re-seeds", () => {
+    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 3, uuid: "u3" }] }, 3)).toEqual({});
   });
 
   test("a SHORTER transcript rewinds to the checkpoint that predates the edit", () => {
