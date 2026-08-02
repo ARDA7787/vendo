@@ -1,5 +1,5 @@
 "use client"
-import { Remixable, VendoSlot, VendoTrigger } from "@vendoai/ui/chrome"
+import { VendoSlot, VendoTrigger } from "@vendoai/ui/chrome"
 import { useSpending } from "@/lib/hooks"
 import { formatUSD } from "@/lib/money"
 import { categoryLabel } from "@/components/charts/colors"
@@ -46,13 +46,12 @@ export default function InsightsPage() {
           <CashflowCardLarge />
         </div>
 
-        {/* The remixable-surface affordance on one of Maple's OWN components:
-            a quiet ✦ at rest, the Remix pill on hover, and the table attached
-            to whatever the user types next. */}
+        {/* Remix moved to the presentational NetWorthView on Home (2026-08-02
+            final shape: remix always means fork, and a fork runs in the jail —
+            TopMerchants fetches its own data through host hooks, which cannot
+            cross the frame boundary; the full demo conversion is lane W1e). */}
         <div className="lg:col-span-2">
-          <Remixable name="Top Merchants">
-            <TopMerchants />
-          </Remixable>
+          <TopMerchants />
         </div>
 
         {/* demo-refresh Part 4 — a labeled EMPTY slot (ghost + suggestions) so
