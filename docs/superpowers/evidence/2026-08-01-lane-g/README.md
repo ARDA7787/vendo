@@ -16,6 +16,19 @@ the same app in ~30ms, so the proof runs there.
 | `05-share-cloud-required.png` | §9.6 live, the RED half: a keyless share is refused with the wire's own actionable sentence — *"sharing needs Vendo Cloud: set VENDO_API_KEY (or pass a hosted store) — apps you own alone keep working without it"*. |
 | `06-apps-tab-mia-masked.png` | Mia Nakamura, an ordinary member of the same org, does NOT see Yousef's app (existence-masking, §9.4) while the demo's own seeded apps still list. |
 
+## Fix round (2026-08-01, verifier findings G1–G17)
+
+Same setup, same production build, `http://localhost:3119`.
+
+| Shot | What it proves |
+| --- | --- |
+| `07-workspace-after-fixes.png` | The workspace still boots clean after the fix round. |
+| `08-apps-tab-after-fixes.png` | The apps surface unchanged: Open · Fork · Share · Remove. |
+| `09-share-dialog-personal-note.png` | **G11** — the dialog knows the app is still personal WITHOUT being told: `GET /apps/:id/grants` now answers `{"level":"owner","grants":[],"personal":true}` (read off the live response) and the note renders "This is your own copy. Sharing it with a team moves it there…". Before the fix `vendo-page` never passed the prop, so this note never appeared and the promote never fired. |
+| `10-share-refused-keyless.png` | **G11 live red-green** — sharing with `team:maple/support` now fires PROMOTE first, and the keyless refusal proves it by name: *"promote needs Vendo Cloud: set VENDO_API_KEY (or pass a hosted store) — apps you own alone keep working without it"*. Before the fix the same click went straight to `share`, so the sentence said "sharing". |
+| `11-share-automation-disarm-note.png` | **G6** — on an app that declares a trigger the dialog says it plainly before the move: "Its automation turns off in the move — automations run with a person's access, so it stays off until someone turns it back on." |
+| `12-switcher-unconfigured-honest.png` | **G17** — with password login unconfigured (production, no `MAPLE_DEMO_PASSWORD`) the account menu says **Switching unavailable** and the toast names the env var, instead of an inert "Personal" item. |
+
 ## The §9.1 seam, proven end to end in the browser
 
 `GET /api/vendo/status` as Yousef, over the live server:
