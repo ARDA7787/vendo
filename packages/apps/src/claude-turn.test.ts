@@ -120,6 +120,63 @@ async function run(
 
 const ok: GuardedCall = async () => ({ status: "ok", output: { invoices: [] } });
 
+describe("the composed brief reaches the SDK — the D2 plumbing question", () => {
+  /**
+   * Written to ANSWER a question, not to fix a bug: finding D2 had
+   * `claudeCode()` report a recurring automation it never created, and the first
+   * candidate cause was `Turn.system` — the block carrying "Never claim a tool
+   * ran unless its result confirms that it did" — being dropped or truncated on
+   * the way to the SDK loop. This hop had no coverage at all, so the answer was
+   * a reading rather than a measurement. It is not dropped: it arrives whole,
+   * APPENDED to the co-trained preset. D2's cause therefore lies in what the
+   * model does with a brief it received, not in whether it received one.
+   */
+  const captureOptions = async (systemPrompt: string | undefined): Promise<Record<string, any>> => {
+    let seen: Record<string, any> = {};
+    const recorded: Recorded = { permissions: [], handled: [] };
+    const inner = fakeSdk([{ say: "ok" }], recorded);
+    await runClaudeTurn({
+      prompt: "do the thing",
+      tools: listing,
+      cwd: "/box/user",
+      env: {},
+      callTool: ok,
+      emit: () => undefined,
+      ...(systemPrompt === undefined ? {} : { systemPrompt }),
+      sdk: {
+        ...inner,
+        query: (params: { prompt: unknown; options: Record<string, any> }) => {
+          seen = params.options;
+          return inner.query(params);
+        },
+      } as never,
+    });
+    return seen;
+  };
+
+  test("it is APPENDED to the claude_code preset, never replacing it", async () => {
+    const brief = "Never claim a tool ran unless its result confirms that it did.";
+    const options = await captureOptions(brief);
+    expect(options["systemPrompt"]).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: brief,
+    });
+  });
+
+  test("a caller with no brief still gets the preset, never an empty system prompt", async () => {
+    expect(await captureOptions(undefined)).toMatchObject({
+      systemPrompt: { type: "preset", preset: "claude_code", append: "" },
+    });
+  });
+
+  test("the user's own files can never configure the harness", async () => {
+    // `settingSources: []` is why a CLAUDE.md in the materialized workspace is
+    // inert: the brief is ours, the workspace is theirs.
+    expect((await captureOptions("brief"))["settingSources"]).toEqual([]);
+  });
+});
+
 describe("in-process MCP projection — one guard, one audit row, one mirror", () => {
   test("every equipped tool is projected under the vendo server", async () => {
     const calls: string[] = [];

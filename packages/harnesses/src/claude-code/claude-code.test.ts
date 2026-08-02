@@ -41,6 +41,9 @@ const encoder = new TextEncoder();
 type BoxScript = (box: {
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   emit: (event: Record<string, unknown>) => void;
+  /** What the box was told to think with — `Turn.system` plus the workspace
+   *  brief, as it arrives through the real door. */
+  systemPrompt?: string;
   /** Writes even over a read-only `/host` bind — the box's chmod is advisory, so
    *  an agent that defeats it is exactly the case the sync-back seam must catch. */
   write: (workspacePath: string, text: string) => void;
@@ -125,9 +128,11 @@ function makeBox(
       callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
       emit: (event: Record<string, unknown>) => void;
       resume?: string;
+      systemPrompt?: string;
     }) => script({
       callTool: input.callTool,
       emit: input.emit,
+      ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
       write: (workspacePath, text) => {
         const target = diskPath(root, workspacePath);
         mkdirSync(path.dirname(target), { recursive: true });
@@ -600,6 +605,21 @@ describe("a turn on a real box wire", () => {
     });
     await drain(claudeCode({ sandbox }), turn);
     expect(answered).toEqual({ status: "denied", reason: "You'll need to approve that." });
+  });
+
+  test("D2 · Turn.system reaches the box WHOLE, with the workspace brief after it", async () => {
+    // The D2 plumbing question, measured rather than read: the composed brief
+    // (which carries "Never claim a tool ran unless its result confirms that it
+    // did") is what `vendo()` thinks with, and it must be what the box thinks
+    // with too. It is — so D2's invented automation is not a dropped brief.
+    let brief: string | undefined;
+    const sandbox = fakeSandbox(async (box) => { brief = box.systemPrompt; });
+    await drain(claudeCode({ sandbox }), makeTurn().turn);
+    expect(brief).toContain("PRODUCT BRIEF");
+    // Ours first, the workspace conventions after — never the other way round,
+    // and never instead.
+    expect(brief?.startsWith("PRODUCT BRIEF")).toBe(true);
+    expect(brief).toContain("Your workspace");
   });
 
   test("the tool listing the box sees is the CURATED one, with its schemas", async () => {
