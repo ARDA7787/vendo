@@ -1,0 +1,62 @@
+[
+  {
+    "at": "2026-08-02T03:23:55.168Z",
+    "id": "aud_1a5da4e8-1948-4e13-85f7-53f03243cf2a",
+    "kind": "tool-call",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_getSpendingInsights {}"
+  },
+  {
+    "at": "2026-08-02T03:23:56.383Z",
+    "id": "aud_557f3aaf-3d51-416c-9e57-26c2e675861a",
+    "kind": "tool-call",
+    "tool": "gmail_GMAIL_GET_PROFILE",
+    "venue": "chat",
+    "detail": {
+      "connectorAccount": {
+        "toolkit": "gmail",
+        "entityId": "vendo-demo",
+        "connector": "composio"
+      }
+    },
+    "outcome": "connect-required",
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "gmail_GMAIL_GET_PROFILE {}"
+  },
+  {
+    "at": "2026-08-02T03:24:00.582Z",
+    "id": "aud_b5d1ef99-faf9-453c-a465-388c6e46ed0c",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "model": "claude-opus-4-8[1m]",
+        "inputTokens": 6,
+        "outputTokens": 706,
+        "cacheReadTokens": 72422,
+        "cacheWriteTokens": 8703
+      },
+      "harness": "claude-code"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

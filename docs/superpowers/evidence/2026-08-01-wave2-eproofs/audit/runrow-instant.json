@@ -1,0 +1,52 @@
+{
+  "harness": "instant",
+  "turns": 3,
+  "run_rows_before": 5,
+  "run_rows_after": 8,
+  "delta": 3,
+  "expected_delta": 3,
+  "holds": true,
+  "turn_answers": [
+    2,
+    2,
+    2
+  ],
+  "new_rows": [
+    {
+      "id": "aud_00032904-7274-4241-a66f-27181322414f",
+      "at": "2026-08-02T03:41:01.674Z",
+      "detail": {
+        "usage": {
+          "inputTokens": 82624,
+          "outputTokens": 96,
+          "cacheReadTokens": 81820
+        },
+        "harness": "instant"
+      }
+    },
+    {
+      "id": "aud_603e3ddd-fa05-4df4-9797-80cf0e933335",
+      "at": "2026-08-02T03:40:52.424Z",
+      "detail": {
+        "usage": {
+          "inputTokens": 83120,
+          "outputTokens": 57,
+          "cacheReadTokens": 81820
+        },
+        "harness": "instant"
+      }
+    },
+    {
+      "id": "aud_878151b0-9eb1-44d9-b838-5a386e347ce2",
+      "at": "2026-08-02T03:40:45.856Z",
+      "detail": {
+        "usage": {
+          "inputTokens": 83120,
+          "outputTokens": 58,
+          "cacheReadTokens": 81820
+        },
+        "harness": "instant"
+      }
+    }
+  ]
+}

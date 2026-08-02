@@ -1,0 +1,92 @@
+[
+  {
+    "step": "probe-open2",
+    "kind": "turn",
+    "thread": "thr_probe_seed2",
+    "http": 200,
+    "seconds": 4.4,
+    "first_view_s": 2.2,
+    "views": 1,
+    "build_failed": 0,
+    "approval": 0,
+    "connect": 0,
+    "tools": [
+      "vendo_apps_open"
+    ],
+    "appIds": [
+      "app_demo_spending_vendo-demo"
+    ],
+    "said": "Here's your spending app. Housing dominates the current period, with subscriptions and dining making up the rest.",
+    "audit": [
+      {
+        "kind": "tool-call",
+        "tool": "host_getSpendingInsights",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "app"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "vendo_apps_open",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "run",
+        "tool": null,
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  },
+  {
+    "step": "probe-edit2",
+    "kind": "turn",
+    "thread": "thr_probe_seed2",
+    "http": 200,
+    "seconds": 7.3,
+    "first_view_s": null,
+    "views": 0,
+    "build_failed": 0,
+    "approval": 0,
+    "connect": 0,
+    "tools": [
+      "vendo_apps_edit"
+    ],
+    "appIds": [
+      "app_demo_spending_vendo-demo"
+    ],
+    "said": "Done. The heading now reads \"This Month's Spending\" \u2014 everything else is unchanged.",
+    "audit": [
+      {
+        "kind": "tool-call",
+        "tool": "validate",
+        "outcome": "error",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "vendo_apps_edit",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "run",
+        "tool": null,
+        "outcome": null,
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  }
+]

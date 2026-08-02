@@ -21,15 +21,16 @@ import type {
   ToolListing,
   Turn,
 } from "@vendoai/core";
-import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedResult } from "@vendoai/apps/internal";
+import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedResult } from "@vendoai/apps/claude-turn";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { defineHarness } from "../define.js";
 import { harnessAdapters } from "../harness-sandbox.js";
 import { checkoutWorkspace, type SyncFile } from "../materialize.js";
+import { HOT_PATH_FILES } from "../render-seam.js";
 import type { TurnMachine } from "./machine.js";
 import { localMachine } from "./local.js";
-import { boxMachine, type SandboxAdapterLike } from "./box.js";
+import { boxMachine, type SandboxAdapterLike, type SessionRef } from "./box.js";
 
 /** v1 options, exactly (design §3): nothing else until asked. */
 export interface ClaudeCodeOptions {
@@ -62,9 +63,10 @@ export interface ClaudeCodeDeps {
   sandbox?: SandboxAdapterLike;
 }
 
-/** §3.5's hot paths, as workspace globs are not a thing here: the two files that
- *  sync mid-turn, resolved per app the checkout carries. */
-const HOT_FILES = ["app.vendo", "plan.vendo"];
+/** §3.5's hot paths as SHAPES: the two files that sync mid-turn, under any app —
+ *  including one whose id the turn is about to invent. The seam owns the frozen
+ *  layout (`hotPathAppId`) and drops anything else that comes back. */
+const HOT_WATCH = HOT_PATH_FILES.map((name) => `/user/apps/*/${name}`);
 const HOT_SYNC_INTERVAL_MS = 1_200;
 
 /** The recorded v0 inference exception (design §9): a boxed harness must reach a
@@ -148,14 +150,17 @@ interface ClaudeState {
   sessionId?: string;
   /**
    * The sleeping machine the session lives on (sandbox path only), and the
-   * control token its restored memory will still demand.
+   * control token its restored memory will still demand. Populated only when a
+   * sweep reclaimed the machine MID-turn (a guarded wait outlived the idle
+   * TTL) — the ordinary sweep runs after the state was already written, so a
+   * process restart normally re-seeds.
    *
    * The token rides here because a woken supervisor keeps the one it slept with,
    * so the next acquire must present it to be allowed to rotate. It is no new
    * exposure: the `ref` beside it already lets its holder wake the machine and
    * read the same workspace.
    */
-  resume?: { ref: string; token: string };
+  resume?: SessionRef;
   /** How long our transcript was when this session last answered. A SHORTER
    *  transcript next turn is a prefix truncation (§1.3) — the runtime keeps the
    *  state precisely so the harness can rewind natively. */
@@ -171,22 +176,25 @@ const REWIND_LEDGER_LIMIT = 24;
 /**
  * §1.3's prefix truncation, through the SDK's own rewind.
  *
- * A shorter incoming transcript means the user edited a past message and resent.
- * Resuming the session unchanged would leave the model remembering exactly what
- * they removed, so this picks the checkpoint that predates the edit and hands it
- * to `resumeSessionAt`. With no usable checkpoint the session is dropped and the
- * turn re-seeds from our transcript — never wrong, only slower.
+ * What reaches here with state intact is a REGENERATE or a delete-from-here:
+ * a real edit never does, because the runtime already CLEARS the state for one
+ * (`classifyHistory` calls a differing overlap an arbitrary edit). Resuming the
+ * session unchanged would leave the model remembering exactly what the user
+ * removed, so this picks the checkpoint that predates the removal and hands it
+ * to `resumeSessionAt`. With no usable checkpoint the session is dropped and
+ * the turn re-seeds from our transcript — never wrong, only slower.
  */
 export function rewindFor(
   state: ClaudeState,
   messageCount: number,
 ): { resume?: string; resumeAt?: string } {
   if (state.sessionId === undefined) return {};
-  // STRICTLY shorter. An equal-length history is either an untouched re-send or
-  // an edit of the last message — and the runtime already CLEARS the state for
-  // the latter (`classifyHistory` calls a differing overlap an arbitrary edit),
-  // so treating equality as a truncation only threw away good sessions.
-  if (state.covers === undefined || messageCount >= state.covers) return { resume: state.sessionId };
+  // STRICTLY longer is the only plain resume. `covers` counts the answering
+  // turn's INPUTS — its reply lands at transcript index `covers` — so an
+  // EQUAL-length history means that reply was thrown away (a regenerate), and
+  // resuming unrewound left the model remembering the answer the user just
+  // deleted. Rewind past it like any other truncation.
+  if (state.covers === undefined || messageCount > state.covers) return { resume: state.sessionId };
   const point = [...(state.rewind ?? [])]
     .filter((entry) => entry.at < messageCount)
     .sort((left, right) => left.at - right.at)
@@ -256,10 +264,11 @@ export function claudeCode(
           | SandboxAdapterLike
           | undefined;
         if (sandbox === undefined) {
-          // The boot gate (`assertHarnessComposable`) passes when the DEPLOYMENT
-          // has an adapter, which is not the same fact as the HARNESS having
-          // been handed one — so this is reachable, and it has to be loud for
-          // the operator and quiet for the user.
+          // On the composed path server.ts now threads the gate-checked
+          // adapter into the slot, so gate-pass implies slot-filled there.
+          // Still reachable by a host driving the runtime directly without a
+          // sandbox — and it has to be loud for the operator and quiet for
+          // the user.
           console.error(
             "[vendo] claudeCode() has no sandbox adapter. Hand it one directly — "
             + "`harness: claudeCode({ sandbox: e2bSandbox({ apiKey }) })` — or pass "
@@ -299,31 +308,20 @@ export function claudeCode(
       try {
         await machine.materialize(checkout.files);
 
-        const hotPaths = checkout.files
-          .map((file) => file.path)
-          .filter((path) => HOT_FILES.some((name) => path.endsWith(`/${name}`)));
-        // Paths that do not exist YET are the interesting ones — a plan file the
-        // agent is about to write is exactly what puts the skeleton on screen.
-        const appIds = new Set(
-          checkout.files
-            .map((file) => /^\/user\/apps\/(app_[^/]+)\//.exec(file.path)?.[1])
-            .filter((id): id is string => id !== undefined),
-        );
-        const watched = new Set([
-          ...hotPaths,
-          ...[...appIds].flatMap((id) => HOT_FILES.map((name) => `/user/apps/${id}/${name}`)),
-        ]);
-
-        if (watched.size > 0) {
-          hotTimer = setInterval(() => {
-            if (finished) return;
-            void serialize(async () => {
-              const hot = await machine.collect([...watched]);
-              await checkout.syncHot(hot);
-            }).catch(() => undefined);
-          }, HOT_SYNC_INTERVAL_MS);
-          hotTimer.unref?.();
-        }
+        // By SHAPE, never by enumeration. Enumerating the hot paths from files
+        // that already existed watched nothing at all on the one ask the skeleton
+        // exists for — "make me an app" — because a brand-new appId has no
+        // directory yet: measured 52.8s of silence against 5.0s when the file
+        // happened to pre-exist. The `*` is matched machine-side (§3.1 freezes
+        // the layout, so the shape is knowable without the id).
+        hotTimer = setInterval(() => {
+          if (finished) return;
+          void serialize(async () => {
+            const hot = await machine.collect(HOT_WATCH);
+            await checkout.syncHot(hot);
+          }).catch(() => undefined);
+        }, HOT_SYNC_INTERVAL_MS);
+        hotTimer.unref?.();
 
         const tools = (await turn.tools.list()).map(listingToTool);
         const running = machine.run({
@@ -380,7 +378,7 @@ export function claudeCode(
             console.error("[vendo] claude-code sync-back failed", error);
           });
         }
-        let released: { resume?: { ref: string; token: string } } | void = undefined;
+        let released: { resume?: SessionRef } | void = undefined;
         try {
           released = await machine.release();
         } catch {
@@ -423,8 +421,9 @@ async function callGuarded(
  * The thread this turn belongs to — the session machine's pool key.
  *
  * `Turn.threadId` (contract §1, amendment 2026-08-01) is the answer on every
- * composed path. The fallbacks exist only for a runtime driven without
- * composition: first message id (stable for the life of one thread,
+ * composed path — the field is required, so the fallbacks are unreachable from
+ * typed callers and exist only for a turn hand-rolled outside the type system:
+ * first message id (stable for the life of one thread,
  * unguessable outside it), else a per-turn random key — sharing a machine
  * (and therefore a native session and a workspace copy) between two
  * conversations because both happened to have no identity is the one outcome
@@ -443,4 +442,3 @@ function threadOf(turn: Turn<ClaudeCodeOptions>): string {
 const rootHintFor = (resolved: ClaudeCodeOptions): string =>
   resolved.machine === "local" ? "your working directory" : "/workspace";
 
-export { pathAccess, checkoutWorkspace } from "../materialize.js";

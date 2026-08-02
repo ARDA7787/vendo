@@ -1,0 +1,122 @@
+[
+  {
+    "at": "2026-08-02T02:55:33.952Z",
+    "id": "aud_ab3bbcdd-e42d-4ce0-b15d-1af8beddd125",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T02:55:45.555Z",
+    "id": "aud_7977521f-973f-4454-a7ce-b3178aa6fd6c",
+    "kind": "tool-call",
+    "tool": "host_listNotifications",
+    "appId": "app_73bcbf00-43b7-4ed6-8588-5e6b73b99720",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listNotifications {}"
+  },
+  {
+    "at": "2026-08-02T02:55:45.557Z",
+    "id": "aud_e2fb9d45-a5ac-4ee7-89ef-a6ee90ae6e8c",
+    "kind": "tool-call",
+    "tool": "host_listAccounts",
+    "appId": "app_73bcbf00-43b7-4ed6-8588-5e6b73b99720",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listAccounts {}"
+  },
+  {
+    "at": "2026-08-02T02:55:45.558Z",
+    "id": "aud_6597434b-402a-47a2-8b9d-c348d6e22343",
+    "kind": "tool-call",
+    "tool": "host_listNotifications",
+    "appId": "app_73bcbf00-43b7-4ed6-8588-5e6b73b99720",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listNotifications {}"
+  },
+  {
+    "at": "2026-08-02T02:55:45.558Z",
+    "id": "aud_94814140-8ad9-4a1e-b85e-76251f8920dc",
+    "kind": "tool-call",
+    "tool": "host_listAccounts",
+    "appId": "app_73bcbf00-43b7-4ed6-8588-5e6b73b99720",
+    "venue": "app",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listAccounts {}"
+  },
+  {
+    "at": "2026-08-02T02:56:09.307Z",
+    "id": "aud_c561a5a3-5c4a-4696-94ba-0e1dc19077d6",
+    "kind": "tool-call",
+    "tool": "vendo_apps_create",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_create {\"prompt\":\"Build a daily balance monitor for the user's checking account. Each day, fetch the checking account balance. If the balance falls below $2,000, display a prominent in-app notification alert that says the checking balance has dropped below $2,000 and shows the current balance. The app should show the current checking balance clearly at all times, along with the $2,000 threshold, the last-checked time, and the alert status (OK or Below Threshold). Use MapleSparkline t\u2026"
+  },
+  {
+    "at": "2026-08-02T02:56:09.315Z",
+    "id": "aud_03949037-4449-40a6-bad9-41c08a95549b",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 41401,
+        "outputTokens": 168,
+        "cacheReadTokens": 41055
+      },
+      "harness": "vendo"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

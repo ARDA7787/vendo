@@ -1,0 +1,10 @@
+data: {"type":"data-vendo-view","data":{"appId":"app_e3skel2","payload":{"formatVersion":"vendo-genui/v2","root":"app","nodes":[{"id":"app","component":"Stack","source":"prewired","children":["tabs"]},{"id":"tabs","component":"Tabs","source":"prewired","props":{"tabs":[{"value":"Overview","label":"Overview"}],"value":"Overview"},"children":["tab-0"]},{"id":"tab-0","component":"Stack","source":"prewired","children":["group-0"]},{"id":"group-0","component":"Surface","source":"prewired","children":["group-0-title","group-0-body"]},{"id":"group-0-title","component":"Text","source":"prewired","props":{"text":"This month","variant":"heading"}},{"id":"group-0-body","component":"Grid","source":"prewired","props":{"columns":2},"children":["group-0-leaf-0","group-0-leaf-1"]},{"id":"group-0-leaf-0","component":"StatTile","source":"prewired","props":{"pending":true}},{"id":"group-0-leaf-1","component":"DataTable","source":"prewired","props":{"pending":true}}],"queries":[{"name":"spending","tool":"host_getSpendingInsights","input":{}}],"streaming":true}},"id":"vendo-view:app_e3skel2"}
+
+data: {"type":"text-start","id":"txt_1_2050a9e3-417a-439b-b50b-9fcf6412c828"}
+
+data: {"type":"text-delta","id":"txt_1_2050a9e3-417a-439b-b50b-9fcf6412c828","delta":"Done. The plan file is written and saved, and I waited a full 60 seconds before replying."}
+
+data: {"type":"text-end","id":"txt_1_2050a9e3-417a-439b-b50b-9fcf6412c828"}
+
+data: [DONE]
+

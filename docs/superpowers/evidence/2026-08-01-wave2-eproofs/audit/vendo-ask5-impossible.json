@@ -1,0 +1,38 @@
+[
+  {
+    "at": "2026-08-02T03:08:40.544Z",
+    "id": "aud_fb8fb485-7465-4b6c-ad67-29654841d47d",
+    "kind": "tool-call",
+    "tool": "vendo_knowledge_search",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_knowledge_search {\"query\":\"credit score\"}"
+  },
+  {
+    "at": "2026-08-02T03:08:45.263Z",
+    "id": "aud_77d4b82f-cf85-4576-8a2e-1482550eb68b",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "inputTokens": 124488,
+        "outputTokens": 223,
+        "cacheReadTokens": 123165
+      },
+      "harness": "vendo"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

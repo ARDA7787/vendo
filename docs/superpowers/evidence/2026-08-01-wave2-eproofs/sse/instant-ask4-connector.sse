@@ -1,0 +1,38 @@
+data: {"type":"text-start","id":"txt_1_216a57ec-f203-41a3-aa99-69e4abcd9faf"}
+
+data: {"type":"text-delta","id":"txt_1_216a57ec-f203-41a3-aa99-69e4abcd9faf","delta":"Let"}
+
+data: {"type":"text-delta","id":"txt_1_216a57ec-f203-41a3-aa99-69e4abcd9faf","delta":" me grab your spending data and Gmail address at the same time."}
+
+data: {"type":"text-end","id":"txt_1_216a57ec-f203-41a3-aa99-69e4abcd9faf"}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_6_25f20ab9-883c-4cda-bee8-8fed6e1a5d68","toolName":"host_getSpendingInsights","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_6_25f20ab9-883c-4cda-bee8-8fed6e1a5d68","toolName":"host_getSpendingInsights","input":{},"dynamic":true}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_7_cbcab911-66ea-49c9-b709-d3eaa3884faf","toolName":"host_getProfile","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_7_cbcab911-66ea-49c9-b709-d3eaa3884faf","toolName":"host_getProfile","input":{},"dynamic":true}
+
+data: {"type":"tool-output-available","toolCallId":"hcall_6_25f20ab9-883c-4cda-bee8-8fed6e1a5d68","output":{"data":[{"category":"housing","amount":285000},{"category":"subscriptions","amount":28500},{"category":"dining","amount":8700}]},"dynamic":true}
+
+data: {"type":"tool-output-available","toolCallId":"hcall_7_cbcab911-66ea-49c9-b709-d3eaa3884faf","output":{"data":{"name":"Yousef Helal","email":"yousef@maple.com","netWorth":5490715,"accountCount":4,"avatarInitials":"YH","demoAutologin":true}},"dynamic":true}
+
+data: {"type":"text-start","id":"txt_2_a20d3a94-9367-40cd-b250-8ee9f7189f58"}
+
+data: {"type":"text-delta","id":"txt_2_a20d3a94-9367-40cd-b250-8ee9f7189f58","delta":"I"}
+
+data: {"type":"text-delta","id":"txt_2_a20d3a94-9367-40cd-b250-8ee9f7189f58","delta":" have everything I need. Let me send the summary now."}
+
+data: {"type":"text-end","id":"txt_2_a20d3a94-9367-40cd-b250-8ee9f7189f58"}
+
+data: {"type":"tool-input-start","toolCallId":"hcall_8_19bc6cd6-e0b6-4511-95fc-54c101984178","toolName":"gmail_GMAIL_SEND_EMAIL","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_8_19bc6cd6-e0b6-4511-95fc-54c101984178","toolName":"gmail_GMAIL_SEND_EMAIL","input":{"recipient_email":"yousef@maple.com","subject":"Your Maple Spending Summary — This Month","body":"Hi Yousef,\n\nHere is a summary of your spending by category for the current period:\n\n  Housing:        $2,850.00\n  Subscriptions:    $285.00\n  Dining:            $87.00\n\n  Total:          $3,222.00\n\nStay on top of your budget at any time by checking the Maple app.\n\n— Maple"},"dynamic":true}
+
+data: {"type":"data-vendo-connect","data":{"toolCallId":"hcall_8_19bc6cd6-e0b6-4511-95fc-54c101984178","connector":"composio","toolkit":"gmail","message":"Connect your gmail account to run gmail_GMAIL_SEND_EMAIL."}}
+
+data: {"type":"tool-output-denied","toolCallId":"hcall_8_19bc6cd6-e0b6-4511-95fc-54c101984178"}
+
+data: [DONE]
+

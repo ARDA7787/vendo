@@ -1,0 +1,322 @@
+[
+  {
+    "at": "2026-08-02T03:19:29.421Z",
+    "id": "aud_45b99bd0-3dc7-4437-b052-f97218ce3389",
+    "kind": "approval",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_ea87444f-b318-4af6-8aab-1bf0aa79a4aa"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.434Z",
+    "id": "aud_554cb6d2-6e75-4c48-949c-594403c1226c",
+    "kind": "approval",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_dcf83c54-45ef-4294-97d0-62425e467c03"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.446Z",
+    "id": "aud_796a162d-946c-4b5b-bb25-8b618eca9359",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_1937ea04-3a2d-424b-8baa-b7f18f329263"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.456Z",
+    "id": "aud_ad8c3c2d-01cf-4519-b402-7eb975dac265",
+    "kind": "approval",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_80729427-f219-4098-bd71-c926f5d2b95b"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.469Z",
+    "id": "aud_8b70a752-9a7a-4e05-83b6-b3f1f9cfff07",
+    "kind": "approval",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_decb6188-63fa-400c-8a34-08768fc41774"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.481Z",
+    "id": "aud_609e246d-0205-47e6-994b-389cfeb94610",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_1916f07c-6e9b-41f7-8b17-4eb7fbe3a287"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.492Z",
+    "id": "aud_a5a3c698-3358-4596-b296-16cff61a9cbe",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_fef7e97a-0f59-4266-88df-af97cd6287b9"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.504Z",
+    "id": "aud_31720772-bbc9-4ef1-93ed-36ebbfd091f8",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_8ed87558-6050-4cdb-85f0-a27721ff1e7a"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.514Z",
+    "id": "aud_ee90a17d-f7d1-4b0d-a1b4-9ec21bcc80b6",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_6b3b4c96-8b77-4fb5-8929-780088683407"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.525Z",
+    "id": "aud_75a3ae4b-849c-4c0a-b4e0-e821b1897d21",
+    "kind": "approval",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_9763b550-0303-4529-be6a-25857bc030b9"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.536Z",
+    "id": "aud_1c903489-2c9a-4c82-b201-643c57c0b125",
+    "kind": "approval",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_b6ebad33-bfd9-491a-b2e1-e5a0a5b60e58"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.546Z",
+    "id": "aud_ce18ef8c-5996-4d35-8507-ba4c200bce13",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_d538523f-292c-428e-a007-d4a910f34376"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.563Z",
+    "id": "aud_7b489ceb-5d26-42c8-9d18-3d3c390ed1f2",
+    "kind": "approval",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_a73172fc-94b1-4d74-9d74-ac613a95279f"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.571Z",
+    "id": "aud_6fdc1bad-6c2b-4436-b95a-dc429c13c530",
+    "kind": "approval",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_5e715ba8-8628-4d18-ba7e-21cf368aadc4"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.581Z",
+    "id": "aud_191aaa29-4910-4c56-a9c9-2997d671ecb4",
+    "kind": "approval",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_bf9a409d-af97-4e79-8bc4-b469207fc7ac"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.591Z",
+    "id": "aud_a51aa64c-6d84-4fc7-8113-6411d7ca8121",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_7856f222-777f-4e12-8689-bcb77b7e29e3"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.600Z",
+    "id": "aud_3c8dc130-d43b-48c4-b006-f08653f9ee2a",
+    "kind": "approval",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_a2c833a8-00f1-43f2-92cd-c7c73c5acf9d"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.608Z",
+    "id": "aud_918961b5-af87-4d71-b3dd-ac394d3441e1",
+    "kind": "approval",
+    "tool": "host_listTransactions",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_ae995233-5e23-435d-910a-7d4e27ee732f"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.615Z",
+    "id": "aud_1cc3c522-5428-4501-8f1e-65df34d5fc66",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_bce422bb-d054-4dcf-8a59-9902b77cede0"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  },
+  {
+    "at": "2026-08-02T03:19:29.623Z",
+    "id": "aud_9900d018-8018-4532-9c90-a2ef9d90aa49",
+    "kind": "approval",
+    "tool": "host_getSpendingInsights",
+    "venue": "chat",
+    "detail": {
+      "grantRevoked": "grt_40c778e7-5bef-4ebd-b9d5-70780239d9f8"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

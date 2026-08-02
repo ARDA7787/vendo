@@ -1,0 +1,40 @@
+[
+  {
+    "at": "2026-08-02T03:38:57.383Z",
+    "id": "aud_566b12d4-fc05-4b39-9a44-0d725e6ea9b0",
+    "kind": "tool-call",
+    "tool": "host_listAccounts",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "host_listAccounts {}"
+  },
+  {
+    "at": "2026-08-02T03:38:58.815Z",
+    "id": "aud_587d2d11-d096-401e-b7d3-c8fe63b82dec",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "model": "claude-opus-4-8[1m]",
+        "inputTokens": 6,
+        "outputTokens": 258,
+        "cacheReadTokens": 72109,
+        "cacheWriteTokens": 8534
+      },
+      "harness": "claude-code"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

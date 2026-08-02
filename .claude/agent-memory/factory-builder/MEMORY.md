@@ -16,3 +16,8 @@
 - [What the reviewer blocks](project-reviewer-block-severity.md) — 4 block categories; "quietly dropped work" is judgment-shaped and now costs the person their app (open product call)
 - [store/index.ts exports must mirror postgres.ts](gotcha-store-postgres-export-mirror.md) — a surface test fails far from the file you changed
 - [e2b template + env gotchas](gotcha-e2b-template-and-env.md) — copy() resolves from the script dir; create({envs}) never reaches the start command
+- [nohup dev servers get reaped](gotcha-nohup-dev-server-reaped.md) — start long-lived servers with run_in_background:true, or they die mid-proof with no crash log
+- [claudeCode() in demo-bank needs a rig patch](gotcha-claudecode-in-nextjs-host.md) — SUPERSEDED 2026-08-01: the diagnosis was wrong and the blocker is fixed; see the subpath entry below
+- [A subpath's graph drags its optional peer](gotcha-subpath-graph-drags-optional-peer.md) — Turbopack RESOLVES `import(CONST)`; split the subpath, don't just declare the peer
+- [hcall_N is a process-wide counter](gotcha-hcall-counter-is-process-wide.md) — never infer "N-1 hidden tool calls" from a high id; count across the whole server boot
+- [`build --force` silently no-ops per package](gotcha-tsc-force-flag-silent-build-fail.md) — tsc rejects `--force`, dist keeps old code, and a red-green check then proves nothing

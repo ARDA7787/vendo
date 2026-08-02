@@ -16,10 +16,14 @@
  * box-side. What differs is only `callTool`'s transport (an HTTP bridge in the
  * box, a direct call on the host), which is why it is a port.
  *
- * It therefore imports NOTHING from the workspace: the only imports are the
- * dynamic ones for the SDK and zod, which resolve from `/opt/vendo-box/node_modules`
- * in the box and from the host's optional peer locally. Keep it that way — the
- * emitted `dist/claude-turn.js` is copied verbatim into a machine image.
+ * It therefore imports NOTHING from the workspace, and — the rule that matters —
+ * it never NAMES the Agent SDK. Whoever supplies the machine supplies the SDK:
+ * the box door loads it from the machine image, `machine: "local"` loads it from
+ * the optional peer that `@vendoai/harnesses` declares. A module that named the
+ * package itself was reachable from every composed host's build graph, and a
+ * bundler that folds `import(CONST)` then refused to build a host that has no
+ * reason to install a ~250MB platform binary. Keep it that way — the emitted
+ * `dist/claude-turn.js` is copied verbatim into a machine image.
  *
  * Two permission laws live here (design §3, "claudeCode() specifics"):
  *   - the box is AUTO-ALLOW for its own file/bash work (the box IS the
@@ -30,20 +34,22 @@
  *     is `{behavior:"deny"}` — something the model narrates — never a throw.
  */
 
-/** Resolved at RUNTIME, never by tsc: the ~250MB SDK is an optional peer of
- *  `@vendoai/harnesses` and lives in the box image — it must never become a
- *  build-time dependency of this package (the engine's `sdk-seam.ts` uses the
- *  same variable-specifier trick for the same reason). */
-const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
-
 /** The MCP server name our projected tools live under (`mcp__vendo__<tool>`). */
 export const VENDO_MCP_SERVER = "vendo";
 
 /** The box's own hands (design §4): a real shell over a workspace COPY. */
 export const BOX_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"] as const;
 
-/** Never available to a headless box turn: no user to ask, no egress to spend. */
+/** Never available to a headless box turn: no user to ask, no egress to spend.
+ *  Redundant with the hook's allow-list ON PURPOSE: `disallowedTools` removes
+ *  these from the model's view entirely, so it never plans around them; the
+ *  hook denial below is the backstop for an SDK that offers them anyway. */
 const DISALLOWED_TOOLS = ["WebSearch", "WebFetch", "AskUserQuestion"];
+
+/** The SDK's subagent door. Allowing the dispatcher grants nothing by itself:
+ *  a subagent's inner calls come back through the same permission hook one by
+ *  one, each judged on its own name. */
+const SUBAGENT_TOOLS = ["Task"];
 
 /** Exactly the three statuses a harness sees (contract §1.1), flattened for the
  *  wire the box speaks. Mapping from `ToolResult` is the host's job. */
@@ -90,8 +96,8 @@ export interface ClaudeTurnInput {
   resumeAt?: string;
   /** The materialized workspace root on this machine. */
   cwd: string;
-  /** Where the SDK keeps its session file, so the caller can ship it out. */
-  configDir?: string;
+  /** `CLAUDE_CONFIG_DIR` included: where the SDK keeps its session file is the
+   *  machine's choice, made in the environment and never read back here. */
   env: Record<string, string>;
   /** Names the box may run without asking. Defaults to {@link BOX_TOOLS}. */
   allowedBoxTools?: readonly string[];
@@ -99,14 +105,13 @@ export interface ClaudeTurnInput {
   emit: (event: ClaudeTurnEvent) => void;
   signal?: AbortSignal;
   /**
-   * The Agent SDK module. The BOX leaves it unset and this file resolves it from
-   * the machine image; `machine: "local"` passes it in, because the optional peer
-   * is declared on `@vendoai/harnesses` (contract build-list item 1) and a
-   * dynamic import here would resolve against `@vendoai/apps`, which does not
-   * declare it — under a strict node_modules layout that is a hard failure.
-   * Tests pass a double.
+   * The Agent SDK module, supplied by whoever supplied the machine: the box door
+   * loads it from the image, `machine: "local"` loads it from the optional peer
+   * `@vendoai/harnesses` declares (contract build-list item 1). REQUIRED, so
+   * this file never names the package and never lands in a host's build graph
+   * for it. Tests pass a double.
    */
-  sdk?: SdkModule;
+  sdk: SdkModule;
 }
 
 /** The bits of the SDK this file uses. Narrow on purpose: the real message union
@@ -206,7 +211,7 @@ const declaredKeys = (schema: unknown): string[] => {
  * Normalizing here also means an argument the tool never declared can never
  * reach the guard, which is the honest reading of the descriptor.
  */
-export function normalizeArgs(schema: unknown, raw: unknown): Record<string, unknown> {
+function normalizeArgs(schema: unknown, raw: unknown): Record<string, unknown> {
   const source = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const args: Record<string, unknown> = {};
   for (const key of declaredKeys(schema)) {
@@ -239,9 +244,13 @@ const callKey = (name: string, args: Record<string, unknown>): string =>
  */
 function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
   const prefix = `mcp__${VENDO_MCP_SERVER}__`;
+  // The hook's ALLOW-list: the box's own hands plus the subagent door. A
+  // deny-list here meant every tool nobody had foreseen — say an SDK upgrade
+  // shipping a new built-in with egress — was silently allowed; unnamed must
+  // mean denied.
+  const boxAllowed = new Set<string>([...(input.allowedBoxTools ?? BOX_TOOLS), ...SUBAGENT_TOOLS]);
   const settled = new Map<string, GuardedResult[]>();
   const schemas = new Map(input.tools.map((listed) => [listed.name, listed.inputSchema]));
-  const slot = (name: string, args: unknown): string => `${name}\0${JSON.stringify(args ?? {})}`;
 
   const execute = async (bare: string, args: Record<string, unknown>): Promise<GuardedResult> => {
     try {
@@ -283,9 +292,14 @@ function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
     rawArgs: Record<string, unknown>,
   ): Promise<Record<string, unknown>> => {
     if (!name.startsWith(prefix)) {
-      // The box IS the permission: its own file/bash work touches a COPY with no
-      // credentials on it, and reality happens at commit.
-      return { behavior: "allow", updatedInput: rawArgs };
+      // ALLOW-LIST, never a deny-list. The box IS the permission for its own
+      // hands — file/bash work touches a COPY with no credentials on it, and
+      // reality happens at commit — but that argument covers exactly the tools
+      // named in {@link boxAllowed}. Anything else (a future SDK built-in with
+      // egress, another server's tools) is denied by not being named, instead
+      // of allowed by not being foreseen.
+      if (boxAllowed.has(name)) return { behavior: "allow", updatedInput: rawArgs };
+      return { behavior: "deny", message: `${name} isn't available in this workspace.` };
     }
     const bare = name.slice(prefix.length);
     const args = normalizeArgs(schemas.get(bare), rawArgs);
@@ -325,11 +339,10 @@ function usageEvent(raw: unknown, model: string | undefined): ClaudeTurnEvent | 
 }
 
 export async function runClaudeTurn(input: ClaudeTurnInput): Promise<void> {
-  const sdk = input.sdk ?? ((await import(SDK_PACKAGE)) as unknown as SdkModule);
+  const sdk = input.sdk;
   const { z } = (await import("zod")) as unknown as { z: ZodLike };
 
   const { tools, canUseTool } = guardedProjection(input, z, sdk);
-  const allowed = [...(input.allowedBoxTools ?? BOX_TOOLS)];
 
   const options: Record<string, unknown> = {
     cwd: input.cwd,
@@ -344,7 +357,7 @@ export async function runClaudeTurn(input: ClaudeTurnInput): Promise<void> {
     // NOT bypassPermissions: the hook is how our guard's asks reach the model.
     permissionMode: "default",
     canUseTool,
-    allowedTools: allowed,
+    allowedTools: [...(input.allowedBoxTools ?? BOX_TOOLS)],
     disallowedTools: DISALLOWED_TOOLS,
     mcpServers: { [VENDO_MCP_SERVER]: sdk.createSdkMcpServer({ name: VENDO_MCP_SERVER, version: "1.0.0", tools }) },
     // Never read settings or CLAUDE.md off the materialized workspace: those are

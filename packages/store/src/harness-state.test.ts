@@ -68,6 +68,24 @@ for (const backend of backends()) {
         .rejects.toBeInstanceOf(VendoError);
     });
 
+    it("deleting the thread deletes its harness state — no ref outlives its thread", async () => {
+      await own("thr_gone");
+      const states = harnessStateStore(made.store);
+      await states.set("thr_gone", "claude-code", "sess_gone");
+      await threadStore(made.store).delete(alice, "thr_gone");
+      expect(await states.get("thr_gone", "claude-code")).toBeUndefined();
+    });
+
+    it("a foreign principal's failed thread delete leaves the harness state alone", async () => {
+      const mallory: Principal = { kind: "user", subject: "user_mallory" };
+      await own("thr_kept");
+      const states = harnessStateStore(made.store);
+      await states.set("thr_kept", "claude-code", "sess_kept");
+      // The delete is subject-guarded, so nothing happens — including the sweep.
+      await threadStore(made.store).delete(mallory, "thr_kept");
+      expect(await states.get("thr_kept", "claude-code")).toBe("sess_kept");
+    });
+
     it("erasing the subject erases their harness state", async () => {
       const carol: Principal = { kind: "user", subject: "user_carol" };
       await own("thr_carol", carol);

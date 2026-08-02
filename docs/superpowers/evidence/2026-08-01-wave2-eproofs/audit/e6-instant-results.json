@@ -1,0 +1,124 @@
+[
+  {
+    "step": "e6-warm",
+    "kind": "turn",
+    "thread": "thr_e6warm",
+    "http": 200,
+    "seconds": 14.9,
+    "first_view_s": 6.1,
+    "views": 5,
+    "build_failed": 0,
+    "approval": 0,
+    "connect": 0,
+    "tools": [
+      "vendo_apps_create"
+    ],
+    "appIds": [
+      "app_1febf852-7a0e-4b3d-9ce1-0b72d896fa0e"
+    ],
+    "said": "Here it is.",
+    "audit": [
+      {
+        "kind": "tool-call",
+        "tool": "validate",
+        "outcome": "error",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "host_listItems",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "host_listItems",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "app"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "host_listItems",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "app"
+      },
+      {
+        "kind": "app-lifecycle",
+        "tool": null,
+        "outcome": "ok",
+        "decidedBy": null,
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "vendo_apps_create",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  },
+  {
+    "step": "e6-measured",
+    "kind": "turn",
+    "thread": "thr_e6measured",
+    "http": 200,
+    "seconds": 19.0,
+    "first_view_s": 6.8,
+    "views": 4,
+    "build_failed": 1,
+    "approval": 0,
+    "connect": 0,
+    "tools": [
+      "vendo_apps_create"
+    ],
+    "appIds": [
+      "app_b28c6691-d463-40fb-b5ba-f179aa9d9b35"
+    ],
+    "said": "This app wasn't created, because it didn't pass the checks that keep an app honest: This stat uses count(items.data), which counts ALL transactions regardless of status, not just those with status 'completed' or 'active'; it should filter items.data to only rows where status is 'completed' or 'active' before counting.",
+    "audit": [
+      {
+        "kind": "tool-call",
+        "tool": "validate",
+        "outcome": "error",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "host_listItems",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "app"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "host_listItems",
+        "outcome": "ok",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "app"
+      },
+      {
+        "kind": "tool-call",
+        "tool": "vendo_apps_create",
+        "outcome": "error",
+        "decidedBy": "rule",
+        "presence": "present",
+        "venue": "chat"
+      }
+    ]
+  }
+]

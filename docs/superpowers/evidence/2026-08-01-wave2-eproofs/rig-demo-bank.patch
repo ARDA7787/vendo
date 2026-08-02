@@ -1,0 +1,74 @@
+diff --git a/apps/demo-bank/src/vendo/server.ts b/apps/demo-bank/src/vendo/server.ts
+index 57217f72e..fa45a6cb0 100644
+--- a/apps/demo-bank/src/vendo/server.ts
++++ b/apps/demo-bank/src/vendo/server.ts
+@@ -3,10 +3,11 @@ import { memoryKnowledgeAdapter } from "@vendoai/core/conformance";
+ import { vendoAutoJudge } from "@vendoai/guard";
+ import { createStore } from "@vendoai/store";
+ import { authJs } from "@vendoai/vendo/auth/auth-js";
+-import { createVendo, instant, vendoModel } from "@vendoai/vendo/server";
++import { createVendo, vendoModel } from "@vendoai/vendo/server";
+ import { authSecret, resolveMapleSubject } from "@/server/users";
+ import { mapleKnowledgeDocs } from "./knowledge";
+ import { mapleMcpConfig } from "./mcp-config";
++import { proofHarness } from "./proof-harness";
+ import { mapleRegistry } from "./registry";
+ 
+ const composioApiKey = process.env.COMPOSIO_API_KEY;
+@@ -35,12 +36,13 @@ export const vendo = createVendo({
+   // fast model on BYO — so the demo runs the fast two-lane path with no
+   // hardcoded model names (speed-core lane; BYO rule).
+   auth: mapleAuth,
+-  // Wave-2 live-proof seam (docs/verification/wave2-lane-f/), same shape as the
++  // Wave-2 live-proof seam (docs/verification/wave2-lane-f/ and
++  // docs/superpowers/evidence/2026-08-01-wave2-eproofs/), same shape as the
+   // wave-1 MAPLE_HARNESS switch. Unset — the shipped demo — leaves the slot
+   // empty, which since the wave-2 flip means the composed `vendo()` serves the
+-  // chat route. `MAPLE_HARNESS=instant` names the specialist instead, which is
+-  // the only way to measure its column against the default's.
+-  ...(process.env.MAPLE_HARNESS === "instant" ? { harness: instant() } : {}),
++  // chat route. `instant` / `claude-code` name a specialist instead, which is
++  // the only way to measure their columns against the default's.
++  ...proofHarness(),
+   // The shared registry (01 §14): the server reads only the data fields;
+   // <VendoRoot> takes the same object and reads only component references.
+   catalog: mapleRegistry,
+diff --git a/apps/demo-bank/src/vendo/proof-harness.ts b/apps/demo-bank/src/vendo/proof-harness.ts
+new file mode 100644
+index 000000000..0162910e7
+--- /dev/null
++++ b/apps/demo-bank/src/vendo/proof-harness.ts
+@@ -0,0 +1,33 @@
++/**
++ * Wave-2 live E-proof seam (docs/superpowers/evidence/2026-08-01-wave2-eproofs/).
++ *
++ * Extends lane F's `MAPLE_HARNESS=instant` switch to the third harness so the
++ * E1 matrix can run all three columns through the SAME composed wire:
++ *
++ *   unset               → slot empty; composition serves the default `vendo()`
++ *   instant             → `harness: instant()`
++ *   claude-code         → `harness: claudeCode()` on a real sandbox machine
++ *   claude-code-local   → `harness: claudeCode({ machine: "local" })`
++ *
++ * NOT COMMITTABLE AS-IS — this file is the proof rig, reverted after the run.
++ * The `claudeCode` import is static because Turbopack refuses every dynamic
++ * form ("Cannot find module as expression is too dynamic", and `turbopackIgnore`
++ * is not honored on `require`), and a static import puts
++ * `@anthropic-ai/claude-agent-sdk` in demo-bank's build graph — where it cannot
++ * resolve, because `@vendoai/apps` imports that SDK without declaring it
++ * (packages/apps/src/claude-turn.ts:37,328). Committing this would break the
++ * deployed demo's build. See the report's finding D1.
++ */
++import { claudeCode } from "@vendoai/harnesses/claude-code";
++import { instant } from "@vendoai/vendo/server";
++import type { createVendo } from "@vendoai/vendo/server";
++
++type HarnessSlot = Pick<Parameters<typeof createVendo>[0], "harness">;
++
++export function proofHarness(): HarnessSlot | Record<string, never> {
++  const named = process.env.MAPLE_HARNESS;
++  if (named === "instant") return { harness: instant() };
++  if (named === "claude-code") return { harness: claudeCode() };
++  if (named === "claude-code-local") return { harness: claudeCode({ machine: "local" }) };
++  return {};
++}

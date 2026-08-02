@@ -25,7 +25,7 @@
  * the store is untouched and the next turn recovers on a fresh machine.
  */
 import { VendoError } from "@vendoai/core";
-import type { GuardedResult } from "@vendoai/apps/internal";
+import type { GuardedResult } from "@vendoai/apps/claude-turn";
 import type { CheckoutFile, SyncFile } from "../materialize.js";
 import type { TurnMachine, TurnRequest } from "./machine.js";
 
@@ -46,7 +46,7 @@ export interface SandboxMachineLike {
 
 /** The supervisor's control port, as `box-agent.ts` names it. */
 const CONTROL_PORT = 8811;
-/** How long a reclaimed-for-idleness machine may sit unused. */
+/** How long an unleased machine may sit idle before the sweep reclaims it. */
 export const MACHINE_IDLE_TTL_MS = 5 * 60_000;
 /** The box holds each poll open this long before answering empty. */
 const POLL_WAIT_MS = 10_000;
@@ -62,9 +62,9 @@ interface PoolEntry {
    * The control token this machine currently accepts.
    *
    * HONEST SCOPE (wave-1 law: no aspirational comments): it is machine-scoped and
-   * rotated on every ACQUIRE — so in practice one token per turn, because a turn
-   * acquires once, but a turn that reuses a warm pooled machine keeps the token
-   * the previous turn minted. It is NOT rotated mid-turn.
+   * rotated on every ACQUIRE, warm reuse included — so one token per turn,
+   * because a turn acquires exactly once. It is NOT rotated mid-turn, so a turn
+   * that spans an approval wait holds one token throughout.
    */
   token: string;
   /** Set while the machine is doing work nobody may reclaim under. */
@@ -101,10 +101,11 @@ const swept = new Map<string, SessionRef>();
  * The machine's control token.
  *
  * HONEST SCOPE (wave-1 law — no aspirational comments): minted per ACQUIRE and
- * rotated into the box by the handshake, so in practice one token per turn
- * (a turn acquires once) — but a turn that reuses a warm pooled machine keeps the
- * token the previous turn minted, and nothing rotates mid-turn. The written
- * "turn-scoped" of design §9 is therefore approximated, not achieved.
+ * rotated into the box by the handshake — warm reuse included, since the probe
+ * that keeps a reaped machine from being handed out IS that handshake. A turn
+ * acquires exactly once, so this is one token per turn. Nothing rotates
+ * mid-turn, so design §9's "turn-scoped" now holds at turn granularity and no
+ * finer.
  */
 const mintToken = (): string => `bxt_${globalThis.crypto.randomUUID()}`;
 
@@ -136,10 +137,17 @@ async function control(
   return { status: answer.status, json };
 }
 
+/** Cancel a pending idle sweep. Nothing may be reclaimed under a machine that
+ *  is about to be used, released or destroyed. */
+function disarmIdle(entry: PoolEntry): void {
+  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.timer = undefined;
+}
+
 /** Arm the idle sweep: snapshot, then destroy. The ref is what a later turn
  *  resumes, so the native session comes back with the disk. */
 function armIdle(threadId: string, entry: PoolEntry, idleTtlMs: number): void {
-  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  disarmIdle(entry);
   entry.timer = setTimeout(() => {
     void (async () => {
       // A timer can outlive its entry (an eviction, a failed handshake). Without
@@ -224,16 +232,8 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
     return status === 200;
   };
 
-  const existing = pool.get(options.threadId);
-  let entry: PoolEntry;
-  if (existing !== undefined) {
-    if (existing.timer !== undefined) clearTimeout(existing.timer);
-    existing.timer = undefined;
-    // A machine already in the pool has served this thread, so whatever session
-    // the last turn wrote is still on its disk — warm reuse always carries it.
-    existing.carriesSession = true;
-    entry = existing;
-  } else {
+  /** Wake or boot a machine for this thread, from the swept ref if there is one. */
+  const acquireCold = async (): Promise<PoolEntry> => {
     // The sweep's own ref first: it is newer than anything a caller could carry.
     const carried = swept.get(options.threadId) ?? options.resume;
     const token = mintToken();
@@ -272,9 +272,40 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
         "the workspace machine refused the turn handshake",
       );
     }
-    entry = { machine, token, leased: true, carriesSession };
-    pool.set(options.threadId, entry);
+    const fresh: PoolEntry = { machine, token, leased: true, carriesSession };
+    pool.set(options.threadId, fresh);
+    return fresh;
+  };
+
+  const existing = pool.get(options.threadId);
+  let entry: PoolEntry | undefined;
+  if (existing !== undefined) {
+    disarmIdle(existing);
+    // PROBE, never assume. A pooled machine can be gone without us having asked
+    // for it — a provider reap, an idle policy on their side, a host that slept.
+    // Handing that corpse out made the thread fail in a third of a second for
+    // the whole process lifetime; only a restart recovered it. The rotation
+    // handshake IS the probe: it is the cheapest round trip the box answers, and
+    // rotating on every acquire is what design §9's turn-scoped token asks for
+    // anyway.
+    const rotated = mintToken();
+    if (await hello(existing.machine, existing.token, rotated)) {
+      existing.token = rotated;
+      // A machine that answered has served this thread, so whatever session the
+      // last turn wrote is still on its disk — warm reuse carries it.
+      existing.carriesSession = true;
+      entry = existing;
+    } else {
+      // Evict, then fall through to the swept-ref/fresh path. A fresh machine
+      // costs a re-seed (`carriesSession: false` there tells the harness to pay
+      // it) and the store already survived the death, so the recovered turn is
+      // correct — only slower.
+      console.error("[vendo] claude-code: the pooled workspace machine stopped answering; starting fresh");
+      pool.delete(options.threadId);
+      await existing.machine.destroy().catch(() => undefined);
+    }
   }
+  entry ??= await acquireCold();
   entry.leased = true;
 
   const request = async (path: string, body?: unknown): Promise<Record<string, unknown>> => {
@@ -295,7 +326,9 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
     carriesSession: entry.carriesSession,
 
     async materialize(files: readonly CheckoutFile[]) {
-      // Chunked so one oversized upload cannot blow the proxy's body limit.
+      // Chunked by COUNT, which bounds the typical upload body — not a hard
+      // byte bound: one large file still travels alone in its chunk, and a
+      // BYO files adapter can hold files the proxy may refuse.
       const CHUNK = 24;
       for (let at = 0; at < files.length; at += CHUNK) {
         await request("/turn/workspace", {
@@ -374,8 +407,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
               result: await turnRequest.callTool(ask.name, (ask.args ?? {}) as Record<string, unknown>),
             })));
           } finally {
-            if (entry.timer !== undefined) clearTimeout(entry.timer);
-            entry.timer = undefined;
+            disarmIdle(entry);
             entry.leased = true;
           }
           for (const { id, result } of answered) {
@@ -391,9 +423,11 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
       entry.leased = false;
       armIdle(options.threadId, entry, idleTtlMs);
       // The machine is warm, so there is usually nothing to carry — a `resume`
-      // only becomes real once a sweep has taken it, and the in-process `swept`
-      // map is what the NEXT turn in THIS process reads. Handing it up too is
-      // what lets a restart, or another replica, wake the same session.
+      // only becomes real once a sweep has taken the machine, which by the time
+      // release() runs means a mid-turn sweep (a guarded wait that outlived the
+      // idle TTL). The in-process `swept` map is what the NEXT turn in THIS
+      // process reads; the ref handed up covers only that rare case, so a
+      // restart normally pays an honest re-seed.
       const resume = entry.resume ?? swept.get(options.threadId);
       return resume === undefined ? undefined : { resume };
     },
@@ -406,7 +440,7 @@ export async function disposeSessionMachines(): Promise<void> {
   pool.clear();
   swept.clear();
   for (const [, entry] of entries) {
-    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    disarmIdle(entry);
     await entry.machine.destroy().catch(() => undefined);
   }
 }

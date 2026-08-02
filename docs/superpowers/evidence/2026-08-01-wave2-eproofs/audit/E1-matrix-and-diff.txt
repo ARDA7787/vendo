@@ -1,0 +1,218 @@
+== E1 matrix ==
+
+--- ask1a-create
+  vendo        views=0 build_failed=1 connect=0 approval=0 tools=['vendo_apps_create']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getBudgets', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getCashflowInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getRecurringInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listCards', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listGoals', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listNotifications', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listPayees', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listTransactions', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listScheduledPayments', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getProfile', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  instant      views=0 build_failed=1 connect=0 approval=0 tools=['vendo_apps_create']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getRecurringInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getBudgets', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getCashflowInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listCards', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listGoals', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listNotifications', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listPayees', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listTransactions', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listScheduledPayments', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getProfile', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+  claude-code  views=0 build_failed=6 connect=0 approval=0 tools=['vendo_apps_create', 'vendo_knowledge_search']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getBudgets', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getCashflowInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getRecurringInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listCards', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listGoals', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listNotifications', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listPayees', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listScheduledPayments', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listTransactions', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getProfile', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_knowledge_search', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listTransactions', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+
+--- ask1b-open
+  vendo        views=1 build_failed=0 connect=0 approval=0 tools=['vendo_apps_open']
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'vendo_apps_open', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  instant      views=1 build_failed=0 connect=0 approval=0 tools=['vendo_apps_open']
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'vendo_apps_open', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  claude-code  views=1 build_failed=0 connect=0 approval=0 tools=['vendo_apps_open']
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'vendo_apps_open', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+
+--- ask2a-blue
+  vendo        views=0 build_failed=0 connect=0 approval=0 tools=['vendo_apps_edit']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  instant      views=0 build_failed=0 connect=0 approval=0 tools=['vendo_apps_edit']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+  claude-code  views=0 build_failed=0 connect=0 approval=0 tools=['vendo_apps_edit']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+
+--- ask2b-edit
+  vendo        views=0 build_failed=0 connect=0 approval=0 tools=['vendo_apps_edit']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  instant      views=0 build_failed=0 connect=0 approval=0 tools=['vendo_apps_edit']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+  claude-code  views=0 build_failed=0 connect=0 approval=0 tools=['vendo_apps_edit']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'vendo_apps_edit', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+
+--- ask3a-author
+  vendo        views=3 build_failed=1 connect=0 approval=0 tools=['vendo_apps_create']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  instant      views=4 build_failed=1 connect=0 approval=0 tools=['vendo_apps_create']
+      ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'host_listTransactions', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'host_listTransactions', 'ok', 'rule', 'present', 'app')
+      ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  claude-code  views=0 build_failed=0 connect=0 approval=0 tools=[]
+      ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+
+--- ask3b-arm
+  vendo        views=0 build_failed=0 connect=0 approval=0 tools=[]
+      ('approval', 'host_getSpendingInsights', None, None, 'present', 'automation')
+      ('approval', 'host_listTransactions', None, None, 'present', 'automation')
+      ('approval', 'host_listAccounts', None, None, 'present', 'automation')
+  instant      views=0 build_failed=0 connect=0 approval=0 tools=[]
+      ('approval', 'host_listAccounts', None, None, 'present', 'automation')
+      ('approval', 'host_listTransactions', None, None, 'present', 'automation')
+      ('approval', 'host_getSpendingInsights', None, None, 'present', 'automation')
+  claude-code  views=0 build_failed=0 connect=0 approval=0 tools=[]
+      ('approval', 'host_listAccounts', None, None, 'present', 'automation')
+      ('approval', 'host_getSpendingInsights', None, None, 'present', 'automation')
+      ('approval', 'host_listTransactions', None, None, 'present', 'automation')
+
+--- ask4-connector
+  vendo        views=0 build_failed=0 connect=1 approval=0 tools=[]
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getProfile', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'gmail_GMAIL_SEND_EMAIL', 'connect-required', None, 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  instant      views=0 build_failed=0 connect=1 approval=0 tools=[]
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'host_getProfile', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'gmail_GMAIL_SEND_EMAIL', 'connect-required', None, 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  claude-code  views=0 build_failed=0 connect=1 approval=0 tools=[]
+      ('tool-call', 'host_getSpendingInsights', 'ok', 'rule', 'present', 'chat')
+      ('tool-call', 'gmail_GMAIL_GET_PROFILE', 'connect-required', None, 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+
+--- ask5-impossible
+  vendo        views=0 build_failed=0 connect=0 approval=0 tools=['vendo_knowledge_search', 'vendo_report_capability_miss']
+      ('tool-call', 'vendo_knowledge_search', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  instant      views=0 build_failed=0 connect=0 approval=0 tools=['vendo_knowledge_search', 'vendo_report_capability_miss']
+      ('tool-call', 'vendo_knowledge_search', 'ok', 'rule', 'present', 'chat')
+      ('run', None, None, None, 'present', 'chat')
+  claude-code  views=0 build_failed=0 connect=0 approval=0 tools=['vendo_report_capability_miss']
+      ('run', None, None, None, 'present', 'chat')
+
+
+== audit-identity diff (decision-relevant fields only) ==
+compared:  kind, tool, outcome, decidedBy, presence, venue
+excluded:  id, at, detail, inputPreview, appId, trigger, principal (per-run by construction)
+ask1a-create       DIFFERS   vendo:15rows | instant:14rows | claude-code:27rows
+    only in vendo,claude-code            ('run', None, None, None, 'present', 'chat')
+    only in claude-code                  ('tool-call', 'vendo_knowledge_search', 'ok', 'rule', 'present', 'chat')
+ask1b-open         IDENTICAL   vendo:3rows | instant:3rows | claude-code:3rows
+ask2a-blue         DIFFERS   vendo:5rows | instant:2rows | claude-code:5rows
+    only in vendo,claude-code            ('run', None, None, None, 'present', 'chat')
+ask2b-edit         DIFFERS   vendo:3rows | instant:2rows | claude-code:3rows
+    only in vendo,claude-code            ('run', None, None, None, 'present', 'chat')
+ask3a-author       DIFFERS   vendo:5rows | instant:7rows | claude-code:2rows
+    only in vendo,instant                ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'app')
+    only in claude-code                  ('tool-call', 'host_listAccounts', 'ok', 'rule', 'present', 'chat')
+    only in instant                      ('tool-call', 'host_listTransactions', 'ok', 'rule', 'present', 'app')
+    only in vendo,instant                ('tool-call', 'validate', 'error', 'rule', 'present', 'chat')
+    only in vendo,instant                ('tool-call', 'vendo_apps_create', 'error', 'rule', 'present', 'chat')
+ask3b-arm          IDENTICAL   vendo:3rows | instant:3rows | claude-code:3rows
+ask4-connector     DIFFERS   vendo:4rows | instant:4rows | claude-code:3rows
+    only in claude-code                  ('tool-call', 'gmail_GMAIL_GET_PROFILE', 'connect-required', None, 'present', 'chat')
+    only in vendo,instant                ('tool-call', 'gmail_GMAIL_SEND_EMAIL', 'connect-required', None, 'present', 'chat')
+    only in vendo,instant                ('tool-call', 'host_getProfile', 'ok', 'rule', 'present', 'chat')
+ask5-impossible    DIFFERS   vendo:2rows | instant:2rows | claude-code:1rows
+    only in vendo,instant                ('tool-call', 'vendo_knowledge_search', 'ok', 'rule', 'present', 'chat')
+
+
+== per-TOOL guard decision, across harnesses ==
+For every tool any column called, the (outcome, decidedBy, presence, venue)
+set each harness recorded. This is the claim that survives the model's free
+choice of WHICH tool to reach for.
+gmail_GMAIL_GET_PROFILE            only claude-code  [('connect-required', None, 'present', 'chat')]
+gmail_GMAIL_SEND_EMAIL             AGREE    vendo=[('connect-required', None, 'present', 'chat')] | instant=[('connect-required', None, 'present', 'chat')]
+host_getBudgets                    AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_getCashflowInsights           AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_getProfile                    AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_getRecurringInsights          AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_getSpendingInsights           AGREE    vendo=[('ok', 'rule', 'present', 'app'), ('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'app'), ('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'app'), ('ok', 'rule', 'present', 'chat')]
+host_listAccounts                  DISAGREE vendo=[('ok', 'rule', 'present', 'app'), ('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'app'), ('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_listCards                     AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_listGoals                     AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_listNotifications             AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_listPayees                    AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_listScheduledPayments         AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+host_listTransactions              DISAGREE vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'app'), ('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+validate                           AGREE    vendo=[('error', 'rule', 'present', 'chat')] | instant=[('error', 'rule', 'present', 'chat')] | claude-code=[('error', 'rule', 'present', 'chat')]
+vendo_apps_create                  AGREE    vendo=[('error', 'rule', 'present', 'chat')] | instant=[('error', 'rule', 'present', 'chat')] | claude-code=[('error', 'rule', 'present', 'chat')]
+vendo_apps_edit                    AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+vendo_apps_open                    AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+vendo_knowledge_search             AGREE    vendo=[('ok', 'rule', 'present', 'chat')] | instant=[('ok', 'rule', 'present', 'chat')] | claude-code=[('ok', 'rule', 'present', 'chat')]
+
+tools called by 2+ harnesses that DISAGREE on the guard decision: 2

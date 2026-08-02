@@ -1,0 +1,10 @@
+data: {"type":"tool-input-start","toolCallId":"hcall_1_8f1562f9-0096-4d68-ba7c-5f1eb3f7ffa7","toolName":"vendo_apps_create","dynamic":true}
+
+data: {"type":"tool-input-available","toolCallId":"hcall_1_8f1562f9-0096-4d68-ba7c-5f1eb3f7ffa7","toolName":"vendo_apps_create","input":{"prompt":"A simple list of the user's recent transactions. For each transaction show the merchant name, date, and amount. Fetch transactions using the list transactions tool. Keep the layout minimal — just a clean, readable list, nothing extra."},"dynamic":true}
+
+data: {"type":"data-vendo-build-failed","data":{"toolCallId":"hcall_1_8f1562f9-0096-4d68-ba7c-5f1eb3f7ffa7","reason":"app build failed: generation failed"}}
+
+data: {"type":"tool-output-error","toolCallId":"hcall_1_8f1562f9-0096-4d68-ba7c-5f1eb3f7ffa7","errorText":"app build failed: generation failed","dynamic":true}
+
+data: [DONE]
+

@@ -1,0 +1,88 @@
+[
+  {
+    "at": "2026-08-02T03:22:35.609Z",
+    "id": "aud_7bf48cb2-abd7-4a41-af43-3bc0f104b770",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T03:22:44.715Z",
+    "id": "aud_414e6664-5274-40de-9e13-a16b6c2129da",
+    "kind": "tool-call",
+    "tool": "vendo_apps_edit",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_edit {\"appId\":\"app_demo_spending_vendo-demo\",\"instruction\":\"Apply a blue color theme throughout the app: use blue accents for headings, surfaces, dividers, and the spending breakdown rows so the overall look reads as blue.\"}"
+  },
+  {
+    "at": "2026-08-02T03:22:52.191Z",
+    "id": "aud_053054ce-ac62-49ca-8d74-aaf78c9d44c4",
+    "kind": "tool-call",
+    "tool": "validate",
+    "venue": "chat",
+    "outcome": "error",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "validate {}"
+  },
+  {
+    "at": "2026-08-02T03:22:59.105Z",
+    "id": "aud_9ed17278-9adf-4f85-8546-705200bfacbe",
+    "kind": "tool-call",
+    "tool": "vendo_apps_edit",
+    "venue": "chat",
+    "outcome": "ok",
+    "presence": "present",
+    "decidedBy": "rule",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "vendo_apps_edit {\"appId\":\"app_demo_spending_vendo-demo\",\"instruction\":\"In the SpendingBreakdown component only, make it read as blue: set the amount color to #1d6fcc, the percentage color to a lighter blue #5a9be0, and change the row bottom border to 1px solid #cfe0f5.\"}"
+  },
+  {
+    "at": "2026-08-02T03:23:02.471Z",
+    "id": "aud_d45c768d-f5e2-4349-b05c-2d958682baf2",
+    "kind": "run",
+    "venue": "chat",
+    "detail": {
+      "usage": {
+        "model": "claude-opus-4-8",
+        "inputTokens": 8,
+        "outputTokens": 868,
+        "cacheReadTokens": 124142,
+        "cacheWriteTokens": 5877
+      },
+      "harness": "claude-code"
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    }
+  }
+]

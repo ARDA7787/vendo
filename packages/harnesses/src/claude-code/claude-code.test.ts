@@ -41,6 +41,9 @@ const encoder = new TextEncoder();
 type BoxScript = (box: {
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   emit: (event: Record<string, unknown>) => void;
+  /** What the box was told to think with — `Turn.system` plus the workspace
+   *  brief, as it arrives through the real door. */
+  systemPrompt?: string;
   /** Writes even over a read-only `/host` bind — the box's chmod is advisory, so
    *  an agent that defeats it is exactly the case the sync-back seam must catch. */
   write: (workspacePath: string, text: string) => void;
@@ -125,9 +128,11 @@ function makeBox(
       callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
       emit: (event: Record<string, unknown>) => void;
       resume?: string;
+      systemPrompt?: string;
     }) => script({
       callTool: input.callTool,
       emit: input.emit,
+      ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
       write: (workspacePath, text) => {
         const target = diskPath(root, workspacePath);
         mkdirSync(path.dirname(target), { recursive: true });
@@ -196,6 +201,9 @@ function makeTurn(input: {
   /** The pool keys on the first message's id, so a test that wants the SAME
    *  session across two turns names it. */
   thread?: string;
+  /** `Turn.threadId` — the pool's FIRST key (contract amendment ccaba80a7).
+   *  Tests that omit it exercise the untyped-caller fallback above. */
+  threadId?: string;
   messages?: Array<{ id: string; text: string }>;
 } = {}): TurnDouble {
   const workspace = testWorkspace(input.files ?? {});
@@ -204,6 +212,7 @@ function makeTurn(input: {
   const messages = (input.messages ?? [{ id: input.thread ?? `m_${(threadSeq += 1)}`, text: "make me a dashboard" }])
     .map((m) => userMessage(m.id, m.text));
   const turn = {
+    ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
     messages,
     tools: {
       list: async () => (input.tools ?? [{ name: "maple_invoices_list", title: "List invoices", description: "d" }])
@@ -499,9 +508,18 @@ describe("§1.3 · a prefix truncation uses the SDK's NATIVE rewind", () => {
       .toEqual({ resume: "s" });
   });
 
-  test("an EQUAL-length history is not a truncation — the runtime clears a real last-message edit", () => {
-    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 1, uuid: "u1" }] }, 3))
-      .toEqual({ resume: "s" });
+  test("an EQUAL-length history is a REGENERATE — rewind past the reply the user threw away", () => {
+    // `covers` counts the answering turn's inputs, so the discarded reply sits
+    // at transcript index `covers` and its own checkpoint (at 3) is unusable:
+    // resuming there still remembers the deleted answer. The previous turn's
+    // checkpoint is the target. (A real last-message EDIT never reaches here —
+    // the runtime clears the state for a differing overlap.)
+    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 1, uuid: "u1" }, { at: 3, uuid: "u3" }] }, 3))
+      .toEqual({ resume: "s", resumeAt: "u1" });
+  });
+
+  test("a regenerate with no checkpoint before the discarded reply drops the session and re-seeds", () => {
+    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 3, uuid: "u3" }] }, 3)).toEqual({});
   });
 
   test("a SHORTER transcript rewinds to the checkpoint that predates the edit", () => {
@@ -602,6 +620,21 @@ describe("a turn on a real box wire", () => {
     expect(answered).toEqual({ status: "denied", reason: "You'll need to approve that." });
   });
 
+  test("D2 · Turn.system reaches the box WHOLE, with the workspace brief after it", async () => {
+    // The D2 plumbing question, measured rather than read: the composed brief
+    // (which carries "Never claim a tool ran unless its result confirms that it
+    // did") is what `vendo()` thinks with, and it must be what the box thinks
+    // with too. It is — so D2's invented automation is not a dropped brief.
+    let brief: string | undefined;
+    const sandbox = fakeSandbox(async (box) => { brief = box.systemPrompt; });
+    await drain(claudeCode({ sandbox }), makeTurn().turn);
+    expect(brief).toContain("PRODUCT BRIEF");
+    // Ours first, the workspace conventions after — never the other way round,
+    // and never instead.
+    expect(brief?.startsWith("PRODUCT BRIEF")).toBe(true);
+    expect(brief).toContain("Your workspace");
+  });
+
   test("the tool listing the box sees is the CURATED one, with its schemas", async () => {
     let projected: unknown;
     const sandbox = fakeSandbox(async () => undefined);
@@ -663,6 +696,32 @@ describe("a turn on a real box wire", () => {
     expect(landed).toEqual(["/user/apps/app_1/plan.vendo"]);
   }, 15_000);
 
+  test("D5 · a plan for a BRAND-NEW app lands mid-turn too — the skeleton is what a new app needs most", async () => {
+    // The measured bug: the hot set was pre-enumerated from files that already
+    // existed, so the one case the skeleton exists for — "make me an app" —
+    // watched nothing and the user sat through 52.8s of silence.
+    let landed: string[] | undefined;
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const sandbox = fakeSandbox(async (box) => {
+      box.write("/user/apps/app_brandnew/plan.vendo", "plan v1");
+      await held;
+      box.emit({ type: "text", delta: "done" });
+    });
+    // NO app directory at turn start: only unrelated user files.
+    const { turn, workspace } = makeTurn({ files: { "/user/memory/keep.md": "kept" } });
+    const watcher = setInterval(() => {
+      const commit = workspace.commits.find((entry) =>
+        entry.changed.includes("/user/apps/app_brandnew/plan.vendo"));
+      if (commit !== undefined) { landed = commit.changed; release(); }
+    }, 20);
+    const guard = setTimeout(release, 8_000);
+    await drain(claudeCode({ sandbox }), turn);
+    clearInterval(watcher);
+    clearTimeout(guard);
+    expect(landed).toEqual(["/user/apps/app_brandnew/plan.vendo"]);
+  }, 15_000);
+
   test("killing the sandbox mid-turn leaves the store untouched, and the next turn recovers", async () => {
     const sandbox = fakeSandbox(async (box) => {
       box.write("/user/apps/app_1/app.vendo", "<App>half</App>");
@@ -681,6 +740,49 @@ describe("a turn on a real box wire", () => {
     const second = makeTurn({ files: { "/user/apps/app_1/app.vendo": "<App/>" } });
     await drain(claudeCode({ sandbox: healthy }), second.turn);
     expect(await second.workspace.readFile("/user/apps/app_1/app.vendo")).toBe("<App>whole</App>");
+  });
+
+  test("the machine pool keys on Turn.threadId FIRST — a history edit cannot orphan the session", async () => {
+    // The amendment's whole point (ccaba80a7): `messages[0].id` changes when
+    // the user edits the first message and resends; the thread's identity does
+    // not. Same threadId + different first-message id must be ONE machine.
+    let creates = 0;
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "ok" }); });
+    const original = sandbox.create.bind(sandbox);
+    sandbox.create = async (spec) => { creates += 1; return original(spec); };
+    const harness = claudeCode({ sandbox });
+    const first = makeTurn({ threadId: "thr_named", messages: [{ id: "m_a", text: "hi" }] });
+    await drain(harness, first.turn);
+    const second = makeTurn({ threadId: "thr_named", messages: [{ id: "m_edited", text: "hi again" }] });
+    await drain(harness, second.turn);
+    expect(creates).toBe(1);
+  });
+
+  test("D4 · a pooled machine the provider reaped is EVICTED, so the next turn on that thread recovers", async () => {
+    // The live half of the kill law. The test above disposes the pool between
+    // turns, which is exactly what hid this: in a real server the dead entry
+    // stays, and every later turn on that thread was handed the corpse — 0.3s
+    // failures for the life of the process, recoverable only by a restart.
+    let boxTurn = 0;
+    const sandbox = fakeSandbox(async (box) => {
+      boxTurn += 1;
+      if (boxTurn === 1) {
+        box.write("/user/apps/app_1/app.vendo", "<App>half</App>");
+        box.kill();
+        return;
+      }
+      box.write("/user/apps/app_1/app.vendo", "<App>whole</App>");
+    });
+    const harness = claudeCode({ sandbox });
+    const first = makeTurn({ thread: "thr_bricked", files: { "/user/apps/app_1/app.vendo": "<App/>" } });
+    await drain(harness, first.turn);
+    expect(await first.workspace.readFile("/user/apps/app_1/app.vendo")).toBe("<App/>");
+
+    // SAME thread, SAME process, pool NOT disposed.
+    const second = makeTurn({ thread: "thr_bricked", files: { "/user/apps/app_1/app.vendo": "<App/>" } });
+    await drain(harness, second.turn);
+    expect(await second.workspace.readFile("/user/apps/app_1/app.vendo")).toBe("<App>whole</App>");
+    expect(sandbox.boxes).toHaveLength(2);
   });
 
   test("one machine per session: a second turn on the same thread reuses it", async () => {

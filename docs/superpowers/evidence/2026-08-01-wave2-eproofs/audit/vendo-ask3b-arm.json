@@ -1,0 +1,59 @@
+[
+  {
+    "at": "2026-08-02T03:08:28.612Z",
+    "id": "aud_f95b38b2-bbbd-4765-94fb-4814da747e77",
+    "kind": "approval",
+    "tool": "host_getSpendingInsights",
+    "appId": "app_demo_weekly_vendo-demo",
+    "venue": "automation",
+    "detail": {
+      "grantId": "grt_5e715ba8-8628-4d18-ba7e-21cf368aadc4",
+      "approved": true
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "Allow \"Weekly spending summary\" to use host_getSpendingInsights while you're away (standing, this app only)"
+  },
+  {
+    "at": "2026-08-02T03:08:28.614Z",
+    "id": "aud_ebf8a02c-5799-42c7-bd2a-76d40b71428f",
+    "kind": "approval",
+    "tool": "host_listTransactions",
+    "appId": "app_demo_weekly_vendo-demo",
+    "venue": "automation",
+    "detail": {
+      "grantId": "grt_a73172fc-94b1-4d74-9d74-ac613a95279f",
+      "approved": true
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "Allow \"Weekly spending summary\" to use host_listTransactions while you're away (standing, this app only)"
+  },
+  {
+    "at": "2026-08-02T03:08:28.615Z",
+    "id": "aud_88446606-770f-4e33-b2f2-fb5152efb7f9",
+    "kind": "approval",
+    "tool": "host_listAccounts",
+    "appId": "app_demo_lowbalance_vendo-demo",
+    "venue": "automation",
+    "detail": {
+      "grantId": "grt_d538523f-292c-428e-a007-d4a910f34376",
+      "approved": true
+    },
+    "presence": "present",
+    "principal": {
+      "kind": "user",
+      "display": "Yousef Helal",
+      "subject": "vendo-demo"
+    },
+    "inputPreview": "Allow \"Low balance alert\" to use host_listAccounts while you're away (standing, this app only)"
+  }
+]
