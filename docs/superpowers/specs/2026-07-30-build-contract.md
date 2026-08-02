@@ -528,6 +528,27 @@ engine and the app-schedules engine each take an optional
 ownership. Memberships are NEVER persisted anywhere; a `kind:"org"` principal
 stays refused at the wire.
 
+Amendment 2026-08-02 (wave-3 close, ratified): the auth preset gains a second
+optional companion seam, mirroring `memberships` in shape and rationale —
+
+```ts
+resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
+export interface ResolvedPerson { subject: string; display?: string }
+```
+
+Vendo holds no directory (the host's identity system IS the org), so it cannot
+turn a typed name into a person and must not pretend to. Without this seam the
+Share dialog does NOT offer to share with one person at all (team/org sharing
+and fork are unaffected); with it, the grant is written for the RESOLVED
+subject, never the typed string. The wave-3 blocker this closes: the field
+encoded free text verbatim as a subject, so the grant matched nobody — and
+because share-implies-promote, the app had already been moved into the team.
+The resolve door is owner-gated (an ungated directory lookup is a
+user-enumeration oracle), non-viewers are masked, and an unset seam answers
+`not-implemented` — deliberately distinct from "no such person". Unlike
+`memberships` it is NOT threaded to the automations/schedules engines: it has
+no unattended caller. `/status` advertises `namesPeople` only when it is set.
+
 ### 9.2 App-access grants — the only rows Vendo stores
 
 Principal encoding (one string, ref-queryable):
@@ -549,7 +570,14 @@ create index on vendo_app_grants (app_id);
 
 One row per (app, principal); re-granting updates `level` in place. A
 reserved routed collection (the `vendo_effects` pattern — no generic-records
-fallback). Joins `ERASE_TABLES` and `byApp`; deliberately NOT in the
+fallback). Amendment 2026-08-02: grant rows MUST carry
+`refs { app_id, principal }`, and the §9.2 grammar is validated AT THE DOOR
+(`appAccess.grant`), never only in a store's routing layer. Both were found at
+wave close: without the refs, `grantsFor`'s ref query could not read back rows
+on any generic-record adapter (the hosted door — a share wrote a row and
+granted nothing); and with validation living in local SQL only, the identical
+malformed request was refused on Postgres and ACCEPTED on the hosted store.
+The adapter rule forbids behaviour that differs by which store is wired. Joins `ERASE_TABLES` and `byApp`; deliberately NOT in the
 anon-adoption path (ephemeral users cannot hold org grants). Grant writes are
 audited with the existing (never-yet-produced) `AuditEvent.kind: "share"`.
 
