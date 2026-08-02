@@ -135,14 +135,30 @@ export function appAccess(store: VendoStore): AppAccess {
     levelFor,
 
     async grant(ctx, appId, principal, level) {
+      // §9.2's grammar is checked HERE, by the door, before anything is written
+      // — not in one store's SQL. The local engine's routing layer refused an
+      // unparseable principal (`parseAppGrantData`) and the hosted store posted
+      // it straight to the console, so the same share was refused on Postgres
+      // and accepted on Cloud's own default; which store is wired may never
+      // change behaviour (the adapter rule). A principal that cannot be parsed
+      // cannot be matched by `grantMatches` either, so accepting one wrote a row
+      // that granted nobody anything — after the app had already been moved into
+      // the team to make room for it.
+      const named = parseGrantPrincipal(principal);
+      if (named === undefined) {
+        throw new VendoError(
+          "validation",
+          `"${principal}" is not a principal — sharing needs "user:<subject>",`
+          + ` "team:<orgId>/<teamId>", or "org:<orgId>"`,
+        );
+      }
       await require(ctx, appId, "owner");
       const orgId = await rowSubject(appId);
       // §9.2 — `org_id` is "the org whose workspace holds the app", so a
       // team:/org: principal from anywhere else can never be satisfied: the
       // matcher keys on the org that HOLDS the row. Storing it anyway would
       // show a share in the list that grants nothing.
-      const named = parseGrantPrincipal(principal);
-      if (named !== undefined && named.kind !== "user" && named.org !== orgId) {
+      if (named.kind !== "user" && named.org !== orgId) {
         throw new VendoError(
           "validation",
           `this app is not in ${named.org}'s workspace, so ${named.org} cannot be given access to it`
@@ -158,7 +174,7 @@ export function appAccess(store: VendoStore): AppAccess {
       // it writes the grant. Two exceptions, both real: the holder's own row
       // (promote mints it BEFORE the flip, §9.5), and an app an asserted
       // membership says is already held by an org.
-      if (named?.kind === "user" && named.subject !== orgId && membershipIn(ctx, orgId ?? "") === undefined) {
+      if (named.kind === "user" && named.subject !== orgId && membershipIn(ctx, orgId ?? "") === undefined) {
         throw new VendoError(
           "validation",
           "this app is still one person's, so another person cannot be given access to it"
@@ -168,6 +184,13 @@ export function appAccess(store: VendoStore): AppAccess {
       await grants.put({
         id: `ag_${globalThis.crypto.randomUUID()}`,
         data: { appId, orgId, principal, level, createdBy: ctx.principal.subject },
+        // The door writes the refs it queries by. The local engine derives them
+        // from the row's own columns, but an adapter that stores records
+        // generically (the hosted door, any BYO adapter) keeps only what it was
+        // given — and `grantsFor` lists by `app_id`, so a grant written without
+        // refs there is a grant nothing can ever read back. Same reason the
+        // effect ledger passes `refs: { subject }` (guard.ts #recordEffect).
+        refs: { app_id: appId, ...(orgId === undefined ? {} : { org_id: orgId }), principal, level },
       });
     },
 

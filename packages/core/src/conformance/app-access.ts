@@ -204,6 +204,24 @@ export function appAccessConformance(options: AppAccessConformanceOptions): Conf
       },
     },
     {
+      name: "a principal outside the §9.2 grammar is refused by the DOOR, whatever store is under it",
+      async run() {
+        // The guard lived in ONE store's SQL, so the same share was refused on
+        // Postgres and accepted on the hosted store (Cloud's own default). An
+        // unparseable principal cannot be matched by `grantMatches` either, so
+        // accepting one wrote a row that granted nobody anything.
+        const appId = nextId();
+        await seedApp(appId, ORG);
+        const admin = ctxFor("dana", [{ org: ORG, admin: true }]);
+        for (const bad of ["kim", "group:x", "team:justanorg", "user:", "org:a/b"]) {
+          let refused: unknown;
+          await access.it.grant(admin, appId, bad, "viewer").catch((error) => { refused = error; });
+          assert((refused as { code?: string })?.code === "validation", `"${bad}" was accepted as a principal`);
+        }
+        assert((await access.it.list(admin, appId)).length === 0, "an unparseable principal was stored");
+      },
+    },
+    {
       name: "a grant naming an org the app does not live in is refused",
       async run() {
         const appId = nextId();

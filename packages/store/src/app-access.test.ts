@@ -123,13 +123,23 @@ for (const backend of backends()) {
       expect(await access().list(ctxFor("kim"), app)).toHaveLength(1);
     });
 
-    it("refuses an unknown grant principal encoding", async () => {
+    it("refuses an unknown grant principal encoding AT THE DOOR, before any store sees it", async () => {
+      // The grammar guard used to live ONLY in the local engine's routing layer
+      // (`parseAppGrantData`), so the very same share was refused on Postgres
+      // and accepted on the hosted store — Cloud's own default. Which store is
+      // wired may never change behaviour (the adapter rule), so `grant` refuses
+      // itself, before it writes. The DOOR's sentence is what proves whose
+      // refusal this is; the routing layer keeps its own as a floor.
       const app = "app_encoding";
       await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
       await expect(access().grant(ctxFor("dana"), app, "kim", "viewer"))
-        .rejects.toBeInstanceOf(VendoError);
+        .rejects.toThrow(/is not a principal/);
       await expect(access().grant(ctxFor("dana"), app, "group:x", "viewer"))
+        .rejects.toThrow(/is not a principal/);
+      await expect(access().grant(ctxFor("dana"), app, "team:acme", "viewer"))
         .rejects.toBeInstanceOf(VendoError);
+      expect((await made.store.records("vendo_app_grants").list({ refs: { app_id: app } })).records)
+        .toEqual([]);
     });
 
     it("resolves EVERY grant on an app, past the page size", async () => {
