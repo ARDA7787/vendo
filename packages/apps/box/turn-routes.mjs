@@ -27,6 +27,14 @@ const MAX_POLL_WAIT_MS = 25_000;
  *  poll), then go. A session machine lives for many turns, and every turn's
  *  event buffer kept forever is a slow leak in a long-lived box. */
 const TURNS_RETAINED = 4;
+/**
+ * Too big for the wire — the proxy's body limit is what this protects. Under the
+ * DEFAULT files store (5 MiB cap) no checked-out file reaches this size; a BYO
+ * files adapter has no cap, so the host's sync-back seam exempts oversized
+ * checked-out files from absent-means-deleted (`materialize.ts`,
+ * `WALK_SKIP_BYTES` — the same 8 MiB) instead of reading this skip as an erasure.
+ */
+const WALK_SKIP_BYTES = 8 * 1024 * 1024;
 
 /** Workspace path → disk path under the root. The frozen layout (§3.1) is kept
  *  verbatim one level down, so `/user/apps/a/app.vendo` reads the same on both
@@ -47,6 +55,18 @@ const matchesPattern = (pattern, workspacePath) => {
   const actual = workspacePath.split("/");
   if (wanted.length !== actual.length) return false;
   return wanted.every((segment, at) => segment === "*" || segment === actual[at]);
+};
+
+/**
+ * Everything the host sends is DATA: only the declared shape passes, and an
+ * unrecognised status reads as an error the model narrates.
+ */
+const guardedResult = (raw) => {
+  if (raw?.status === "ok") return { status: "ok", output: raw.output };
+  if (raw?.status === "denied") {
+    return { status: "denied", reason: String(raw.reason ?? "That isn't something I can do right now.") };
+  }
+  return { status: "error", message: String(raw.message ?? "That didn't work.") };
 };
 
 const walk = (directory, out) => {
@@ -293,14 +313,7 @@ export const createTurnRoutes = (options = {}) => {
             const workspacePath = toWorkspace(root, diskPath);
             if (!workspacePath.startsWith("/user/")) continue;
             try {
-              // Too big for the wire — the proxy's body limit is what this
-              // protects. Under the DEFAULT files store (5 MiB cap) no
-              // checked-out file reaches this size; a BYO files adapter has no
-              // cap, so the host's sync-back seam exempts oversized
-              // checked-out files from absent-means-deleted (materialize.ts,
-              // WALK_SKIP_BYTES — the same 8 MiB) instead of reading this skip
-              // as an erasure.
-              if (statSync(diskPath).size > 8 * 1024 * 1024) continue;
+              if (statSync(diskPath).size > WALK_SKIP_BYTES) continue;
               files.push({ path: workspacePath, base64: readFileSync(diskPath).toString("base64") });
             } catch {
               // A file that vanished mid-walk simply is not in the diff.
@@ -333,15 +346,7 @@ export const createTurnRoutes = (options = {}) => {
         const ask = state.asks.get(payload?.id);
         if (ask === undefined) return { status: 404, body: { error: "no such ask" } };
         state.asks.delete(payload.id);
-        // Everything the host sends is DATA: only the declared shape passes, and
-        // an unrecognised status reads as an error the model narrates.
-        const raw = payload?.result ?? {};
-        const result = raw.status === "ok"
-          ? { status: "ok", output: raw.output }
-          : raw.status === "denied"
-            ? { status: "denied", reason: String(raw.reason ?? "That isn't something I can do right now.") }
-            : { status: "error", message: String(raw.message ?? "That didn't work.") };
-        ask.resolve(result);
+        ask.resolve(guardedResult(payload?.result));
         return { status: 200, body: { ok: true } };
       }
       state.abort.abort();

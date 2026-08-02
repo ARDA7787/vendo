@@ -74,18 +74,21 @@ const matchesPattern = (pattern: string, workspacePath: string): boolean => {
   return wanted.every((segment, at) => segment === "*" || segment === actual[at]);
 };
 
-async function walk(root: string, directory: string, out: string[]): Promise<void> {
+/** Every file under `directory`, in DISK paths. A directory we cannot read is
+ *  simply not there — same shape as the box door's own walk. */
+async function walk(directory: string, out: string[] = []): Promise<string[]> {
   let entries;
   try {
     entries = await readdir(directory, { withFileTypes: true });
   } catch {
-    return;
+    return out;
   }
   for (const entry of entries) {
     const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) await walk(root, full, out);
+    if (entry.isDirectory()) await walk(full, out);
     else if (entry.isFile()) out.push(full);
   }
+  return out;
 }
 
 export interface LocalMachineOptions {
@@ -135,9 +138,7 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
         const patterns = paths.filter((entry) => entry.includes("*"));
         let matched: string[] = [];
         if (patterns.length > 0) {
-          const diskPaths: string[] = [];
-          await walk(root, root, diskPaths);
-          matched = diskPaths
+          matched = (await walk(root))
             .map((diskPath) => toWorkspace(root, diskPath))
             .filter((workspacePath) =>
               patterns.some((pattern) => matchesPattern(pattern, workspacePath)));
@@ -152,10 +153,8 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
         }
         return found;
       }
-      const diskPaths: string[] = [];
-      await walk(root, root, diskPaths);
       const files: SyncFile[] = [];
-      for (const diskPath of diskPaths) {
+      for (const diskPath of await walk(root)) {
         const workspacePath = toWorkspace(root, diskPath);
         if (pathAccess(workspacePath) !== "rw") continue;
         files.push({ path: workspacePath, bytes: await readFile(diskPath) });
@@ -170,7 +169,8 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
       await runClaudeTurn({
         ...request,
         cwd: root,
-        configDir,
+        // CLAUDE_CONFIG_DIR is the whole handoff: the SDK reads it from the
+        // environment, so the runner is told nothing about where the session lands.
         env: { ...options.env, CLAUDE_CONFIG_DIR: configDir },
         ...(sdk === undefined ? {} : { sdk }),
       });

@@ -137,10 +137,17 @@ async function control(
   return { status: answer.status, json };
 }
 
+/** Cancel a pending idle sweep. Nothing may be reclaimed under a machine that
+ *  is about to be used, released or destroyed. */
+function disarmIdle(entry: PoolEntry): void {
+  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.timer = undefined;
+}
+
 /** Arm the idle sweep: snapshot, then destroy. The ref is what a later turn
  *  resumes, so the native session comes back with the disk. */
 function armIdle(threadId: string, entry: PoolEntry, idleTtlMs: number): void {
-  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  disarmIdle(entry);
   entry.timer = setTimeout(() => {
     void (async () => {
       // A timer can outlive its entry (an eviction, a failed handshake). Without
@@ -273,8 +280,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
   const existing = pool.get(options.threadId);
   let entry: PoolEntry | undefined;
   if (existing !== undefined) {
-    if (existing.timer !== undefined) clearTimeout(existing.timer);
-    existing.timer = undefined;
+    disarmIdle(existing);
     // PROBE, never assume. A pooled machine can be gone without us having asked
     // for it — a provider reap, an idle policy on their side, a host that slept.
     // Handing that corpse out made the thread fail in a third of a second for
@@ -401,8 +407,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
               result: await turnRequest.callTool(ask.name, (ask.args ?? {}) as Record<string, unknown>),
             })));
           } finally {
-            if (entry.timer !== undefined) clearTimeout(entry.timer);
-            entry.timer = undefined;
+            disarmIdle(entry);
             entry.leased = true;
           }
           for (const { id, result } of answered) {
@@ -435,7 +440,7 @@ export async function disposeSessionMachines(): Promise<void> {
   pool.clear();
   swept.clear();
   for (const [, entry] of entries) {
-    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    disarmIdle(entry);
     await entry.machine.destroy().catch(() => undefined);
   }
 }

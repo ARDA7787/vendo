@@ -30,7 +30,7 @@ import { checkoutWorkspace, type SyncFile } from "../materialize.js";
 import { HOT_PATH_FILES } from "../render-seam.js";
 import type { TurnMachine } from "./machine.js";
 import { localMachine } from "./local.js";
-import { boxMachine, type SandboxAdapterLike } from "./box.js";
+import { boxMachine, type SandboxAdapterLike, type SessionRef } from "./box.js";
 
 /** v1 options, exactly (design §3): nothing else until asked. */
 export interface ClaudeCodeOptions {
@@ -160,7 +160,7 @@ interface ClaudeState {
    * exposure: the `ref` beside it already lets its holder wake the machine and
    * read the same workspace.
    */
-  resume?: { ref: string; token: string };
+  resume?: SessionRef;
   /** How long our transcript was when this session last answered. A SHORTER
    *  transcript next turn is a prefix truncation (§1.3) — the runtime keeps the
    *  state precisely so the harness can rewind natively. */
@@ -378,7 +378,7 @@ export function claudeCode(
             console.error("[vendo] claude-code sync-back failed", error);
           });
         }
-        let released: { resume?: { ref: string; token: string } } | void = undefined;
+        let released: { resume?: SessionRef } | void = undefined;
         try {
           released = await machine.release();
         } catch {

@@ -96,8 +96,8 @@ export interface ClaudeTurnInput {
   resumeAt?: string;
   /** The materialized workspace root on this machine. */
   cwd: string;
-  /** Where the SDK keeps its session file, so the caller can ship it out. */
-  configDir?: string;
+  /** `CLAUDE_CONFIG_DIR` included: where the SDK keeps its session file is the
+   *  machine's choice, made in the environment and never read back here. */
   env: Record<string, string>;
   /** Names the box may run without asking. Defaults to {@link BOX_TOOLS}. */
   allowedBoxTools?: readonly string[];
@@ -343,7 +343,6 @@ export async function runClaudeTurn(input: ClaudeTurnInput): Promise<void> {
   const { z } = (await import("zod")) as unknown as { z: ZodLike };
 
   const { tools, canUseTool } = guardedProjection(input, z, sdk);
-  const allowed = [...(input.allowedBoxTools ?? BOX_TOOLS)];
 
   const options: Record<string, unknown> = {
     cwd: input.cwd,
@@ -358,7 +357,7 @@ export async function runClaudeTurn(input: ClaudeTurnInput): Promise<void> {
     // NOT bypassPermissions: the hook is how our guard's asks reach the model.
     permissionMode: "default",
     canUseTool,
-    allowedTools: allowed,
+    allowedTools: [...(input.allowedBoxTools ?? BOX_TOOLS)],
     disallowedTools: DISALLOWED_TOOLS,
     mcpServers: { [VENDO_MCP_SERVER]: sdk.createSdkMcpServer({ name: VENDO_MCP_SERVER, version: "1.0.0", tools }) },
     // Never read settings or CLAUDE.md off the materialized workspace: those are
