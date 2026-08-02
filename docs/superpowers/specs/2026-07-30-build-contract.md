@@ -590,6 +590,18 @@ and under `/orgs/<orgId>/apps/<appId>/` the app grant governs
 through the runtime (`requireOwned` is widened, not duplicated); the
 workspace façade calls it for `/orgs` reads and at commit.
 
+Amendment 2026-08-01 (lane G fix round, ratified): `history(appId)` gains the
+RunContext — `history(appId, ctx)`. A ctx-less handle has no identity to
+check, which is exactly how a viewer could roll the team's app back (the wire
+was the only boundary, and it gated on the now-viewer-level `get`). Levels:
+`list` = viewer, `undo` = editor, non-viewers masked as `not-found`. An
+OPTIONAL ctx was rejected — any caller omitting it would get the ungated
+handle back. No host-facing signature changes. The pure half of `can()`
+(principal grammar, level ordering, path rules) lives in
+`packages/core/src/app-access.ts` with an `appAccessConformance` kit mounted
+by BOTH the store implementation and the apps test fixture, so the two can
+never drift.
+
 ### 9.4 Access posture
 
 An app the caller cannot even view stays `not-found` (existence-masking, as
