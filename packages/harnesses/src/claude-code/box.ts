@@ -25,7 +25,7 @@
  * the store is untouched and the next turn recovers on a fresh machine.
  */
 import { VendoError } from "@vendoai/core";
-import type { GuardedResult } from "@vendoai/apps/internal";
+import type { GuardedResult } from "@vendoai/apps/claude-turn";
 import type { CheckoutFile, SyncFile } from "../materialize.js";
 import type { TurnMachine, TurnRequest } from "./machine.js";
 

@@ -7,23 +7,51 @@
  * spawned-CLI harness without a sandbox is a boot error (design §9), and this is
  * the escape hatch a host chooses on purpose.
  *
- * The SDK arrives by DYNAMIC import (the `sdk-seam.ts` pattern): it is an
- * optional peer, so neither `tsc` nor a host who never opts in ever needs the
- * ~250MB platform binary on disk.
+ * The SDK arrives by DYNAMIC import, bundler-ignored: it is an optional peer, so
+ * neither `tsc`, nor a host's BUILD, nor a host who never opts in ever needs the
+ * ~250MB platform binary on disk. This file is the only place on any host path
+ * that names it.
  */
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { VendoError } from "@vendoai/core";
 import type { CheckoutFile, SyncFile } from "../materialize.js";
 import { pathAccess } from "../materialize.js";
 import type { TurnMachine, TurnRequest } from "./machine.js";
 
-/** The turn runner is shared with the box — one implementation, two homes. */
-const RUNNER = "@vendoai/apps/internal";
-/** Resolved at RUNTIME and from HERE, because this package is the one that
- *  declares the optional peer. The shared runner must stay free of it. */
-const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
+/** The turn runner is shared with the box — one implementation, two homes. Its
+ *  OWN subpath, so importing it never drags the render seam's `./internal` in,
+ *  and `./internal` never drags this in. */
+const RUNNER = "@vendoai/apps/claude-turn";
+
+/**
+ * The SDK, from HERE, because this package is the one that declares the optional
+ * peer — and this function is the ONLY place in the shipped packages that names
+ * it on a host path.
+ *
+ * `turbopackIgnore`/`webpackIgnore` keep it out of a host's BUILD: a bundler
+ * that resolves this specifier refuses to build a Next.js host that has not
+ * installed a ~250MB platform binary it may never run, which is precisely the
+ * cost the optional peer exists to avoid. The import still happens at runtime,
+ * against the deployment's own node_modules.
+ */
+async function loadAgentSdk(): Promise<unknown> {
+  try {
+    return await import(/* turbopackIgnore: true */ /* webpackIgnore: true */ "@anthropic-ai/claude-agent-sdk");
+  } catch (cause) {
+    // The operator, not the user: this is a deployment choice that was not
+    // followed through, and it can only be fixed by installing something.
+    throw new VendoError(
+      "validation",
+      "claudeCode({ machine: \"local\" }) needs the Claude Agent SDK on this server. "
+      + "Install @anthropic-ai/claude-agent-sdk, or drop `machine: \"local\"` and give the "
+      + "harness a sandbox instead, which keeps the SDK off your server entirely.",
+      { cause },
+    );
+  }
+}
 
 /** A stable home per thread, so the SDK's own session file survives between
  *  turns on the same host exactly as it survives inside a warm box. */
@@ -65,7 +93,7 @@ export interface LocalMachineOptions {
   /** The recorded v0 inference exception (design §9): a harness must reach a
    *  model to think. Nothing else enters the SDK subprocess's environment. */
   env: Record<string, string>;
-  /** Test seam — the real runner is loaded from `@vendoai/apps/internal`. */
+  /** Test seam — the real runner is loaded from {@link RUNNER}, with the SDK. */
   runner?: (input: Record<string, unknown>) => Promise<void>;
 }
 
@@ -138,7 +166,7 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
     async run(request: TurnRequest) {
       const runClaudeTurn = options.runner
         ?? (await import(RUNNER)).runClaudeTurn as (input: Record<string, unknown>) => Promise<void>;
-      const sdk = options.runner === undefined ? await import(SDK_PACKAGE) : undefined;
+      const sdk = options.runner === undefined ? await loadAgentSdk() : undefined;
       await runClaudeTurn({
         ...request,
         cwd: root,

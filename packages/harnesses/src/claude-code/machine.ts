@@ -7,7 +7,7 @@
  * projection, `turn.state`) is shared, which is what stops the opt-in from being
  * a second implementation of the same harness.
  */
-import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedCall } from "@vendoai/apps/internal";
+import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedCall } from "@vendoai/apps/claude-turn";
 import type { CheckoutFile, SyncFile } from "../materialize.js";
 
 export interface TurnRequest {

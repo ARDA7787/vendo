@@ -21,7 +21,7 @@ import type {
   ToolListing,
   Turn,
 } from "@vendoai/core";
-import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedResult } from "@vendoai/apps/internal";
+import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedResult } from "@vendoai/apps/claude-turn";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { defineHarness } from "../define.js";

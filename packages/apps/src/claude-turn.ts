@@ -16,10 +16,14 @@
  * box-side. What differs is only `callTool`'s transport (an HTTP bridge in the
  * box, a direct call on the host), which is why it is a port.
  *
- * It therefore imports NOTHING from the workspace: the only imports are the
- * dynamic ones for the SDK and zod, which resolve from `/opt/vendo-box/node_modules`
- * in the box and from the host's optional peer locally. Keep it that way — the
- * emitted `dist/claude-turn.js` is copied verbatim into a machine image.
+ * It therefore imports NOTHING from the workspace, and — the rule that matters —
+ * it never NAMES the Agent SDK. Whoever supplies the machine supplies the SDK:
+ * the box door loads it from the machine image, `machine: "local"` loads it from
+ * the optional peer that `@vendoai/harnesses` declares. A module that named the
+ * package itself was reachable from every composed host's build graph, and a
+ * bundler that folds `import(CONST)` then refused to build a host that has no
+ * reason to install a ~250MB platform binary. Keep it that way — the emitted
+ * `dist/claude-turn.js` is copied verbatim into a machine image.
  *
  * Two permission laws live here (design §3, "claudeCode() specifics"):
  *   - the box is AUTO-ALLOW for its own file/bash work (the box IS the
@@ -29,12 +33,6 @@
  *     so the co-trained pause-and-explain serves our approval cards. A denial
  *     is `{behavior:"deny"}` — something the model narrates — never a throw.
  */
-
-/** Resolved at RUNTIME, never by tsc: the ~250MB SDK is an optional peer of
- *  `@vendoai/harnesses` and lives in the box image — it must never become a
- *  build-time dependency of this package (the engine's `sdk-seam.ts` uses the
- *  same variable-specifier trick for the same reason). */
-const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
 
 /** The MCP server name our projected tools live under (`mcp__vendo__<tool>`). */
 export const VENDO_MCP_SERVER = "vendo";
@@ -99,14 +97,13 @@ export interface ClaudeTurnInput {
   emit: (event: ClaudeTurnEvent) => void;
   signal?: AbortSignal;
   /**
-   * The Agent SDK module. The BOX leaves it unset and this file resolves it from
-   * the machine image; `machine: "local"` passes it in, because the optional peer
-   * is declared on `@vendoai/harnesses` (contract build-list item 1) and a
-   * dynamic import here would resolve against `@vendoai/apps`, which does not
-   * declare it — under a strict node_modules layout that is a hard failure.
-   * Tests pass a double.
+   * The Agent SDK module, supplied by whoever supplied the machine: the box door
+   * loads it from the image, `machine: "local"` loads it from the optional peer
+   * `@vendoai/harnesses` declares (contract build-list item 1). REQUIRED, so
+   * this file never names the package and never lands in a host's build graph
+   * for it. Tests pass a double.
    */
-  sdk?: SdkModule;
+  sdk: SdkModule;
 }
 
 /** The bits of the SDK this file uses. Narrow on purpose: the real message union
@@ -325,7 +322,7 @@ function usageEvent(raw: unknown, model: string | undefined): ClaudeTurnEvent | 
 }
 
 export async function runClaudeTurn(input: ClaudeTurnInput): Promise<void> {
-  const sdk = input.sdk ?? ((await import(SDK_PACKAGE)) as unknown as SdkModule);
+  const sdk = input.sdk;
   const { z } = (await import("zod")) as unknown as { z: ZodLike };
 
   const { tools, canUseTool } = guardedProjection(input, z, sdk);

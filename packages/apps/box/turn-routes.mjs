@@ -87,6 +87,14 @@ export const createTurnRoutes = (options = {}) => {
   let active;
 
   const loadRunner = async () => options.runTurn ?? (await import(RUNNER)).runClaudeTurn;
+  /**
+   * The SDK, from the machine image (`build-template.mjs` npm-installs it into
+   * /opt/vendo-box at BUILD time). It is loaded HERE and not by the runner
+   * because the runner's other home is a HOST's server, where naming this
+   * package would drag a ~250MB platform binary into the host's build graph.
+   * `agent-sdk.mjs` reaches for it exactly the same way.
+   */
+  const loadSdk = async () => await import("@anthropic-ai/claude-agent-sdk");
 
   const startTurn = async (payload) => {
     const turnId = `turn_${randomUUID()}`;
@@ -123,9 +131,12 @@ export const createTurnRoutes = (options = {}) => {
     });
 
     const runClaudeTurn = await loadRunner();
+    // An injected runner is a test double and brings its own SDK double.
+    const sdk = options.runTurn === undefined ? await loadSdk() : undefined;
     state.promise = (async () => {
       try {
         await runClaudeTurn({
+          ...(sdk === undefined ? {} : { sdk }),
           prompt: payload.prompt,
           systemPrompt: payload.systemPrompt,
           tools: Array.isArray(payload.tools) ? payload.tools : [],
