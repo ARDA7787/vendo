@@ -467,6 +467,7 @@ class Door {
       turn.ctx.principal,
       { clientId: HARNESS_CLIENT_ID, scopes: [] },
       undefined,
+      undefined,
       { token, turn },
     );
     const response = await state.handleRequest(req);
