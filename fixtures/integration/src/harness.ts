@@ -404,7 +404,22 @@ async function forwardToWire(
     const response = await handler(request);
     res.statusCode = response.status;
     response.headers.forEach((value, name) => res.setHeader(name, value));
-    res.end(Buffer.from(await response.arrayBuffer()));
+    // STREAM the body through as it arrives — buffering it whole via
+    // `arrayBuffer()` (the old shape) meant no real HTTP client could ever
+    // observe a still-open SSE turn's early chunks (the approval/connect
+    // cards §1.4 writes BEFORE a blocked call resolves); the whole response
+    // only ever reached the wire once the turn was completely finished.
+    if (response.body === null) {
+      res.end();
+      return;
+    }
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(Buffer.from(value));
+    }
+    res.end();
   } catch (error) {
     res.statusCode = 500;
     res.setHeader("content-type", "text/plain");
