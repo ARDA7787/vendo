@@ -165,10 +165,18 @@ skill works and invoking an unlisted operator skill returns **FAILED**.
 
 ## 5. Gates
 
-`pnpm build` ✅ · `pnpm typecheck` ✅ 43/43 · `pnpm lint` ✅ 6/6 (dependency-guard +
-portability) · `pnpm test --force --concurrency=1` from the repo root, twice, both on
-the FINAL commit (the earlier green pair predated the skills wiring and the
-NUL-separator fix, so it was re-run rather than cited).
+All five green, all on the FINAL commit (`55d43d1f9`):
+
+- `pnpm build` ✅
+- `pnpm typecheck` ✅ **43/43**
+- `pnpm lint` ✅ **6/6** (dependency-guard + portability)
+- `pnpm test --force --concurrency=1` from the repo root, **TWICE**:
+  run A **55/55 successful, 31/31 packages, 0 failures**; run B **55/55 successful,
+  31/31 packages, 0 failures**.
+
+(An earlier green-looking pair was discarded rather than cited: one predated the
+skills wiring, and the other was an aborted run whose piped exit code read 0 — see
+the trap note below.)
 
 Per-package on the clean run: apps 642 · harnesses 234 · vendo 1753 · ui 683 ·
 bench 525 · corpus-harness 390 · demo-accounting 152 · genui-bench 122 ·
