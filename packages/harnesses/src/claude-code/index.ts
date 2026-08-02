@@ -204,6 +204,19 @@ const readState = (raw: string | undefined): ClaudeState => {
  */
 const doorTokens = new Map<string, string>();
 
+/** A missing door is a deployment fact, not a per-turn event. */
+let noDoorWarned = false;
+function warnNoDoorOnce(): void {
+  if (noDoorWarned) return;
+  noDoorWarned = true;
+  console.error(
+    "[vendo] claudeCode() has no MCP door, so this agent has NONE of your product's "
+    + "actions — only its own workspace. Its tools travel the door now: pass "
+    + "`mcp: true` to createVendo and set VENDO_BASE_URL (or `mcp: { baseUrl }`) "
+    + "to an origin the machine can reach.",
+  );
+}
+
 /** A callback-driven producer, consumed by the generator that must `yield`. */
 function eventQueue<T>() {
   const buffered: T[] = [];
@@ -293,7 +306,16 @@ export function claudeCode(
       // that the in-process projection is gone (10-mcp §3b).
       const doorPort = harnessAdapters(harness).toolDoor as ToolDoorPort | undefined;
       let door: { url: string; token: string } | undefined;
-      if (doorPort !== undefined) {
+      if (doorPort === undefined) {
+        // No door was composed at all, so this turn has the box's own hands and
+        // NONE of the product's actions. That is a legitimate deployment (a host
+        // using the harness purely for workspace work) and it is also, far more
+        // often, someone who has not noticed that `claudeCode()` reaches its
+        // tools through the door now. Loud once per process for the operator;
+        // the user is never lied to, because a model with no tool refuses
+        // honestly rather than inventing one.
+        warnNoDoorOnce();
+      } else {
         if (doorPort.url === undefined) {
           // A door exists but nothing can reach it. Loud for the operator,
           // because only they can fix it, and one plain sentence for the user —

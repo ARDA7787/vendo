@@ -153,10 +153,8 @@ live("claudeCode() — live, in a real e2b box", () => {
       await machine.send({
         prompt,
         systemPrompt: "Answer in as few words as possible.",
-        tools: [],
         model: MODEL,
         maxTurns: 4,
-        callTool: async () => ({ status: "ok", output: {} }),
         emit: (event) => {
           if (event.type === "text") text += event.delta;
           if (event.type === "session") sessionId = event.sessionId;
@@ -192,14 +190,7 @@ live("claudeCode() — live, in a real e2b box", () => {
     await first.materialize([
       { path: "/user/memory/note.md", bytes: new TextEncoder().encode("the code is 4417\n"), readOnly: false },
     ]);
-    await first.send({
-      prompt: "Say ok.",
-      tools: [],
-      model: MODEL,
-      maxTurns: 3,
-      callTool: async () => ({ status: "ok", output: {} }),
-      emit: () => undefined,
-    });
+    await first.send({ prompt: "Say ok.", model: MODEL, maxTurns: 3, emit: () => undefined });
     await first.release();
 
     // Kill it the way a provider reap does — no snapshot, nothing published.
@@ -217,10 +208,8 @@ live("claudeCode() — live, in a real e2b box", () => {
     await second.send({
       prompt: "Read user/memory/note.md and tell me the code. Digits only.",
       systemPrompt: "Answer in as few words as possible.",
-      tools: [],
       model: MODEL,
       maxTurns: 6,
-      callTool: async () => ({ status: "ok", output: {} }),
       emit: (event) => { if (event.type === "text") text += event.delta; },
     });
     console.log("[live recovery]", JSON.stringify({ text }));
@@ -292,23 +281,22 @@ live("claudeCode() — live, in a real e2b box", () => {
     expect(await bob.workspace.readFile("/user/memory/secret.md")).toContain("BANANA-222");
   }, 600_000);
 
-  test("E7 · a guarded call executes HOST-side, and the box env holds no credential but inference", async () => {
+  test("E7 · the box env holds no credential but inference — and no door credential either", async () => {
+    // The tool half of this proof MOVED. `claudeCode()` reaches its tools
+    // through the host's MCP door now, so a guarded call needs a composed host
+    // at an origin the box can resolve — which is exactly what
+    // `docs/verification/door-ctx/live-door-proof.mjs` drives, over a real
+    // tunnel, and where the "one guard, one audit row, one mirror" assertions
+    // now live. What CANNOT move is this half: whatever else changed, the
+    // machine's environment still holds the inference key and nothing else.
     process.env["VENDO_LANE_E_BOX_CANARY"] = "never-in-a-box";
     const h = harnessed({
-      thread: "m_box_tools",
-      say: "First tell me how many invoices are outstanding. Then write the full output of "
-        + "`env | sort` to user/files/env.txt. Then say done.",
-      tools: [{
-        name: "maple_invoices_list",
-        title: "List invoices",
-        description: "List the signed-in user's invoices.",
-        inputSchema: { type: "object", properties: {} } as never,
-      }],
-      answer: () => ({ status: "ok", output: [{ id: "inv_1" }, { id: "inv_2" }] }),
+      thread: "m_box_env",
+      say: "Write the full output of `env | sort` to user/files/env.txt. Then say done.",
     });
     let text = "";
     try {
-      for await (const event of claudeCode({ sandbox: sandbox(), model: MODEL, maxTurns: 16 })
+      for await (const event of claudeCode({ sandbox: sandbox(), model: MODEL, maxTurns: 12 })
         .run(h.turn as never)) {
         if (event.type === "text") text += event.delta;
         if (event.type === "error") text += `\n[error] ${event.message}`;
@@ -317,11 +305,12 @@ live("claudeCode() — live, in a real e2b box", () => {
       delete process.env["VENDO_LANE_E_BOX_CANARY"];
     }
     const dump = await h.workspace.readFile("/user/files/env.txt");
-    console.log("[live box tools]", JSON.stringify({ text, calls: h.calls }));
     console.log("[live box env]", dump.split("\n").map((line) => line.split("=")[0]).filter(Boolean).join(","));
-    expect(h.calls.map((call) => call.name)).toContain("maple_invoices_list");
     expect(dump).not.toContain("never-in-a-box");
     expect(dump).not.toContain(process.env["E2B_API_KEY"]);
     expect(dump).toContain("ANTHROPIC_API_KEY");
+    // The door credential rides the /session/message payload, never the machine
+    // environment — so an agent that dumps its own env cannot read it back out.
+    expect(dump).not.toContain("vtk_");
   }, 600_000);
 });
