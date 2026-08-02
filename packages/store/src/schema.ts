@@ -191,6 +191,12 @@ export const DDL = [
     UNIQUE (app_id, principal)
   )`,
   "CREATE INDEX IF NOT EXISTS vendo_app_grants_app_idx ON vendo_app_grants (app_id)",
+  // The other leg of §9.2's two queries: `apps.list` asks "which apps does THIS
+  // principal reach?" once per encoding the caller satisfies (user, each org,
+  // each team). Without this index every one of those is a seq scan of the whole
+  // grant table on the hot list path — the same order-of-magnitude regression
+  // the perf gate exists to catch.
+  "CREATE INDEX IF NOT EXISTS vendo_app_grants_principal_idx ON vendo_app_grants (principal)",
 ] as const;
 
 // Additive columns stay compatible with same-version development databases (02 §2

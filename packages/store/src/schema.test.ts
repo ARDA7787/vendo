@@ -176,6 +176,17 @@ for (const backend of backends()) {
       });
     }
 
+    it("indexes vendo_app_grants by principal, not only by app", async () => {
+      // The apps runtime runs a PRINCIPAL-ONLY query per encoding on every
+      // apps.list (runtime.ts `grantedRecords`): one per org, one per team, one
+      // for the user. Without this index each of those is a seq scan of every
+      // grant row in the deployment, on the hot list path.
+      const rows = await made.sql(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'vendo_app_grants'",
+      );
+      expect(rows.some((row) => /\(principal\)/.test(String(row.indexdef)))).toBe(true);
+    });
+
     it("rejects a future schema version as a conflict", async () => {
       await made.sql("UPDATE vendo_meta SET value = '999'::jsonb WHERE key = 'schema_version'");
       await made.store.close();

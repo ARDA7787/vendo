@@ -97,6 +97,25 @@ for (const backend of backends()) {
       expect(await count("vendo_workspace_files", "path = '/user/files/apps/app_drop/notes.md'", [])).toBe(1);
     });
 
+    it("erases the app subtree's ROOT row, at both the /user and the /orgs anchor", async () => {
+      // The anchors were slash-suffixed only, so a row at exactly
+      // `/user/apps/<id>` or `/orgs/<org>/apps/<id>` — the very path core's
+      // `appOfOrgPath` says the app's grants govern — outlived the erase.
+      const owner: Principal = { kind: "user", subject: "user_ws_root" };
+      await seed(made.store, owner, "/user/apps/app_root", ["the root, as a row"]);
+      await made.sql(
+        "INSERT INTO vendo_workspace_files (path, owner, content, bytes) VALUES ($1, $2, $3, $4)",
+        ["/orgs/acme/apps/app_root", "acme", "the org's root row", 18],
+      );
+      // ...and a sibling whose id merely starts the same must survive.
+      await seed(made.store, owner, "/user/apps/app_root2", ["a different app"]);
+
+      await eraseStore(made.store, { files: storeFiles(made.store) }).byApp("app_root");
+      expect(await count("vendo_workspace_files", "path = '/user/apps/app_root'", [])).toBe(0);
+      expect(await count("vendo_workspace_files", "path = '/orgs/acme/apps/app_root'", [])).toBe(0);
+      expect(await count("vendo_workspace_files", "path = '/user/apps/app_root2'", [])).toBe(1);
+    });
+
     it("adopts an anonymous session's workspace into the signed-in subject", async () => {
       const anon: Principal = { kind: "user", subject: "anon_ws_adopt", ephemeral: true };
       const signedIn: Principal = { kind: "user", subject: "user_ws_adopter" };

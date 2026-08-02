@@ -1,4 +1,4 @@
-import type { FilesAdapter } from "@vendoai/core";
+import { encodeGrantPrincipal, type FilesAdapter } from "@vendoai/core";
 import { escapeLike } from "./helpers/utils.js";
 import { dbFor, type VendoStore } from "./store.js";
 import { invalid } from "./validate.js";
@@ -62,7 +62,8 @@ function emptyReport(): EraseReport {
 
 /**
  * 02-store §5 — the store-level erase API: by subject (full erasure) or by
- * app, cascading the matching data across all 16 tables of §2's map. It is
+ * app, cascading the matching data across every table of §2's map (the count
+ * lives in `ERASE_TABLES`, which the conformance suite pins to the DDL). It is
  * the ONLY sanctioned deletion path for `vendo_audit` rows — the routed door
  * refuses audit deletion (§2); this API reaches the tables directly.
  * Ephemeral subjects are erased the same way (their rows are ordinary disk
@@ -196,9 +197,18 @@ export function eraseStore(store: VendoStore, options: { files: FilesAdapter }):
       await delWorkspace(report, "vendo_workspace_files", "owner = $1", [subject]);
       await delWorkspace(report, "vendo_workspace_history", "owner = $1", [subject]);
       // The person's grants ON OTHER PEOPLE'S apps (§9.2's `user:<subject>`
-      // encoding). Team and org grants name no person, so they stay: they
-      // describe the org's arrangement, which the departure does not change.
-      await del(report, "vendo_app_grants", "principal = $1", [`user:${subject}`]);
+      // encoding, through the ONE encoder so a surface can never write a shape
+      // this cannot match). Team and org grants name no person, so they stay:
+      // they describe the org's arrangement, which the departure does not change.
+      await del(report, "vendo_app_grants", "principal = $1", [
+        encodeGrantPrincipal({ kind: "user", subject }),
+      ]);
+      // ...but the leaver's name is also on every grant they WROTE (§9.2's
+      // `created_by`, kept for audit). Deleting those rows would revoke a team's
+      // access because the person who set it up left, so the arrangement stays
+      // and the identifier goes. A redaction, not a deletion — it is deliberately
+      // absent from the report, which counts rows destroyed.
+      await db.query("UPDATE vendo_app_grants SET created_by = '' WHERE created_by = $1", [subject]);
       // The session registration (if any) is retired with the data (§4).
       await del(report, "vendo_sessions", "subject = $1", [subject]);
       return report;
@@ -230,8 +240,13 @@ export function eraseStore(store: VendoStore, options: { files: FilesAdapter }):
       // the second anchor: a promoted app's documents live under
       // `/orgs/<orgId>/apps/<appId>/` (§9.5), and the app id is the same
       // verbatim id, so one `%` covers every org that could hold it.
-      const anchors = [`/user/apps/${escapeLike(appId)}/%`, `/orgs/%/apps/${escapeLike(appId)}/%`];
-      const where = "path LIKE $1 ESCAPE '\\' OR path LIKE $2 ESCAPE '\\'";
+      // Each anchor is TWO patterns: the subtree, and the subtree's own root row
+      // at exactly `…/apps/<appId>` — the path core's `appOfOrgPath` says the
+      // app's grants govern, which a slash-suffixed LIKE never matched.
+      const user = `/user/apps/${escapeLike(appId)}`;
+      const org = `/orgs/%/apps/${escapeLike(appId)}`;
+      const anchors = [`${user}/%`, user, `${org}/%`, org];
+      const where = [1, 2, 3, 4].map((n) => `path LIKE $${n} ESCAPE '\\'`).join(" OR ");
       await delWorkspace(report, "vendo_workspace_files", where, anchors);
       await delWorkspace(report, "vendo_workspace_history", where, anchors);
       return report;

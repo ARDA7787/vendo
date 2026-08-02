@@ -8,7 +8,7 @@ import { appFixture, approvalFixture, auditFixture, grantFixture } from "./fixtu
 import { appStore, grantStore, registerEphemeralSubject } from "./index.js";
 
 // 02-store §5: "A store-level erase API ... erases by subject (full erasure)
-// or by app, cascading the matching data across all 16 tables, and is
+// or by app, cascading the matching data across every table of §2's map, and is
 // exposed on the umbrella. It is the only sanctioned deletion path for audit
 // rows."
 
@@ -187,6 +187,37 @@ for (const backend of backends()) {
       expect(await store.records("vendo_threads").get("thr_erase_anon")).toBeNull();
       expect(await store.records("vendo_audit").get(event.id)).toBeNull();
       expect(await grantStore(store).get("grt_erase_anon")).toBeNull();
+    });
+
+    it("takes the departing person out of vendo_app_grants — the row they hold AND their name on the rows they wrote", async () => {
+      // §9.2's `created_by` is a SUBJECT, kept for audit. A full erasure that
+      // leaves it behind leaves the person's identifier in the store; deleting
+      // the whole row instead would revoke a team's access because the person
+      // who set it up left, so the arrangement stays and the name goes.
+      const store = made.store;
+      const leaver = "user_erase_granter";
+      const grants = store.records("vendo_app_grants");
+      await grants.put({
+        id: "ag_erase_theirs",
+        data: { appId: "app_shared", orgId: "acme", principal: `user:${leaver}`, level: "editor", createdBy: "dana" },
+        refs: { app_id: "app_shared", principal: `user:${leaver}` },
+      });
+      await grants.put({
+        id: "ag_erase_authored",
+        data: { appId: "app_shared", orgId: "acme", principal: "team:acme/finance", level: "viewer", createdBy: leaver },
+        refs: { app_id: "app_shared", principal: "team:acme/finance" },
+      });
+
+      const report = await eraseStore(store, { files: storeFiles(store) }).bySubject(leaver);
+      // Their own access row is deleted and counted...
+      expect(report.vendo_app_grants).toBe(1);
+      expect(await grants.get("ag_erase_theirs")).toBeNull();
+      // ...the team's access survives, with the leaver's name redacted off it.
+      expect(await grants.get("ag_erase_authored")).not.toBeNull();
+      expect(await made.sql(
+        "SELECT created_by FROM vendo_app_grants WHERE id = $1",
+        ["ag_erase_authored"],
+      )).toEqual([{ created_by: "" }]);
     });
   });
 
