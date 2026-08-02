@@ -1487,16 +1487,38 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     const subject = ctx.principal.subject;
     const records = await allRecords(config.store.records(APPS), { refs: { subject } });
     const rows = records.map(parseAppRow).filter((row) => row.subject === subject);
-    const ownedIds = new Set(rows.map((row) => row.doc.id));
+    const seen = new Set(rows.map((row) => row.doc.id));
+    // E8-F1 — an ORG-held app's row subject is the org id (§9.5), so matching
+    // the caller's own subject listed a promoted automation for NOBODY: not the
+    // members, not the org admin, not even the person who promoted it. Promote
+    // deliberately disarms the automation and tells the promoter it "stays off
+    // until someone turns it back on" — a promise nothing could keep while the
+    // only surface that mentions it hid it. The orgs come from the ctx (§9.1:
+    // asserted, never stored) and `can(editor)` still decides each row.
+    for (const org of new Set((ctx.memberships ?? []).map(({ org: id }) => id))) {
+      for (const record of await allRecords(config.store.records(APPS), { refs: { subject: org } })) {
+        const row = parseAppRow(record);
+        if (row.subject !== org || seen.has(row.doc.id)) continue;
+        if (await canEdit(ctx, row, row.doc.id)) {
+          seen.add(row.doc.id);
+          rows.push(row);
+        }
+      }
+    }
     // An adopted automation runs as its SPONSOR, who may not own the app — and
     // the person it runs as has to be able to see it (§8: editor = edit). The
     // sponsorship rows are ref'd by subject, so this is one indexed query, never
     // a scan of everybody's apps.
+    //
+    // E8-F2 — INVALIDATED rows are included on purpose. A stopped automation
+    // used to vanish from here, leaving the adoption card the only mention of it
+    // anywhere: dismiss the card, or never open the app, and there was no way
+    // back to it at all.
     const sponsoredElsewhere = (await allRecords(sponsorships(), { refs: { subject } }))
       .map((record) => sponsorshipSchema.safeParse(record.data))
-      .filter((parsed) => parsed.success && parsed.data.status === "active")
+      .filter((parsed) => parsed.success)
       .map((parsed) => (parsed as { data: Sponsorship }).data.appId)
-      .filter((appId) => !ownedIds.has(appId));
+      .filter((appId) => !seen.has(appId));
     for (const record of sponsoredElsewhere.length === 0
       ? []
       : await allRecords(config.store.records(APPS), { ids: sponsoredElsewhere })) {
@@ -1533,10 +1555,17 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       const editors = config.appAccess?.list === undefined
         ? undefined
         : (await config.appAccess.list(ctx, row.doc.id)).length;
+      // E8-F2 — a stopped automation says so HERE, in the same sentence the
+      // adoption card and the stopped run row use, so the list is a way back to
+      // it rather than a place it silently disappeared from.
+      const stopped = sponsorship?.status === "invalidated"
+        ? ((reason) => ({ reason, summary: SPONSORSHIP_STOP[reason](row.doc.name) }))(sponsorship.reason ?? "edit")
+        : undefined;
       entries.push({
         app: row.doc,
         enabled: row.enabled,
         sponsor: { subject: sponsor, ...(display === undefined ? {} : { display }) },
+        ...(stopped === undefined ? {} : { stopped }),
         ...(editors === undefined ? {} : { editors }),
         ...(pending === undefined ? {} : {
           pendingGrants: pending.pendingGrants,

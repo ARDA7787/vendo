@@ -128,6 +128,12 @@ export interface AutomationsEngine {
      *  Dana's access"). `display` only when the caller IS the sponsor: Vendo
      *  holds no directory, and a name for anyone else would be invented. */
     sponsor?: { subject: string; display?: string };
+    /** §9.9 — set exactly while the automation is STOPPED and waiting to be
+     *  adopted. `summary` is the same consumer sentence the adoption card and
+     *  the stopped run row carry, so the list is a route back to a paused
+     *  automation instead of the one place it vanished from (E8-F2). It never
+     *  names the sponsor: this string is read by anyone who can edit the app. */
+    stopped?: { reason: "edit" | "departure" | "grants"; summary: string };
     /** How many principals hold a grant on the app, when an access seam is
      *  configured — the "wider editor set" the label names when one exists. */
     editors?: number;

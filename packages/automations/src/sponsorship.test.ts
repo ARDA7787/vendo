@@ -949,3 +949,57 @@ describe("sponsorship — what the stopped run row is allowed to say", () => {
     expect(guard.audit.some((event) => JSON.stringify(event.detail).includes(raw))).toBe(true);
   });
 });
+
+/** E8-F1/E8-F2 (live browser proof, 2026-08-01) — the two ways an automation
+ *  became BUILT BUT UNREACHABLE. `list` is the only surface that mentions an
+ *  automation outside the app itself, so anything it hides is, in practice, gone:
+ *  promote deliberately disarms the automation and the Share dialog promises it
+ *  "stays off until someone turns it back on", and an invalidated sponsorship
+ *  leaves the adoption card as the only mention anywhere. */
+describe("sponsorship — an automation the caller can edit is an automation they can SEE", () => {
+  const withOrg = (subject: string, org = "maple"): RunContext =>
+    ({ ...ctx(subject), memberships: [{ org }] }) as RunContext;
+
+  it("lists a promoted org app's disarmed automation for an editor, who can turn it back on", async () => {
+    // The promoted shape: the row subject is the ORG (§9.5), and promote left it
+    // disabled. Before this, `list` matched `row.subject === ctx.subject`, so the
+    // automation was listed for NOBODY — not the members, not the org admin, not
+    // even the person who promoted it.
+    const app = doc("app_promoted");
+    const { store, engine } = harness({ appAccess: appAccessStub(["user_kim"]) });
+    await seedApp(store, app, "maple", false);
+
+    const listed = await engine.list(withOrg("user_kim"));
+    expect(listed.map((entry) => entry.app.id)).toEqual([app.id]);
+    expect(listed[0]?.enabled).toBe(false);
+    // ...and the promise is keepable: she can arm it from there.
+    expect((await engine.enable(app.id, withOrg("user_kim"))).enabled).toBe(true);
+
+    // Someone who asserts no membership and holds no grant still sees nothing.
+    expect(await engine.list(ctx("user_mal"))).toEqual([]);
+  });
+
+  it("keeps a STOPPED automation visible to its sponsor, with the honest stopped state", async () => {
+    // A personal app Dana ADOPTED: she is the sponsor and not the owner, so
+    // `sponsoredElsewhere` is her only route to it — and it dropped every row
+    // whose sponsorship was not `active`, which is exactly the paused ones.
+    const app = doc("app_paused");
+    const { store, engine } = harness({ appAccess: appAccessStub(["user_dana"]) });
+    await seedApp(store, app, "user_owner");
+    await setSponsorship(store, {
+      appId: app.id,
+      sponsor: "user_dana",
+      display: "Dana",
+      intentHash: intentHash(appIntentOf(app)),
+      status: "invalidated",
+      reason: "edit",
+      invalidatedAt: NOW.toISOString(),
+    });
+
+    const listed = await engine.list(ctx("user_dana"));
+
+    expect(listed.map((entry) => entry.app.id)).toEqual([app.id]);
+    expect(listed[0]?.stopped).toMatchObject({ reason: "edit" });
+    expect(listed[0]?.stopped?.summary).toMatch(/anyone who can edit this app can take it on/);
+  });
+});
