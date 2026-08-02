@@ -434,4 +434,3 @@ function threadOf(turn: Turn<ClaudeCodeOptions>): string {
 const rootHintFor = (resolved: ClaudeCodeOptions): string =>
   resolved.machine === "local" ? "your working directory" : "/workspace";
 
-export { pathAccess, checkoutWorkspace } from "../materialize.js";

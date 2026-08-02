@@ -56,17 +56,7 @@ export {
   type RenderSeamOptions,
 } from "./render-seam.js";
 export { VENDO_STATUS_PART } from "./wire.js";
-export {
-  checkoutWorkspace,
-  contentHash,
-  pathAccess,
-  type Access,
-  type CheckoutFile,
-  type SyncFile,
-  type WorkspaceCheckout,
-} from "./materialize.js";
-export {
-  harnessAdapters,
-  provideHarnessAdapters,
-  type HarnessAdapters,
-} from "./harness-sandbox.js";
+// The materialization seam (materialize.ts) is deliberately NOT re-exported:
+// its consumers are the harness drivers in this package, which reach it
+// relatively. A barrel export with no reader is surface nobody asked for.
+export { provideHarnessAdapters, type HarnessAdapters } from "./harness-sandbox.js";

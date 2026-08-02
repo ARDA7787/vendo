@@ -211,7 +211,7 @@ const declaredKeys = (schema: unknown): string[] => {
  * Normalizing here also means an argument the tool never declared can never
  * reach the guard, which is the honest reading of the descriptor.
  */
-export function normalizeArgs(schema: unknown, raw: unknown): Record<string, unknown> {
+function normalizeArgs(schema: unknown, raw: unknown): Record<string, unknown> {
   const source = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const args: Record<string, unknown> = {};
   for (const key of declaredKeys(schema)) {
