@@ -7,9 +7,25 @@
  *
  * `machine: "local"` on purpose. The sandbox path adds an e2b machine and a
  * control-port hop and changes NOTHING above the `SessionMachine` port — the
- * projection, the permission hook, the diff sync-back and `turn.state` are the
- * same code either way, and this is the leg that can be proven without a
- * provider account or a template bake.
+ * permission hook, the diff sync-back and `turn.state` are the same code either
+ * way, and this is the leg that can be proven without a provider account or a
+ * template bake.
+ *
+ * **door-ctx moved the TOOL proofs out of this file.** A `claudeCode()` turn
+ * reaches its tools through the host's MCP door now, and a door needs a composed
+ * host — which this package cannot build (layering: harnesses never depends on
+ * the umbrella). The three asks that were about tools therefore live where the
+ * composition does:
+ *
+ *   - `packages/vendo/src/claude-code-composed.live.test.ts` — the local leg,
+ *     over a real loopback door;
+ *   - `docs/verification/door-ctx/live-door-proof.mjs` — the box leg, over a
+ *     real public tunnel, with the approval tap and the audit rows;
+ *   - `packages/vendo/src/mcp-door-parity.e2e.test.ts` — the offline gate.
+ *
+ * What stays here is everything that is TRUE of the harness with no door at all:
+ * its real bash hands, the diff sync-back, the native session across turns, and
+ * an honest refusal.
  */
 import type { Json, ToolResult, Turn } from "@vendoai/core";
 import { describe, expect, test } from "vitest";
@@ -83,26 +99,6 @@ async function say(h: Harnessed, options: Record<string, unknown> = {}): Promise
 }
 
 live("claudeCode() — live, machine:\"local\"", () => {
-  test("E1 · a normal ask reaches the projected tool, and the tool executes HOST-side", async () => {
-    const h = harnessed({
-      say: "How many invoices are outstanding? Just tell me the number.",
-      tools: [{
-        name: "maple_invoices_list",
-        title: "List invoices",
-        description: "List the signed-in user's invoices. Returns every invoice with its status.",
-        inputSchema: { type: "object", properties: { status: { type: "string" } } } as never,
-      }],
-      answer: () => ({
-        status: "ok",
-        output: [{ id: "inv_1", status: "outstanding" }, { id: "inv_2", status: "outstanding" }],
-      }),
-    });
-    const reply = await say(h);
-    console.log("[live E1 normal]", JSON.stringify({ reply, calls: h.calls }));
-    expect(h.calls.map((call) => call.name)).toContain("maple_invoices_list");
-    expect(reply).toMatch(/2|two/i);
-  }, 300_000);
-
   test("E1 · edit-in-place: the box's real bash edits the app, and the DIFF lands in the store", async () => {
     const h = harnessed({
       say: "The dashboard heading says 'Invoices'. Change it to say 'Bills' and nothing else.",
@@ -119,28 +115,6 @@ live("claudeCode() — live, machine:\"local\"", () => {
     expect(h.workspace.commits.flatMap((commit) => commit.changed)).toEqual([
       "/user/apps/app_live/app.vendo",
     ]);
-  }, 300_000);
-
-  test("E1 · a guard DENIAL comes back through the native permission hook and is narrated", async () => {
-    const h = harnessed({
-      say: "Please pay invoice inv_1 now.",
-      tools: [{
-        name: "maple_invoices_pay",
-        title: "Pay an invoice",
-        description: "Pay one of the user's invoices.",
-        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } as never,
-      }],
-      answer: () => ({
-        status: "denied",
-        reason: "That payment needs the person's approval before it can go through.",
-      }),
-    });
-    const reply = await say(h);
-    console.log("[live E1 denial]", JSON.stringify({ reply, calls: h.calls }));
-    expect(h.calls.map((call) => call.name)).toContain("maple_invoices_pay");
-    // Narrated, not crashed: the model explains and stops.
-    expect(reply.toLowerCase()).toMatch(/approv|permission|confirm/);
-    expect(reply).not.toContain("[error]");
   }, 300_000);
 
   test("E1 · an impossible ask is refused honestly, with no invented tool", async () => {

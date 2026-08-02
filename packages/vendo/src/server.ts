@@ -28,6 +28,7 @@ export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai
 // package the host installed (architecture §6).
 export { instant, type InstantHarnessDeps, type InstantHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
+import { createTurnCredentials, type TurnCredentials } from "./turn-credentials.js";
 import { warnDeprecatedConfigKeys } from "./config-keys.js";
 import { orgPolicyPath, orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
 import { createPromoteApp } from "./promote-app.js";
@@ -2397,6 +2398,16 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // skills projected into `/host/skills`, and the resolved model seats. The
   // per-turn halves it cannot know (thread, workspace, ctx-shaped prompt and
   // descriptor catalog) are resolved in harness-turn.ts.
+  // Hoisted above the harness runtime: a harness whose thinker runs on a
+  // MACHINE needs to know whether a door exists at all before it can be told
+  // where to reach it. `mcp: true` and `mcp: {…}` both open the door; the
+  // object form carries door options.
+  const mcpOptions = typeof config.mcp === "object" && config.mcp !== null
+    ? config.mcp
+    : config.mcp === true
+      ? {}
+      : undefined;
+
   const harnessTurns = createHarnessTurns({
     harness: harness as Harness<never>,
     // The composed sandbox adapter, threaded through so a spawned harness's
@@ -2434,6 +2445,26 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // Build contract §9.1/§9.7 — the same host org query the wire resolves per
     // request, so a harness turn's façade mounts the team's files too.
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+    // Every turn, published for the door's turn credential. Publishing is not a
+    // grant: without a credential minted from inside the turn there is nothing
+    // to resolve, and the credential's authority window IS this publication.
+    liveTurn: ({ threadId, ctx, tools }) => turnCredentials.publish(threadId, { ctx, tools }),
+    // The other half, for a harness whose thinker runs on a machine: where the
+    // door is, and how to mint one conversation's credential for it. `url` is
+    // undefined when the deployment set no public base — a machine cannot reach
+    // a door nobody can name, and the harness says so in the operator's voice
+    // rather than opening a session that would 401 on its first tool call.
+    ...(mcpOptions === undefined ? {} : {
+      toolDoor: {
+        // The SAME origin the door itself is configured with, or a machine would
+        // be pointed at a URL discovery never advertises.
+        url: (mcpOptions.baseUrl ?? configuredBaseUrl) === undefined
+          ? undefined
+          : new URL(MCP_MOUNT, mcpOptions.baseUrl ?? configuredBaseUrl).toString(),
+        mint: (threadId: string) => turnCredentials.mint(threadId),
+        revoke: (token: string) => turnCredentials.revoke(token),
+      },
+    }),
   });
   /**
    * THE harness door — one object, served two ways.
@@ -2652,11 +2683,15 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // own protocol state), the host's oauth seam, and an AppsPort view of `apps`.
   // `mcp: true` and `mcp: {…}` both open the door; the object form carries
   // door options (an explicit `baseUrl` overrides the VENDO_BASE_URL default).
-  const mcpOptions = typeof config.mcp === "object" && config.mcp !== null
-    ? config.mcp
-    : config.mcp === true
-      ? {}
-      : undefined;
+  /**
+   * 10-mcp §3b — the process's own turn-credential registry.
+   *
+   * Created unconditionally and BEFORE the door, because both ends attach to it:
+   * the harness runtime publishes every live turn here, and a composed door
+   * resolves harness bearers through it. It grants nothing on its own — a
+   * credential only exists once a harness mints one from inside its own turn.
+   */
+  const turnCredentials: TurnCredentials = createTurnCredentials();
   let door: McpDoor | undefined;
   if (mcpOptions !== undefined) {
     if (oauthSeam === undefined) {
@@ -2709,6 +2744,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       // `org:`/`team:` grant can never match here: a team app shared with the
       // caller would be absent from list and not-found on open, over MCP only.
       ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+      // The door's SECOND credential space (10-mcp §3b): a harness bearer is
+      // answered from the live turn it names, with that turn's venue, presence,
+      // equipped tools and approval card. The outside-agent path is untouched —
+      // the two spaces never meet (`mcp-door-outside-agent.e2e.test.ts`).
+      turnCredentials,
       mount: MCP_MOUNT,
       ...(doorBaseUrl === undefined ? {} : { baseUrl: doorBaseUrl }),
       // 10-mcp §3.1/§3.2 — broker-fronted compositions: trust the external

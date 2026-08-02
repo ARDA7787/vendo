@@ -1,0 +1,32 @@
+
+ RUN  v2.1.9 /Users/yousefh/orca/workspaces/flowlet/door/packages/harnesses
+
+stderr | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E1 · edit-in-place: the box's real bash edits the app, and the DIFF lands in the store
+[vendo] claudeCode() has no MCP door, so this agent has NONE of your product's actions — only its own workspace. Its tools travel the door now: pass `mcp: true` to createVendo and set VENDO_BASE_URL (or `mcp: { baseUrl }`) to an origin the machine can reach.
+
+(node:46437) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(Use `node --trace-warnings ...` to show where the warning was created)
+stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E1 · edit-in-place: the box's real bash edits the app, and the DIFF lands in the store
+[live E1 edit] {"reply":"I'll find and update that heading for you.Done. The heading now says \"Bills\".","after":"<App name=\"Money\">\n  <Heading text=\"Bills\" />\n</App>\n","commits":[{"changed":["/user/apps/app_live/app.vendo"]}]}
+
+(node:46437) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > E1 · an impossible ask is refused honestly, with no invented tool
+[live E1 impossible] {"reply":"I'm not able to book flights for you. I'm here to help with your Maple business banking needs, but flight booking isn't something I can do through this system.\n\nYou'll need to use a travel booking service or airline website directly to book your flight to Tokyo. Is there anything related to your business banking I can help with instead?","calls":[]}
+
+(node:46437) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > §1.3 · turn.state carries the native session, and the next turn RESUMES it
+[live session] {"carried":"{\"sessionId\":\"6f98b6f5-bb1f-4abc-b751-34a2b5190799\",\"covers\":1}"}
+
+stdout | src/claude-code/claude-code.live.test.ts > claudeCode() — live, machine:"local" > §1.3 · turn.state carries the native session, and the next turn RESUMES it
+[live session resume] {"reply":"4127"}
+
+ ✓ src/claude-code/claude-code.live.test.ts (3 tests) 36800ms
+   ✓ claudeCode() — live, machine:"local" > E1 · edit-in-place: the box's real bash edits the app, and the DIFF lands in the store 12866ms
+   ✓ claudeCode() — live, machine:"local" > E1 · an impossible ask is refused honestly, with no invented tool 9702ms
+   ✓ claudeCode() — live, machine:"local" > §1.3 · turn.state carries the native session, and the next turn RESUMES it 14231ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  12:21:57
+   Duration  37.30s (transform 204ms, setup 0ms, collect 344ms, tests 36.80s, environment 0ms, prepare 29ms)
+

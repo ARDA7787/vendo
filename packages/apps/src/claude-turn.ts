@@ -1,20 +1,28 @@
 /**
- * ONE Claude Agent SDK turn, port-injected — wave 2 lane E, build list items 4
- * and 5.
+ * ONE Claude Agent SDK session, port-injected — wave 2 lane E, rewritten by
+ * door-ctx.
  *
  * This module is the SDK loop for `claudeCode()`, and it has TWO homes on
  * purpose:
  *
  *   - inside the box, copied into the template as `/opt/vendo-box/claude-turn.mjs`
- *     (`build-template.mjs`), driven by the supervisor's turn routes;
+ *     (`build-template.mjs`), driven by the supervisor's session routes;
  *   - on the host, imported from `dist` for `machine: "local"`.
  *
- * One implementation, because the interesting part is identical in both: the
- * projection of `turn.tools.list()` as an in-process MCP server whose every
- * handler round-trips to the HOST, where `turn.tools.call()` executes — one
- * guard, one audit row, one mirror, exactly like `vendo()`. No tool executes
- * box-side. What differs is only `callTool`'s transport (an HTTP bridge in the
- * box, a direct call on the host), which is why it is a port.
+ * **The tools are the HOST's own MCP door now.** They used to be an in-process
+ * MCP server this file BUILT — every handler round-tripping to the host over an
+ * inverted HTTP bridge the host polled, because the door could not carry a
+ * turn's accountability context. door-ctx taught it to (10-mcp §3b), so the
+ * session simply points at `{ type: "http", url, headers: { Authorization } }`
+ * with a credential scoped to the turn in flight. The door hands each call to
+ * `turn.tools.call()` — one guard, one audit row, one mirror, one commit,
+ * exactly like `vendo()`. Nothing executes box-side, and this file no longer
+ * translates schemas, correlates calls, or knows what a tool IS.
+ *
+ * What died with the projection: the JSON-Schema→zod translation, the
+ * hook/handler correlation queue that made exactly-once hold, the tool listing
+ * itself (the door lists LIVE, so a tool `find_tools` equips mid-conversation
+ * needs no session reopen), and the `callTool` port in both drivers.
  *
  * It therefore imports NOTHING from the workspace, and — the rule that matters —
  * it never NAMES the Agent SDK. Whoever supplies the machine supplies the SDK:
@@ -25,13 +33,13 @@
  * reason to install a ~250MB platform binary. Keep it that way — the emitted
  * `dist/claude-turn.js` is copied verbatim into a machine image.
  *
- * Two permission laws live here (design §3, "claudeCode() specifics"):
- *   - the box is AUTO-ALLOW for its own file/bash work (the box IS the
- *     permission: copies only, no credentials, reality happens at commit), so
- *     those tools are pre-approved and never consult the hook;
- *   - our guard's asks are delivered through the SDK's NATIVE permission hook,
- *     so the co-trained pause-and-explain serves our approval cards. A denial
- *     is `{behavior:"deny"}` — something the model narrates — never a throw.
+ * One permission law still lives here (design §3, "claudeCode() specifics"): the
+ * box is AUTO-ALLOW for its own file/bash work (the box IS the permission —
+ * copies only, no credentials, reality happens at commit), so those tools are
+ * pre-approved. Our guard's asks are no longer delivered through the SDK's
+ * native permission hook, because the guard now decides at the DOOR: a refusal
+ * arrives as the tool's own in-band error text, which is still something the
+ * model narrates and never a throw.
  */
 
 /** The MCP server name our projected tools live under (`mcp__vendo__<tool>`). */
@@ -51,24 +59,6 @@ const DISALLOWED_TOOLS = ["WebSearch", "WebFetch", "AskUserQuestion"];
  *  one, each judged on its own name. */
 const SUBAGENT_TOOLS = ["Task"];
 
-/** Exactly the three statuses a harness sees (contract §1.1), flattened for the
- *  wire the box speaks. Mapping from `ToolResult` is the host's job. */
-export type GuardedResult =
-  | { status: "ok"; output: unknown }
-  | { status: "denied"; reason: string }
-  | { status: "error"; message: string };
-
-/** One `turn.tools.call()`. The ONLY way anything reaches the world. */
-export type GuardedCall = (name: string, args: Record<string, unknown>) => Promise<GuardedResult>;
-
-/** A `ToolListing` as the projection needs it (contract §1.1). */
-export interface ClaudeTurnTool {
-  name: string;
-  title?: string;
-  description: string;
-  inputSchema?: unknown;
-}
-
 export type ClaudeTurnEvent =
   | { type: "text"; delta: string }
   | { type: "status"; label: string }
@@ -82,7 +72,6 @@ export interface ClaudeSessionInput {
   /** `Turn.system` — appended to the SDK's own claude_code preset, never replacing
    *  it: the co-training is the reason this harness exists. */
   systemPrompt?: string;
-  tools: readonly ClaudeTurnTool[];
   model?: string;
   effort?: string;
   maxTurns?: number;
@@ -122,7 +111,16 @@ export interface ClaudeSessionInput {
    * collect-by-shape rather than a whole-tree read.
    */
   onFileWritten?: (path: string | undefined) => void;
-  callTool: GuardedCall;
+  /**
+   * The host's own MCP door, and a credential for the turn in flight.
+   *
+   * This is the ONLY way anything reaches the world. Absent, the session runs
+   * with the box's own hands and no host tools at all — which is a real
+   * deployment (a host that never opened the door) and never a silent
+   * degradation: `claudeCode()` refuses to open a session it cannot give tools
+   * to when a door exists but has no reachable URL.
+   */
+  toolDoor?: { url: string; token: string };
   emit: (event: ClaudeTurnEvent) => void;
   /**
    * The Agent SDK module, supplied by whoever supplied the machine: the box door
@@ -168,207 +166,35 @@ export interface SdkModule {
     prompt: string | AsyncIterable<SessionUserMessage>;
     options: Record<string, unknown>;
   }): AsyncIterable<Record<string, unknown>> & { interrupt?: () => Promise<unknown> };
-  tool(name: string, description: string, inputSchema: unknown, handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown>): unknown;
-  createSdkMcpServer(options: { name: string; version?: string; tools?: unknown[] }): unknown;
-}
-
-/** The zod surface the schema translation needs. Deliberately the intersection
- *  of zod 3 and zod 4 — the box installs whatever the SDK's peer resolves to. */
-export interface ZodLike {
-  string(): AnyZod;
-  number(): AnyZod;
-  boolean(): AnyZod;
-  array(inner: AnyZod): AnyZod;
-  any(): AnyZod;
-  enum(values: [string, ...string[]]): AnyZod;
-}
-interface AnyZod {
-  optional(): AnyZod;
-  describe(text: string): AnyZod;
-}
-
-interface JsonSchemaNode {
-  type?: string;
-  enum?: unknown[];
-  items?: JsonSchemaNode;
-  description?: string;
-  properties?: Record<string, JsonSchemaNode>;
-  required?: string[];
 }
 
 /**
- * JSON Schema → a zod raw shape, because `tool()` takes a raw shape and the
- * interchange we hand every harness is JSON Schema (contract §1.1 amendment).
- * Deliberately partial: our descriptors are flat objects of scalars, arrays and
- * enums, and anything richer degrades to `z.any()` rather than to a schema that
- * lies about what the tool accepts.
+ * The box's permission hook — an ALLOW-LIST, and now the whole of it.
+ *
+ * It used to be where a projected tool actually EXECUTED: `turn.tools.call()` is
+ * atomic (guard + execute + audit + mirror), so it could not be split into a
+ * check for the hook and a run for the handler, and doing it in the hook was
+ * what let a guard denial come back as the SDK's native `{behavior:"deny"}`.
+ * All of that moved to the door. What is left is the one law that was always
+ * local: the box may use its own hands, and nothing else.
+ *
+ * `mcp__vendo__*` is allowed here because the DOOR is the permission for those
+ * — the guard decides there, on the host, with the turn's own context. A denial
+ * comes back as the tool's in-band error text instead of the native deny
+ * behavior; the model narrates either way, and it is the guard's own sentence.
  */
-export function jsonSchemaToZodShape(schema: unknown, z: ZodLike): Record<string, unknown> {
-  const node = (typeof schema === "object" && schema !== null ? schema : {}) as JsonSchemaNode;
-  const properties = node.properties;
-  if (properties === undefined) return {};
-  const required = new Set(Array.isArray(node.required) ? node.required : []);
-  const shape: Record<string, unknown> = {};
-  for (const [name, property] of Object.entries(properties)) {
-    let field = leaf(property, z);
-    if (typeof property.description === "string") field = field.describe(property.description);
-    shape[name] = required.has(name) ? field : field.optional();
-  }
-  return shape;
-}
-
-function leaf(node: JsonSchemaNode, z: ZodLike): AnyZod {
-  if (Array.isArray(node.enum) && node.enum.length > 0 && node.enum.every((v) => typeof v === "string")) {
-    return z.enum(node.enum as [string, ...string[]]);
-  }
-  switch (node.type) {
-    case "string": return z.string();
-    case "number":
-    case "integer": return z.number();
-    case "boolean": return z.boolean();
-    case "array": return z.array(node.items === undefined ? z.any() : leaf(node.items, z));
-    default: return z.any();
-  }
-}
-
-const textResult = (text: string, isError = false): Record<string, unknown> => ({
-  content: [{ type: "text", text }],
-  ...(isError ? { isError: true } : {}),
-});
-
-const asText = (output: unknown): string =>
-  typeof output === "string" ? output : JSON.stringify(output ?? null);
-
-/** The properties a tool actually declares. Nothing else is part of its input. */
-const declaredKeys = (schema: unknown): string[] => {
-  const node = (typeof schema === "object" && schema !== null ? schema : {}) as JsonSchemaNode;
-  return Object.keys(node.properties ?? {});
-};
-
-/**
- * The ONE args value for a call: the model's emission projected onto the tool's
- * DECLARED properties.
- *
- * This is what makes exactly-once hold. `z.object(shape)` strips unknown keys and
- * imposes its own key order, so the permission hook (which sees the raw
- * emission) and the MCP handler (which sees the parsed object) were handed
- * DIFFERENT objects for one call — a reordered emission, an invented extra key,
- * or a tool declaring no properties all made the handler miss the hook's queued
- * result and execute the guarded call a SECOND time: two guard verdicts, two
- * audit rows, two executions of one intent. (The effect ledger cannot save this:
- * it keys on a run id an interactive turn does not have.)
- *
- * Normalizing here also means an argument the tool never declared can never
- * reach the guard, which is the honest reading of the descriptor.
- */
-function normalizeArgs(schema: unknown, raw: unknown): Record<string, unknown> {
-  const source = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
-  const args: Record<string, unknown> = {};
-  for (const key of declaredKeys(schema)) {
-    if (source[key] !== undefined) args[key] = source[key];
-  }
-  return args;
-}
-
-/** Key-order-independent identity for one call. Both sides compute it from the
- *  SAME normalized args, so the queue can never be missed. */
-const callKey = (name: string, args: Record<string, unknown>): string =>
-  `${name}\u0000${JSON.stringify(Object.entries(args).sort(([left], [right]) => (left < right ? -1 : 1)))}`;
-
-/**
- * `canUseTool` is where a projected call actually executes.
- *
- * That looks surprising for one turn and is the only shape that honors the
- * contract: `turn.tools.call()` is ATOMIC (guard + execute + audit + mirror), so
- * it cannot be split into a check for the hook and a run for the handler. Doing
- * it in the hook is what lets a guard denial come back as the SDK's own
- * `{behavior:"deny"}` — the co-trained pause-and-explain — instead of a tool
- * error the model reads as a bug. The handler then returns the result the hook
- * already fetched.
- *
- * Correlation is by name + NORMALIZED input, because `CanUseTool` is not handed a
- * tool_use id. Both sides normalize through the tool's declared schema
- * (`normalizeArgs`), so the two views of one call cannot diverge. Two identical
- * CONCURRENT calls queue two results and consume one each — two intents, two
- * executions, two audit rows, which is correct.
- */
-function guardedProjection(input: ClaudeSessionInput, z: ZodLike, sdk: SdkModule) {
+function boxPermission(input: ClaudeSessionInput) {
   const prefix = `mcp__${VENDO_MCP_SERVER}__`;
-  // The hook's ALLOW-list: the box's own hands plus the subagent door. A
-  // deny-list here meant every tool nobody had foreseen — say an SDK upgrade
+  // A deny-list here meant every tool nobody had foreseen — say an SDK upgrade
   // shipping a new built-in with egress — was silently allowed; unnamed must
   // mean denied.
   const boxAllowed = new Set<string>([...(input.allowedBoxTools ?? BOX_TOOLS), ...SUBAGENT_TOOLS]);
-  const settled = new Map<string, GuardedResult[]>();
-  const schemas = new Map(input.tools.map((listed) => [listed.name, listed.inputSchema]));
-
-  const execute = async (bare: string, args: Record<string, unknown>): Promise<GuardedResult> => {
-    try {
-      return await input.callTool(bare, args);
-    } catch (error) {
-      // `call()` never throws by contract; a transport that does is still not
-      // allowed to take the turn down.
-      return { status: "error", message: error instanceof Error ? error.message : String(error) };
+  return async (name: string, rawArgs: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    if (name.startsWith(prefix) || boxAllowed.has(name)) {
+      return { behavior: "allow", updatedInput: rawArgs };
     }
+    return { behavior: "deny", message: `${name} isn't available in this workspace.` };
   };
-
-  const tools = input.tools.map((listed) =>
-    sdk.tool(
-      listed.name,
-      // The title is the consumer-voice name; the model needs both.
-      listed.title === undefined ? listed.description : `${listed.title}. ${listed.description}`,
-      jsonSchemaToZodShape(listed.inputSchema, z),
-      async (rawArgs) => {
-        const args = normalizeArgs(listed.inputSchema, rawArgs);
-        const key = callKey(listed.name, args);
-        const queued = settled.get(key);
-        // Normally the hook already ran this exact call. If an SDK build
-        // pre-approves MCP tools and never consults the hook, execute here —
-        // still exactly one guarded call, and a denial still reads as an error
-        // the model can narrate.
-        const result = queued !== undefined && queued.length > 0
-          ? queued.shift()!
-          : await execute(listed.name, args);
-        if (queued !== undefined && queued.length === 0) settled.delete(key);
-        if (result.status === "ok") return textResult(asText(result.output));
-        if (result.status === "denied") return textResult(result.reason, true);
-        return textResult(result.message, true);
-      },
-    ),
-  );
-
-  const canUseTool = async (
-    name: string,
-    rawArgs: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> => {
-    if (!name.startsWith(prefix)) {
-      // ALLOW-LIST, never a deny-list. The box IS the permission for its own
-      // hands — file/bash work touches a COPY with no credentials on it, and
-      // reality happens at commit — but that argument covers exactly the tools
-      // named in {@link boxAllowed}. Anything else (a future SDK built-in with
-      // egress, another server's tools) is denied by not being named, instead
-      // of allowed by not being foreseen.
-      if (boxAllowed.has(name)) return { behavior: "allow", updatedInput: rawArgs };
-      return { behavior: "deny", message: `${name} isn't available in this workspace.` };
-    }
-    const bare = name.slice(prefix.length);
-    const args = normalizeArgs(schemas.get(bare), rawArgs);
-    const result = await execute(bare, args);
-    if (result.status === "denied") {
-      // The native denial path: the model explains and moves on. Our approval
-      // card is already on the user's screen — the runtime raised it (§1.4).
-      return { behavior: "deny", message: result.reason };
-    }
-    const key = callKey(bare, args);
-    const queued = settled.get(key);
-    if (queued === undefined) settled.set(key, [result]);
-    else queued.push(result);
-    // Hand the SDK the normalized args, so the handler is asked about exactly the
-    // call the guard already answered.
-    return { behavior: "allow", updatedInput: args };
-  };
-
-  return { tools, canUseTool };
 }
 
 /** The SDK's `usage` block, in the `HarnessEvent` vocabulary. */
@@ -452,7 +278,7 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
     const hook = raw as { tool_input?: { file_path?: unknown } };
     const written = hook.tool_input?.file_path;
     input.onFileWritten?.(typeof written === "string" ? written : undefined);
-    // This hook OBSERVES. Permission lives in `canUseTool`, and a hook that
+    // This hook OBSERVES. Permission lives in `boxPermission`, and a hook that
     // returned a decision here would be a second, quieter permission system.
     return {};
   };
@@ -461,8 +287,7 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
   let live: { interrupt?: () => Promise<unknown> } | undefined;
 
   const drain = (async () => {
-    const { z } = (await import("zod")) as unknown as { z: ZodLike };
-    const { tools, canUseTool } = guardedProjection(input, z, sdk);
+    const canUseTool = boxPermission(input);
 
     const options: Record<string, unknown> = {
       cwd: input.cwd,
@@ -478,7 +303,22 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       canUseTool,
       allowedTools: [...(input.allowedBoxTools ?? BOX_TOOLS)],
       disallowedTools: DISALLOWED_TOOLS,
-      mcpServers: { [VENDO_MCP_SERVER]: sdk.createSdkMcpServer({ name: VENDO_MCP_SERVER, version: "1.0.0", tools }) },
+      // The host's own door, over native remote MCP. `alwaysLoad` because our
+      // tools are ALREADY curated (the loadout, `surfaces.agent`, THE LAW's §12
+      // withholding) — letting the engine defer them behind its own tool search
+      // would be a second curation layer over a set we deliberately shaped, and
+      // it makes an unreachable door fail at startup instead of silently
+      // presenting a model with no hands.
+      ...(input.toolDoor === undefined ? {} : {
+        mcpServers: {
+          [VENDO_MCP_SERVER]: {
+            type: "http",
+            url: input.toolDoor.url,
+            headers: { Authorization: `Bearer ${input.toolDoor.token}` },
+            alwaysLoad: true,
+          },
+        },
+      }),
       // Never read settings or CLAUDE.md off the materialized workspace: those are
       // the USER's files, and a file cannot be allowed to configure the harness.
       // This disables FILESYSTEM settings discovery only — `plugins` below is an

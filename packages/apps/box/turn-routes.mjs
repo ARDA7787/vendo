@@ -6,19 +6,28 @@
  * ONCE, hold ONE Claude Agent SDK session open for the whole conversation, and
  * push each user message into it. Chat in, stream out — exactly like a terminal.
  *
- * **The bridge is inverted, and stays that way.** `SandboxMachine.request()` is
- * the only data path into a box, so the host drives: it posts a message, then
- * polls; when the model reaches a projected tool the box parks the ask and hands
- * it out on the next poll; the host runs `turn.tools.call()` and posts the answer
- * back. The box therefore holds no outbound credential at all — a workspace copy,
- * the inference key (the recorded v0 exception), and the machine token the host
- * asserts on every call.
+ * **The tool bridge is gone.** It used to be INVERTED: `SandboxMachine.request()`
+ * is the only data path INTO a box, so the host drove — post a message, poll;
+ * when the model reached a projected tool the box PARKED the ask and handed it
+ * out on the next poll; the host ran `turn.tools.call()` and posted the answer
+ * back. cc-native measured whether our MCP door could replace that and it could
+ * not; door-ctx made it (10-mcp §3b), so the session now reaches the host's
+ * tools directly over remote MCP with a turn-scoped credential the host mints.
  *
- * The cc-native lane MEASURED whether our MCP door could replace this bridge
- * (`packages/vendo/src/mcp-door-parity.e2e.test.ts`). It cannot: the door
- * hardcodes `venue`/`presence`, cannot express a live approval, and has no
- * bearer a harness can mint. So the projection stays in-process and this bridge
- * stays with it — now keyed on the SESSION rather than on one turn.
+ * What that deleted here: `callTool`, the per-message `asks` map, the
+ * hand-out-once cursor bookkeeping, the `/session/{id}/answer` route, and the
+ * tool FINGERPRINT that reopened a session whenever the equipped set changed —
+ * the door lists live, so there is nothing to go stale.
+ *
+ * What it costs: the box now holds an OUTBOUND credential and needs egress to
+ * the host's origin, where before it held nothing but a workspace copy, the
+ * inference key and the inbound machine token. The credential is strictly
+ * weaker than the bridge it replaces — the bridge could ask the host to run any
+ * tool the turn could run, and so can this — but it is a real posture change
+ * and it is recorded in the lane's close note.
+ *
+ * The poll loop STAYS: it is how the model's text, usage and `wrote` events
+ * leave the box, and nothing about MCP changes that direction of travel.
  *
  * Everything interesting about the SDK loop lives in `claude-turn.mjs`, which is
  * the SAME module `machine: "local"` runs on the host — one implementation, two
@@ -64,18 +73,6 @@ const matchesPattern = (pattern, workspacePath) => {
   return wanted.every((segment, at) => segment === "*" || segment === actual[at]);
 };
 
-/**
- * Everything the host sends is DATA: only the declared shape passes, and an
- * unrecognised status reads as an error the model narrates.
- */
-const guardedResult = (raw) => {
-  if (raw?.status === "ok") return { status: "ok", output: raw.output };
-  if (raw?.status === "denied") {
-    return { status: "denied", reason: String(raw.reason ?? "That isn't something I can do right now.") };
-  }
-  return { status: "error", message: String(raw.message ?? "That didn't work.") };
-};
-
 const walk = (directory, out) => {
   let entries;
   try {
@@ -95,18 +92,6 @@ const walk = (directory, out) => {
 };
 
 /**
- * The tool listing a session was opened with, as one comparable string.
- *
- * An in-process MCP server's tool set is fixed when the session opens, but OUR
- * equipped set can grow mid-conversation (`find_tools`). Rather than project
- * every tool up front — which would defeat curation and THE LAW's withholding —
- * the session is REOPENED (resuming its own id, so nothing is forgotten) on the
- * rare message where the listing actually changed.
- */
-const fingerprint = (tools) =>
-  (Array.isArray(tools) ? tools : []).map((tool) => tool?.name).sort().join(" ");
-
-/**
  * @param {object} options
  * @param {string} [options.root]     workspace root (default /workspace)
  * @param {string} [options.token]    the machine token the host must present
@@ -122,9 +107,8 @@ export const createSessionRoutes = (options = {}) => {
   // "Not logged in"), so the credential arrives with the first message.
   let sdkEnv = { ...(options.env ?? process.env) };
 
-  /** The live session, its tool fingerprint, and the id to resume on reopen. */
+  /** The live session and the id to resume on reopen. */
   let session;
-  let openedWith = "";
   let sessionId;
   /** Every message's buffers, by id. The in-flight one is `current`. */
   const messages = new Map();
@@ -144,26 +128,15 @@ export const createSessionRoutes = (options = {}) => {
     for (const resolve of state.waiters.splice(0)) resolve();
   };
 
-  /** Events and asks belong to whichever message is in flight. Between messages
-   *  nothing is active, and anything arriving then is dropped rather than
-   *  attributed to the next message. */
+  /** Events belong to whichever message is in flight. Between messages nothing
+   *  is active, and anything arriving then is dropped rather than attributed to
+   *  the next message. */
   const emit = (event) => {
     if (current === undefined) return;
     if (event?.type === "session" && typeof event.sessionId === "string") sessionId = event.sessionId;
     current.events.push(event);
     wake(current);
   };
-
-  const callTool = (name, args) => new Promise((resolve) => {
-    const state = current;
-    if (state === undefined) {
-      resolve({ status: "error", message: "That didn't work." });
-      return;
-    }
-    const id = `ask_${randomUUID()}`;
-    state.asks.set(id, { id, name, args, resolve, handedOut: false });
-    wake(state);
-  });
 
   /** The host asked for a mid-turn hot sync; it polls for this and syncs. */
   const onFileWritten = (written) => {
@@ -176,11 +149,9 @@ export const createSessionRoutes = (options = {}) => {
     const createClaudeSession = await loadFactory();
     // An injected factory is a test double and brings its own SDK double.
     const sdk = options.openSession === undefined ? await loadSdk() : undefined;
-    openedWith = fingerprint(payload.tools);
     session = createClaudeSession({
       ...(sdk === undefined ? {} : { sdk }),
       systemPrompt: payload.systemPrompt,
-      tools: Array.isArray(payload.tools) ? payload.tools : [],
       model: payload.model,
       effort: payload.effort,
       maxTurns: payload.maxTurns,
@@ -189,9 +160,11 @@ export const createSessionRoutes = (options = {}) => {
       ...(sessionId === undefined ? {} : { resume: sessionId }),
       ...(payload.pluginPath === undefined ? {} : { pluginPath: payload.pluginPath }),
       ...(payload.skillNames === undefined ? {} : { skillNames: payload.skillNames }),
+      // The host's door and this conversation's credential. Data like every
+      // other field: the box asserts nothing about it and cannot mint one.
+      ...(payload.toolDoor === undefined ? {} : { toolDoor: payload.toolDoor }),
       cwd: root,
       env: { ...sdkEnv },
-      callTool,
       emit,
       onFileWritten,
     });
@@ -199,23 +172,25 @@ export const createSessionRoutes = (options = {}) => {
 
   const startMessage = async (payload) => {
     const messageId = `msg_${randomUUID()}`;
-    const state = { events: [], asks: new Map(), waiters: [], done: false };
+    const state = { events: [], waiters: [], done: false };
     messages.set(messageId, state);
     for (const stale of [...messages.keys()].slice(0, -MESSAGES_RETAINED)) messages.delete(stale);
     current = state;
 
     if (session === undefined) {
       await openSession(payload);
-    } else if (payload.reopen === true || fingerprint(payload.tools) !== openedWith) {
+    } else if (payload.reopen === true) {
+      // A TRUNCATION (§1.3): the host says this session remembers an answer the
+      // user threw away, so it must NOT come back with its memory — the fresh
+      // one resumes nothing and the host's prompt carries the re-seed.
+      //
+      // This used to also fire on a CHANGED TOOL LISTING, because an in-process
+      // MCP server's tool set is fixed when the session opens. The door lists
+      // live, so a tool `find_tools` equips mid-conversation costs nothing.
       const closing = session;
       session = undefined;
       await closing.end().catch(() => undefined);
-      // `reopen` is a TRUNCATION (§1.3): the host says this session remembers an
-      // answer the user threw away, so it must NOT come back with its memory —
-      // the fresh one resumes nothing and the host's prompt carries the re-seed.
-      // A changed tool listing is the other reason to reopen, and that one keeps
-      // its id so nothing is forgotten.
-      if (payload.reopen === true) sessionId = undefined;
+      sessionId = undefined;
       await openSession(payload);
     }
 
@@ -228,11 +203,6 @@ export const createSessionRoutes = (options = {}) => {
         state.events.push({ type: "error", message: "Something went wrong while I was working on that." });
       } finally {
         state.done = true;
-        // A message that ended with asks outstanding would hang the host's poll.
-        for (const ask of state.asks.values()) {
-          ask.resolve({ status: "error", message: "the turn ended" });
-        }
-        state.asks.clear();
         if (current === state) current = undefined;
         wake(state);
       }
@@ -245,18 +215,8 @@ export const createSessionRoutes = (options = {}) => {
     const deadline = Date.now() + Math.min(Math.max(waitMs ?? 0, 0), MAX_POLL_WAIT_MS);
     for (;;) {
       const fresh = state.events.slice(cursor);
-      const offered = [...state.asks.values()].filter((ask) => !ask.handedOut);
-      if (fresh.length > 0 || offered.length > 0 || state.done) {
-        // Handed out ONCE: a poll that re-offered an unanswered ask would have
-        // the host execute the same guarded call again.
-        for (const ask of offered) ask.handedOut = true;
-        return {
-          events: fresh,
-          cursor: cursor + fresh.length,
-          asks: offered.map(({ id, name, args }) => ({ id, name, args })),
-          // Only truly finished when nobody is still waiting on us.
-          done: state.done && state.asks.size === 0,
-        };
+      if (fresh.length > 0 || state.done) {
+        return { events: fresh, cursor: cursor + fresh.length, done: state.done };
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) return { events: [], cursor, done: false };
@@ -382,7 +342,7 @@ export const createSessionRoutes = (options = {}) => {
         return { status: 202, body: { messageId: await startMessage(payload) } };
       }
 
-      const match = /^\/session\/([^/]+)\/(poll|answer|interrupt)$/.exec(pathname);
+      const match = /^\/session\/([^/]+)\/(poll|interrupt)$/.exec(pathname);
       if (match === null) return { status: 404, body: { error: `unknown route: ${pathname}` } };
       const state = messages.get(match[1]);
       if (state === undefined) return { status: 404, body: { error: `unknown message: ${match[1]}` } };
@@ -391,16 +351,9 @@ export const createSessionRoutes = (options = {}) => {
         const cursor = Number.isInteger(payload?.cursor) ? payload.cursor : 0;
         return { status: 200, body: await poll(state, cursor, payload?.waitMs) };
       }
-      if (match[2] === "interrupt") {
-        // The user hit stop. The SESSION survives — only this turn is cut short,
-        // which is the whole reason a live session interrupts instead of aborting.
-        await session?.interrupt().catch(() => undefined);
-        return { status: 200, body: { ok: true } };
-      }
-      const ask = state.asks.get(payload?.id);
-      if (ask === undefined) return { status: 404, body: { error: "no such ask" } };
-      state.asks.delete(payload.id);
-      ask.resolve(guardedResult(payload?.result));
+      // The user hit stop. The SESSION survives — only this turn is cut short,
+      // which is the whole reason a live session interrupts instead of aborting.
+      await session?.interrupt().catch(() => undefined);
       return { status: 200, body: { ok: true } };
     },
 

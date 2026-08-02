@@ -15,25 +15,27 @@
  * race windows. Re-materializing from the store — which is the truth anyway —
  * costs one round trip on the rare message that finds its box gone.
  *
- * **The bridge is inverted.** `SandboxMachine.request()` is the only runtime data
- * path INTO the box, so the host drives: it posts a message, then polls; when the
- * model reaches a projected tool the box parks the ask and hands it out on the
- * next poll; the host runs `turn.tools.call()` and posts the answer back. The box
- * therefore never needs to reach the host at all, which is the strongest possible
- * reading of "the box holds a workspace copy and a token, nothing else" (§9).
+ * **The bridge is GONE.** `SandboxMachine.request()` used to be the only runtime
+ * data path INTO the box, so the host drove: it posted a message, then polled;
+ * when the model reached a projected tool the box parked the ask and handed it
+ * out on the next poll; the host ran `turn.tools.call()` and posted the answer
+ * back. cc-native MEASURED whether our MCP door could replace that and it could
+ * not; door-ctx made it (10-mcp §3b), so the box now reaches the host's tools
+ * directly over remote MCP with a credential scoped to the turn in flight.
  *
- * The cc-native lane MEASURED whether our MCP door could replace that bridge and
- * it cannot — see `packages/vendo/src/mcp-door-parity.e2e.test.ts` and
- * `docs/verification/cc-native/parity-gate.md`. Tools stay in-process.
+ * The poll loop stays — it is how text, usage and `wrote` events leave the box —
+ * but it no longer carries asks, and there is no `/answer` route.
  *
- * **§1.4, no machine lease while an approval waits.** A guarded call may block up
- * to `APPROVAL_WAIT_MS` for a human tap. The idle timer is armed for that whole
- * window, so a wait that outlives the box's idle budget loses the box — which is
- * the same case as "kill the sandbox mid-turn": the store is untouched and the
- * next message recovers on a fresh box.
+ * **§1.4, and a cost the flip introduced.** A guarded call may block up to
+ * `APPROVAL_WAIT_MS` for a human tap. That wait used to happen HERE, where the
+ * host could arm the idle timer across it so a wait outliving the idle budget
+ * lost the box. It now happens inside the door, on the host, and from out here
+ * it is indistinguishable from a slow tool — so the box IS held for that window
+ * (bounded by `MESSAGE_BUDGET_MS`). Better for the user (an approved call
+ * resumes on the same session) and worse for cost (a parked write holds a
+ * sandbox for up to 90s). Recorded in the lane's close note as a deviation.
  */
 import { VendoError } from "@vendoai/core";
-import type { GuardedResult } from "@vendoai/apps/claude-turn";
 import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
 import { emptyTree } from "../materialize.js";
 import type { SessionMachine, SessionMessage } from "./machine.js";
@@ -253,7 +255,6 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
       const started = await request("/session/message", {
         prompt: message.prompt,
         systemPrompt: message.systemPrompt,
-        tools: message.tools,
         model: message.model,
         effort: message.effort,
         maxTurns: message.maxTurns,
@@ -261,6 +262,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
         reopen: message.reopen,
         pluginPath: message.pluginPath,
         skillNames: message.skillNames,
+        toolDoor: message.toolDoor,
       });
       // From here on the box holds a session, so a next message on this thread
       // neither re-materializes nor re-seeds.
@@ -293,35 +295,6 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
         }
         cursor = typeof polled["cursor"] === "number" ? polled["cursor"] : cursor;
 
-        const asks = (Array.isArray(polled["asks"]) ? polled["asks"] : [])
-          .filter((ask): ask is { id: string; name: string; args?: unknown } => {
-            const candidate = ask as { id?: unknown; name?: unknown };
-            return typeof candidate.id === "string" && typeof candidate.name === "string";
-          });
-        if (asks.length > 0) {
-          // §1.4, made real rather than declared: a guarded call may block up to
-          // APPROVAL_WAIT_MS for a human tap, and no box may be held immune for
-          // that whole window. So the idle timer is ARMED across it — a wait that
-          // outlives the idle budget loses the box, and losing it mid-turn is the
-          // case the store already survives.
-          armIdle(options.threadId, box, idleTtlMs);
-          let answered: Array<{ id: string; result: GuardedResult }>;
-          try {
-            // CONCURRENTLY: the model issued them together, and serializing would
-            // queue N approval waits behind each other. One call, one guard
-            // verdict, one answer — the box handed each ask out exactly once.
-            answered = await Promise.all(asks.map(async (ask) => ({
-              id: ask.id,
-              result: await message.callTool(ask.name, (ask.args ?? {}) as Record<string, unknown>),
-            })));
-          } finally {
-            disarmIdle(box);
-          }
-          for (const { id, result } of answered) {
-            await request(`/session/${messageId}/answer`, { id, result });
-          }
-          continue;
-        }
         if (polled["done"] === true) return;
       }
     },

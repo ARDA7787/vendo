@@ -1,0 +1,62 @@
+{
+  "at": "2026-08-02T19:15:17.933Z",
+  "publicUrl": "https://tommy-examine-origin-widespread.trycloudflare.com",
+  "template": "h5pf20fap7ows6io81kr",
+  "results": [
+    {
+      "name": "1 · the box's read reached the host through the door",
+      "pass": true,
+      "detail": "host executions: [\"maple_invoices_list\"]"
+    },
+    {
+      "name": "1 · the audit row carries the TURN's venue and presence, not the door's",
+      "pass": true,
+      "detail": "{\"venue\":\"chat\",\"presence\":\"present\",\"outcome\":\"ok\",\"decidedBy\":\"rule\"}"
+    },
+    {
+      "name": "1 · the model answered with the HOST's data",
+      "pass": true,
+      "detail": "stream mentions inv_7781: true"
+    },
+    {
+      "name": "2 · the transcript mirror carries the call",
+      "pass": true,
+      "detail": "[\"tool-input-start:maple_invoices_list\",\"tool-input-available:maple_invoices_list\",\"tool-output-available\"]"
+    },
+    {
+      "name": "3 · an approval card reached the user's queue while the turn waited",
+      "pass": true,
+      "detail": "approval apr_9b533cf2-10a6-4f59-ad22-bed7f728f905"
+    },
+    {
+      "name": "3 · the tap EXECUTED the call — not 'resolve it there, then retry'",
+      "pass": true,
+      "detail": "[{\"outcome\":\"ok\",\"decidedBy\":\"grant\",\"venue\":\"chat\"}]"
+    },
+    {
+      "name": "3 · exactly ONE executed row for one intent",
+      "pass": true,
+      "detail": "ok rows: 1"
+    },
+    {
+      "name": "4 · the box's write reached the host's workspace",
+      "pass": true,
+      "detail": "\"DOOR-CTX-4417\\n\""
+    },
+    {
+      "name": "5 · the unattended turn's rows say away/automation",
+      "pass": true,
+      "detail": "[{\"kind\":\"run\",\"venue\":\"automation\",\"presence\":\"away\"},{\"kind\":\"approval\",\"tool\":\"maple_invoices_list\",\"venue\":\"automation\",\"presence\":\"away\",\"outcome\":\"pending-approval\"}]"
+    },
+    {
+      "name": "5 · nothing was EXECUTED for the absent run",
+      "pass": true,
+      "detail": "executed rows: 0"
+    },
+    {
+      "name": "6 · an unregistered turn credential is refused at the public door",
+      "pass": true,
+      "detail": "status 401"
+    }
+  ]
+}

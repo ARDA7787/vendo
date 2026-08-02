@@ -59,4 +59,6 @@ export { VENDO_STATUS_PART } from "./wire.js";
 // The materialization seam (materialize.ts) is deliberately NOT re-exported:
 // its consumers are the harness drivers in this package, which reach it
 // relatively. A barrel export with no reader is surface nobody asked for.
-export { provideHarnessAdapters, type HarnessAdapters } from "./harness-sandbox.js";
+// `harnessAdapters` is the READ side: a harness constructed at boot (the host
+// wrote `harness: claudeCode()`) collects the composed slots at turn time.
+export { harnessAdapters, provideHarnessAdapters, type HarnessAdapters, type ToolDoorPort } from "./harness-sandbox.js";

@@ -37,3 +37,6 @@
 - [export-surface test resolves from cwd](gotcha-export-surface-test-cwd.md) — `vitest --root packages/ui` from the repo root reds it with a bogus TS2307 that mimics a real registry miss
 - [Long doc blocks get orphaned by insertion](gotcha-doc-block-orphaned-by-insertion.md) — adding a symbol under a `*/` silently re-parents the block; two stacked blocks = an orphan
 - [An unmounted workspace read is ENOENT](gotcha-workspace-unmounted-read-is-enoent.md) — "no mount" and "no file" are byte-identical; a missing membership makes a whole feature silently inert
+- [server.close() hangs on a keep-alive MCP socket](gotcha-server-close-hangs-on-keepalive.md) — vitest then reports PASSING live tests as failed; closeAllConnections() first
+- [cloudflared prints its URL before DNS](gotcha-cloudflared-url-before-dns.md) — poll the real public URL, and drive the tunnel from OUTSIDE the script under test
+- [Compare against the record, not live state](feedback-compare-against-the-record-not-live-state.md) — a "differs from the current value?" check is vacuous when that value is cleared between uses

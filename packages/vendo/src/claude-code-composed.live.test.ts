@@ -16,9 +16,19 @@
  *     transcript rather than restarting it (§1.3).
  *
  * `machine: "local"` because the box leg is proven separately
- * (`packages/harnesses/src/claude-code/claude-code-box.live.test.ts`) and adds a
- * provider account to a test whose subject is composition.
+ * (`packages/harnesses/src/claude-code/claude-code-box.live.test.ts`, and
+ * end-to-end over a public tunnel in
+ * `docs/verification/door-ctx/live-door-proof.mjs`) and adds a provider account
+ * to a test whose subject is composition.
+ *
+ * **door-ctx.** The harness's tools are the host's own MCP door now, so a
+ * composed `claudeCode()` needs one open and an origin the SDK subprocess can
+ * resolve. On the local leg that is a LOOPBACK listener — the subprocess runs on
+ * this machine, so `http://127.0.0.1:<port>` is a real, reachable, and entirely
+ * un-mocked origin. The tool call below therefore travels a genuine HTTP MCP
+ * round trip into `vendo.handler`, exactly as the box's does over the internet.
  */
+import { createServer, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,21 +91,65 @@ function hostTools(): { tools: ToolRegistry; calls: Array<Record<string, unknown
   };
 }
 
+/**
+ * Serve one composed host on loopback, so the SDK subprocess this test starts
+ * can reach its MCP door for real. Torn down with the test's other cleanups.
+ */
+async function listen(vendo: Vendo, origin: string): Promise<void> {
+  const port = Number(new URL(origin).port);
+  const server: Server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const headers: Array<[string, string]> = Object.entries(req.headers)
+      .flatMap(([key, value]) => (value === undefined
+        ? []
+        : [[key, Array.isArray(value) ? value.join(",") : value] as [string, string]]));
+    const answer = await vendo.handler(new Request(`${origin}${req.url ?? "/"}`, {
+      method: req.method,
+      headers,
+      ...(chunks.length === 0 ? {} : { body: Buffer.concat(chunks) }),
+    }));
+    res.writeHead(answer.status, Object.fromEntries(answer.headers.entries()));
+    res.end(Buffer.from(await answer.arrayBuffer()));
+  });
+  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+  cleanups.push(async () => {
+    // `close()` alone waits for every keep-alive socket, and the SDK subprocess
+    // holds its MCP connection open — the teardown then hangs until vitest's
+    // hook timeout and the test is reported failed after it already passed.
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+}
+
+/** One loopback port per composed host in this file. */
+let nextPort = 8830;
+const nextOrigin = (): string => `http://127.0.0.1:${(nextPort += 1)}`;
+
 async function compose(overrides: Record<string, unknown> = {}): Promise<{
   vendo: Vendo;
   store: VendoStore;
   host: ReturnType<typeof hostTools>;
+  origin: string;
 }> {
   const store = await tempStore();
   const host = hostTools();
+  const origin = nextOrigin();
   const vendo = createVendo({
     model: {} as LanguageModel,
     principal: async () => principal,
     store,
+    // The harness reaches its tools over THIS door (10-mcp §3b).
+    mcp: { baseUrl: origin },
+    oauth: {
+      async authorize() { return { subject: principal.subject }; },
+      async principal(subject: string) { return { kind: "user" as const, subject }; },
+    },
     ...overrides,
   } as Parameters<typeof createVendo>[0]);
   vendo.actions.add(host.tools);
-  return { vendo, store, host };
+  await listen(vendo, origin);
+  return { vendo, store, host, origin };
 }
 
 const auditRows = async (store: VendoStore): Promise<Array<Record<string, unknown>>> => {
@@ -143,6 +197,63 @@ live("claudeCode() through createVendo", () => {
     const runRow = rows.find((row) => row["kind"] === "run");
     expect((runRow?.["detail"] as { usage?: unknown } | undefined)?.usage).toBeDefined();
     expect(JSON.stringify(thread.messages)).not.toContain("inputTokens");
+  }, 420_000);
+
+  it("door-ctx · a guard DENIAL travels the door and is NARRATED, never crashed", async () => {
+    // Moved here from `claude-code.live.test.ts` when the tools became the
+    // door's: a denial now arrives as the MCP tool's in-band error text rather
+    // than the SDK's native `{behavior:"deny"}`, and the point of the proof is
+    // that the model still explains and stops instead of treating it as a bug.
+    const store = await tempStore();
+    const origin = nextOrigin();
+    const calls: string[] = [];
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      mcp: { baseUrl: origin },
+      oauth: {
+        async authorize() { return { subject: principal.subject }; },
+        async principal(subject: string) { return { kind: "user" as const, subject }; },
+      },
+      harness: claudeCode({ machine: "local", model: MODEL, maxTurns: 8 }),
+    } as Parameters<typeof createVendo>[0]);
+    vendo.actions.add({
+      async descriptors() {
+        return [{
+          name: "maple_invoices_pay",
+          title: "Pay an invoice",
+          description: "Pay one of the signed-in customer's invoices.",
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "string" } },
+            required: ["id"],
+            additionalProperties: false,
+          },
+          risk: "read",
+        }] as ToolDescriptor[];
+      },
+      async execute(call) {
+        calls.push(call.tool);
+        return {
+          status: "blocked",
+          reason: "That payment needs the person's approval before it can go through.",
+        };
+      },
+    } as ToolRegistry);
+    await listen(vendo, origin);
+
+    const response = await vendo.handler(post("/threads", {
+      threadId: "thr_denied",
+      message: userMessage("m1", "Please pay invoice inv_1 now."),
+    }));
+    const text = await response.text();
+    console.log("[composed denial]", JSON.stringify({ calls, tail: text.slice(-800) }));
+
+    // It really reached our guard-bound registry, over the door.
+    expect(calls).toContain("maple_invoices_pay");
+    // ...and the model narrated the refusal rather than reporting a failure.
+    expect(text.toLowerCase()).toMatch(/approv|permission|confirm/);
   }, 420_000);
 
   it("§1.3 · turn.state is DURABLE: a second composition on the same store resumes the session", async () => {

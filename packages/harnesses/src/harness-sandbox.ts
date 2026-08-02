@@ -21,6 +21,29 @@
  */
 import type { Harness } from "@vendoai/core";
 
+/**
+ * The host's own MCP door, as a harness that runs a MACHINE needs it.
+ *
+ * A boxed harness cannot hold the guard-bound registry — the registry is the
+ * host's, and the box is deliberately credential-free. Before door-ctx it
+ * reached the registry through an inverted HTTP bridge the host polled; now it
+ * reaches the SAME `turn.tools` over the host's own MCP door, using a credential
+ * this port mints (10-mcp §3b).
+ *
+ * The credential states nothing and grants nothing on its own: it is a pointer
+ * at "the turn currently in flight on thread T", mintable only from inside such
+ * a turn, and dead the moment that turn ends.
+ */
+export interface ToolDoorPort {
+  /** The door's canonical absolute URL, or undefined when this deployment has no
+   *  public base a machine could reach (`VENDO_BASE_URL` unset). */
+  readonly url: string | undefined;
+  /** Mint a credential for one conversation. `undefined` outside a live turn of
+   *  that thread — the subject is READ from the turn, never named by a caller. */
+  mint(threadId: string): string | undefined;
+  revoke(token: string): void;
+}
+
 /** The composed adapters a harness may be handed. Mirrors `ComposedAdapters`
  *  (the boot gate's view) plus the blob door session artifacts need. */
 export interface HarnessAdapters {
@@ -29,6 +52,8 @@ export interface HarnessAdapters {
   sandbox?: unknown;
   /** `FilesAdapter` — where a harness parks an artifact too big for `turn.state`. */
   files?: unknown;
+  /** The host's MCP door, for a harness whose thinker runs on a machine. */
+  toolDoor?: ToolDoorPort;
 }
 
 const slots = new WeakMap<object, HarnessAdapters>();
