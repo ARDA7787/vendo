@@ -296,3 +296,13 @@ passes for an unnameable reason either.
   vestigial on that path. Worth a follow-up; not this lane's contract.
 - `createVendo({ mcp: true })` warns "zero live host tools" when tools are added via
   `vendo.actions.add()` after construction. Cosmetic, pre-existing.
+- **A file that GROWS past `WALK_SKIP_BYTES` (8 MiB) inside the box is deleted from
+  the store at turn end.** Found while fixing FIX A; PRE-EXISTING (the same hole
+  exists at base) and deliberately not touched here. The path: a file small enough to
+  be checked out lands in `hashes` and not in `oversized`; the box grows it past
+  8 MiB; the box door's whole-tree walk then SKIPS it, so it is absent from the
+  turn-end collect, and `deleteMissing` reads absent-as-deleted. It needs the box to
+  grow one file past 8 MiB, so it is narrow — but it is real data loss and it is the
+  same family as FIX A. The fix is for `oversized` to be updated from what the box
+  reports rather than only from the checkout. Flagging, not fixing: out of this
+  round's scope.
