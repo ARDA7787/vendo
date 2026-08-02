@@ -43,6 +43,7 @@ export {
   // hooks/*
   useActivity,
   useApp,
+  useAppGrants,
   useApps,
   useApprovals,
   useAutomations,

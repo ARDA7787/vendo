@@ -4,6 +4,7 @@ import {
   type AuditEvent,
   type BlobStore,
   type Guard,
+  type Membership,
   type Principal,
   type RecordQuery,
   type RecordStore,
@@ -1131,6 +1132,58 @@ describe("createMcpDoor login federation", () => {
   });
 });
 
+/** F4 (wave-3 independent check) — build contract §9.1/§9.3. `can()` reads the
+ *  caller's orgs from the ctx and NEVER queries them, so a RunContext with no
+ *  `memberships` can never match an `org:`/`team:` grant: over a door without
+ *  this seam a team app shared with you is absent from list and not-found on
+ *  open. The wire, the harness and the automations engine all get the seam; this
+ *  is the fourth door. */
+describe("createMcpDoor asserts the caller's orgs (§9.1)", () => {
+  it("resolves the host's memberships onto every RunContext it mints", async () => {
+    const seen: Array<Parameters<AppsPort["list"]>[0]> = [];
+    const asked: Principal[] = [];
+    const harness = makeHarness({
+      memberships: async (principal) => {
+        asked.push(principal);
+        return [{ org: "maple", display: "Maple Bank", teams: ["support"] }];
+      },
+      apps: {
+        async list(ctx) { seen.push(ctx); return []; },
+        async open() { throw new Error("unused"); },
+        async call() { throw new Error("unused"); },
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const connected = await connect(harness.door, tokens.access_token);
+
+    await connected.client.callTool({ name: "host_lookup", arguments: { query: "x" } });
+    // The apps half of §9.3 goes through the door's own ride-along tool, which
+    // is the verb a shared team app would be missing from.
+    await connected.client.callTool({ name: "vendo_apps_list", arguments: {} });
+
+    // The seam is keyed on the Principal, exactly as §9.1 freezes it.
+    expect(asked[0]).toEqual({ kind: "user", subject: "user_1" });
+    // ...and the answer REACHES the ctx — the assertion that was missing, and
+    // the only thing `can()` ever reads.
+    expect(harness.executions[0]?.ctx.memberships)
+      .toEqual([{ org: "maple", display: "Maple Bank", teams: ["support"] }]);
+    expect(seen[0]?.memberships)
+      .toEqual([{ org: "maple", display: "Maple Bank", teams: ["support"] }]);
+  });
+
+  it("leaves memberships absent when the host asserts none — every unkeyed deployment", async () => {
+    const harness = makeHarness();
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const connected = await connect(harness.door, tokens.access_token);
+
+    await connected.client.callTool({ name: "host_lookup", arguments: { query: "x" } });
+
+    expect(harness.executions[0]?.ctx).not.toHaveProperty("memberships");
+  });
+});
+
 describe("createMcpDoor MCP protocol", () => {
   it("uses the real SDK for descriptors and all in-band outcome mappings", async () => {
     let outcome: ToolOutcome = { status: "ok", output: { answer: 42 } };
@@ -1867,6 +1920,8 @@ interface HarnessOptions {
   oauth?: HostOAuthAdapter;
   /** Override the guard's audit sink (e.g. to simulate a failing store write). */
   report?: Guard["report"];
+  /** Build contract §9.1 — the host's org query, keyed on Principal. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -1907,6 +1962,7 @@ function makeHarness(options: HarnessOptions = {}) {
     ...(options.remoteAs === undefined ? {} : { remoteAs: options.remoteAs }),
     ...(options.federation === undefined ? {} : { federation: options.federation }),
     ...(options.theme === undefined ? {} : { theme: options.theme }),
+    ...(options.memberships === undefined ? {} : { memberships: options.memberships }),
     oauth: options.oauth ?? {
       async authorize(_req, ctx) {
         authorizeContexts.push(ctx);

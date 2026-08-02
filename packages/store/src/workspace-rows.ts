@@ -1,6 +1,6 @@
 import { VendoError, type FilesAdapter, type IsoDateTime } from "@vendoai/core";
 import type { Db } from "./db.js";
-import { iso, text } from "./helpers/utils.js";
+import { escapeLike, iso, text } from "./helpers/utils.js";
 
 /** Build contract §3.3 — inline in `content` up to this size; past it the row
     carries a `blob_ref` into the files adapter instead. */
@@ -8,6 +8,24 @@ export const WORKSPACE_INLINE_MAX_BYTES = 65_536;
 
 /** Build contract §3.3 — retention per path, same as app history. */
 export const WORKSPACE_HISTORY_LIMIT = 50;
+
+/** Build contract §9.7 — which mount holds an app's documents: a person's
+    `/user`, or an org's `/orgs/<org>`. Owner and path prefix always travel
+    together, so naming the mount is the whole address. */
+export type AppMount =
+  | { kind: "user"; subject: string }
+  | { kind: "org"; org: string };
+
+const mountOwner = (mount: AppMount): string =>
+  mount.kind === "user" ? mount.subject : mount.org;
+
+/** The app's own root path in a mount, with NO trailing slash: the subtree
+    hangs off it, and it is itself a path a row can sit at. */
+const appRoot = (mount: AppMount, appId: string): string =>
+  mount.kind === "user" ? `/user/apps/${appId}` : `/orgs/${mount.org}/apps/${appId}`;
+
+/** The two tables an app's documents live in; both move together. */
+const WORKSPACE_TABLES = ["vendo_workspace_files", "vendo_workspace_history"] as const;
 
 /** One file's metadata. Content is fetched separately (it may live in a blob). */
 export interface WorkspaceFileMeta {
@@ -123,12 +141,34 @@ export interface WorkspaceRows {
     owner: string,
     prepared: PreparedWrite,
     intent?: string,
-  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime }>;
+    /** Build contract §9.7 — `/orgs` commits are STRICT compare-and-swap: one
+        attempt, no re-aim. A lost swap comes back `conflict: true` (and its
+        blob is released) so the façade can answer the frozen conflict branch
+        instead of overwriting a colleague's edit. */
+    options?: {
+      strict?: boolean;
+      /** The revision this turn CHECKED OUT (contract §3.5) — null when the
+          file did not exist then. Strict mounts swap against this, not against
+          whatever the head happens to be at commit time, or a commit would
+          quietly overwrite an edit that landed mid-turn. */
+      expectedRevision?: number | null;
+    },
+  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime; conflict?: true }>;
   /** Drop a prepared write that will never land, so its blob is not orphaned. */
   discard(prepared: PreparedWrite): Promise<void>;
   /** Deleting records the content it removed (history is append-only, §3.3), so
       `undo` can bring the file back. Returns false if there was nothing there. */
   remove(owner: string, path: string, intent?: string): Promise<boolean>;
+  /** Build contract §9.5 — promote's workspace half: move one app's documents
+      between mounts (`/user/apps/<id>/**` owned by a person and
+      `/orgs/<org>/apps/<id>/**` owned by the org). Owner AND path change
+      together, because owner derivation is a pure function of the path (§9.7);
+      history moves with the files, or undo would walk into unreachable rows.
+      Both directions, so the umbrella's promote can put the documents back
+      when the row flip that follows them fails. A destination that already
+      holds these paths is refused BEFORE anything moves. Returns how many file
+      rows moved. */
+  moveApp(appId: string, from: AppMount, to: AppMount): Promise<number>;
   history(owner: string, path: string): Promise<WorkspaceHistoryEntry[]>;
   /** Walks history backwards: restores the newest superseded revision and
       consumes it, so a second call walks one step further back.
@@ -297,10 +337,28 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
   const landRow = async (
     owner: string,
     initial: PreparedWrite,
-    options: { intent?: string; recordHistory: boolean },
-  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime }> => {
+    options: {
+      intent?: string;
+      recordHistory: boolean;
+      strict?: boolean;
+      expectedRevision?: number | null;
+    },
+  ): Promise<{ landed: boolean; revision: number; updatedAt: IsoDateTime; conflict?: true }> => {
     let prepared = initial;
-    for (let attempt = 0; attempt < SWAP_ATTEMPTS; attempt += 1) {
+    if (options.strict === true
+      && (prepared.prior?.revision ?? null) !== (options.expectedRevision ?? null)) {
+      // The head moved between checkout and commit: the base this write was
+      // built on is gone, so the swap is refused before it is attempted.
+      await dropBlob(prepared.stored);
+      return {
+        landed: false,
+        revision: prepared.prior?.revision ?? 0,
+        updatedAt: prepared.prior?.updatedAt ?? new Date().toISOString(),
+        conflict: true,
+      };
+    }
+    const attempts = options.strict === true ? 1 : SWAP_ATTEMPTS;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const now = new Date().toISOString();
       if (await swapRow(owner, prepared, options, now)) {
         // Only AFTER the swap wins: with no history row (recordHistory:false, the
@@ -326,6 +384,18 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
           await dropBlob(prepared.stored);
           return { landed: false, revision: head.revision, updatedAt: head.updatedAt };
         }
+      }
+      if (options.strict === true) {
+        // §9.7 — strict mounts do not re-aim. Release the blob this write
+        // placed (nothing points at it) and report the loss; the harness
+        // re-reads the new head and re-applies.
+        await dropBlob(prepared.stored);
+        return {
+          landed: false,
+          revision: head?.revision ?? prepared.revision,
+          updatedAt: head?.updatedAt ?? new Date().toISOString(),
+          conflict: true,
+        };
       }
       prepared = {
         ...prepared,
@@ -379,10 +449,12 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
       };
     },
 
-    async land(owner, prepared, intent) {
+    async land(owner, prepared, intent, options) {
       return await landRow(owner, prepared, {
         ...(intent === undefined ? {} : { intent }),
         recordHistory: true,
+        ...(options?.strict === true ? { strict: true } : {}),
+        ...(options?.expectedRevision === undefined ? {} : { expectedRevision: options.expectedRevision }),
       });
     },
 
@@ -400,6 +472,50 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
       await db.query("DELETE FROM vendo_workspace_files WHERE path = $1 AND owner = $2", [path, owner]);
       await trim(owner, path);
       return true;
+    },
+
+    async moveApp(appId, from, to) {
+      const before = appRoot(from, appId);
+      const after = appRoot(to, appId);
+      // TWO anchors per mount, exactly as erase.byApp matches: the subtree, and
+      // the app's own root row at exactly `…/apps/<appId>` — the path core's
+      // `appOfOrgPath` says the app's grants govern, which a slash-suffixed LIKE
+      // never matched, so a promote left it behind in the promoter's `/user`.
+      const anchored = `(path LIKE $2 ESCAPE '\\' OR path = $3)`;
+      const subtree = `${escapeLike(before)}/%`;
+      // The destination is checked FIRST, across both tables: `vendo_workspace_files`
+      // is keyed (path, owner), so a collision would fail the UPDATE mid-move and
+      // strand half the app. Refuse in the caller's own words instead — a promote
+      // is all-or-nothing (§9.5).
+      for (const table of WORKSPACE_TABLES) {
+        const clash = await db.query(
+          `SELECT 1 FROM ${table} WHERE owner = $1 AND ${anchored} LIMIT 1`,
+          [mountOwner(to), `${escapeLike(after)}/%`, after],
+        );
+        if (clash.rows.length > 0) {
+          throw new VendoError(
+            "conflict",
+            `this app already has files where it would be moved to, so nothing was moved`,
+            { appId, path: after },
+          );
+        }
+      }
+      let moved = 0;
+      for (const table of WORKSPACE_TABLES) {
+        // The rewrite replaces exactly the leading `before` root and keeps the
+        // rest of the path verbatim, so a path that merely CONTAINS the app id
+        // deeper down is untouched — and the root row, whose remainder is the
+        // empty string, lands at exactly `after`.
+        const result = await db.query(
+          `UPDATE ${table}
+              SET owner = $4, path = $5 || substring(path FROM ${before.length + 1})
+            WHERE owner = $1 AND ${anchored}
+            RETURNING 1`,
+          [mountOwner(from), subtree, before, mountOwner(to), after],
+        );
+        if (table === "vendo_workspace_files") moved = result.rows.length;
+      }
+      return moved;
     },
 
     async history(owner, path) {

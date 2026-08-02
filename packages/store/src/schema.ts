@@ -36,8 +36,13 @@ import type { Db } from "./db-postgres.js";
         correct, keyed per (run, turn, tool, input, ordinal) and subject-scoped
         so it joins the erase cascade.
     Same load-bearing bump as v5 — the DDL loop only runs while
-    version < SCHEMA_VERSION. */
-export const SCHEMA_VERSION = 6;
+    version < SCHEMA_VERSION.
+
+    v7 (build contract §9.2, wave 3) adds `vendo_app_grants`: app → principal →
+    level, the ONLY multi-party rows Vendo stores. Memberships are asserted per
+    request by the host's own identity system and are never persisted (§9.1),
+    so this one table is the whole sharing model. Same load-bearing bump. */
+export const SCHEMA_VERSION = 7;
 
 /** 02-store §2 */
 export const DDL = [
@@ -151,12 +156,13 @@ export const DDL = [
   )`,
   "CREATE INDEX IF NOT EXISTS vendo_knowledge_chunks_refs_idx ON vendo_knowledge_chunks USING GIN (refs jsonb_path_ops)",
   // Build contract §3.3 (v6): the workspace. One row per file, keyed
-  // (path, owner) — `owner` is the subject for /user/** paths and the reserved
-  // host subject for the read-only /host/** mounts. Content is inline up to
-  // WORKSPACE_INLINE_MAX_BYTES; past it (or when the bytes are not text) the
+  // (path, owner). `owner` is a pure function of the path (§9.7): the subject
+  // for `/user/**`, the org id for `/orgs/<orgId>/**`. (`/host/**` is a
+  // per-turn projection the caller supplies, never rows.) Content is inline up
+  // to WORKSPACE_INLINE_MAX_BYTES; past it (or when the bytes are not text) the
   // row carries a `blob_ref` into the files adapter instead. `revision` is the
-  // per-file counter the /orgs compare-and-swap will arm in wave 3 — it ships
-  // now so the table never migrates for it.
+  // per-file counter the /orgs compare-and-swap arms (wave 3) — it shipped in
+  // v6 so the table never had to migrate for it.
   `CREATE TABLE IF NOT EXISTS vendo_workspace_files (
     path text NOT NULL, owner text NOT NULL, content text, blob_ref text,
     bytes integer NOT NULL, revision integer NOT NULL DEFAULT 1,
@@ -173,6 +179,24 @@ export const DDL = [
     content text, blob_ref text, intent text, at timestamptz NOT NULL DEFAULT now()
   )`,
   "CREATE INDEX IF NOT EXISTS vendo_workspace_history_path_idx ON vendo_workspace_history (path, owner, revision DESC)",
+  // Build contract §9.2 (v7): app-access grants. `principal` is one string in
+  // the frozen encoding — `user:<subject>` · `team:<orgId>/<teamId>` ·
+  // `org:<orgId>` — matched against the memberships the host ASSERTS per
+  // request; nothing about the org chart is stored here. One row per
+  // (app, principal): re-granting updates `level` in place.
+  `CREATE TABLE IF NOT EXISTS vendo_app_grants (
+    id text PRIMARY KEY, app_id text NOT NULL, org_id text NOT NULL,
+    principal text NOT NULL, level text NOT NULL, created_by text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (app_id, principal)
+  )`,
+  "CREATE INDEX IF NOT EXISTS vendo_app_grants_app_idx ON vendo_app_grants (app_id)",
+  // The other leg of §9.2's two queries: `apps.list` asks "which apps does THIS
+  // principal reach?" once per encoding the caller satisfies (user, each org,
+  // each team). Without this index every one of those is a seq scan of the whole
+  // grant table on the hot list path — the same order-of-magnitude regression
+  // the perf gate exists to catch.
+  "CREATE INDEX IF NOT EXISTS vendo_app_grants_principal_idx ON vendo_app_grants (principal)",
 ] as const;
 
 // Additive columns stay compatible with same-version development databases (02 §2

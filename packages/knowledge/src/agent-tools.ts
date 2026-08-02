@@ -264,7 +264,7 @@ function isWeak(hits: KnowledgeHit[], threshold: number): boolean {
     the chat search reuses its verdict instead of paying a second model call
     to re-read the same text. */
 const hitSetKey = (hits: KnowledgeHit[]): string =>
-  hits.map((hit) => `${hit.ref.docId} ${hit.ref.chunkId ?? ""}`).join("");
+  hits.map((hit) => `${hit.ref.docId}\0${hit.ref.chunkId ?? ""}`).join("\u0001");
 
 /** What one verification attempt produced (see adjudicate). */
 interface Adjudication {

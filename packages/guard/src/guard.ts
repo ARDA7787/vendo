@@ -38,6 +38,7 @@ import type {
   CreateGuardConfig,
   Judge,
   PolicyConfigObject,
+  PolicyRule,
   VendoGuard,
 } from "./types.js";
 
@@ -55,6 +56,10 @@ const AUDIT_COLLECTION = "vendo_audit";
  *  a re-run of a run that already sent the payment must not send it again. */
 const EFFECTS_COLLECTION = "vendo_effects";
 const JUDGE_TIMEOUT_MS = 15_000;
+/** Build contract §9.10 — the one rank the org clamp compares on: an org rule
+ *  may move a decision UP this order and never down. */
+const strictness = (action: PolicyRule["action"]): number =>
+  action === "block" ? 2 : action === "ask" ? 1 : 0;
 
 interface ApprovalRecordData {
   request: ApprovalRequest;
@@ -688,6 +693,50 @@ class GuardImplementation implements VendoGuard {
       draft = { action: "ask", decidedBy: "default" };
     }
 
+    // Build contract §9.10 — the org-admin layer, evaluated here and nowhere
+    // else: a strictness CLAMP between host policy and the user's own
+    // approvals. It deliberately binds grant-authorized drafts (an admin
+    // tightening their members' agents is precisely a rule over what those
+    // members already approved for themselves), and it can only move a decision
+    // up the rank run < ask < block — which is what makes "host policy always
+    // wins, org policy tightens never loosens" structural rather than a promise.
+    // THE LAW's call-time gate stays downstream of it, untouched.
+    //
+    // ONE carve-out, and it is the same one THE LAW makes below (`replayApproved`
+    // in `bind`): a run/"grant" with NO grantId is a one-time CONSUMED approval —
+    // a human just tapped this exact call with these exact arguments, moments
+    // ago, which is the very thing an org "ask" asked for. Re-clamping it made
+    // "ask" unsatisfiable: park → approve → park, forever, with the call never
+    // getting through. A STANDING grant (grantId present) stays bound on
+    // purpose: an org ask over a remembered grant means confirm-every-time, and
+    // that is the point of the layer.
+    //
+    // Stated rather than discovered: the carve-out skips the whole org lookup,
+    // so it skips `block` too — an org rule that FORBIDS this call does not stop
+    // a consumed approval for it, even though nothing about `block` is
+    // unsatisfiable. That is the trade, and it is bounded to one already-tapped
+    // call: the alternative is asking the guard to tell `ask` and `block` apart
+    // before it has read the rule, and any such split re-opens the park →
+    // approve → park loop for `ask`.
+    //
+    // Known and accepted: an org rule adopted BETWEEN a park and its approval is
+    // not applied to that one call — the consumed replay is already authorized by
+    // the human who tapped it. That is the same time-of-check window host policy
+    // has always had for approved replays, not a new one, and closing it would
+    // re-open the unsatisfiable-ask hole above.
+    const consumedApproval = draft.action === "run"
+      && draft.decidedBy === "grant" && draft.grantId === undefined;
+    const orgRule = consumedApproval
+      ? undefined
+      : await this.#orgRule(call, effectiveDescriptor, ctx);
+    if (orgRule !== undefined && strictness(orgRule.action) > strictness(draft.action)) {
+      // Only "ask" and "block" can outrank a draft — "run" is the floor — so the
+      // else arm here is reached exactly when the org rule says ask.
+      draft = orgRule.action === "block"
+        ? { action: "block", reason: orgRule.note ?? "blocked by org policy", decidedBy: "org" }
+        : { action: "ask", decidedBy: "org" };
+    }
+
     if (draft.action === "run") {
       const write = effectiveDescriptor.risk === "write" || effectiveDescriptor.risk === "destructive";
       const runKey = ctx.trigger?.runId ?? ctx.sessionId;
@@ -774,6 +823,48 @@ class GuardImplementation implements VendoGuard {
       descriptor: effectiveDescriptor,
       ...(metadata.rationale === undefined ? {} : { rationale: metadata.rationale }),
     };
+  }
+
+  /** The STRICTEST org rule matching this call, or undefined when no org layer
+   *  is configured, none matches, or the resolver could not answer.
+   *
+   *  A throw means the org's `policy.json` is unreadable or malformed. That
+   *  applies NO org rules — the actions registry's posture (`registry.ts`): a
+   *  layer that cannot be understood refuses to guess rather than silently
+   *  LOOSEN what it was meant to tighten — and it lands on the audit trail, so
+   *  the admin whose file is broken can see that their policy is not in force. */
+  async #orgRule(
+    call: ToolCall,
+    descriptor: ToolDescriptor,
+    ctx: RunContext,
+  ): Promise<PolicyRule | undefined> {
+    const resolve = this.#config.orgPolicy;
+    if (resolve === undefined) return undefined;
+    let rules: PolicyRule[];
+    try {
+      rules = await resolve(ctx);
+    } catch (error) {
+      console.warn(
+        `[vendo] guard: org policy could not be resolved (${errorMessage(error)}) — no org rules were `
+        + `applied to ${call.tool}. Host policy and user approvals still decided it.`,
+      );
+      await this.report(
+        eventFromContext(ctx, {
+          kind: "policy-decision",
+          tool: call.tool,
+          detail: { reason: "org-policy-unavailable", message: errorMessage(error) },
+        }),
+      );
+      return undefined;
+    }
+    let strictest: PolicyRule | undefined;
+    for (const rule of rules) {
+      if (!ruleMatches(rule, call.tool, descriptor.risk, ctx.venue, ctx.presence)) continue;
+      if (strictest === undefined || strictness(rule.action) > strictness(strictest.action)) {
+        strictest = rule;
+      }
+    }
+    return strictest;
   }
 
   async #effectiveDescriptor(

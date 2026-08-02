@@ -1,5 +1,6 @@
 import {
   TOOL_NAME_PATTERN,
+  VENDO_APP_FORMAT,
   VENDO_TOOL_TITLES,
   toolDescriptorSchema,
   type RunContext,
@@ -15,6 +16,7 @@ import {
   seedAppRow,
   scriptedLanguageModel,
 } from "./testing/index.js";
+import { seedGrantRows, storeAccessFixture } from "./testing/app-access-fixture.js";
 
 const ctx: RunContext = {
   principal: { kind: "user", subject: "user_tools" },
@@ -304,6 +306,62 @@ describe("apps agent tools", () => {
     })).resolves.toEqual({
       status: "error",
       error: { code: "not-found", message: `app not found: ${created.id}` },
+    });
+  });
+});
+
+describe("§9.4 — a refused EDIT hands the model the fork offer, not the raw code", () => {
+  // The tool result was `{code:"forbidden", message:"editor access is required
+  // for app_7c2f…"}` — an app id and a level name, which the model then relays
+  // to a person. §9.4 invented `forbidden` for exactly this case BECAUSE it is
+  // answerable: the caller provably sees the app, so "you can't" comes with
+  // "…but here's what I can do".
+  const setup = async (): Promise<{ tools: ToolRegistry; appId: string }> => {
+    const store = memoryStore();
+    const runtime = createApps({
+      store,
+      guard: guardFixture(),
+      tools: hostTools,
+      catalog: [],
+      model: scriptedLanguageModel(generated),
+      appAccess: storeAccessFixture(store),
+    });
+    // Held by the org, with this caller a VIEWER — the one shape `forbidden`
+    // is ever thrown for.
+    await seedAppRow(store, { format: VENDO_APP_FORMAT, id: "app_teamdash", name: "Team dashboard" }, "acme");
+    await seedGrantRows(store, "app_teamdash", { [`user:${ctx.principal.subject}`]: "viewer" });
+    return { tools: runtime.agentTools(), appId: "app_teamdash" };
+  };
+
+  it("says what it can do instead, and names neither the app id nor the level", async () => {
+    const { tools, appId } = await setup();
+    const outcome = await tools.execute({
+      id: "call_denied",
+      tool: "vendo_apps_edit",
+      args: { appId, instruction: "add last quarter" },
+    }, { ...ctx, memberships: [{ org: "acme" }] });
+
+    expect(outcome.status).toBe("error");
+    const error = (outcome as { error: { code: string; message: string } }).error;
+    // The CODE is machine-facing and stays exactly as the contract froze it.
+    expect(error.code).toBe("forbidden");
+    // The MESSAGE is what reaches a person through the model.
+    expect(error.message).not.toContain(appId);
+    expect(error.message).not.toMatch(/editor|access is required/i);
+    expect(error.message).toMatch(/can’t change the team’s copy/i);
+    expect(error.message).toMatch(/own copy/i);
+  });
+
+  it("leaves every other refusal exactly as it was", async () => {
+    const { tools } = await setup();
+    const outcome = await tools.execute({
+      id: "call_missing",
+      tool: "vendo_apps_edit",
+      args: { appId: "app_absent", instruction: "anything" },
+    }, ctx);
+    expect(outcome).toEqual({
+      status: "error",
+      error: { code: "not-found", message: "app not found: app_absent" },
     });
   });
 });

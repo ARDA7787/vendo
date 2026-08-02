@@ -20,7 +20,7 @@ import {
 } from "@vendoai/store";
 import { resolveMapleSession } from "@/vendo/auth";
 import { harnessProofEnabled } from "@/vendo/harness-proof";
-import { vendo } from "@/vendo/server";
+import { mapleAuth, vendo } from "@/vendo/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,14 +38,18 @@ export async function GET(request: Request): Promise<Response> {
   const store = vendo.store;
   const workspaces = workspaceStore(store);
 
+  // Build contract §9.7 — undo/history address an OWNER derived from the path,
+  // so they take the caller: who they are plus the orgs Maple asserts for them.
+  const caller = { principal, memberships: await mapleAuth.memberships!(principal) };
+
   const undoPath = url.searchParams.get("undo");
   if (undoPath !== null) {
-    return Response.json({ undo: await workspaces.undo(principal, undoPath) });
+    return Response.json({ undo: await workspaces.undo(caller, undoPath) });
   }
 
   const historyPath = url.searchParams.get("history");
   if (historyPath !== null) {
-    return Response.json({ history: await workspaces.history(principal, historyPath) });
+    return Response.json({ history: await workspaces.history(caller, historyPath) });
   }
 
   const readPath = url.searchParams.get("read");

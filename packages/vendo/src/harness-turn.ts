@@ -18,6 +18,7 @@ import {
   isUnattended,
   type FilesAdapter,
   type Harness,
+  type Membership,
   type PackSkill,
   type Principal,
   type ResolvedModels,
@@ -92,6 +93,11 @@ export interface HarnessTurnsConfig {
   bridge?: (ctx: RunContext, threadId: ThreadId) => HarnessRuntimeDeps["bridge"];
   /** Test seam only; production uses the frozen APPROVAL_WAIT_MS. */
   approvalWaitMs?: number;
+  /** Build contract §9.1 — the host's own org query, keyed on the Principal so
+   *  the workspace door can resolve it with no request in hand. It decides the
+   *  turn's `/orgs` mount set (§9.7); unset ⇒ no org mounts, exactly today's
+   *  single-player façade. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
 }
 
 export interface HarnessTurns {
@@ -104,8 +110,13 @@ export interface HarnessTurns {
     signal?: AbortSignal;
   }): Promise<Response>;
   /** The workspace as one principal sees it this turn. Exposed for the host and
-   *  for the undo/history doors; `open` builds a fresh path index per call. */
-  workspace(principal: Principal, opts?: { host?: Record<string, string> }): Promise<WorkspaceFs>;
+   *  for the undo/history doors; `open` builds a fresh path index per call.
+   *  The `/orgs` mounts (§9.7) come from the host's memberships seam, resolved
+   *  here — a caller may override with `memberships` when it already has them. */
+  workspace(
+    principal: Principal,
+    opts?: { host?: Record<string, string>; memberships?: Membership[] },
+  ): Promise<WorkspaceFs>;
 }
 
 export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
@@ -261,8 +272,16 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
   };
 
   return {
-    workspace: (principal, opts) =>
-      sqlDoors().workspaces.open(principal, { host: opts?.host ?? hostProjection() }),
+    async workspace(principal, opts) {
+      // §9.7 — the mount set is the host's ASSERTIONS for this principal. The
+      // seam is keyed on the principal precisely so this door (which has no
+      // request) can ask the same question the wire asks per request.
+      const asserted = opts?.memberships ?? await config.memberships?.(principal);
+      return await sqlDoors().workspaces.open(principal, {
+        host: opts?.host ?? hostProjection(),
+        ...(asserted === undefined ? {} : { memberships: asserted }),
+      });
+    },
 
     async stream(input) {
       validateMessage(input?.message);
@@ -295,7 +314,12 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
       await threads.persist(thread, [input.message]);
 
       const { transcript, workspaces, harnessState } = sqlDoors();
-      const workspace = await workspaces.open(input.ctx.principal, { host: hostProjection() });
+      // §9.7 — the turn's façade mounts every org the wire asserted for this
+      // request, so an agent turn can read and write the team's files at all.
+      const workspace = await workspaces.open(input.ctx.principal, {
+        host: hostProjection(),
+        ...(input.ctx.memberships === undefined ? {} : { memberships: input.ctx.memberships }),
+      });
       const runtime = createHarnessRuntime({
         tools: config.tools,
         guard: config.guard,

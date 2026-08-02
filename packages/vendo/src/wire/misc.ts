@@ -180,10 +180,19 @@ export const activityRoutes: RouteEntry[] = [
 
 export const statusRoutes: RouteEntry[] = [
   route("GET", "/status", async ({ deps, context }) => {
-    await context("chat");
+    const ctx = await context("chat");
     return json({
       posture: deps.guard.status().posture,
       version: VERSION,
+      // Build contract §9.1 — the orgs the host ASSERTED for this caller, so
+      // the Share dialog can offer them by name. Nothing is stored: this is
+      // the same per-request answer `can()` just used, echoed to the surface.
+      ...(ctx.memberships === undefined ? {} : { memberships: ctx.memberships }),
+      // Build contract §9.1 companion — can the HOST name a person from what
+      // someone types? Vendo holds no directory, so with the `resolvePerson`
+      // seam unset the Share dialog must not offer to share with one person at
+      // all: it used to, and encoded whatever was typed as the subject.
+      ...(deps.resolvePerson === undefined ? {} : { namesPeople: true }),
       blocks: {
         store: true,
         agent: true,

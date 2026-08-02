@@ -21,6 +21,16 @@ export {
 } from "./sessions.js";
 export { envSecrets, secretStore, storeSecrets } from "./secrets.js";
 export { appStore, type AppRow } from "./helpers/apps.js";
+// Build contract §9.3 — `can()`, the one permission function every door reaches.
+export {
+  appAccess,
+  parseGrantPrincipal,
+  type AccessLevel,
+  type AppAccess,
+  type AppGrantRecord,
+  type CanThing,
+  type GrantPrincipal,
+} from "./helpers/app-access.js";
 export { threadStore, type AskUserAnswer, type ThreadRow } from "./helpers/threads.js";
 export { threadMessageStore, type ThreadMessageLike } from "./helpers/thread-messages.js";
 export { grantStore } from "./helpers/grants.js";
@@ -38,6 +48,7 @@ export {
   WORKSPACE_INLINE_MAX_BYTES,
   HOST_MOUNT,
   USER_MOUNT,
+  type AppMount,
   type HostProjection,
   type WorkspaceFileMeta,
   type WorkspaceHistoryEntry,

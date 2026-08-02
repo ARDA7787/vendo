@@ -29,6 +29,8 @@ export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai
 export { instant, type InstantHarnessDeps, type InstantHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
 import { warnDeprecatedConfigKeys } from "./config-keys.js";
+import { orgPolicyPath, orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
+import { createPromoteApp } from "./promote-app.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -46,6 +48,8 @@ import {
   type AutomationsEngine,
 } from "@vendoai/automations";
 import {
+  ADOPTION_VENUE_KEY,
+  RESERVED_SUBJECT_PREFIX,
   VendoError,
   descriptorHash,
   vendoThemeSchema,
@@ -81,12 +85,15 @@ import {
 import { createMcpDoor, type AppsPort, type HostOAuthAdapter, type McpDoor } from "@vendoai/mcp";
 import {
   adoptEphemeralSubject,
+  appAccess,
+  appStore,
   createStore,
   envSecrets,
   registerEphemeralSubject,
   storeFiles,
   sweepEphemeralSubjects,
   threadMessageStore,
+  workspaceStore,
   type SubjectMergeReport,
   type VendoStore,
 } from "@vendoai/store";
@@ -226,7 +233,7 @@ import {
   type WireDeps,
 } from "./wire/shared.js";
 import { appRoutes } from "./wire/apps.js";
-import { boxRoutes, fnProxyRoutes } from "./wire/box.js";
+import { boxRoutes, fnProxyRoutes, servedProxyRoutes } from "./wire/box.js";
 import { approvalRoutes, grantRoutes } from "./wire/approvals.js";
 import { automationRoutes, runRoutes } from "./wire/automations.js";
 import { connectionRoutes } from "./wire/connections.js";
@@ -1294,6 +1301,9 @@ const wireRoutes: readonly RouteEntry[] = [
   ...grantRoutes,
   ...orgsRoutes,
   ...fnProxyRoutes,
+  // Build contract §9.8 — ahead of the grouped /apps arm for the same reason
+  // the fn proxy is: /apps/:id/serve/** must resolve here, not fall through it.
+  ...servedProxyRoutes,
   ...appRoutes,
   ...automationRoutes,
   ...runRoutes,
@@ -1431,6 +1441,16 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const resolvePrincipal = config.auth?.principal ?? config.principal ?? (async () => null);
   const actAsSeam = config.auth === undefined ? config.actAs : config.auth.actAs;
   const oauthSeam = config.auth === undefined ? config.oauth : config.auth.oauth;
+  // Build contract §9.1 — the fourth seam. It rides the preset (there is no
+  // per-seam twin: the org query has no meaning without an identity story) and
+  // is handed to the wire, the automations engine, and the schedule engine, so
+  // an attended request and an unattended fire resolve the SAME answer.
+  const membershipsSeam = config.auth?.memberships;
+  // Build contract §9.1 companion — the fifth seam, on the same preset and for
+  // the same reason: Vendo holds no directory, so only the host can turn what
+  // someone typed into the Share dialog into one of its own subjects. Unset, the
+  // dialog does not offer to share with one person at all.
+  const resolvePersonSeam = config.auth?.resolvePerson;
   // 02-store §4 (kill-list B3) — ephemeral session policy. Validated like the
   // agent's context config; defaults are the recommended knobs. The store takes
   // the clock per call (register/sweep), so one time source needs no seam.
@@ -1570,6 +1590,34 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       },
     }),
     ...(config.judge === undefined ? {} : { judge: config.judge }),
+    // Build contract §9.10 — the org-admin layer, composed at the seam like
+    // every other adapter choice: the guard evaluates rules, this reads them.
+    // Callers with no asserted memberships (every unkeyed deployment, and any
+    // request whose host asserted none) resolve to no rules at all.
+    //
+    // A per-ORG failure (unreadable or malformed policy.json) skips that org's
+    // rules and lands on the audit trail, so the admin whose file is broken can
+    // see their policy is not in force. Reported through the guard that is being
+    // constructed here — the callback only ever runs inside a later check, which
+    // is the same late-binding `resolveRisk` above uses.
+    orgPolicy: orgPolicyResolver(workspacePolicySource(store), async (org, reason) => {
+      console.warn(
+        `[vendo] org policy for "${org}" was not applied: ${reason} `
+        + `(its rules live at ${orgPolicyPath(org)}) — until then this org's rules are not in force.`,
+      );
+      await guard.report({
+        id: `aud_${globalThis.crypto.randomUUID()}`,
+        at: new Date().toISOString(),
+        kind: "policy-decision",
+        // A broken org file is nobody's personal event, so it is audited under
+        // the runtime's own reserved namespace (`vendo:`, block-actions §C)
+        // rather than pinned to whichever member happened to trigger the read.
+        principal: { kind: "user", subject: `${RESERVED_SUBJECT_PREFIX}org-policy:${org}` },
+        venue: "chat",
+        presence: "away",
+        detail: { reason: "org-policy-unavailable", org, message: reason },
+      });
+    }),
   });
   let presentCredentialsWarningEmitted = false;
   const warnPresentCredentialsNotForwarded = async (event: {
@@ -1997,11 +2045,30 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // environment — VENDO_API_KEY fills its CloudAppsClient slot HERE, at the
   // composition seam; unfilled, share/publish refuse with cloud-required.
   const appsCloud = cloudKeyOptions();
+  // ADAPTER RULE, multi-party seam (build contract §9.6): sharing is
+  // multi-party coordination, so the WRITES that create it need a key —
+  // filled HERE, from the same one read every other Cloud default uses. The
+  // enforcement half below (`appAccess`) is OSS and never key-conditional:
+  // with no key no grant row can exist, so `can()` degenerates to ownership.
+  const multiParty = appsCloud !== undefined;
+  // §9.5's promote crosses subjects and moves workspace rows — raw-row work
+  // that needs a local engine handle. A Cloud-hosted store answers through the
+  // wire door instead and has none, so the seam stays unset there and promote
+  // refuses loudly rather than half-moving an app. Resolved on FIRST PROMOTE,
+  // never at compose: a host-passed store that is not a local engine handle
+  // must not take down createVendo for a verb it may never call.
+  const promoteRows = isHostedStore(store) ? undefined : {
+    get rows() { return appStore(store); },
+    get workspace() { return workspaceStore(store, { files }); },
+  };
   // Wave 9 — the arming seam for ladder-authored automations: filled with the
   // automations engine composed BELOW (arming only happens inside requests,
   // which run after createVendo returns, so the closure reference is safe —
   // same pattern as the connections loadout seed).
   let automationsForArming: AutomationsEngine | undefined;
+  // Build contract §9.3 — ONE `can()` over the host's store, held by the apps
+  // runtime and the automations engine alike, so one rule answers both sides.
+  const access = appAccess(store);
   const apps = createApps({
     store,
     guard,
@@ -2009,6 +2076,72 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     model: inference.agent.model,
     catalog,
     pinBaselines,
+    // Build contract §9 — the multi-party half. `can()` over whatever store the
+    // host wired (OSS, unconditional); `multiParty` is the Cloud gate on the
+    // three writes that create sharing; `promoteApp` is the store's sanctioned
+    // cross-subject door; `memberships` lets an unattended schedule fire assert
+    // the same orgs a request does.
+    appAccess: access,
+    multiParty,
+    // §9.5's order and its rollback rule live in promote-app.ts, where the
+    // failure interleavings are testable; the getters keep `dbFor` lazy.
+    ...(promoteRows === undefined ? {} : { promoteApp: createPromoteApp(promoteRows) }),
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+    // Build contract §9.9 — sponsorship's two halves, composed HERE because
+    // they cross the apps↔automations line and neither block may reach into
+    // the other. Both ride the same late binding as `armAutomation` above
+    // (automations is constructed after apps; every call happens later).
+    //
+    // The edit hook is what makes "anyone else editing invalidates the
+    // sponsorship" true: the apps runtime knows who edited, the automations
+    // engine knows who sponsors.
+    //
+    // Why these two seams NO-OP on an unset engine while `armAutomation` below
+    // THROWS (F26 — deliberate, not an oversight): all three are unreachable
+    // today, because nothing in this composition can skip constructing the
+    // engine. If the invariant ever broke, the difference is what the caller
+    // asked for. Arming is a request to CHANGE something; silently not arming an
+    // automation the person just authored is the exact "quietly dropped work"
+    // failure, so it refuses out loud. These two are enrichments of somebody
+    // else's write and read: an app open and a landed edit must not fail because
+    // the automations half is missing — there is simply no card and no
+    // invalidation to report.
+    onDocumentEdit: async (previous, next, editor) =>
+      automationsForArming?.onDocumentEdit(previous, next, editor),
+    // The adoption card is additive venue state on the open payload, under the
+    // one key the tree renderer reads. Without this line the card exists and
+    // nothing can ever show it, so a stopped automation would wait forever.
+    venueState: async (app, ctx) => {
+      // F24 — an app with no trigger has never been an automation, so it has no
+      // sponsorship and nothing to adopt. Answering that from the document the
+      // opener already holds keeps the adoption lookup's two store reads off
+      // EVERY app open in every deployment, including the single-player ones
+      // that have no automations at all.
+      if (app.trigger === undefined) return undefined;
+      const card = await automationsForArming?.adoption(app.id, ctx);
+      return card === undefined ? undefined : { [ADOPTION_VENUE_KEY]: card };
+    },
+    // Build contract §9.8 — where the authenticated served-app proxy lives. The
+    // wire owns its base path, so it is filled here and nowhere else; the apps
+    // block never invents a URL for a door it does not mount.
+    //
+    // ABSOLUTE, like the personal branch's provider URL: an MCP client (or
+    // anything not already sitting on the host origin) cannot resolve a relative
+    // path. Serving an app means a machine, and machine provisioning already
+    // requires VENDO_BASE_URL (see machineEnv), so the origin is always there —
+    // and when it is not, the refusal names it rather than handing out a URL
+    // nobody can follow.
+    servedProxyPath: (appId: AppId) => {
+      if (configuredBaseUrl === undefined) {
+        throw new VendoError(
+          "validation",
+          "serving a team app needs VENDO_BASE_URL — the app's URL has to be absolute for anything "
+          + "that is not already on this origin (an MCP client, a native app). Set it to this "
+          + "deployment's public origin and restart.",
+        );
+      }
+      return `${configuredBaseUrl.replace(/\/+$/, "")}${BASE_PATH}/apps/${encodeURIComponent(appId)}/serve/`;
+    },
     // execution-v2 Waves 4+9 — the layer-2/3 experimental opt-ins, host-config
     // only (never an env var: enabling machine-backed execution or a surface
     // that runs generated web apps is a deliberate per-project decision).
@@ -2298,6 +2431,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     capabilityMiss,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
+    // Build contract §9.1/§9.7 — the same host org query the wire resolves per
+    // request, so a harness turn's façade mounts the team's files too.
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
   });
   /**
    * THE harness door — one object, served two ways.
@@ -2474,6 +2610,15 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     guard,
     store,
     runner: agent.asRunner(),
+    // Build contract §9.3 — the fire-time sponsorship gate and the adoption
+    // card ask `can(editor)` through this seam. Unwired it would silently fall
+    // back to ownership and an editor-adopted automation would stop dead at its
+    // next fire.
+    appAccess: access,
+    // Build contract §9.1 — an away run asserts the owner's orgs the same way a
+    // request does; the callback is host server code in this deployment, so the
+    // absence of a session is not in its way.
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     ...(hostedStoreComposed ? { localTriggerKinds: new Set<"schedule" | "external">() } : {}),
   });
   automationsForArming = automations;
@@ -2558,6 +2703,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       // layering keeps mcp off actions, so the file stays the umbrella's to
       // read and the wire stays the door's to shape.
       menuTools: () => actions.surfaceMenu("mcp"),
+      // Build contract §9.1 — the FOURTH door gets the same seam as the wire,
+      // the harness and the automations engine. `can()` reads the caller's orgs
+      // off the ctx and never queries them (§9.3), so without this an
+      // `org:`/`team:` grant can never match here: a team app shared with the
+      // caller would be absent from list and not-found on open, over MCP only.
+      ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
       mount: MCP_MOUNT,
       ...(doorBaseUrl === undefined ? {} : { baseUrl: doorBaseUrl }),
       // 10-mcp §3.1/§3.2 — broker-fronted compositions: trust the external
@@ -2596,6 +2747,8 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const runtimeCapture = development ? createRuntimeCapture(developmentPaths) : null;
   const handler = createWireHandler({
     principal: resolvePrincipal,
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+    ...(resolvePersonSeam === undefined ? {} : { resolvePerson: resolvePersonSeam }),
     ready,
     trustedBaseIsHttps,
     get sessionId() { return sessionId(); },

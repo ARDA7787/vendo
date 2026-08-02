@@ -27,6 +27,7 @@ const CONTRACT_COLUMNS: Record<string, string[]> = {
   vendo_knowledge_chunks: ["id", "data", "refs", "created_at", "updated_at"],
   vendo_workspace_files: ["path", "owner", "content", "blob_ref", "bytes", "revision", "created_at", "updated_at"],
   vendo_workspace_history: ["id", "path", "owner", "revision", "content", "blob_ref", "intent", "at"],
+  vendo_app_grants: ["id", "app_id", "org_id", "principal", "level", "created_by", "created_at"],
 };
 
 for (const backend of backends()) {
@@ -47,17 +48,17 @@ for (const backend of backends()) {
     it("stores schema_version and a boot_id in vendo_meta", async () => {
       const rows = await made.sql("SELECT key, value FROM vendo_meta ORDER BY key");
       expect(rows).toEqual(expect.arrayContaining([
-        expect.objectContaining({ key: "schema_version", value: 6 }),
+        expect.objectContaining({ key: "schema_version", value: 7 }),
         expect.objectContaining({ key: "boot_id" }),
       ]));
       expect(rows.find((row) => row.key === "boot_id")?.value).toEqual(expect.any(String));
     });
 
-    it("lands a fresh database directly on schema version 6", async () => {
+    it("lands a fresh database directly on schema version 7", async () => {
       // A brand-new DB never runs the v2 backfill's DELETE against real data; it
       // just records the current version. (beforeAll already ran ensureSchema.)
       const version = (await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value;
-      expect(version).toBe(6);
+      expect(version).toBe(7);
     });
 
     it("keeps boot_id stable across a close and reopen", async () => {
@@ -77,7 +78,7 @@ for (const backend of backends()) {
 
       await made.store.ensureSchema();
 
-      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(6);
+      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(7);
       const rows = await made.sql(
         `SELECT table_name FROM information_schema.tables
          WHERE table_schema = 'public' AND table_name IN ('vendo_mcp_clients', 'vendo_mcp_grants')
@@ -101,7 +102,7 @@ for (const backend of backends()) {
 
       await made.store.ensureSchema();
 
-      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(6);
+      expect((await made.sql("SELECT value FROM vendo_meta WHERE key = 'schema_version'"))[0]?.value).toBe(7);
       const survivor = await made.sql(
         "SELECT id FROM vendo_records WHERE collection = 'vendo_state' AND id = 'app_live:subject_live'",
       );
@@ -109,7 +110,7 @@ for (const backend of backends()) {
       await made.sql("DELETE FROM vendo_records WHERE collection = 'vendo_state' AND id = 'app_live:subject_live'");
     });
 
-    it("creates all 20 contract tables with every contracted key column", async () => {
+    it("creates all 21 contract tables with every contracted key column", async () => {
       const rows = await made.sql(
         "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name LIKE 'vendo_%'",
       );
@@ -123,8 +124,9 @@ for (const backend of backends()) {
       // 20 at wave-1 integration: 16 shipped + lane D's vendo_thread_messages
       // and vendo_effects + lane B's vendo_workspace_files and
       // vendo_workspace_history. Each lane asserted 18 counting only its own
-      // pair; the merged v6 carries all four.
-      expect(actual.size).toBe(20);
+      // pair; the merged v6 carries all four. v7 (wave 3, build contract §9.2)
+      // adds vendo_app_grants — the only multi-party rows Vendo stores.
+      expect(actual.size).toBe(21);
       for (const [table, columns] of Object.entries(CONTRACT_COLUMNS)) {
         expect(actual.has(table), table).toBe(true);
         for (const column of columns) expect(actual.get(table)?.has(column), `${table}.${column}`).toBe(true);
@@ -173,6 +175,17 @@ for (const backend of backends()) {
         expect(rows.some((row) => /USING gin \(refs/.test(String(row.indexdef)))).toBe(true);
       });
     }
+
+    it("indexes vendo_app_grants by principal, not only by app", async () => {
+      // The apps runtime runs a PRINCIPAL-ONLY query per encoding on every
+      // apps.list (runtime.ts `grantedRecords`): one per org, one per team, one
+      // for the user. Without this index each of those is a seq scan of every
+      // grant row in the deployment, on the hot list path.
+      const rows = await made.sql(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'vendo_app_grants'",
+      );
+      expect(rows.some((row) => /\(principal\)/.test(String(row.indexdef)))).toBe(true);
+    });
 
     it("rejects a future schema version as a conflict", async () => {
       await made.sql("UPDATE vendo_meta SET value = '999'::jsonb WHERE key = 'schema_version'");

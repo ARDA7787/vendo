@@ -2,7 +2,9 @@ import type { AppsRuntime, AppTokens } from "@vendoai/apps";
 import type { AutomationsEngine } from "@vendoai/automations";
 import {
   VendoError,
+  type Membership,
   type Principal,
+  type ResolvedPerson,
   type RunContext,
   type ToolOutcome,
   type ToolRegistry,
@@ -39,6 +41,8 @@ const STATUS_BY_CODE: Record<VendoErrorCode, number> = {
   validation: 400,
   "not-found": 404,
   blocked: 403,
+  // Build contract §9.4 — the caller sees the thing but may not do this to it.
+  forbidden: 403,
   conflict: 409,
   "cloud-required": 402,
   "sandbox-unavailable": 501,
@@ -47,6 +51,16 @@ const STATUS_BY_CODE: Record<VendoErrorCode, number> = {
 
 export interface WireDeps {
   principal: (req: Request) => Promise<Principal | null>;
+  /** Build contract §9.1 — the host's own org query, resolved once per context
+      resolution in createContextResolver and stashed on the ctx, so every door
+      downstream of one `context()` call reads the same answer. Unset → no orgs
+      asserted → `can()` degenerates to ownership. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
+  /** Build contract §9.1 companion — the host's own directory lookup, behind the
+      owner gate on the Share dialog's door. Takes the ASKER so the host can scope
+      its directory to them. Unset → /status says so and the dialog does not offer
+      to share with one person. */
+  resolvePerson?: (query: string, asker: Principal) => Promise<ResolvedPerson | null>;
   ready: () => Promise<void>;
   /** VENDO_BASE_URL is https → TLS terminates upstream; see secureRequest. */
   trustedBaseIsHttps: boolean;
