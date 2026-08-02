@@ -26,6 +26,11 @@ export { appOfOrgPath, isGrantPrincipal, orgOfPath, parseGrantPrincipal } from "
 const membershipIn = (ctx: RunContext, org: string): Membership | undefined =>
   (ctx.memberships ?? []).find((entry) => entry.org === org);
 
+/** How many grant rows one query reads. Sizing, not a limit — `grantsFor` pages
+    to the end, because a level that stops applying at row 501 is a permission
+    bug that leaves no trace. */
+const GRANT_PAGE_SIZE = 500;
+
 /**
  * Build contract §9.3 — `can()`, one function, three doors (the workspace
  * façade, the wire, and the MCP door all reach it through the apps runtime).
@@ -57,8 +62,24 @@ export function appAccess(store: VendoStore): AppAccess {
     return { ...data, id: record.id, createdAt: record.createdAt };
   };
 
-  const grantsFor = async (appId: AppId): Promise<AppGrantRecord[]> =>
-    (await grants.list({ refs: { app_id: appId }, limit: 500 })).records.map(recordOf);
+  /** EVERY grant on the app, paged. One page (the overwhelming case) is one
+   *  query — the door only returns a cursor when more rows exist — and the
+   *  501st grant resolves like the first, instead of silently granting nothing
+   *  to whoever happened to fall off the end of the page. */
+  const grantsFor = async (appId: AppId): Promise<AppGrantRecord[]> => {
+    const rows: AppGrantRecord[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await grants.list({
+        refs: { app_id: appId },
+        limit: GRANT_PAGE_SIZE,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      rows.push(...page.records.map(recordOf));
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return rows;
+  };
 
   const levelFor = async (ctx: RunContext, appId: AppId): Promise<AccessLevel | null> => {
     const subject = await rowSubject(appId);

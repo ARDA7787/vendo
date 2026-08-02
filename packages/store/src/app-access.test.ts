@@ -129,6 +129,27 @@ for (const backend of backends()) {
         .rejects.toBeInstanceOf(VendoError);
     });
 
+    it("resolves EVERY grant on an app, past the page size", async () => {
+      // One page was all `can()` ever read, so on a heavily shared app the
+      // grants beyond it silently granted nothing: somebody's access vanished
+      // with no revoke, no audit row, and nothing to see in the Share dialog.
+      const app = "app_many";
+      await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
+      const owner = ctxFor("dana");
+      const grants = made.store.records("vendo_app_grants");
+      const total = 505;
+      for (let index = 0; index < total; index += 1) {
+        await grants.put({
+          id: `ag_many_${String(index).padStart(4, "0")}`,
+          data: { appId: app, orgId: "dana", principal: `user:member_${index}`, level: "viewer", createdBy: "dana" },
+        });
+      }
+
+      const listed = await access().list(owner, app);
+      expect(listed).toHaveLength(total);
+      expect(new Set(listed.map((row) => row.principal)).size).toBe(total);
+    }, 60_000);
+
     it("refuses a grant naming an org the app does not live in", async () => {
       // §9.2's `org_id` is "the org whose workspace holds the app", so a
       // `team:`/`org:` principal from a DIFFERENT org can never be satisfied

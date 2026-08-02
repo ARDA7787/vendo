@@ -1,4 +1,4 @@
-import type { AccessLevel, AppId, Membership } from "@vendoai/core";
+import { encodeGrantPrincipal, parseGrantPrincipal, type AccessLevel, type AppId, type Membership } from "@vendoai/core";
 import { useState } from "react";
 import { useAppGrants } from "../hooks/use-app-grants.js";
 import { ChromeRoot } from "./chrome-root.js";
@@ -19,41 +19,26 @@ const LEVELS: Array<{ value: AccessLevel; label: string; blurb: string }> = [
   { value: "owner", label: "Can share", blurb: "Edit, share, and delete it." },
 ];
 
-/** The frozen §9.2 encoding, built here so no caller has to know the grammar. */
-export function encodeGrantPrincipal(
-  target: { kind: "user"; subject: string } | { kind: "team"; org: string; team: string } | { kind: "org"; org: string },
-): string {
-  if (target.kind === "user") return `user:${target.subject}`;
-  if (target.kind === "org") return `org:${target.org}`;
-  return `team:${target.org}/${target.team}`;
-}
+/** The frozen §9.2 encoding lives in core, next to the parser that reads it —
+    ONE encoder, so a surface can never write a shape `can()` cannot match.
+    Re-exported here because the chrome surface has always offered it. */
+export { encodeGrantPrincipal };
 
 /** Which org a chosen principal names — the org a personal app moves into.
     `user:` names a person, not a team, so it moves nothing. */
 function orgOf(encoded: string): string | undefined {
-  const [kind, ...rest] = encoded.split(":");
-  const value = rest.join(":");
-  if (kind === "org") return value === "" ? undefined : value;
-  if (kind === "team") {
-    const org = value.split("/")[0];
-    return org === "" ? undefined : org;
-  }
-  return undefined;
+  const named = parseGrantPrincipal(encoded);
+  return named === undefined || named.kind === "user" ? undefined : named.org;
 }
 
 /** Consumer voice, not the encoding: "the finance team", not "team:acme/finance". */
 function describePrincipal(encoded: string, memberships: readonly Membership[]): string {
-  const [kind, ...rest] = encoded.split(":");
-  const value = rest.join(":");
-  if (kind === "user") return value;
-  if (kind === "org") {
-    return memberships.find((membership) => membership.org === value)?.display ?? `Everyone at ${value}`;
-  }
-  if (kind === "team") {
-    const [, team] = value.split("/");
-    return `The ${team} team`;
-  }
-  return encoded;
+  const named = parseGrantPrincipal(encoded);
+  if (named === undefined) return encoded;
+  if (named.kind === "user") return named.subject;
+  if (named.kind === "team") return `The ${named.team} team`;
+  return memberships.find((membership) => membership.org === named.org)?.display
+    ?? `Everyone at ${named.org}`;
 }
 
 export interface ShareDialogProps {
@@ -134,7 +119,10 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
         )}
       </div>
 
-      {canShare ? null : (
+      {/* Nothing is said about access until the first read has answered: `null`
+          is also what the hook holds while it is still in flight, so rendering
+          it told every caller they had no access for as long as the fetch took. */}
+      {canShare || isLoading ? null : (
         <p className="fl-share-note">
           {level === null
             ? "You don’t have access to this app."
