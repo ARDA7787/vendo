@@ -204,6 +204,13 @@ describe("E8 — two principals, one org, over the real composition", () => {
       { path: `/orgs/${ORG}/apps/app_collide/app.vendo`, owner: ORG },
       { path: "/user/apps/app_collide/app.vendo", owner: "dana" },
     ]);
+    // ...and its grant set too: the owner grant a promote mints goes back with
+    // the documents, so a refused promote leaves nothing behind at all.
+    expect((await call(vendo, dana, "GET", "/apps/app_collide/grants")).body).toEqual({
+      level: "owner",
+      grants: [],
+      personal: true,
+    });
   });
 
   it("a viewer denied an edit gets forbidden (403) and can fork", async () => {

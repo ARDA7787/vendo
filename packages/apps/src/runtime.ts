@@ -2359,7 +2359,14 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // The row's subject becomes the org id VERBATIM — the same convention the
       // workspace `owner` column uses (contract §3.3), so one id names the app's
       // rows and its documents alike, and the documents move with it.
-      await config.promoteApp(appId, from, orgId);
+      try {
+        await config.promoteApp(appId, from, orgId);
+      } catch (failure) {
+        // All-or-nothing: the move refused (a destination collision, a lost
+        // race), so the app is still wholly personal — and so is its grant set.
+        await config.appAccess?.revoke(ctx, appId, promoter).catch(() => undefined);
+        throw failure;
+      }
       // Re-stamped now that the row names the org, so the grant's `org_id`
       // records the org that actually holds the app (one row per (app,
       // principal), so this updates in place rather than accreting).
