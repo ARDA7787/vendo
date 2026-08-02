@@ -663,6 +663,32 @@ describe("a turn on a real box wire", () => {
     expect(landed).toEqual(["/user/apps/app_1/plan.vendo"]);
   }, 15_000);
 
+  test("D5 · a plan for a BRAND-NEW app lands mid-turn too — the skeleton is what a new app needs most", async () => {
+    // The measured bug: the hot set was pre-enumerated from files that already
+    // existed, so the one case the skeleton exists for — "make me an app" —
+    // watched nothing and the user sat through 52.8s of silence.
+    let landed: string[] | undefined;
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const sandbox = fakeSandbox(async (box) => {
+      box.write("/user/apps/app_brandnew/plan.vendo", "plan v1");
+      await held;
+      box.emit({ type: "text", delta: "done" });
+    });
+    // NO app directory at turn start: only unrelated user files.
+    const { turn, workspace } = makeTurn({ files: { "/user/memory/keep.md": "kept" } });
+    const watcher = setInterval(() => {
+      const commit = workspace.commits.find((entry) =>
+        entry.changed.includes("/user/apps/app_brandnew/plan.vendo"));
+      if (commit !== undefined) { landed = commit.changed; release(); }
+    }, 20);
+    const guard = setTimeout(release, 8_000);
+    await drain(claudeCode({ sandbox }), turn);
+    clearInterval(watcher);
+    clearTimeout(guard);
+    expect(landed).toEqual(["/user/apps/app_brandnew/plan.vendo"]);
+  }, 15_000);
+
   test("killing the sandbox mid-turn leaves the store untouched, and the next turn recovers", async () => {
     const sandbox = fakeSandbox(async (box) => {
       box.write("/user/apps/app_1/app.vendo", "<App>half</App>");
@@ -681,6 +707,33 @@ describe("a turn on a real box wire", () => {
     const second = makeTurn({ files: { "/user/apps/app_1/app.vendo": "<App/>" } });
     await drain(claudeCode({ sandbox: healthy }), second.turn);
     expect(await second.workspace.readFile("/user/apps/app_1/app.vendo")).toBe("<App>whole</App>");
+  });
+
+  test("D4 · a pooled machine the provider reaped is EVICTED, so the next turn on that thread recovers", async () => {
+    // The live half of the kill law. The test above disposes the pool between
+    // turns, which is exactly what hid this: in a real server the dead entry
+    // stays, and every later turn on that thread was handed the corpse — 0.3s
+    // failures for the life of the process, recoverable only by a restart.
+    let boxTurn = 0;
+    const sandbox = fakeSandbox(async (box) => {
+      boxTurn += 1;
+      if (boxTurn === 1) {
+        box.write("/user/apps/app_1/app.vendo", "<App>half</App>");
+        box.kill();
+        return;
+      }
+      box.write("/user/apps/app_1/app.vendo", "<App>whole</App>");
+    });
+    const harness = claudeCode({ sandbox });
+    const first = makeTurn({ thread: "thr_bricked", files: { "/user/apps/app_1/app.vendo": "<App/>" } });
+    await drain(harness, first.turn);
+    expect(await first.workspace.readFile("/user/apps/app_1/app.vendo")).toBe("<App/>");
+
+    // SAME thread, SAME process, pool NOT disposed.
+    const second = makeTurn({ thread: "thr_bricked", files: { "/user/apps/app_1/app.vendo": "<App/>" } });
+    await drain(harness, second.turn);
+    expect(await second.workspace.readFile("/user/apps/app_1/app.vendo")).toBe("<App>whole</App>");
+    expect(sandbox.boxes).toHaveLength(2);
   });
 
   test("one machine per session: a second turn on the same thread reuses it", async () => {
