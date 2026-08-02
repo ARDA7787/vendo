@@ -89,18 +89,23 @@ message as a cold start". Removing the cold start did **not** shrink it.
 
 | file | before | after | delta |
 |---|---|---|---|
-| `box.ts` | 446 | 341 | **−105** |
-| `claude-turn.ts` | 416 | 622 | **+206** |
-| `local.ts` | 184 | 277 | +93 |
-| `turn-routes.mjs` | 359 | 405 | +46 |
-| `machine.ts` | 58 | 87 | +29 |
-| `index.ts` | 444 | 457 | +13 |
-| `materialize.ts` | 192 | 192 | 0 |
-| **production total** | **2,099** | **2,381** | **+282** |
-| tests | 1,304 | 1,802 | +498 |
-| **contract's 3,403** | **3,403** | **4,183** | **+780** |
+| `box.ts` | 446 | 346 | **−100** |
+| `index.ts` | 444 | 443 | −1 |
+| `materialize.ts` | 192 | 234 | +42 |
+| `machine.ts` | 58 | 100 | +42 |
+| `turn-routes.mjs` | 359 | 410 | +51 |
+| `local.ts` | 184 | 282 | +98 |
+| `claude-turn.ts` | 416 | 602 | **+186** |
+| **production total** | **2,099** | **2,417** | **+318** |
+| tests | 1,304 | 2,002 | +698 |
+| **contract's 3,403** | **3,403** | **4,419** | **+1,016** |
 
-**Why.** The deletions landed exactly where predicted (`box.ts` −105: the pool,
+Round 1 of the independent check moved production by **+36 net**: deleting the
+rewind machinery took `index.ts` back *below* its starting size and trimmed
+`claude-turn.ts` by 20, while the warm-box baseline fix added 42 to
+`materialize.ts` and both ports grew to carry `TreeState` and `reopen`.
+
+**Why.** The deletions landed exactly where predicted (`box.ts` −100: the pool,
 sweep, snapshot, resume-ref and rotation). But holding a session OPEN costs more code
 than starting one per turn: a push-driven input inbox, a turn-boundary settle, a
 send-serializing queue, interrupt plumbing, reopen-on-tool-change, and — in both
@@ -132,7 +137,7 @@ real model), `live-local-proofs.log` (5/5, `machine: "local"`),
 | 2 | **Skills** — native discovery | **PASS (live)** | a `refund-policy` SKILL.md whose code is only knowable by reading it → agent answered `ZEPHYR-9931`, with `settingSources: []` intact |
 | 3 | **Tools + audit** | **PASS (live)** | `maple_invoices_list` executed host-side through `turn.tools.call`; box env carries `ANTHROPIC_API_KEY` and no other credential (no E2B key, no canary). Parity evidence in §1 |
 | 4 | **Components** | **PARTIAL** | live: the agent edited `app.vendo` and the diff committed. Mid-turn skeleton timing is pinned at unit level (hook-driven `syncHot`, incl. the brand-new-appId shape case) but I did **not** measure a live mid-turn latency number, so the 52.8s-vs-5.0s regression is guarded by construction, not re-measured |
-| 5 | **Recovery** | **PASS (live)** | box destroyed mid-conversation → fresh box, files re-materialized, agent read back `4417` |
+| 5 | **Recovery** | **PASS (live), with one part proven by construction** | LIVE: box destroyed mid-conversation → fresh box, files re-materialized from the store, agent read back `4417`. "Conversation MEMORY intact" is NOT live-proven — a fresh box has no session to resume, so memory rides the `promptFor` re-seed from the host transcript, which is pinned by unit tests (`promptFor`, and the regenerate/append pair) rather than measured against a model |
 | 6 | **Isolation** | **PASS (live)** | two tenants, one host process: Alice saw `APPLE-111` only, Bob `BANANA-222` only, neither the other's |
 | 7 | **Local mode** | **PASS (live)** | 5/5 including a guard denial narrated through the native permission hook and an honest refusal with no invented tool |
 | 8 | **Line count** | **DONE** | §3 — it went up |
@@ -198,6 +203,59 @@ an aborted run (40 of 53 tasks) and its exit code said 0. Read the TALLY, never 
 exit line — exactly as the contract says.
 
 ---
+
+## 5b. Independent check — fix round 1 (2026-08-02)
+
+The check returned FAIL with two required fixes. Both are fixed, each pinned by a
+test that fails without the fix.
+
+**FIX A — warm-box stale-clobber (data loss).** `checkoutWorkspace` seeded its diff
+baseline from a FRESH store read every turn, but a warm box's tree dates from
+conversation start and is never re-materialized. A file changed in the store
+out-of-band (another thread of the same user, an app tool, an automation)
+hash-mismatched the box's stale copy at turn end and was written BACK — reverting
+the newer state; an out-of-band delete was resurrected. **Both reproduced** (the
+store came back as `turn-1 content`; the deleted file reappeared), then fixed: the
+baseline is a `TreeState` persisted per conversation on the box/local entry, so
+"unchanged in the box" means SKIP. Three tests pin it, including that the box's OWN
+edit still lands — a fix that turned sync-back off would also have passed the first
+two.
+
+**FIX B — rewind was dead, and is now deleted.** `rewindFor` computed
+`resume`/`resumeAt` and the driver sent them, but the box door never read
+`payload.resumeAt` and a warm session never reopened, so a regenerate left the
+discarded answer in the model's memory — the exact failure the machinery existed to
+prevent. Verified dead by grep before deleting. **Deleted:** `rewindFor`, the rewind
+ledger, `REWIND_LEDGER_LIMIT`, the `checkpoint` event, `resumeAt`/`resumeSessionAt`
+plumbing, and 80 lines of tests. **Replaced by** one predicate (`truncated`) plus a
+`reopen` flag: a transcript that did not grow closes the live session and re-seeds
+from the host transcript. Never wrong, only slower, and regenerate is the rare path.
+Kept `covers` — it is the only thing that makes a truncation detectable, so deleting
+it would have removed the ability to fix the bug.
+
+**Two tests were passing for the WRONG reason, and that mattered.** The live
+`§1.3 · the pooled machine keeps its native session across turns` proof passed
+before this round only because the box's live session persisted regardless of the
+resume plumbing; its double handed ONE message per turn, so after FIX B it correctly
+failed (`truncated` read a genuine next message as a regenerate). Production
+`Turn.messages` is the accumulated transcript — `thread.messages` read back from
+`vendo_thread_messages` with the new message upserted
+(`packages/vendo/src/harness-turn.ts`) — so the LAW is right and the DOUBLE was
+wrong. Both live doubles now carry the transcript, and the local one no longer
+passes for an unnameable reason either.
+
+**Also this round:**
+- Deleted `ClaudeSessionInput.signal` + `abortFor` and `ClaudeSession.sessionId()` —
+  verified zero production callers; both drivers translate abort to `interrupt()`.
+- Committed the operator-skill isolation probe as a test, red-green verified by
+  injecting a leaked `dataviz` into the enabled set.
+- **KEPT the send-serializing queue**, against the checker's "arguable". Without it
+  two concurrent `send()` calls both write the single `settleTurn` slot and the
+  first caller's promise never resolves — a request that hangs forever, which is
+  worse than the box door's 409. Proven: with the queue removed the new test TIMES
+  OUT. The box door does 409 concurrent messages, but `machine: "local"` has no such
+  door and nothing above guarantees the runtime serializes same-thread turns, so
+  eight lines to rule out a permanent hang is the cheaper side. Now pinned.
 
 ## 6. Contracted and dropped / deviations
 

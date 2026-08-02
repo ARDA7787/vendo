@@ -2,38 +2,38 @@
  RUN  v2.1.9 /Users/yousefh/orca/workspaces/flowlet/cc-native/packages/harnesses
 
 stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > E3 · the box's real bash edits the app, and the diff lands in OUR store
-[live box edit] {"text":"I'll find and change that heading for you.Done — the heading now says 'Bills'.","after":"<App name=\"Money\">\n  <Heading text=\"Bills\" />\n</App>\n","commits":[{"changed":["/user/apps/app_box/app.vendo"]}]}
+[live box edit] {"text":"I'll find and change the dashboard heading from \"Invoices\" to \"Bills\".Done. The heading now says \"Bills\".","after":"<App name=\"Money\">\n  <Heading text=\"Bills\" />\n</App>\n","commits":[{"changed":["/user/apps/app_box/app.vendo"]}]}
 
 stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > §1.3 · the pooled machine keeps its native session across turns
-[live box session] {"carried":"{\"sessionId\":\"9de76d2b-4d28-4bc0-8b6e-9d49b7b5d563\",\"covers\":1,\"rewind\":[{\"at\":1,\"uuid\":\"af9a6760-3de4-4b5f-b57a-4034a777b56e\"}]}","text":"8823"}
+[live box session] {"carried":"{\"sessionId\":\"5c07f505-5a6c-4d17-871b-6198ac171c8d\",\"covers\":1}","text":"8823"}
 
 stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > PROOF 1 · chat is real: two messages, ONE box, ONE session, no re-materialize between them
-[live chat] {"session":"e50e4160-27b0-4c79-840d-19fd16f8a9dc","recalled":"7311"}
+[live chat] {"session":"053011f9-58d0-488a-afe0-a685b071bff6","recalled":"7311"}
 
 stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > PROOF 5 · recovery: a box that DIED gets replaced, files come back, and the thread re-seeds
-[live recovery] {"text":"I'll read that file for you.4417"}
+[live recovery] {"text":"I'll read the file for you.4417"}
 
 stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > PROOF 2 · the agent DISCOVERS and uses a vendo skill natively, with settingSources: [] intact
-[live box skill] {"text":"I'll check Maple's refund policy for you.The refund authorization code is **ZEPHYR-9931**."}
+[live box skill] {"text":"I'll check Maple's refund policy for the authorization code.The refund authorization code is **ZEPHYR-9931**."}
 
 stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > PROOF 6 · two tenants on ONE host process cannot see each other's files, skills or session
-[live isolation] {"aliceSaid":"I'll read all the files under the user/ directory to find the secret.The secret is: **APPLE-111**\n\nDone.","bobSaid":"I'll search for all files under the user/ directory and read them to find any secrets.bob's secret is BANANA-222"}
+[live isolation] {"aliceSaid":"I'll find and read all files under the user/ directory.The secret is APPLE-111.\n\nDone.","bobSaid":"I'll search for all files under user/ and read them to find any secret.bob's secret is BANANA-222"}
 
 stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > E7 · a guarded call executes HOST-side, and the box env holds no credential but inference
-[live box tools] {"text":"I'll help you with that. Let me first load the invoices tool and then get the information you need.You have **2 outstanding invoices**.\n\nDone.","calls":[{"name":"maple_invoices_list","args":{}}]}
+[live box tools] {"text":"I'll help you with both tasks. Let me first load the invoice tool to check outstanding invoices.Now writing the environment output to the file.You have **2 outstanding invoices** (inv_1 and inv_2).\n\nDone.","calls":[{"name":"maple_invoices_list","args":{}}]}
 [live box env] AI_AGENT,ANTHROPIC_API_KEY,CLAUDECODE,CLAUDE_AGENT_SDK_VERSION,CLAUDE_CODE_CHILD_SESSION,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,CLAUDE_CODE_ENTRYPOINT,CLAUDE_CODE_EXECPATH,CLAUDE_CODE_SESSION_ID,CLAUDE_PID,COREPACK_ENABLE_AUTO_PIN,DISABLE_AUTOUPDATER,E2B_EVENTS_ADDRESS,E2B_SANDBOX,E2B_SANDBOX_ID,E2B_TEMPLATE_ID,GIT_EDITOR,HOME,LOGNAME,NODE_VERSION,NoDefaultCurrentDirectoryInExePath,PATH,PWD,SHELL,SHLVL,USER,YARN_VERSION,_
 
- ✓ src/claude-code/claude-code-box.live.test.ts (7 tests) 129408ms
-   ✓ claudeCode() — live, in a real e2b box > E3 · the box's real bash edits the app, and the diff lands in OUR store 16391ms
-   ✓ claudeCode() — live, in a real e2b box > §1.3 · the pooled machine keeps its native session across turns 20121ms
-   ✓ claudeCode() — live, in a real e2b box > PROOF 1 · chat is real: two messages, ONE box, ONE session, no re-materialize between them 16776ms
-   ✓ claudeCode() — live, in a real e2b box > PROOF 5 · recovery: a box that DIED gets replaced, files come back, and the thread re-seeds 14132ms
-   ✓ claudeCode() — live, in a real e2b box > PROOF 2 · the agent DISCOVERS and uses a vendo skill natively, with settingSources: [] intact 15354ms
-   ✓ claudeCode() — live, in a real e2b box > PROOF 6 · two tenants on ONE host process cannot see each other's files, skills or session 24004ms
-   ✓ claudeCode() — live, in a real e2b box > E7 · a guarded call executes HOST-side, and the box env holds no credential but inference 22303ms
+ ✓ src/claude-code/claude-code-box.live.test.ts (7 tests) 100209ms
+   ✓ claudeCode() — live, in a real e2b box > E3 · the box's real bash edits the app, and the diff lands in OUR store 14354ms
+   ✓ claudeCode() — live, in a real e2b box > §1.3 · the pooled machine keeps its native session across turns 9977ms
+   ✓ claudeCode() — live, in a real e2b box > PROOF 1 · chat is real: two messages, ONE box, ONE session, no re-materialize between them 6673ms
+   ✓ claudeCode() — live, in a real e2b box > PROOF 5 · recovery: a box that DIED gets replaced, files come back, and the thread re-seeds 15141ms
+   ✓ claudeCode() — live, in a real e2b box > PROOF 2 · the agent DISCOVERS and uses a vendo skill natively, with settingSources: [] intact 12259ms
+   ✓ claudeCode() — live, in a real e2b box > PROOF 6 · two tenants on ONE host process cannot see each other's files, skills or session 21174ms
+   ✓ claudeCode() — live, in a real e2b box > E7 · a guarded call executes HOST-side, and the box env holds no credential but inference 20308ms
 
  Test Files  1 passed (1)
       Tests  7 passed (7)
-   Start at  02:46:43
-   Duration  130.47s (transform 510ms, setup 0ms, collect 875ms, tests 129.41s, environment 0ms, prepare 46ms)
+   Start at  03:52:11
+   Duration  100.89s (transform 313ms, setup 0ms, collect 501ms, tests 100.21s, environment 0ms, prepare 34ms)
 

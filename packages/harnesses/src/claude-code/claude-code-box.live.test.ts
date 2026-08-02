@@ -28,12 +28,29 @@ function harnessed(input: {
   answer?: (name: string, args: Json) => ToolResult;
   thread: string;
   state?: string;
+  /**
+   * The transcript SO FAR, as the runtime supplies it.
+   *
+   * `Turn.messages` is the canonical thread read back from
+   * `vendo_thread_messages` with the new user message upserted
+   * (`packages/vendo/src/harness-turn.ts`), so on a real turn 2 it holds turn 1's
+   * user message AND its reply. A double that hands one message per turn makes a
+   * genuine next message look like a TRUNCATION to `truncated()`.
+   */
+  history?: Array<{ id: string; role: "user" | "assistant"; text: string }>;
 }) {
   const workspace = testWorkspace(input.files ?? {});
   const calls: Array<{ name: string; args: Json }> = [];
   const state = createTurnState(input.state);
   const turn = {
-    messages: [userMessage(input.thread, input.say)],
+    messages: [
+      ...(input.history ?? []).map(({ id, role, text }) => (
+        role === "user"
+          ? userMessage(id, text)
+          : { id, role: "assistant" as const, parts: [{ type: "text" as const, text }] }
+      )),
+      userMessage(input.thread, input.say),
+    ],
     tools: {
       list: async () => (input.tools ?? []).map((tool) => ({ ...tool, risk: "read" as const })),
       call: async (name: string, args: Json) => {
@@ -104,7 +121,13 @@ live("claudeCode() — live, in a real e2b box", () => {
     expect(JSON.parse(carried!).sessionId).toMatch(/.+/);
 
     const second = harnessed({
-      thread: "m_box_session",
+      // Turn 2 carries the transcript, exactly as the runtime hands it over —
+      // which is what makes this an APPEND rather than a truncation.
+      history: [
+        { id: "m_box_session", role: "user", text: "Remember the number 8823. Just say ok." },
+        { id: "a_box_session", role: "assistant", text: "ok" },
+      ],
+      thread: "m_box_session_2",
       say: "What number did I ask you to remember? Reply with digits only.",
       state: carried!,
     });

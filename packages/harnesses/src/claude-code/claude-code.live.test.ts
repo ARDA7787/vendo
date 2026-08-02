@@ -34,12 +34,25 @@ function harnessed(input: {
   answer?: (name: string, args: Json) => ToolResult;
   state?: string;
   thread?: string;
+  /** The transcript SO FAR — see the note on `messages` below. */
+  history?: Array<{ id: string; role: "user" | "assistant"; text: string }>;
 }): Harnessed {
   const workspace = testWorkspace(input.files ?? {});
   const calls: Array<{ name: string; args: Json }> = [];
   const state = createTurnState(input.state);
   const turn = {
-    messages: [userMessage(input.thread ?? `m_${Math.random().toString(36).slice(2)}`, input.say)],
+    messages: [
+      // `Turn.messages` is the canonical transcript the runtime reads back and
+      // upserts the new message into (`packages/vendo/src/harness-turn.ts`), so a
+      // real turn 2 carries turn 1 AND its reply. A double that hands one message
+      // per turn makes a genuine next message look like a TRUNCATION.
+      ...(input.history ?? []).map(({ id, role, text }) => (
+        role === "user"
+          ? userMessage(id, text)
+          : { id, role: "assistant" as const, parts: [{ type: "text" as const, text }] }
+      )),
+      userMessage(input.thread ?? `m_${Math.random().toString(36).slice(2)}`, input.say),
+    ],
     tools: {
       list: async () => (input.tools ?? []).map((tool) => ({ ...tool, risk: "read" as const })),
       call: async (name: string, args: Json) => {
@@ -154,8 +167,14 @@ live("claudeCode() — live, machine:\"local\"", () => {
     expect(JSON.parse(carried!).sessionId).toMatch(/.+/);
 
     const second = harnessed({
+      // The transcript so far, as the runtime supplies it: this is an APPEND, so
+      // the live session is kept rather than dropped for a truncation.
+      history: [
+        { id: "m_live_session", role: "user", text: "Remember the number 4127. Just say ok." },
+        { id: "a_live_session", role: "assistant", text: "ok" },
+      ],
       say: "What number did I ask you to remember? Reply with digits only.",
-      thread: "m_live_session",
+      thread: "m_live_session_2",
       state: carried!,
     });
     const reply = await say(second);
