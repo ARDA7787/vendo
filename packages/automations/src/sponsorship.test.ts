@@ -1003,3 +1003,75 @@ describe("sponsorship — an automation the caller can edit is an automation the
     expect(listed[0]?.stopped?.summary).toMatch(/anyone who can edit this app can take it on/);
   });
 });
+
+/** ORCHESTRATOR RULING 2026-08-01 (handoff #5, derived from the locked model) —
+ *  an event emitted by a MEMBER of the org fires that org's automations.
+ *
+ *  `emit` matched apps by the emitter's own subject, so an ORG-owned host-event
+ *  automation could never be fired by anybody: the row subject is the org id
+ *  (§9.5) and no principal is ever an org (§9.1 keeps `kind:"org"` refused at the
+ *  wire). Same "built but unreachable" shape as the `list` defect, and the same
+ *  fix shape: walk the orgs the principal asserts, and let the ordinary
+ *  fire-time gate decide each run.
+ *
+ *  As WHOM it runs is unchanged and is not a new question: the SPONSOR (§9.9),
+ *  never a synthetic org principal. */
+describe("sponsorship — a member's event fires the org's automation", () => {
+  /** The org's automation, armed by Dana, who can edit it through the access
+   *  seam; Kim is an ordinary member of the same org and emits the event. */
+  const orgAutomation = async (id: string, editors: string[] = ["user_dana"]) => {
+    const app = doc(id);
+    const h = harness({
+      appAccess: appAccessStub(editors),
+      // §9.1's seam — keyed on Principal precisely so unattended code can ask.
+      memberships: async (principal) => principal.subject === "user_mal"
+        ? []
+        : [{ org: "maple", display: "Maple Bank" }],
+    });
+    await seedApp(h.store, app, "maple", false);
+    await h.engine.enable(app.id, ctx("user_dana", "Dana"));
+    return { ...h, app };
+  };
+
+  it("fires it for a member, and the run acts as the SPONSOR", async () => {
+    const { engine, calls, app } = await orgAutomation("app_org_emit");
+
+    const ids = await engine.emit("go", {}, { kind: "user", subject: "user_kim" });
+
+    expect(ids).toHaveLength(1);
+    expect(calls.map(({ call }) => call.tool)).toEqual([readTool.name, writeTool.name]);
+    // Kim's event, Dana's access — the automation always runs as the person who
+    // took it on, never as the person who happened to trigger it.
+    expect(calls[0]?.ctx.principal.subject).toBe("user_dana");
+    expect(await engine.runs.get(ids[0]!, ctx("user_dana"))).toMatchObject({
+      appId: app.id,
+      status: "ok",
+    });
+  });
+
+  it("fires nothing for a non-member emitting the very same event", async () => {
+    const { engine, calls } = await orgAutomation("app_org_emit_stranger");
+
+    const ids = await engine.emit("go", {}, { kind: "user", subject: "user_mal" });
+
+    expect(ids).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("does not run an org automation whose sponsorship has lapsed — and says why", async () => {
+    const { store, engine, calls, app } = await orgAutomation("app_org_emit_stopped");
+    // A third party edits it: the sponsorship lapses.
+    await engine.onDocumentEdit(app, doc(app.id, "Renamed by somebody else"), "user_omar");
+
+    const ids = await engine.emit("go", {}, { kind: "user", subject: "user_kim" });
+
+    // It stops LOUDLY, exactly as a scheduled fire does: a run row and an audit
+    // event, and no tool call at all.
+    expect(ids).toHaveLength(1);
+    expect(calls).toEqual([]);
+    const run = await engine.runs.get(ids[0]!, ctx("user_dana"));
+    expect(run?.status).toBe("error");
+    expect(run?.summary).toMatch(/anyone who can edit this app can take it on/);
+    expect(await sponsorshipRow(store, app.id)).toMatchObject({ status: "invalidated" });
+  });
+});

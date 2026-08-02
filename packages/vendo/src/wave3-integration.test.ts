@@ -72,6 +72,15 @@ const automationApp = (id: string): AppDocument => ({
   },
 });
 
+/** The same automation on a HOST EVENT, for the emit path. */
+const eventAutomationApp = (id: string): AppDocument => ({
+  ...automationApp(id),
+  trigger: {
+    on: { kind: "host-event", event: "invoice.paid" },
+    run: { kind: "steps", steps: [{ id: "read", tool: READ_TOOL }] },
+  },
+});
+
 /** A plain app: no trigger, so nothing to adopt and nothing to look up. */
 const plainApp = (id: string): AppDocument => ({
   format: VENDO_APP_FORMAT,
@@ -363,5 +372,44 @@ describe("F8(b) — a member's erase against an org-owned automation", () => {
     expect(card).toMatchObject({ reason: "departure" });
     // The name went with the erase and must not come back.
     expect(card).not.toHaveProperty("sponsor");
+  });
+});
+
+/** ORCHESTRATOR RULING 2026-08-01 (handoff #5) — a member's event fires the
+ *  org's automations, and each run acts as its SPONSOR. Over the real
+ *  composition this ALSO pins `server.ts`'s automations `memberships:` seam,
+ *  which nothing else covered: without it the engine asserts no orgs for the
+ *  emitter and the org's row stays unreachable. */
+describe("ruling — vendo.emit fires an ORG-owned automation for a member", () => {
+  it("fires for a member as the sponsor, and fires nothing for a non-member", async () => {
+    const booted = await boot();
+    const app = eventAutomationApp("app_org_event");
+    await seedApp(booted.store, app, ORG);
+    expect((await wire(booted.vendo, dana, "POST", `/apps/${app.id}/grants`, {
+      principal: "user:kim",
+      level: "editor",
+    })).status).toBe(200);
+    // Kim takes it on, so the run's identity is hers and not the org's.
+    expect((await booted.vendo.automations.enable(app.id, ctxOf(kim))).enabled).toBe(true);
+
+    // A member of the same org emits the event: the org's automation fires.
+    const fired = await booted.vendo.emit("invoice.paid", {}, omar);
+    expect(fired).toHaveLength(1);
+    const run = await booted.vendo.automations.runs.get(fired[0]!, ctxOf(kim));
+    // It got PAST the fire-time gate and into its first step, where the real
+    // guard asks for the standing grant Kim has not yet approved.
+    expect(run).toMatchObject({ appId: app.id, status: "pending-approval" });
+
+    // ...and it is KIM who is being asked — the sponsor, never the org and never
+    // the member whose event happened to trigger it.
+    const asked = (await booted.store.records("vendo_approvals").list({})).records
+      .map((record) => (record.data as { request: { ctx: { principal: { subject: string } } } })
+        .request.ctx.principal.subject);
+    expect(new Set(asked)).toEqual(new Set([kim.subject]));
+
+    // Somebody the host asserts no membership for emits the very same event and
+    // reaches nothing at all.
+    const stranger: Principal = { kind: "user", subject: "stranger" };
+    expect(await booted.vendo.emit("invoice.paid", {}, stranger)).toEqual([]);
   });
 });

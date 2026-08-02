@@ -1774,16 +1774,40 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
   };
 
   const emit: AutomationsEngine["emit"] = async (event, payload, principal) => {
-    // Only host-event apps for this subject (indexed refs) — was a full scan of the subject's apps.
-    const records = await allRecords(config.store.records(APPS), {
-      refs: { subject: principal.subject, trigger_kind: "host-event" },
-    });
+    // Ruling 2026-08-01 — an event emitted by a MEMBER of the org fires that
+    // org's automations. Matching only the emitter's own subject meant an
+    // ORG-owned host-event automation could never be fired by anybody: its row
+    // subject is the org id (§9.5) and no principal is ever an org (§9.1 keeps
+    // `kind:"org"` refused at the wire). The orgs are ASSERTED through the same
+    // §9.1 seam an unattended fire uses, never stored.
+    //
+    // A broken directory must not take the person's OWN automations down with
+    // it: the seam's failure is reported and their personal ones still fire.
+    let orgs: string[] = [];
+    try {
+      orgs = [...new Set((await config.memberships?.(principal) ?? []).map(({ org }) => org))];
+    } catch (error) {
+      console.warn(
+        `[vendo] could not resolve ${principal.subject}'s orgs for event "${event}" (${message(error)}); `
+        + "any org-owned automation on this event did not fire — this subject's own automations did",
+      );
+    }
     const ids: string[] = [];
-    for (const record of records) {
-      const row = parseAppRow(record);
-      const source = row.doc.trigger?.on;
-      if (row.enabled && row.subject === principal.subject && source?.kind === "host-event" && source.event === event) {
-        ids.push(await startRun(row, "host-event", payload));
+    // Indexed refs per owner (never a scan): the emitter, then each asserted org.
+    for (const subject of [principal.subject, ...orgs]) {
+      for (const record of await allRecords(config.store.records(APPS), {
+        refs: { subject, trigger_kind: "host-event" },
+      })) {
+        const row = parseAppRow(record);
+        const source = row.doc.trigger?.on;
+        // Membership is what makes the org's row reachable; whether this run may
+        // proceed at all is the ordinary fire-time gate's call inside startRun
+        // (active sponsorship + matching intent + the SPONSOR still can(editor)),
+        // so an org automation nobody holds any more stops loudly instead of
+        // running for whoever touched the event.
+        if (row.enabled && row.subject === subject && source?.kind === "host-event" && source.event === event) {
+          ids.push(await startRun(row, "host-event", payload));
+        }
       }
     }
     return ids;
