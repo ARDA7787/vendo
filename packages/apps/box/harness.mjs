@@ -35,7 +35,7 @@ import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from
 import http from "node:http";
 import path from "node:path";
 import { runAgentTask as defaultRunAgentTask } from "./agent-sdk.mjs";
-import { createTurnRoutes } from "./turn-routes.mjs";
+import { createSessionRoutes } from "./turn-routes.mjs";
 
 const RESPAWN_DELAY_MS = 1_000;
 const RUN_WATCH_INTERVAL_MS = 2_000;
@@ -201,7 +201,7 @@ export const createHarness = (options = {}) => {
 
   // Wave 2 lane E — the conversational door beside the layer-3 builder's. Same
   // control port, same supervisor, a different kind of turn.
-  const turnRoutes = options.turnRoutes ?? createTurnRoutes({ env: boundaryEnv() });
+  const turnRoutes = options.turnRoutes ?? createSessionRoutes({ env: boundaryEnv() });
 
   const handle = async (request, response) => {
     const url = new URL(request.url ?? "/", "http://box.internal");

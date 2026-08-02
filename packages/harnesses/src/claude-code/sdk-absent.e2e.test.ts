@@ -73,7 +73,7 @@ describe("D1 · a host that never installed the Agent SDK", () => {
       const runner = await import(${JSON.stringify(appsDist("dist/claude-turn.js"))});
       if (typeof apps.createApps !== "function") throw new Error("apps did not load");
       if (typeof internal.assembleTree !== "function") throw new Error("internals did not load");
-      if (typeof runner.runClaudeTurn !== "function") throw new Error("runner did not load");
+      if (typeof runner.createClaudeSession !== "function") throw new Error("runner did not load");
       console.log("APPS_OK");
     `);
     expect(output).toContain("APPS_OK");
@@ -83,7 +83,7 @@ describe("D1 · a host that never installed the Agent SDK", () => {
     const output = runProbe(`
       const { claudeCode } = await import(${JSON.stringify(dist("dist/claude-code/index.js"))});
       const { assertHarnessComposable } = await import(${JSON.stringify(dist("dist/index.js"))});
-      const sandbox = { async create() {}, async resume() {}, async destroy() {} };
+      const sandbox = { async create() {}, async destroy() {} };
       // The sandbox path: the SDK lives in the box image, never here.
       assertHarnessComposable(claudeCode(), { sandbox });
       assertHarnessComposable(claudeCode({ sandbox }), { sandbox });
@@ -99,7 +99,7 @@ describe("D1 · a host that never installed the Agent SDK", () => {
       const { localMachine } = await import(${JSON.stringify(dist("dist/claude-code/local.js"))});
       const machine = await localMachine({ threadId: "thr_sdk_absent", env: {} });
       try {
-        await machine.run({ prompt: "go", tools: [], callTool: async () => ({ status: "ok", output: {} }), emit: () => {} });
+        await machine.send({ prompt: "go", tools: [], callTool: async () => ({ status: "ok", output: {} }), emit: () => {} });
         console.log("NO_ERROR");
       } catch (error) {
         console.log("MESSAGE:" + error.message);

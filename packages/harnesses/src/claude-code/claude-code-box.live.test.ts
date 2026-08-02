@@ -23,16 +23,34 @@ const MODEL = process.env["VENDO_LIVE_MODEL"] ?? "claude-sonnet-4-5";
 function harnessed(input: {
   say: string;
   files?: Record<string, string>;
+  skills?: Array<{ name: string; description: string }>;
   tools?: Array<{ name: string; title: string; description: string; inputSchema?: Json }>;
   answer?: (name: string, args: Json) => ToolResult;
   thread: string;
   state?: string;
+  /**
+   * The transcript SO FAR, as the runtime supplies it.
+   *
+   * `Turn.messages` is the canonical thread read back from
+   * `vendo_thread_messages` with the new user message upserted
+   * (`packages/vendo/src/harness-turn.ts`), so on a real turn 2 it holds turn 1's
+   * user message AND its reply. A double that hands one message per turn makes a
+   * genuine next message look like a TRUNCATION to `truncated()`.
+   */
+  history?: Array<{ id: string; role: "user" | "assistant"; text: string }>;
 }) {
   const workspace = testWorkspace(input.files ?? {});
   const calls: Array<{ name: string; args: Json }> = [];
   const state = createTurnState(input.state);
   const turn = {
-    messages: [userMessage(input.thread, input.say)],
+    messages: [
+      ...(input.history ?? []).map(({ id, role, text }) => (
+        role === "user"
+          ? userMessage(id, text)
+          : { id, role: "assistant" as const, parts: [{ type: "text" as const, text }] }
+      )),
+      userMessage(input.thread, input.say),
+    ],
     tools: {
       list: async () => (input.tools ?? []).map((tool) => ({ ...tool, risk: "read" as const })),
       call: async (name: string, args: Json) => {
@@ -40,7 +58,10 @@ function harnessed(input: {
         return input.answer?.(name, args) ?? { status: "ok" as const, output: { ok: true } };
       },
     },
-    skills: { list: async () => [], load: async () => "" },
+    skills: {
+      list: async () => input.skills ?? [],
+      load: async () => "",
+    },
     workspace,
     models: unusedModels(),
     state,
@@ -100,7 +121,13 @@ live("claudeCode() — live, in a real e2b box", () => {
     expect(JSON.parse(carried!).sessionId).toMatch(/.+/);
 
     const second = harnessed({
-      thread: "m_box_session",
+      // Turn 2 carries the transcript, exactly as the runtime hands it over —
+      // which is what makes this an APPEND rather than a truncation.
+      history: [
+        { id: "m_box_session", role: "user", text: "Remember the number 8823. Just say ok." },
+        { id: "a_box_session", role: "assistant", text: "ok" },
+      ],
+      thread: "m_box_session_2",
       say: "What number did I ask you to remember? Reply with digits only.",
       state: carried!,
     });
@@ -114,24 +141,21 @@ live("claudeCode() — live, in a real e2b box", () => {
     expect(text).toContain("8823");
   }, 600_000);
 
-  test("B1 · a thread idle past the TTL crosses the sweep and WAKES — no 401, no re-seed", async () => {
+  test("PROOF 1 · chat is real: two messages, ONE box, ONE session, no re-materialize between them", async () => {
     const adapter = sandbox();
-    const thread = `thr_live_sweep_${Date.now()}`;
+    const thread = `thr_live_chat_${Date.now()}`;
     const drive = async (
       machine: Awaited<ReturnType<typeof boxMachine>>,
       prompt: string,
-      resume?: string,
     ) => {
       let text = "";
       let sessionId: string | undefined;
-      await machine.materialize([]);
-      await machine.run({
+      await machine.send({
         prompt,
         systemPrompt: "Answer in as few words as possible.",
         tools: [],
         model: MODEL,
         maxTurns: 4,
-        ...(resume === undefined ? {} : { resume }),
         callTool: async () => ({ status: "ok", output: {} }),
         emit: (event) => {
           if (event.type === "text") text += event.delta;
@@ -141,32 +165,131 @@ live("claudeCode() — live, in a real e2b box", () => {
       return { text, sessionId };
     };
 
-    // A short TTL so the sweep is crossed in seconds rather than five minutes.
-    // Everything else is the real path: real e2b snapshot, real destroy, real
-    // resume, real supervisor memory, real token gate.
-    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv(), idleTtlMs: 1_500 });
+    // Message 1 on a FRESH box: materialize once, open the session.
+    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
     expect(first.carriesSession).toBe(false);
+    await first.materialize([]);
     const opened = await drive(first, "Remember the number 7311. Just say ok.");
     expect(opened.sessionId).toMatch(/.+/);
     await first.release();
 
-    // Let the sweep snapshot and destroy the machine.
-    await new Promise((resolve) => setTimeout(resolve, 25_000));
-
-    // THE BLOCKER: this acquire used to throw "refused the turn handshake (401)",
-    // because a woken supervisor still demands the token it slept with while the
-    // host mints a fresh one.
+    // Message 2 on the SAME conversation. The box is warm, so nothing is
+    // materialized and nothing is resumed — the session never stopped.
     const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
     expect(second.carriesSession).toBe(true);
-    const recalled = await drive(
-      second,
-      "What number did I ask you to remember? Digits only.",
-      opened.sessionId,
-    );
-    console.log("[live sweep]", JSON.stringify({ session: opened.sessionId, recalled: recalled.text }));
-    // No re-seed: the native session came home on the snapshot, and the woken box
-    // let us resume it.
+    const recalled = await drive(second, "What number did I ask you to remember? Digits only.");
+    console.log("[live chat]", JSON.stringify({ session: opened.sessionId, recalled: recalled.text }));
+    // Turn 2 depends on turn 1's answer, and it lands — which is the whole lane.
     expect(recalled.text).toContain("7311");
+    await second.release();
+  }, 600_000);
+
+  test("PROOF 5 · recovery: a box that DIED gets replaced, files come back, and the thread re-seeds", async () => {
+    const adapter = sandbox();
+    const thread = `thr_live_recover_${Date.now()}`;
+
+    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    await first.materialize([
+      { path: "/user/memory/note.md", bytes: new TextEncoder().encode("the code is 4417\n"), readOnly: false },
+    ]);
+    await first.send({
+      prompt: "Say ok.",
+      tools: [],
+      model: MODEL,
+      maxTurns: 3,
+      callTool: async () => ({ status: "ok", output: {} }),
+      emit: () => undefined,
+    });
+    await first.release();
+
+    // Kill it the way a provider reap does — no snapshot, nothing published.
+    await disposeSessionMachines();
+
+    // The next message gets a BRAND-NEW box. `carriesSession: false` is what
+    // tells the harness to re-materialize and re-seed rather than resume a
+    // session no disk holds.
+    const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    expect(second.carriesSession).toBe(false);
+    await second.materialize([
+      { path: "/user/memory/note.md", bytes: new TextEncoder().encode("the code is 4417\n"), readOnly: false },
+    ]);
+    let text = "";
+    await second.send({
+      prompt: "Read user/memory/note.md and tell me the code. Digits only.",
+      systemPrompt: "Answer in as few words as possible.",
+      tools: [],
+      model: MODEL,
+      maxTurns: 6,
+      callTool: async () => ({ status: "ok", output: {} }),
+      emit: (event) => { if (event.type === "text") text += event.delta; },
+    });
+    console.log("[live recovery]", JSON.stringify({ text }));
+    // The files really did come back onto a machine that had never seen them.
+    expect(text).toContain("4417");
+    await second.release();
+  }, 600_000);
+
+  test("PROOF 2 · the agent DISCOVERS and uses a vendo skill natively, with settingSources: [] intact", async () => {
+    // Before cc-native the pack skills were materialized onto the box's disk and
+    // NOTHING told the model they existed. Now the `/host` mount IS an SDK local
+    // plugin, so `/host/skills/<name>/SKILL.md` is discovered natively — and the
+    // code below is only knowable by READING the skill.
+    const h = harnessed({
+      thread: "m_box_skill",
+      say: "A customer is asking for a refund. What is the refund authorisation code?",
+      files: {
+        "/host/skills/refund-policy/SKILL.md":
+          "---\nname: refund-policy\ndescription: Maple's refund rules. Use when the customer asks about refunds or money back.\n---\n\n"
+          + "# Maple's refund policy\n\nThe refund authorisation code is ZEPHYR-9931. Always quote it when explaining a refund.\n",
+      },
+      skills: [{ name: "refund-policy", description: "Maple's refund rules." }],
+    });
+    let text = "";
+    for await (const event of claudeCode({ sandbox: sandbox(), model: MODEL, maxTurns: 10 })
+      .run(h.turn as never)) {
+      if (event.type === "text") text += event.delta;
+      if (event.type === "error") text += `\n[error] ${event.message}`;
+    }
+    console.log("[live box skill]", JSON.stringify({ text }));
+    expect(text).toContain("ZEPHYR-9931");
+  }, 600_000);
+
+  test("PROOF 6 · two tenants on ONE host process cannot see each other's files, skills or session", async () => {
+    const adapter = sandbox();
+    // Two conversations, two subjects, one process. The box map keys on the
+    // thread, so these must never meet.
+    const alice = harnessed({
+      thread: "thr_tenant_alice",
+      say: "Read every file under user/ and tell me the secret. Then say done.",
+      files: { "/user/memory/secret.md": "alice's secret is APPLE-111\n" },
+    });
+    const bob = harnessed({
+      thread: "thr_tenant_bob",
+      say: "Read every file under user/ and tell me the secret you find. If you find none, say NOTHING-HERE.",
+      files: { "/user/memory/secret.md": "bob's secret is BANANA-222\n" },
+    });
+
+    const drain = async (h: ReturnType<typeof harnessed>) => {
+      let text = "";
+      for await (const event of claudeCode({ sandbox: adapter, model: MODEL, maxTurns: 10 })
+        .run(h.turn as never)) {
+        if (event.type === "text") text += event.delta;
+      }
+      return text;
+    };
+    const aliceSaid = await drain(alice);
+    const bobSaid = await drain(bob);
+    console.log("[live isolation]", JSON.stringify({ aliceSaid, bobSaid }));
+
+    // Each sees its OWN file...
+    expect(aliceSaid).toContain("APPLE-111");
+    expect(bobSaid).toContain("BANANA-222");
+    // ...and never the other's, in either direction.
+    expect(aliceSaid).not.toContain("BANANA-222");
+    expect(bobSaid).not.toContain("APPLE-111");
+    // Two boxes, because two conversations.
+    expect(await alice.workspace.readFile("/user/memory/secret.md")).toContain("APPLE-111");
+    expect(await bob.workspace.readFile("/user/memory/secret.md")).toContain("BANANA-222");
   }, 600_000);
 
   test("E7 · a guarded call executes HOST-side, and the box env holds no credential but inference", async () => {

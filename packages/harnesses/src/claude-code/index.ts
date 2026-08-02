@@ -28,9 +28,9 @@ import { defineHarness } from "../define.js";
 import { harnessAdapters } from "../harness-sandbox.js";
 import { checkoutWorkspace, type SyncFile } from "../materialize.js";
 import { HOT_PATH_FILES } from "../render-seam.js";
-import type { TurnMachine } from "./machine.js";
+import type { SessionMachine } from "./machine.js";
 import { localMachine } from "./local.js";
-import { boxMachine, type SandboxAdapterLike, type SessionRef } from "./box.js";
+import { boxMachine, type SandboxAdapterLike } from "./box.js";
 
 /** v1 options, exactly (design §3): nothing else until asked. */
 export interface ClaudeCodeOptions {
@@ -63,11 +63,19 @@ export interface ClaudeCodeDeps {
   sandbox?: SandboxAdapterLike;
 }
 
-/** §3.5's hot paths as SHAPES: the two files that sync mid-turn, under any app —
- *  including one whose id the turn is about to invent. The seam owns the frozen
- *  layout (`hotPathAppId`) and drops anything else that comes back. */
+/**
+ * §3.5's hot paths as SHAPES: the two files that sync mid-turn, under any app —
+ * including one whose id the turn is about to invent. The seam owns the frozen
+ * layout (`hotPathAppId`) and drops anything else that comes back.
+ *
+ * These used to be read on a 1.2s TIMER. They are now read when the SDK's native
+ * `PostToolUse` hook says something was written — sync on write, not sync on
+ * tick. The shape matters as much as it ever did: enumerating from files that
+ * already existed watched nothing at all on the one ask the skeleton exists for
+ * ("make me an app"), because a brand-new appId has no directory yet — measured
+ * 52.8s of silence against 5.0s when the file happened to pre-exist.
+ */
 const HOT_WATCH = HOT_PATH_FILES.map((name) => `/user/apps/*/${name}`);
-const HOT_SYNC_INTERVAL_MS = 1_200;
 
 /** The recorded v0 inference exception (design §9): a boxed harness must reach a
  *  model to think, and that is the ONLY credential in the machine. */
@@ -122,19 +130,19 @@ export function promptFor(messages: readonly UIMessage[], resuming: boolean): st
     + `The user now says:\n\n${spoken}`;
 }
 
-/** The workspace conventions, appended to `Turn.system`. Consumer-voice law
- *  applies to what the model SAYS; this block is what it needs to KNOW. */
-function workspaceBrief(root: string): string {
-  return `\n\n## Your workspace\n\n`
-    + `Everything you can see is under ${root}. \`user/\` is the person's own space — apps, memory, `
-    + `uploaded and generated files — and every change you make there is saved automatically when you finish `
-    + `(and immediately, for an app or plan file, so they see it appear). \`host/\` is reference material: read it, never write it. `
-    + `\`user/scratch/\` is yours to make a mess in and is never saved.\n\n`
-    + `The shell, the editor and the file tools act on a COPY. Anything that touches the real world — the `
-    + `product's own actions, the person's data, asking them a question — is a \`vendo\` tool, and those run `
-    + `on their behalf with their permission. If one comes back refused, say so plainly and move on; do not `
-    + `try to do it another way.\n\n`
-    + `Talk to the person like a person: no file paths, no tool names, no code.`;
+/**
+ * The few lines the co-trained preset does NOT already know: where it is, who it
+ * is talking to, and which hands touch reality.
+ *
+ * This replaced a ~14-line wall that re-explained the mount layout, the copy
+ * semantics, the save timing and the refusal etiquette. Claude Code already knows
+ * how to work in a directory — that is what the preset IS. What it cannot know is
+ * the EMBEDDING, so that is all this says.
+ */
+function embeddingBrief(root: string): string {
+  return `\n\nYou are embedded in this product, talking to one of its customers — plain language, no file paths, no tool names.`
+    + `\n\nTheir files are in ${root}. Real-world actions — the product's own operations, their data — are the \`vendo\` tools;`
+    + ` if one comes back refused, say so plainly and move on. UI you build goes in \`app.vendo\`.`;
 }
 
 const listingToTool = (listing: ToolListing): ClaudeTurnTool => ({
@@ -146,61 +154,41 @@ const listingToTool = (listing: ToolListing): ClaudeTurnTool => ({
 
 /** `turn.state` — the opaque blob (§1.3). Ours to shape, nobody else's to read. */
 interface ClaudeState {
-  /** The SDK's native session id, so a next turn resumes instead of re-seeding. */
-  sessionId?: string;
   /**
-   * The sleeping machine the session lives on (sandbox path only), and the
-   * control token its restored memory will still demand. Populated only when a
-   * sweep reclaimed the machine MID-turn (a guarded wait outlived the idle
-   * TTL) — the ordinary sweep runs after the state was already written, so a
-   * process restart normally re-seeds.
+   * The SDK's native session id.
    *
-   * The token rides here because a woken supervisor keeps the one it slept with,
-   * so the next acquire must present it to be allowed to rotate. It is no new
-   * exposure: the `ref` beside it already lets its holder wake the machine and
-   * read the same workspace.
+   * This is the WHOLE of our recovery story now. It used to sit beside a
+   * snapshot ref and a control token, because a swept box could be woken; a
+   * conversation box is destroyed instead, so a session id is only resumable
+   * while the box that owns it is still up. On a fresh box the id is stale and
+   * the thread re-seeds from OUR transcript — which is the truth anyway
+   * (design §3, "Harness state").
    */
-  resume?: SessionRef;
-  /** How long our transcript was when this session last answered. A SHORTER
-   *  transcript next turn is a prefix truncation (§1.3) — the runtime keeps the
-   *  state precisely so the harness can rewind natively. */
+  sessionId?: string;
+  /** How long our transcript was when this session last answered — the ONLY
+   *  thing that makes a truncation detectable. */
   covers?: number;
-  /** transcript length → the assistant uuid `resumeSessionAt` rewinds to. */
-  rewind?: Array<{ at: number; uuid: string }>;
 }
 
-/** Enough history to rewind through a plausible run of edits; a session id is
- *  disposable, so an over-old truncation honestly costs a re-seed. */
-const REWIND_LEDGER_LIMIT = 24;
-
 /**
- * §1.3's prefix truncation, through the SDK's own rewind.
+ * §1.3's prefix truncation: did the user throw away the answer this session still
+ * remembers?
  *
- * What reaches here with state intact is a REGENERATE or a delete-from-here:
- * a real edit never does, because the runtime already CLEARS the state for one
- * (`classifyHistory` calls a differing overlap an arbitrary edit). Resuming the
- * session unchanged would leave the model remembering exactly what the user
- * removed, so this picks the checkpoint that predates the removal and hands it
- * to `resumeSessionAt`. With no usable checkpoint the session is dropped and
- * the turn re-seeds from our transcript — never wrong, only slower.
+ * `covers` counts the answering turn's INPUTS — its reply lands at transcript
+ * index `covers` — so a history that did not GROW means that reply is gone. That
+ * is a REGENERATE or a delete-from-here; a real mid-history edit never reaches
+ * here, because the runtime already CLEARS the state for one (`classifyHistory`
+ * calls a differing overlap an arbitrary edit).
+ *
+ * This replaced a rewind LEDGER (`rewindFor`, `resumeSessionAt`, per-message
+ * checkpoint uuids, a 24-entry history). That machinery was dead: the box door
+ * never read `payload.resumeAt` and a warm session never reopened, so a
+ * regenerate left the discarded answer in the model's memory — the exact failure
+ * it existed to prevent. Dropping the session and re-seeding from OUR transcript
+ * is never wrong, only slower, and regenerate is the rare path.
  */
-export function rewindFor(
-  state: ClaudeState,
-  messageCount: number,
-): { resume?: string; resumeAt?: string } {
-  if (state.sessionId === undefined) return {};
-  // STRICTLY longer is the only plain resume. `covers` counts the answering
-  // turn's INPUTS — its reply lands at transcript index `covers` — so an
-  // EQUAL-length history means that reply was thrown away (a regenerate), and
-  // resuming unrewound left the model remembering the answer the user just
-  // deleted. Rewind past it like any other truncation.
-  if (state.covers === undefined || messageCount > state.covers) return { resume: state.sessionId };
-  const point = [...(state.rewind ?? [])]
-    .filter((entry) => entry.at < messageCount)
-    .sort((left, right) => left.at - right.at)
-    .at(-1);
-  if (point === undefined) return {};
-  return { resume: state.sessionId, resumeAt: point.uuid };
+export function truncated(state: ClaudeState, messageCount: number): boolean {
+  return state.covers !== undefined && messageCount <= state.covers;
 }
 
 const readState = (raw: string | undefined): ClaudeState => {
@@ -254,9 +242,11 @@ export function claudeCode(
       // host's server.
       const resolved = { ...options, ...(turn.options ?? {}), machine: options.machine };
       const state = readState(turn.state.get());
-      const checkout = await checkoutWorkspace(turn.workspace);
 
-      let machine: TurnMachine;
+      // The MACHINE comes first, because whether it is warm decides what the
+      // checkout may assume: a warm machine's disk is the baseline, a fresh one
+      // is about to be handed the store's own copy.
+      let machine: SessionMachine;
       if (resolved.machine === "local") {
         machine = await localMachine({ threadId: threadOf(turn), env: inferenceEnv() });
       } else {
@@ -281,9 +271,20 @@ export function claudeCode(
           sandbox,
           threadId: threadOf(turn),
           env: inferenceEnv(),
-          ...(state.resume === undefined ? {} : { resume: state.resume }),
         });
       }
+
+      // A WARM machine diffs against what its own disk holds (`machine.tree`),
+      // never against a fresh store read: the store may have moved underneath it
+      // (another thread of the same user, an app tool, an automation) and the
+      // box's stale copy must not be written back over the newer state. A FRESH
+      // machine passes nothing, so the baseline is derived here and is exactly
+      // what materialize is about to put on its disk.
+      const checkout = await checkoutWorkspace(
+        turn.workspace,
+        machine.tree,
+        !machine.carriesSession,
+      );
 
       const events = eventQueue<ClaudeTurnEvent>();
       /** One sync at a time: the façade stages in memory, and two overlapping
@@ -295,46 +296,60 @@ export function claudeCode(
         return next;
       };
 
-      // A machine whose disk does not carry the session cannot resume it — asking
-      // the SDK to would fail the turn outright, so the honest move is to re-seed
-      // from OUR transcript, which is the truth anyway.
-      const rewind = machine.carriesSession ? rewindFor(state, turn.messages.length) : {};
-      let sessionId = rewind.resume;
-      /** The newest assistant uuid this turn produced — the next rewind point. */
-      let checkpoint: string | undefined;
+      // Two reasons a live session cannot be continued. A machine whose disk does
+      // not carry it cannot resume it at all; and a TRUNCATION means the session
+      // remembers an answer the user threw away, so it has to go. Either way the
+      // honest move is to re-seed from OUR transcript, which is the truth anyway.
+      const stale = truncated(state, turn.messages.length);
+      let sessionId = machine.carriesSession && !stale ? state.sessionId : undefined;
       let finished = false;
-      let hotTimer: ReturnType<typeof setInterval> | undefined;
 
       try {
-        await machine.materialize(checkout.files);
+        // ONLY on a machine that is not already carrying this conversation. A warm
+        // box's disk IS the working copy: re-materializing between messages would
+        // reset the tree the live session is holding open, which is the one thing
+        // "one box per conversation" exists to prevent.
+        if (!machine.carriesSession) await machine.materialize(checkout.files);
 
-        // By SHAPE, never by enumeration. Enumerating the hot paths from files
-        // that already existed watched nothing at all on the one ask the skeleton
-        // exists for — "make me an app" — because a brand-new appId has no
-        // directory yet: measured 52.8s of silence against 5.0s when the file
-        // happened to pre-exist. The `*` is matched machine-side (§3.1 freezes
-        // the layout, so the shape is knowable without the id).
-        hotTimer = setInterval(() => {
+        /** Sync on WRITE, not on a tick — the native PostToolUse hook drives this.
+         *  Still by SHAPE, because the app whose plan lands first may have an id
+         *  the turn only just invented. */
+        const syncHotNow = (): void => {
           if (finished) return;
           void serialize(async () => {
             const hot = await machine.collect(HOT_WATCH);
             await checkout.syncHot(hot);
           }).catch(() => undefined);
-        }, HOT_SYNC_INTERVAL_MS);
-        hotTimer.unref?.();
+        };
 
         const tools = (await turn.tools.list()).map(listingToTool);
-        const running = machine.run({
+        // `Turn.skills` finally reaches this harness. Before cc-native the pack
+        // skills were materialized onto the box's disk and NOTHING pointed the
+        // model at them — they were files it might stumble on. Naming them here
+        // is what turns the `/host` mount into a native plugin, and naming them
+        // rather than saying "all" is what stops the MACHINE's own skills (an
+        // operator's ~/.claude/skills, on the local path) from joining the set.
+        const skillNames = (await turn.skills.list().catch(() => [])).map((skill) => skill.name);
+        const running = machine.send({
           prompt: promptFor(turn.messages, sessionId !== undefined),
-          systemPrompt: `${turn.system ?? ""}${workspaceBrief(rootHintFor(resolved))}`,
+          systemPrompt: `${turn.system ?? ""}${embeddingBrief(rootHintFor(resolved))}`,
           tools,
           ...(resolved.model === undefined ? {} : { model: resolved.model }),
           ...(resolved.effort === undefined ? {} : { effort: resolved.effort }),
           ...(resolved.maxTurns === undefined ? {} : { maxTurns: resolved.maxTurns }),
-          ...(rewind.resume === undefined ? {} : { resume: rewind.resume }),
-          ...(rewind.resumeAt === undefined ? {} : { resumeAt: rewind.resumeAt }),
+          ...(sessionId === undefined ? {} : { resume: sessionId }),
+          // A truncation on a WARM machine has to close the session it is holding
+          // open, or the model keeps the answer the user deleted.
+          ...(stale && machine.carriesSession ? { reopen: true } : {}),
+          // The `/host` mount doubles as the SDK plugin root, so the pack skills
+          // already on this disk are discovered natively — no projection. No
+          // skills, no plugin: an empty plugin is a directory nobody reads.
+          ...(skillNames.length === 0
+            ? {}
+            : { pluginPath: machine.pluginPath, skillNames }),
           callTool: (name, args) => callGuarded(turn, name, args),
           emit: (event) => events.push(event),
+          onFileWritten: () => syncHotNow(),
           signal: turn.signal,
         }).then(() => events.close(), (error: unknown) => {
           // The thinker failed; the user hears one plain sentence and the turn
@@ -349,16 +364,11 @@ export function claudeCode(
             sessionId = event.sessionId;
             continue;
           }
-          if (event.type === "checkpoint") {
-            checkpoint = event.uuid;
-            continue;
-          }
           yield event;
         }
         await running;
       } finally {
         finished = true;
-        if (hotTimer !== undefined) clearInterval(hotTimer);
         // Turn end: the whole writable tree, deletions included (§3.5).
         //
         // A machine that died mid-turn cannot be read back, and an EMPTY read is
@@ -378,24 +388,13 @@ export function claudeCode(
             console.error("[vendo] claude-code sync-back failed", error);
           });
         }
-        let released: { resume?: SessionRef } | void = undefined;
         try {
-          released = await machine.release();
+          await machine.release();
         } catch {
-          // A machine we cannot release is the pool's problem, never the turn's.
+          // A machine we cannot release is the box map's problem, never the turn's.
         }
-        // A rewind that landed replaces the ledger's tail: everything after the
-        // rewind point is a branch the session no longer holds.
-        const kept = machine.carriesSession
-          ? (state.rewind ?? []).filter((entry) => entry.at < turn.messages.length)
-          : [];
-        const ledger = checkpoint === undefined
-          ? kept
-          : [...kept, { at: turn.messages.length, uuid: checkpoint }].slice(-REWIND_LEDGER_LIMIT);
         const next: ClaudeState = {
           ...(sessionId === undefined ? {} : { sessionId, covers: turn.messages.length }),
-          ...(ledger.length === 0 ? {} : { rewind: ledger }),
-          ...(released?.resume === undefined ? {} : { resume: released.resume }),
         };
         if (next.sessionId === undefined) turn.state.clear();
         else turn.state.set(JSON.stringify(next));

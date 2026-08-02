@@ -1,17 +1,24 @@
 /**
- * Wave 2 lane E — the box's `claudeCode()` turn door.
+ * The box's `claudeCode()` SESSION door.
  *
  * The existing control port serves the layer-3 app builder (`/agent/*`). This
- * module adds the CONVERSATIONAL door beside it: materialize a workspace copy,
- * run one Claude Agent SDK turn over it, stream events out, and hand every
- * projected tool call back to the HOST — which is the only place a tool ever
- * executes.
+ * module adds the CONVERSATIONAL door beside it: materialize a workspace copy
+ * ONCE, hold ONE Claude Agent SDK session open for the whole conversation, and
+ * push each user message into it. Chat in, stream out — exactly like a terminal.
  *
- * **The bridge is inverted.** `SandboxMachine.request()` is the only data path
- * into a box, so the host drives: it polls, the box parks an ask and hands it out
- * on the next poll, the host answers. The box therefore holds no outbound
- * credential at all — a workspace copy, the inference key (the recorded v0
- * exception), and the machine token the host asserts on every call. Nothing else.
+ * **The bridge is inverted, and stays that way.** `SandboxMachine.request()` is
+ * the only data path into a box, so the host drives: it posts a message, then
+ * polls; when the model reaches a projected tool the box parks the ask and hands
+ * it out on the next poll; the host runs `turn.tools.call()` and posts the answer
+ * back. The box therefore holds no outbound credential at all — a workspace copy,
+ * the inference key (the recorded v0 exception), and the machine token the host
+ * asserts on every call.
+ *
+ * The cc-native lane MEASURED whether our MCP door could replace this bridge
+ * (`packages/vendo/src/mcp-door-parity.e2e.test.ts`). It cannot: the door
+ * hardcodes `venue`/`presence`, cannot express a live approval, and has no
+ * bearer a harness can mint. So the projection stays in-process and this bridge
+ * stays with it — now keyed on the SESSION rather than on one turn.
  *
  * Everything interesting about the SDK loop lives in `claude-turn.mjs`, which is
  * the SAME module `machine: "local"` runs on the host — one implementation, two
@@ -23,10 +30,10 @@ import path from "node:path";
 
 const RUNNER = "/opt/vendo-box/claude-turn.mjs";
 const MAX_POLL_WAIT_MS = 25_000;
-/** Finished turns stay pollable for a little while (a host retrying its last
- *  poll), then go. A session machine lives for many turns, and every turn's
+/** Finished messages stay pollable for a little while (a host retrying its last
+ *  poll), then go. A session box lives for many messages, and every message's
  *  event buffer kept forever is a slow leak in a long-lived box. */
-const TURNS_RETAINED = 4;
+const MESSAGES_RETAINED = 4;
 /**
  * Too big for the wire — the proxy's body limit is what this protects. Under the
  * DEFAULT files store (5 MiB cap) no checked-out file reaches this size; a BYO
@@ -88,25 +95,42 @@ const walk = (directory, out) => {
 };
 
 /**
+ * The tool listing a session was opened with, as one comparable string.
+ *
+ * An in-process MCP server's tool set is fixed when the session opens, but OUR
+ * equipped set can grow mid-conversation (`find_tools`). Rather than project
+ * every tool up front — which would defeat curation and THE LAW's withholding —
+ * the session is REOPENED (resuming its own id, so nothing is forgotten) on the
+ * rare message where the listing actually changed.
+ */
+const fingerprint = (tools) =>
+  (Array.isArray(tools) ? tools : []).map((tool) => tool?.name).sort().join(" ");
+
+/**
  * @param {object} options
  * @param {string} [options.root]     workspace root (default /workspace)
  * @param {string} [options.token]    the machine token the host must present
- * @param {Function} [options.runTurn] injectable SDK loop (tests)
+ * @param {Function} [options.openSession] injectable session factory (tests)
  * @param {NodeJS.ProcessEnv} [options.env] env handed to the SDK
  */
-export const createTurnRoutes = (options = {}) => {
+export const createSessionRoutes = (options = {}) => {
   const root = options.root ?? process.env.VENDO_WORKSPACE_ROOT ?? "/workspace";
   let token = options.token ?? process.env.VENDO_BOX_TOKEN ?? "";
   // What the SDK subprocess gets. Seeded from the machine's own env and
-  // REPLACED by every /turn/hello: the provider does not hand create-time envs
-  // to the template's start command (measured 2026-08-01 — the in-box SDK
-  // answered "Not logged in"), and a turn-scoped handoff is the better shape
-  // anyway: the credential arrives with the turn that needs it.
+  // REPLACED by /session/hello: the provider does not hand create-time envs to
+  // the template's start command (measured 2026-08-01 — the in-box SDK answered
+  // "Not logged in"), so the credential arrives with the first message.
   let sdkEnv = { ...(options.env ?? process.env) };
-  const turns = new Map();
-  let active;
 
-  const loadRunner = async () => options.runTurn ?? (await import(RUNNER)).runClaudeTurn;
+  /** The live session, its tool fingerprint, and the id to resume on reopen. */
+  let session;
+  let openedWith = "";
+  let sessionId;
+  /** Every message's buffers, by id. The in-flight one is `current`. */
+  const messages = new Map();
+  let current;
+
+  const loadFactory = async () => options.openSession ?? (await import(RUNNER)).createClaudeSession;
   /**
    * The SDK, from the machine image (`build-template.mjs` npm-installs it into
    * /opt/vendo-box at BUILD time). It is loaded HERE and not by the runner
@@ -116,77 +140,104 @@ export const createTurnRoutes = (options = {}) => {
    */
   const loadSdk = async () => await import("@anthropic-ai/claude-agent-sdk");
 
-  const startTurn = async (payload) => {
-    const turnId = `turn_${randomUUID()}`;
-    const state = {
-      events: [],
-      /**
-       * Every projected call waiting on the host, by id — a QUEUE, not a slot.
-       * The model emits parallel tool_use blocks (and a Task subagent's calls
-       * land concurrently too), so a single slot starved the second call until
-       * the turn budget expired. Each entry is handed out exactly ONCE, so the
-       * host can never execute one intent twice.
-       */
-      asks: new Map(),
-      waiters: [],
-      done: false,
-      abort: new AbortController(),
-    };
-    turns.set(turnId, state);
-    for (const stale of [...turns.keys()].slice(0, -TURNS_RETAINED)) turns.delete(stale);
-    active = turnId;
+  const wake = (state) => {
+    for (const resolve of state.waiters.splice(0)) resolve();
+  };
 
-    const wake = () => {
-      for (const resolve of state.waiters.splice(0)) resolve();
-    };
-    const emit = (event) => {
-      state.events.push(event);
-      wake();
-    };
-    /** Park the call for the host and wait for its answer. */
-    const callTool = (name, args) => new Promise((resolve) => {
-      const id = `ask_${randomUUID()}`;
-      state.asks.set(id, { id, name, args, resolve, handedOut: false });
-      wake();
+  /** Events and asks belong to whichever message is in flight. Between messages
+   *  nothing is active, and anything arriving then is dropped rather than
+   *  attributed to the next message. */
+  const emit = (event) => {
+    if (current === undefined) return;
+    if (event?.type === "session" && typeof event.sessionId === "string") sessionId = event.sessionId;
+    current.events.push(event);
+    wake(current);
+  };
+
+  const callTool = (name, args) => new Promise((resolve) => {
+    const state = current;
+    if (state === undefined) {
+      resolve({ status: "error", message: "That didn't work." });
+      return;
+    }
+    const id = `ask_${randomUUID()}`;
+    state.asks.set(id, { id, name, args, resolve, handedOut: false });
+    wake(state);
+  });
+
+  /** The host asked for a mid-turn hot sync; it polls for this and syncs. */
+  const onFileWritten = (written) => {
+    if (current === undefined) return;
+    current.events.push({ type: "wrote", ...(typeof written === "string" ? { path: written } : {}) });
+    wake(current);
+  };
+
+  const openSession = async (payload) => {
+    const createClaudeSession = await loadFactory();
+    // An injected factory is a test double and brings its own SDK double.
+    const sdk = options.openSession === undefined ? await loadSdk() : undefined;
+    openedWith = fingerprint(payload.tools);
+    session = createClaudeSession({
+      ...(sdk === undefined ? {} : { sdk }),
+      systemPrompt: payload.systemPrompt,
+      tools: Array.isArray(payload.tools) ? payload.tools : [],
+      model: payload.model,
+      effort: payload.effort,
+      maxTurns: payload.maxTurns,
+      // Reopening mid-conversation resumes the session we already have, so a
+      // changed tool listing costs a restart and never a memory.
+      ...(sessionId === undefined ? {} : { resume: sessionId }),
+      ...(payload.pluginPath === undefined ? {} : { pluginPath: payload.pluginPath }),
+      ...(payload.skillNames === undefined ? {} : { skillNames: payload.skillNames }),
+      cwd: root,
+      env: { ...sdkEnv },
+      callTool,
+      emit,
+      onFileWritten,
     });
+  };
 
-    const runClaudeTurn = await loadRunner();
-    // An injected runner is a test double and brings its own SDK double.
-    const sdk = options.runTurn === undefined ? await loadSdk() : undefined;
+  const startMessage = async (payload) => {
+    const messageId = `msg_${randomUUID()}`;
+    const state = { events: [], asks: new Map(), waiters: [], done: false };
+    messages.set(messageId, state);
+    for (const stale of [...messages.keys()].slice(0, -MESSAGES_RETAINED)) messages.delete(stale);
+    current = state;
+
+    if (session === undefined) {
+      await openSession(payload);
+    } else if (payload.reopen === true || fingerprint(payload.tools) !== openedWith) {
+      const closing = session;
+      session = undefined;
+      await closing.end().catch(() => undefined);
+      // `reopen` is a TRUNCATION (§1.3): the host says this session remembers an
+      // answer the user threw away, so it must NOT come back with its memory —
+      // the fresh one resumes nothing and the host's prompt carries the re-seed.
+      // A changed tool listing is the other reason to reopen, and that one keeps
+      // its id so nothing is forgotten.
+      if (payload.reopen === true) sessionId = undefined;
+      await openSession(payload);
+    }
+
     state.promise = (async () => {
       try {
-        await runClaudeTurn({
-          ...(sdk === undefined ? {} : { sdk }),
-          prompt: payload.prompt,
-          systemPrompt: payload.systemPrompt,
-          tools: Array.isArray(payload.tools) ? payload.tools : [],
-          model: payload.model,
-          effort: payload.effort,
-          maxTurns: payload.maxTurns,
-          resume: payload.resume,
-          resumeAt: payload.resumeAt,
-          cwd: root,
-          env: { ...sdkEnv },
-          callTool,
-          emit,
-          signal: state.abort.signal,
-        });
+        await session.send(payload.prompt);
       } catch (error) {
         // The host renders one plain sentence; the detail stays in the box's log.
-        console.error("[vendo-box] turn failed", error);
-        emit({ type: "error", message: "Something went wrong while I was working on that." });
+        console.error("[vendo-box] message failed", error);
+        state.events.push({ type: "error", message: "Something went wrong while I was working on that." });
       } finally {
         state.done = true;
-        // A turn that ended with asks outstanding would hang the host's poll.
+        // A message that ended with asks outstanding would hang the host's poll.
         for (const ask of state.asks.values()) {
           ask.resolve({ status: "error", message: "the turn ended" });
         }
         state.asks.clear();
-        if (active === turnId) active = undefined;
-        wake();
+        if (current === state) current = undefined;
+        wake(state);
       }
     })();
-    return turnId;
+    return messageId;
   };
 
   /** Hold the poll open until there is something to say, or the wait expires. */
@@ -218,7 +269,7 @@ export const createTurnRoutes = (options = {}) => {
 
   return {
     /** True for anything this module owns, so the supervisor can delegate. */
-    owns: (pathname) => pathname.startsWith("/turn"),
+    owns: (pathname) => pathname.startsWith("/session"),
 
     /**
      * @returns {Promise<{status:number, body:object}>}
@@ -226,13 +277,11 @@ export const createTurnRoutes = (options = {}) => {
     async handle(method, pathname, headers, payload) {
       if (method !== "POST") return { status: 405, body: { error: "POST only" } };
       const presented = headers["x-vendo-box-token"];
-      if (pathname === "/turn/hello") {
-        // Trust on FIRST use while the box is unclaimed; after that ONLY the
-        // holder of the current token may ROTATE it. Rotation is what makes a
-        // woken machine usable: a snapshot restores this module's memory, so the
-        // box comes back still demanding the token it slept with, while the host
-        // mints a fresh one per acquire. An attacker can still never claim a box
-        // that is in use — they hold neither token.
+      if (pathname === "/session/hello") {
+        // Trust on FIRST use while the box is unclaimed; after that only the
+        // holder of the token may speak. There is no ROTATION any more: a box
+        // lives for one conversation and is destroyed rather than snapshotted,
+        // so there is no woken supervisor holding a stale token to reconcile.
         if (token !== "" && presented !== token) {
           return { status: 401, body: { error: "bad or missing box token" } };
         }
@@ -240,8 +289,8 @@ export const createTurnRoutes = (options = {}) => {
           return { status: 400, body: { error: "token must be a non-empty string" } };
         }
         token = payload.token;
-        // The turn-scoped credential handoff (design §9): a workspace copy, the
-        // inference key, and this token — nothing else ever enters the machine.
+        // The credential handoff (design §9): a workspace copy, the inference
+        // key, and this token — nothing else ever enters the machine.
         if (typeof payload.env === "object" && payload.env !== null) {
           const next = {};
           for (const [name, value] of Object.entries(payload.env)) {
@@ -257,7 +306,7 @@ export const createTurnRoutes = (options = {}) => {
         return { status: 401, body: { error: "bad or missing box token" } };
       }
 
-      if (pathname === "/turn/workspace") {
+      if (pathname === "/session/workspace") {
         if (payload?.reset === true) {
           // Empty the root's CONTENTS, never the root itself: the sandbox runs
           // as a non-root user and cannot recreate a directory directly under
@@ -279,15 +328,15 @@ export const createTurnRoutes = (options = {}) => {
         return { status: 200, body: { ok: true } };
       }
 
-      if (pathname === "/turn/collect") {
+      if (pathname === "/session/collect") {
         const wanted = Array.isArray(payload?.paths) ? payload.paths : undefined;
         const files = [];
         if (wanted !== undefined) {
           // A wanted entry naming a `*` segment is how a file that did NOT exist
-          // when the turn started reaches the mid-turn sync: the host cannot
-          // pre-name `/user/apps/<a brand-new id>/plan.vendo`, so it asks by
-          // shape. Filtered HERE, so the wire carries the hot files and not the
-          // tree they were found in.
+          // when the conversation started reaches the mid-turn sync: the host
+          // cannot pre-name `/user/apps/<a brand-new id>/plan.vendo`, so it asks
+          // by shape. Filtered HERE, so the wire carries the hot files and not
+          // the tree they were found in.
           const patterns = wanted.filter((entry) => typeof entry === "string" && entry.includes("*"));
           const literals = wanted.filter((entry) => typeof entry === "string" && !entry.includes("*"));
           const matched = patterns.length === 0
@@ -323,37 +372,39 @@ export const createTurnRoutes = (options = {}) => {
         return { status: 200, body: { files } };
       }
 
-      if (pathname === "/turn/start") {
-        if (active !== undefined) {
-          return { status: 409, body: { error: "a turn is already running", turnId: active } };
+      if (pathname === "/session/message") {
+        if (current !== undefined) {
+          return { status: 409, body: { error: "a message is already running" } };
         }
         if (typeof payload?.prompt !== "string" || payload.prompt.trim() === "") {
           return { status: 400, body: { error: "prompt must be a non-empty string" } };
         }
-        return { status: 202, body: { turnId: await startTurn(payload) } };
+        return { status: 202, body: { messageId: await startMessage(payload) } };
       }
 
-      const match = /^\/turn\/([^/]+)\/(poll|answer|abort)$/.exec(pathname);
+      const match = /^\/session\/([^/]+)\/(poll|answer|interrupt)$/.exec(pathname);
       if (match === null) return { status: 404, body: { error: `unknown route: ${pathname}` } };
-      const state = turns.get(match[1]);
-      if (state === undefined) return { status: 404, body: { error: `unknown turn: ${match[1]}` } };
+      const state = messages.get(match[1]);
+      if (state === undefined) return { status: 404, body: { error: `unknown message: ${match[1]}` } };
 
       if (match[2] === "poll") {
         const cursor = Number.isInteger(payload?.cursor) ? payload.cursor : 0;
         return { status: 200, body: await poll(state, cursor, payload?.waitMs) };
       }
-      if (match[2] === "answer") {
-        const ask = state.asks.get(payload?.id);
-        if (ask === undefined) return { status: 404, body: { error: "no such ask" } };
-        state.asks.delete(payload.id);
-        ask.resolve(guardedResult(payload?.result));
+      if (match[2] === "interrupt") {
+        // The user hit stop. The SESSION survives — only this turn is cut short,
+        // which is the whole reason a live session interrupts instead of aborting.
+        await session?.interrupt().catch(() => undefined);
         return { status: 200, body: { ok: true } };
       }
-      state.abort.abort();
+      const ask = state.asks.get(payload?.id);
+      if (ask === undefined) return { status: 404, body: { error: "no such ask" } };
+      state.asks.delete(payload.id);
+      ask.resolve(guardedResult(payload?.result));
       return { status: 200, body: { ok: true } };
     },
 
-    /** Tests: await the turn's completion. */
-    turnPromise: (turnId) => turns.get(turnId)?.promise,
+    /** Tests: await one message's completion. */
+    messagePromise: (messageId) => messages.get(messageId)?.promise,
   };
 };

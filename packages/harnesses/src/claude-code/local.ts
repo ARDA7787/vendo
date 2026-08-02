@@ -17,11 +17,13 @@ import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { VendoError } from "@vendoai/core";
-import type { CheckoutFile, SyncFile } from "../materialize.js";
+import type { ClaudeTurnEvent } from "@vendoai/apps/claude-turn";
+import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
+import { emptyTree } from "../materialize.js";
 import { pathAccess } from "../materialize.js";
-import type { TurnMachine, TurnRequest } from "./machine.js";
+import type { SessionMachine, SessionMessage } from "./machine.js";
 
-/** The turn runner is shared with the box — one implementation, two homes. Its
+/** The session runner is shared with the box — one implementation, two homes. Its
  *  OWN subpath, so importing it never drags the render seam's `./internal` in,
  *  and `./internal` never drags this in. */
 const RUNNER = "@vendoai/apps/claude-turn";
@@ -91,16 +93,47 @@ async function walk(directory: string, out: string[] = []): Promise<string[]> {
   return out;
 }
 
+/** One live session per thread, for the life of the process — the local mirror of
+ *  "one box per conversation". */
+interface LocalSession {
+  /** The live `ClaudeSession`, once the first message has opened it. */
+  session?: { send(prompt: string): Promise<void>; interrupt(): Promise<void>; end(): Promise<void> };
+  /** The tool listing the session was opened with, as one comparable string. */
+  openedWith: string;
+  /** Has this thread's workspace been materialized in this process? */
+  warm: boolean;
+  /** What this thread's disk holds — the sync-back baseline, per conversation. */
+  tree: TreeState;
+  /**
+   * The TURN currently in flight, and the only thing the session's sinks are
+   * allowed to close over.
+   *
+   * A session outlives the turn that opened it, so capturing that turn's `emit`
+   * and `callTool` directly sent every later turn's text and tool calls to a
+   * queue nobody was draining — measured live 2026-08-02: the user's second
+   * message came back completely empty. The box path routes through whichever
+   * message is in flight for exactly this reason; local mode does the same.
+   */
+  live?: Pick<SessionMessage, "callTool" | "emit" | "onFileWritten">;
+}
+const locals = new Map<string, LocalSession>();
+
+/** An in-process MCP server's tool set is fixed when the session opens, but OUR
+ *  equipped set can grow mid-conversation (`find_tools`). The session is REOPENED
+ *  on the rare message where the listing actually changed. */
+const fingerprint = (tools: readonly { name: string }[]): string =>
+  tools.map((tool) => tool.name).sort().join(" ");
+
 export interface LocalMachineOptions {
   threadId: string;
   /** The recorded v0 inference exception (design §9): a harness must reach a
    *  model to think. Nothing else enters the SDK subprocess's environment. */
   env: Record<string, string>;
-  /** Test seam — the real runner is loaded from {@link RUNNER}, with the SDK. */
-  runner?: (input: Record<string, unknown>) => Promise<void>;
+  /** Test seam — the real factory is loaded from {@link RUNNER}, with the SDK. */
+  openSession?: (input: Record<string, unknown>) => LocalSession["session"];
 }
 
-export async function localMachine(options: LocalMachineOptions): Promise<TurnMachine> {
+export async function localMachine(options: LocalMachineOptions): Promise<SessionMachine> {
   const home = homeFor(options.threadId);
   // STABLE per thread, not a fresh mkdtemp per turn. The SDK files its session
   // under `CLAUDE_CONFIG_DIR/projects/<slug of cwd>`, so a moving working
@@ -108,17 +141,24 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
   // measured: turn 2 of a live thread failed outright instead of remembering.
   const root = path.join(home, "workspace");
   const configDir = path.join(home, "claude");
-  // Emptied, not appended to: the STORE is the truth, and re-materializing from
-  // it is what makes "a different harness sees the identical workspace next
-  // turn" true.
-  await rm(root, { recursive: true, force: true }).catch(() => undefined);
-  await mkdir(root, { recursive: true });
-  await mkdir(configDir, { recursive: true });
+  const held = locals.get(options.threadId) ?? { openedWith: "", warm: false, tree: emptyTree() };
+  locals.set(options.threadId, held);
+  // A FRESH thread gets an emptied tree: the STORE is the truth, and
+  // re-materializing from it is what makes "a different harness sees the
+  // identical workspace" true. A warm thread's tree is the live session's working
+  // copy and is left exactly as the last turn left it.
+  if (!held.warm) {
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
+    await mkdir(root, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+  }
 
   return {
-    // The config dir is per thread and outlives the turn, so a session written
-    // last turn is still on this disk.
-    carriesSession: true,
+    carriesSession: held.warm,
+
+    pluginPath: path.join(root, "host"),
+
+    tree: held.tree,
 
     async materialize(files) {
       for (const file of files) {
@@ -162,23 +202,81 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
       return files;
     },
 
-    async run(request: TurnRequest) {
-      const runClaudeTurn = options.runner
-        ?? (await import(RUNNER)).runClaudeTurn as (input: Record<string, unknown>) => Promise<void>;
-      const sdk = options.runner === undefined ? await loadAgentSdk() : undefined;
-      await runClaudeTurn({
-        ...request,
-        cwd: root,
-        // CLAUDE_CONFIG_DIR is the whole handoff: the SDK reads it from the
-        // environment, so the runner is told nothing about where the session lands.
-        env: { ...options.env, CLAUDE_CONFIG_DIR: configDir },
-        ...(sdk === undefined ? {} : { sdk }),
-      });
+    async send(message: SessionMessage) {
+      // Point the session's sinks at THIS turn before anything can arrive.
+      held.live = {
+        callTool: message.callTool,
+        emit: message.emit,
+        ...(message.onFileWritten === undefined ? {} : { onFileWritten: message.onFileWritten }),
+      };
+      const wanted = fingerprint(message.tools);
+      // `reopen` is a TRUNCATION: the session remembers an answer the user threw
+      // away, so it must not survive. A changed tool listing is the other reason
+      // to reopen, and that one keeps its memory (the caller still passes resume).
+      if (held.session !== undefined && (message.reopen === true || wanted !== held.openedWith)) {
+        const closing = held.session;
+        held.session = undefined;
+        await closing.end().catch(() => undefined);
+      }
+      if (held.session === undefined) {
+        const createClaudeSession = options.openSession
+          ?? (await import(RUNNER)).createClaudeSession as (input: Record<string, unknown>) => LocalSession["session"];
+        const sdk = options.openSession === undefined ? await loadAgentSdk() : undefined;
+        held.session = createClaudeSession({
+          systemPrompt: message.systemPrompt,
+          tools: message.tools,
+          model: message.model,
+          effort: message.effort,
+          maxTurns: message.maxTurns,
+          ...(message.resume === undefined ? {} : { resume: message.resume }),
+          ...(message.pluginPath === undefined ? {} : { pluginPath: message.pluginPath }),
+          ...(message.skillNames === undefined ? {} : { skillNames: message.skillNames }),
+          cwd: root,
+          // CLAUDE_CONFIG_DIR is the whole handoff: the SDK reads it from the
+          // environment, so the runner is told nothing about where the session lands.
+          env: { ...options.env, CLAUDE_CONFIG_DIR: configDir },
+          // STABLE indirections, never this turn's closures: the session
+          // outlives the turn that opened it (see LocalSession.live). Between
+          // turns nothing is in flight, and anything arriving then is dropped
+          // rather than attributed to the next turn.
+          callTool: async (name: string, args: Record<string, unknown>) =>
+            held.live === undefined
+              ? { status: "error" as const, message: "That didn't work." }
+              : held.live.callTool(name, args),
+          emit: (event: ClaudeTurnEvent) => held.live?.emit(event),
+          onFileWritten: (written: string | undefined) => held.live?.onFileWritten?.(written),
+          ...(sdk === undefined ? {} : { sdk }),
+        });
+        held.openedWith = wanted;
+      }
+      held.warm = true;
+      if (message.signal?.aborted === true) {
+        await held.session!.interrupt();
+        return;
+      }
+      const stop = message.signal === undefined
+        ? undefined
+        : () => void held.session?.interrupt().catch(() => undefined);
+      if (stop !== undefined) message.signal!.addEventListener("abort", stop, { once: true });
+      try {
+        await held.session!.send(message.prompt);
+      } finally {
+        if (stop !== undefined) message.signal!.removeEventListener("abort", stop);
+        // The turn is over; nothing may be attributed to it from here on.
+        held.live = undefined;
+      }
     },
 
     async release() {
-      // Nothing to tear down: the next turn empties and re-materializes the tree,
-      // and the config dir (with it, the native session) deliberately stays.
+      // Nothing to tear down: the session and its config dir deliberately stay,
+      // which is what makes the next message a push rather than a cold start.
     },
   };
+}
+
+/** Test + shutdown seam: end every local session this process holds. */
+export async function disposeLocalSessions(): Promise<void> {
+  const held = [...locals.values()];
+  locals.clear();
+  for (const entry of held) await entry.session?.end().catch(() => undefined);
 }
