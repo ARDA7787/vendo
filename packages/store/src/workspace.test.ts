@@ -6,6 +6,9 @@ import { dbFor } from "./store.js";
 import { workspaceStore, WORKSPACE_HISTORY_LIMIT, WORKSPACE_INLINE_MAX_BYTES } from "./workspace.js";
 
 const user: Principal = { kind: "user", subject: "user_ws" };
+/** §9.7 — undo/history take the CALLER (principal + asserted orgs), because
+    the owner they address is derived from the path and checked with `can()`. */
+const caller = { principal: user };
 const APP = "/user/apps/app_1/app.vendo";
 
 for (const backend of backends()) {
@@ -103,7 +106,7 @@ for (const backend of backends()) {
         await fs.commit({ message: intent });
       }
 
-      const history = await workspace.history(user, path);
+      const history = await workspace.history(caller, path);
       expect(history.map((entry) => [entry.revision, entry.intent])).toEqual([
         [2, "made the chart green"],
         [1, "made the chart blue"],
@@ -114,12 +117,12 @@ for (const backend of backends()) {
       expect(await reader()).toBe("chart: green");
 
       // Each undo walks one step further back, never toggling between two.
-      expect(await workspace.undo(user, path)).toEqual({ status: "ok", revision: 4 });
+      expect(await workspace.undo(caller, path)).toEqual({ status: "ok", revision: 4 });
       expect(await reader()).toBe("chart: blue");
-      expect(await workspace.undo(user, path)).toEqual({ status: "ok", revision: 5 });
+      expect(await workspace.undo(caller, path)).toEqual({ status: "ok", revision: 5 });
       expect(await reader()).toBe("chart: red");
       // Nothing left to undo.
-      expect(await workspace.undo(user, path)).toEqual({ status: "empty" });
+      expect(await workspace.undo(caller, path)).toEqual({ status: "empty" });
       expect(await reader()).toBe("chart: red");
     });
 
@@ -258,7 +261,7 @@ for (const backend of backends()) {
       // One live revision + one superseded revision.
       expect(await blobsFor()).toBe(2);
 
-      expect(await workspace.undo(user, path)).toEqual({ status: "ok", revision: 3 });
+      expect(await workspace.undo(caller, path)).toEqual({ status: "ok", revision: 3 });
       expect(await (await workspace.open(user)).readFile(path)).toBe(big("a"));
       // Undo has no redo, so the discarded revision's blob must not linger:
       // only the restored one is still referenced.
@@ -458,11 +461,11 @@ for (const backend of backends()) {
       expect(await rowsFor(path)).toEqual([]);
 
       // History kept what the delete removed, with the delete's own intent.
-      expect(await workspace.history(user, path)).toMatchObject([
+      expect(await workspace.history(caller, path)).toMatchObject([
         { revision: 1, intent: "deleted the file" },
       ]);
 
-      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      expect(await workspace.undo(caller, path)).toMatchObject({ status: "ok" });
       expect(await (await workspace.open(user)).readFile(path)).toBe("the only copy");
       // Revisions never go backwards, even across a delete and a restore.
       expect(Number((await rowsFor(path))[0]?.["revision"])).toBeGreaterThan(1);
@@ -502,19 +505,19 @@ for (const backend of backends()) {
         await fs.writeFile(path, content);
         await fs.commit({ message: "wrote" });
       }
-      const historyBefore = await workspace.history(user, path);
+      const historyBefore = await workspace.history(caller, path);
       expect(historyBefore).toHaveLength(2);
 
       // Every workspace blob vanishes — the shape of pointing at the wrong bucket.
       await made.sql("DELETE FROM vendo_blobs WHERE namespace = 'workspace'");
 
       // Reported as an adapter fault, naming the revisions it could not read...
-      const first = await workspace.undo(user, path);
+      const first = await workspace.undo(caller, path);
       expect(first).toMatchObject({ status: "content-missing" });
       expect(first).toMatchObject({ revisions: [2, 1] });
       // ...and repeating it changes nothing: the history is still all there.
-      expect(await workspace.undo(user, path)).toMatchObject({ status: "content-missing" });
-      expect(await workspace.history(user, path)).toEqual(historyBefore);
+      expect(await workspace.undo(caller, path)).toMatchObject({ status: "content-missing" });
+      expect(await workspace.history(caller, path)).toEqual(historyBefore);
     });
 
     // F8 (verifier): a revision whose blob had vanished reported "empty" — a lie
@@ -544,11 +547,11 @@ for (const backend of backends()) {
 
       // One step: over the unreadable revision and onto the one that works,
       // saying which it skipped rather than pretending nothing happened.
-      expect(await workspace.undo(user, path))
+      expect(await workspace.undo(caller, path))
         .toMatchObject({ status: "ok", skipped: [missingRevision] });
       expect(await (await workspace.open(user)).readFile(path)).toBe(big("a"));
       // The unreadable revision was stepped over, not destroyed.
-      expect((await workspace.history(user, path)).map((entry) => entry.revision))
+      expect((await workspace.history(caller, path)).map((entry) => entry.revision))
         .toContain(missingRevision);
     });
 
@@ -593,9 +596,9 @@ for (const backend of backends()) {
 
       // Undo walks back through the loser's edit to the base, never toggling.
       const loser = settled === "chart: from left" ? "chart: from right" : "chart: from left";
-      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      expect(await workspace.undo(caller, path)).toMatchObject({ status: "ok" });
       expect(await (await workspace.open(user)).readFile(path)).toBe(loser);
-      expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+      expect(await workspace.undo(caller, path)).toMatchObject({ status: "ok" });
       expect(await (await workspace.open(user)).readFile(path)).toBe("chart: base");
     });
 
@@ -637,7 +640,7 @@ for (const backend of backends()) {
       try {
         // undo restores r1 (K_a) but loses its first CAS to the writer, re-aims,
         // and wins — dropping only the content it actually superseded.
-        expect(await workspace.undo(user, path)).toMatchObject({ status: "ok" });
+        expect(await workspace.undo(caller, path)).toMatchObject({ status: "ok" });
       } finally {
         db.query = original;
       }
@@ -656,7 +659,7 @@ for (const backend of backends()) {
       expect(dangling).toEqual([]);
 
       // And the writer's revision is genuinely recoverable, not content-missing.
-      const recovered = await workspace.undo(user, path);
+      const recovered = await workspace.undo(caller, path);
       expect(recovered).toMatchObject({ status: "ok" });
       expect(await (await workspace.open(user)).readFile(path)).toBe(big("b"));
     });

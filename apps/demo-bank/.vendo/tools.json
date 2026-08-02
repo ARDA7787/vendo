@@ -733,7 +733,7 @@
         "path": "/api/proof",
         "argsIn": "query"
       },
-      "srcHash": "sha256:515809a640d53bc88d47a64e5968d09763d2fa1fb0d54cb4e2e2d834c14d7acd"
+      "srcHash": "sha256:6685933bdad55139448519a474dd485b40e3d5aa1c4571a7343a020b9ed4ab85"
     },
     {
       "name": "host_transferMoney",

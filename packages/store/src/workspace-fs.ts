@@ -17,15 +17,20 @@ import { safeErrorMessage, VendoError } from "@vendoai/core";
 import type { PreparedWrite, WorkspaceFileMeta, WorkspaceRows } from "./workspace-rows.js";
 
 /** Build contract §3.1 — the frozen layout. `/user` is the subject's, rw;
-    `/host` is host-authored, ro for everyone (wave-1 `can()`, §8). No other
-    top-level mount exists, and no path's meaning depends on who wrote it. */
+    `/orgs/<orgId>` is one mount per ASSERTED membership (§9.7), owned by the
+    org; `/host` is host-authored, ro for everyone. No other top-level mount
+    exists, and no path's meaning depends on who wrote it. */
 export const USER_MOUNT = "/user";
 export const HOST_MOUNT = "/host";
+export const ORGS_MOUNT = "/orgs";
 
 /** Intra-turn junk (§3.1): visible to the turn, never committed to the store.
-    The bare path counts — a FILE called `/user/scratch` would otherwise persist
-    and shadow the directory the layout reserves. */
-const SCRATCH_MOUNT = "/user/scratch";
+    One per mount — `/user/scratch` and `/orgs/<org>/scratch` — because a turn
+    working in an org mount has the same throwaway files a personal turn does,
+    and committing them would publish them to the whole team. The bare path
+    counts: a FILE called `scratch` would otherwise persist and shadow the
+    directory the layout reserves. */
+const SCRATCH = /^(?:\/user|\/orgs\/[^/]+)\/scratch(?:\/|$)/;
 
 const DIR_MODE = 0o755;
 const FILE_MODE = 0o644;
@@ -44,13 +49,16 @@ const enotempty = (op: string, path: string): Error =>
   new Error(`ENOTEMPTY: directory not empty, ${op} '${path}'`);
 const eexist = (op: string, path: string): Error =>
   new Error(`EEXIST: file already exists, ${op} '${path}'`);
-/** The workspace is exactly two mounts (§3.1). A write anywhere else is a
-    mistake — `/User/apps/...`, `/user/../x`, `/etc/passwd` — and silently
-    accepting it would lose the data at commit with an `ok` status. */
-const eacces = (op: string, path: string): Error =>
+/** The workspace is exactly the mounts §3.1 names. A write anywhere else is a
+    mistake — `/User/apps/...`, `/user/../x`, `/etc/passwd`, or an org the host
+    did not assert this request — and silently accepting it would lose the data
+    at commit with an `ok` status. The message names the mounts THIS caller
+    actually has, because "no such org" and "no orgs at all" are different
+    problems with different fixes. */
+const eacces = (op: string, path: string, mounts: readonly string[]): Error =>
   new Error(
     `EACCES: permission denied, ${op} '${path}'`
-      + ` (the workspace holds ${USER_MOUNT} and ${HOST_MOUNT} only)`,
+      + ` (the workspace holds ${mounts.join(", ")})`,
   );
 
 /** Resolve `.`/`..`, collapse slashes, drop the trailing one. Pure. */
@@ -137,26 +145,53 @@ const statOf = (kind: "file" | "directory", size: number, mtime: Date): FsStat =
  * contract §5), so projecting them per turn is always current, while a copy in
  * the store could go stale against the deployed packs.
  */
+/** Build contract §9.7 — what one turn's façade may reach. `subject` owns
+    `/user/**`; each asserted org owns `/orgs/<org>/**`. `canCommit` is the
+    per-path live-rows check the commit runs (§9.3's path variant); absent, the
+    façade is single-player and every `/user` write lands as it always did. */
+export interface WorkspaceMounts {
+  subject: string;
+  /** Org ids the host ASSERTED this request. An org that is not here has no
+      mount at all — not an empty one, not a forbidden one: absent. */
+  orgs: readonly string[];
+  /** Live-rows `can(editor)` for one path. Runs at commit, never at read: the
+      box is a snapshot, so reads age gracefully and writes never sneak through. */
+  canCommit?: (path: string) => Promise<boolean>;
+}
+
 export class WorkspaceStoreFs implements WorkspaceFs {
   private readonly staged = new Map<string, Staged>();
   private readonly removed = new Set<string>();
   private readonly directories = new Set<string>();
   private readonly index: Map<string, WorkspaceFileMeta>;
+  private readonly mounts: WorkspaceMounts;
 
   constructor(
     private readonly rows: WorkspaceRows,
-    private readonly owner: string,
+    mounts: WorkspaceMounts | string,
     index: WorkspaceFileMeta[],
     private readonly host: Map<string, Uint8Array>,
   ) {
+    this.mounts = typeof mounts === "string" ? { subject: mounts, orgs: [] } : mounts;
     this.index = new Map(index.map((meta) => [meta.path, meta]));
   }
 
-  /** Wave-1 `can()` (contract §8), in one predicate: a `/user/**` path belongs
-      to its subject, `/host/**` is read-only for everyone. Anything else is
-      turn-scoped memory and never persisted. */
+  /** Build contract §9.7 — owner derivation is a PURE FUNCTION OF THE PATH:
+      `/user/**` is the bound subject's, `/orgs/<org>/**` is the org's. An org
+      the host did not assert has no owner here, so it has no mount. */
+  private ownerOf(path: string): string | undefined {
+    if (under(path, USER_MOUNT)) return this.mounts.subject;
+    const org = /^\/orgs\/([^/]+)(?:\/|$)/.exec(path)?.[1];
+    return org !== undefined && this.mounts.orgs.includes(org) ? org : undefined;
+  }
+
+  /** The mount roots this caller has, in the order readdir reports them. */
+  private mountNames(): string[] {
+    return ["host", ...(this.mounts.orgs.length > 0 ? ["orgs"] : []), "user"];
+  }
+
   private storeBacked(path: string): boolean {
-    return under(path, USER_MOUNT);
+    return this.ownerOf(path) !== undefined;
   }
 
   private readOnly(path: string): boolean {
@@ -164,10 +199,12 @@ export class WorkspaceStoreFs implements WorkspaceFs {
   }
 
   /** Every write goes through here: `/host` is read-only, and anything outside
-      the two mounts is refused outright rather than accepted and dropped. */
+      this caller's mounts is refused outright rather than accepted and dropped. */
   private assertWritable(op: string, path: string): void {
     if (this.readOnly(path)) throw erofs(op, path);
-    if (!this.storeBacked(path)) throw eacces(op, path);
+    if (!this.storeBacked(path)) {
+      throw eacces(op, path, this.mountNames().map((name) => `/${name}`));
+    }
     // A file cannot also be a directory. Allowing it produced a name that
     // readdir reported twice — once as each — and bash globs processed twice.
     for (let parent = dirnameOf(path); parent !== "/"; parent = dirnameOf(parent)) {
@@ -176,7 +213,7 @@ export class WorkspaceStoreFs implements WorkspaceFs {
   }
 
   private persists(path: string): boolean {
-    return this.storeBacked(path) && !under(path, SCRATCH_MOUNT);
+    return this.storeBacked(path) && !SCRATCH.test(path);
   }
 
   /** Every path the turn can see: the store's index, the host overlay, and this
@@ -198,6 +235,10 @@ export class WorkspaceStoreFs implements WorkspaceFs {
       not directories), plus anything explicitly `mkdir`ed this turn. */
   private isDirectory(path: string): boolean {
     if (path === "/" || path === USER_MOUNT || path === HOST_MOUNT) return true;
+    // A mounted org is a directory even while empty — the mount is what the
+    // membership grants, whether or not anyone has written in it yet.
+    if (this.mounts.orgs.length > 0 && path === ORGS_MOUNT) return true;
+    if (this.mounts.orgs.some((org) => path === `${ORGS_MOUNT}/${org}`)) return true;
     if (this.directories.has(path)) return true;
     return this.livePaths().some((candidate) => candidate.startsWith(`${path}/`));
   }
@@ -212,7 +253,7 @@ export class WorkspaceStoreFs implements WorkspaceFs {
     if (!this.storeBacked(normalized) || this.removed.has(normalized) || !this.index.has(normalized)) {
       throw enoent(op, path);
     }
-    const bytes = await this.rows.read(this.owner, normalized);
+    const bytes = await this.rows.read(this.ownerOf(normalized)!, normalized);
     if (bytes === undefined) throw enoent(op, path);
     return bytes;
   }
@@ -320,9 +361,11 @@ export class WorkspaceStoreFs implements WorkspaceFs {
     // reporting it as a file made `find -type f` return directories.
     for (const candidate of this.directories) collect(candidate, "directory");
     if (normalized === "/") {
-      directories.add("user");
-      directories.add("host");
+      for (const name of this.mountNames()) directories.add(name);
     }
+    // `ls /orgs` is a query over the assertions, not a directory read (design
+    // §8): every asserted org appears, empty or not.
+    if (normalized === ORGS_MOUNT) for (const org of this.mounts.orgs) directories.add(org);
     // One entry per name, whatever the two sets say: a name is a directory if
     // anything lives under it, otherwise a file.
     return [...new Set([...directories, ...files])]
@@ -440,12 +483,24 @@ export class WorkspaceStoreFs implements WorkspaceFs {
    * the honest O(files changed) count. `/user/scratch/**` never lands.
    */
   async commit(opts?: { message?: string }): Promise<CommitResult> {
+    // Build contract §8/§9.3 — the box is born filtered, so `can()` runs at
+    // exactly two moments; this is the second. Live rows, per changed path,
+    // BEFORE anything is placed: a mid-session revoke must bite here even
+    // though the reads it already served stand.
+    if (this.mounts.canCommit !== undefined) {
+      for (const path of [...this.staged.keys(), ...this.removed]) {
+        if (!this.persists(path)) continue;
+        if (!(await this.mounts.canCommit(path))) {
+          throw new VendoError("forbidden", `you cannot write ${path}`, { path });
+        }
+      }
+    }
     const landing: PreparedWrite[] = [];
     for (const [path, staged] of this.staged) {
       if (!this.persists(path)) continue;
       let prepared: PreparedWrite | "unchanged";
       try {
-        prepared = await this.rows.prepare(this.owner, path, staged.bytes);
+        prepared = await this.rows.prepare(this.ownerOf(path)!, path, staged.bytes);
       } catch (cause) {
         // Nothing has been written yet; release what this commit already placed
         // so a rejected commit leaves no orphaned content behind. Best-effort:
@@ -473,18 +528,35 @@ export class WorkspaceStoreFs implements WorkspaceFs {
     }
 
     const changed: string[] = [];
+    const conflicts: string[] = [];
     for (const path of [...this.removed].filter((candidate) => this.persists(candidate))) {
-      if (await this.rows.remove(this.owner, path, opts?.message)) {
+      if (await this.rows.remove(this.ownerOf(path)!, path, opts?.message)) {
         this.index.delete(path);
         changed.push(path);
       }
     }
     this.removed.clear();
     for (const prepared of landing) {
-      const written = await this.rows.land(this.owner, prepared, opts?.message);
+      // Build contract §9.7 — commit policy is PER MOUNT: `/user` keeps the
+      // last-write-wins re-aim loop, `/orgs` is strict compare-and-swap, so a
+      // lost swap comes back as `conflict` for the harness to re-read and
+      // re-apply rather than silently overwriting a colleague.
+      const owner = this.ownerOf(prepared.path)!;
+      const strict = !under(prepared.path, USER_MOUNT);
+      const written = await this.rows.land(owner, prepared, opts?.message, {
+        strict,
+        // The revision this TURN opened with (§3.5's checkout base), not the
+        // head at commit time — the whole point of CAS is to notice the edit
+        // that landed in between.
+        expectedRevision: this.index.get(prepared.path)?.revision ?? null,
+      });
+      if (written.conflict === true) {
+        conflicts.push(prepared.path);
+        continue;
+      }
       this.index.set(prepared.path, {
         path: prepared.path,
-        owner: this.owner,
+        owner,
         bytes: prepared.bytes,
         revision: written.revision,
         updatedAt: written.updatedAt,
@@ -493,6 +565,7 @@ export class WorkspaceStoreFs implements WorkspaceFs {
       // case this commit wrote nothing and must not claim the file changed.
       if (written.landed) changed.push(prepared.path);
     }
+    if (conflicts.length > 0) return { status: "conflict", paths: conflicts.sort() };
     // Committed files now read through the store like everything else.
     for (const path of changed) this.staged.delete(path);
     return { status: "ok", changed: changed.sort() };

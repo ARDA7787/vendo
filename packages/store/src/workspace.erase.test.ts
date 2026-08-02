@@ -110,7 +110,7 @@ for (const backend of backends()) {
       const fs = await workspaceStore(made.store).open(signedIn);
       expect(await fs.readFile("/user/apps/app_anon/app.vendo")).toBe("then edited");
       // History travelled with the file, so undo still works after signing in.
-      const undone = await workspaceStore(made.store).undo(signedIn, "/user/apps/app_anon/app.vendo");
+      const undone = await workspaceStore(made.store).undo({ principal: signedIn }, "/user/apps/app_anon/app.vendo");
       expect(undone).toEqual({ status: "ok", revision: 3 });
       expect(await (await workspaceStore(made.store).open(signedIn))
         .readFile("/user/apps/app_anon/app.vendo")).toBe("made while anonymous");

@@ -137,6 +137,7 @@ for (const backend of backends()) {
         vendo_sessions: 0, // durable subject — never registered as a session
         vendo_knowledge_docs: 1,
         vendo_knowledge_chunks: 1,
+        vendo_app_grants: 0, // ...and holds no app-access grant (§9.2)
         vendo_workspace_files: 0, // this subject wrote no workspace files
         vendo_workspace_history: 0,
         workspace_content_objects: 0, // ...so no workspace content was deleted either

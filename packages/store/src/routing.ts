@@ -33,6 +33,7 @@ import { cursorMs, decodeCursor, encodeCursor, iso, pageLimit, text } from "./he
 import {
   invalid,
   parseAppData,
+  parseAppGrantData,
   parseApprovalData,
   parseAuditEvent,
   parseEffectData,
@@ -56,6 +57,7 @@ export const RESERVED_COLLECTIONS = [
   "vendo_apps",
   "vendo_state",
   "vendo_effects",
+  "vendo_app_grants",
 ] as const;
 
 export const DEDICATED_RECORD_COLLECTIONS = [
@@ -206,6 +208,20 @@ async function insertEffect(
     [record.id, subject, JSON.stringify(outcome)],
   );
   return result.rows[0] ? effectRecord(result.rows[0]) : null;
+}
+
+function appGrantRecord(row: Record<string, unknown>): VendoRecord {
+  const at = iso(row["created_at"]);
+  const appId = text(row["app_id"]);
+  const principal = text(row["principal"]);
+  const level = text(row["level"]);
+  return {
+    id: text(row["id"]),
+    data: { appId, orgId: text(row["org_id"]), principal, level, createdBy: text(row["created_by"]) },
+    refs: { app_id: appId, org_id: text(row["org_id"]), principal, level },
+    createdAt: at,
+    updatedAt: at,
+  };
 }
 
 function stateRecord(row: StateRow): VendoRecord {
@@ -550,6 +566,34 @@ function configFor(db: Db, collection: ReservedCollection): RoutedConfig {
               "vendo_effects receipts are immutable once written; only insertIfAbsent is supported",
             );
           },
+        },
+      };
+    case "vendo_app_grants":
+      return {
+        table: collection,
+        // Contract §9.2: app → principal → level, in ITS OWN table — the erase
+        // cascade and the by-app cascade both address `vendo_app_grants`
+        // directly, so grants routed to the generic table would be invisible
+        // to both (the vendo_effects lesson).
+        select: "SELECT * FROM vendo_app_grants",
+        cursorColumn: "created_at",
+        refs: { app_id: "app_id", org_id: "org_id", principal: "principal", level: "level" },
+        fromDb: appGrantRecord,
+        async put(record) {
+          const data = parseAppGrantData(record.data, record.id);
+          // One row per (app, principal): re-granting UPDATES the level in
+          // place rather than accreting rows a max() would have to reconcile.
+          // The original id survives, so a revoke by id stays stable.
+          const result = await db.query(
+            `INSERT INTO vendo_app_grants (id, app_id, org_id, principal, level, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (app_id, principal)
+               DO UPDATE SET level = EXCLUDED.level, created_by = EXCLUDED.created_by,
+                             org_id = EXCLUDED.org_id
+             RETURNING *`,
+            [record.id, data.appId, data.orgId, data.principal, data.level, data.createdBy],
+          );
+          return appGrantRecord(result.rows[0] as Record<string, unknown>);
         },
       };
     case "vendo_state":

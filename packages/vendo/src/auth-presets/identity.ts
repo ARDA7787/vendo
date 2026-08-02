@@ -1,5 +1,5 @@
 import type { SecretSource } from "@vendoai/actions/presets";
-import type { ActAs, PermissionGrant, Principal } from "@vendoai/core";
+import type { ActAs, Membership, PermissionGrant, Principal } from "@vendoai/core";
 import type { HostOAuthAdapter } from "@vendoai/mcp";
 import { environment } from "../wire/shared.js";
 import type { HostAuthPreset, HostAuthPresetUser, HostAuthPresetUserResolver } from "./shared.js";
@@ -158,6 +158,8 @@ export interface ComposeHostAuthPresetOptions {
   actAs: ActAs;
   /** The sessionless-door redirect (10-mcp §3). */
   login(request: Request, returnTo: string): Response;
+  /** Build contract §9.1 — forwarded verbatim; presets never interpret it. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
 }
 
 /** The three-seam shape every named preset shares (authJs is the template):
@@ -196,5 +198,10 @@ export function composeHostAuthPreset(opts: ComposeHostAuthPresetOptions): HostA
     },
   };
 
-  return { principal, actAs: opts.actAs, oauth };
+  return {
+    principal,
+    actAs: opts.actAs,
+    oauth,
+    ...(opts.memberships === undefined ? {} : { memberships: opts.memberships }),
+  };
 }

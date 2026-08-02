@@ -3,6 +3,7 @@ import { useVendoContext } from "../context.js";
 import { useApp } from "../hooks/use-app.js";
 import { useApps } from "../hooks/use-apps.js";
 import { useMobileTakeover } from "../hooks/use-mobile-takeover.js";
+import { useVendoStatus } from "../hooks/use-vendo-status.js";
 import { useThreads } from "../hooks/use-threads.js";
 import { AppFrame } from "../tree/frames.js";
 import { ActivityPanel } from "./activity-panel.js";
@@ -10,6 +11,7 @@ import { AutomationsPanel } from "./automations-panel.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { ACTIVITY_ANCHOR_ATTRIBUTE, ACTIVITY_BUMP_EVENT } from "./morph-toast.js";
 import { ConnectedAccountsPanel } from "./connected-accounts-panel.js";
+import { ForkOffer, ShareDialog } from "./share-dialog.js";
 import { TakeoverPortal } from "./takeover-portal.js";
 import { VendoThread } from "./thread/index.js";
 import { WaitingQueue } from "./waiting-queue.js";
@@ -137,14 +139,26 @@ function OpenApp({ appId }: { appId: string }) {
 
 function AppsWorkspace() {
   const { apps, create, fork, remove } = useApps();
+  // §9.1 — the orgs the host asserted for this caller; the Share dialog offers
+  // them by name. Empty on a single-player deployment, which is the point.
+  const { memberships } = useVendoStatus();
   const [selected, setSelected] = useState<string>();
+  const [sharing, setSharing] = useState<string>();
+  const [denied, setDenied] = useState<string>();
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string>();
-  const during = async (action: () => Promise<void>) => {
+  const during = async (action: () => Promise<void>, appId?: string) => {
     setError(undefined);
+    setDenied(undefined);
     try {
       await action();
     } catch (reason) {
+      // §9.4 — `forbidden` means they can see it but not do this to it, which
+      // is answerable: offer the fork instead of showing them a wall.
+      if (appId !== undefined && (reason as { code?: string })?.code === "forbidden") {
+        setDenied(appId);
+        return;
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
@@ -161,6 +175,16 @@ function AppsWorkspace() {
   return (
     <div className="fl-page-pane" style={{ gap: 14, overflowY: "auto", padding: 14 }}>
       {error ? <div role="alert" className="fl-error">{error}</div> : null}
+      {denied ? (
+        <ForkOffer
+          onFork={() => during(async () => {
+            const copy = await fork(denied);
+            setDenied(undefined);
+            setSelected(copy.id);
+          })}
+          onDismiss={() => setDenied(undefined)}
+        />
+      ) : null}
       <form className="fl-picker-toprow" aria-label="Create app" onSubmit={event => void submit(event)}>
         <label style={{ flex: 1 }}>
           <span className="fl-picker-group" style={{ display: "block", margin: "0 2px 7px" }}>Describe a new app</span>
@@ -192,15 +216,35 @@ function AppsWorkspace() {
             <div className="fl-auto-flow" style={{ gap: 8 }}>
               <button className="fl-btn fl-btn-primary" type="button" onClick={() => setSelected(app.id)}>Open</button>
               <button className="fl-btn" type="button" onClick={() => void during(async () => { await fork(app.id); })}>Fork</button>
+              {/* Build contract §9.2-§9.6 — the Share dialog is the ONE surface
+                  that writes grants. It opens for anyone; the dialog itself
+                  reads the caller's level and says plainly when they may not
+                  change who reaches the app. */}
+              <button className="fl-btn" type="button" onClick={() => setSharing(sharing === app.id ? undefined : app.id)}>
+                {sharing === app.id ? "Close sharing" : "Share"}
+              </button>
               <button className="fl-btn fl-btn-ceremony" type="button" onClick={() => {
                 if (globalThis.confirm?.(`Remove ${app.name}?`)) {
                   void during(async () => {
                     await remove(app.id);
                     if (selected === app.id) setSelected(undefined);
-                  });
+                  }, app.id);
                 }
               }}>Remove</button>
             </div>
+            {sharing === app.id ? (
+              <div style={{ padding: 12 }}>
+                <ShareDialog
+                  appId={app.id}
+                  appName={app.name}
+                  memberships={memberships}
+                  // §9.5 — an app that declares a trigger loses it in the move;
+                  // the dialog says so before and after.
+                  automation={app.trigger !== undefined}
+                  onClose={() => setSharing(undefined)}
+                />
+              </div>
+            ) : null}
           </article>
         ))}
       </div>

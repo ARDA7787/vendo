@@ -162,7 +162,7 @@ describe("apps lifecycle", () => {
     expect(await store.records(`app:${fork.id}:notes`).list()).toEqual({ records: [] });
     expect(await store.records("vendo_state").get(`${fork.id}:${ctx.principal.subject}`)).toBeNull();
     expect(await store.blobs(`app:${fork.id}:files`).list()).toEqual([]);
-    expect(await runtime.history(fork.id).list()).toEqual([]);
+    expect(await runtime.history(fork.id, ctx).list()).toEqual([]);
   });
 
   it("a fork never carries a machine or a retired v1 server ref", async () => {
@@ -236,7 +236,7 @@ describe("apps lifecycle", () => {
       await runtime.edit(app.id, `Edit ${index}`, ctx);
     }
 
-    const history = runtime.history(app.id);
+    const history = runtime.history(app.id, ctx);
     const entries = await history.list();
     expect(entries).toHaveLength(50);
     expect(entries[0]?.intent).toBe("Edit 51");
@@ -302,8 +302,8 @@ describe("apps lifecycle", () => {
       await runtime.edit(app.id, "First", context("user_ada"));
       await runtime.edit(app.id, "Second", context("user_ada"));
 
-      await expect(runtime.history(app.id).undo()).resolves.toMatchObject({ name: "First" });
-      await expect(runtime.history(app.id).undo()).resolves.toEqual(app);
+      await expect(runtime.history(app.id, context("user_ada")).undo()).resolves.toMatchObject({ name: "First" });
+      await expect(runtime.history(app.id, context("user_ada")).undo()).resolves.toEqual(app);
     } finally {
       uuid.mockRestore();
     }
@@ -312,7 +312,7 @@ describe("apps lifecycle", () => {
   it("rejects undo on empty history", async () => {
     const { runtime } = setup();
     const app = await runtime.create({ prompt: "No history" }, context("user_ada"));
-    await expect(runtime.history(app.id).undo()).rejects.toEqual(
+    await expect(runtime.history(app.id, context("user_ada")).undo()).rejects.toEqual(
       new VendoError("conflict", "nothing to undo"),
     );
   });
@@ -356,6 +356,6 @@ describe("apps lifecycle", () => {
     });
 
     await expect(runtime.list(ctx)).resolves.toEqual([edited.app]);
-    await expect(runtime.history(valid.id).list()).resolves.toEqual([edited.version]);
+    await expect(runtime.history(valid.id, ctx).list()).resolves.toEqual([edited.version]);
   });
 });

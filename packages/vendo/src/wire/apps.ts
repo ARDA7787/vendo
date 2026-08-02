@@ -1,6 +1,16 @@
-import { VendoError, type Json } from "@vendoai/core";
+import { VendoError, type AccessLevel, type Json } from "@vendoai/core";
 import type { VendoStore } from "@vendoai/store";
 import { json, requestJson, route, string, type RouteEntry } from "./shared.js";
+
+/** Build contract §9.3 — the level vocabulary is CLOSED, so the wire refuses
+    anything outside it instead of letting a typo reach the store. */
+function accessLevel(value: unknown): AccessLevel {
+  const level = string(value, "level");
+  if (level !== "viewer" && level !== "editor" && level !== "owner") {
+    throw new VendoError("validation", "level must be viewer, editor, or owner");
+  }
+  return level;
+}
 
 /** What the ?pending=1 disambiguation learned about a record open() refused
     to serve this caller. */
@@ -163,13 +173,20 @@ export const appRoutes: RouteEntry[] = [
       const body = await requestJson(request);
       return json(await deps.apps.edit(appId, string(body["instruction"], "instruction"), ctx));
     }
+    // Build contract §9.3 — the LEVEL lives in the runtime: `list` needs
+    // viewer, `undo` needs editor (rolling the team's app back is an edit), and
+    // a caller who cannot see the app stays masked. This route just names the
+    // caller; it is no longer the only thing standing between a viewer and the
+    // team's history.
     if (operation === "history" && segments.length === 3) {
+      // The door still masks an app this caller cannot see at all, so a
+      // not-found answer never depends on which verb they asked for.
       if (await deps.apps.get(appId, ctx) === null) throw new VendoError("not-found", `app not found: ${appId}`);
-      if (request.method === "GET") return json(await deps.apps.history(appId).list());
+      if (request.method === "GET") return json(await deps.apps.history(appId, ctx).list());
       if (request.method === "POST") {
         const body = await requestJson(request);
         if (body["op"] !== "undo") throw new VendoError("validation", "history op must be undo");
-        return json(await deps.apps.history(appId).undo());
+        return json(await deps.apps.history(appId, ctx).undo());
       }
     }
     // 06-apps §8–§9 — additive: the reviewable diff of what this app ships
@@ -216,6 +233,60 @@ export const appRoutes: RouteEntry[] = [
     }
     if (request.method === "POST" && operation === "fork" && segments.length === 3) {
       return json(await deps.apps.fork(appId, ctx));
+    }
+    // Build contract §9.2–§9.6 — the Share dialog's door. Reading the grant
+    // list is viewer-gated and OSS; writing one is owner-gated AND
+    // Cloud-gated, and the runtime (not this route) is where both are decided,
+    // so the MCP door inherits the same rules without a second copy.
+    if (operation === "grants" && segments.length === 3) {
+      if (request.method === "GET") {
+        return json({
+          level: await deps.apps.access.levelFor(appId, ctx),
+          grants: await deps.apps.access.list(appId, ctx),
+          // §9.5 — "share implies promote" needs to know whether this is still
+          // the caller's own copy. Derived from who HOLDS the row, so the
+          // dialog never has to guess from an empty grant list.
+          personal: await deps.apps.access.holder(appId, ctx) === ctx.principal.subject,
+        });
+      }
+      if (request.method === "POST") {
+        const body = await requestJson(request);
+        await deps.apps.access.grant(
+          appId,
+          string(body["principal"], "principal"),
+          accessLevel(body["level"]),
+          ctx,
+        );
+        return json({ grants: await deps.apps.access.list(appId, ctx) });
+      }
+      if (request.method === "DELETE") {
+        const principal = wire.url.searchParams.get("principal");
+        await deps.apps.access.revoke(appId, string(principal, "principal"), ctx);
+        // The revoke LANDED. Reading the list back is a courtesy for the dialog,
+        // and a caller who just removed their OWN last grant may no longer read
+        // it — that is §9.4's masking answering a different question, not a
+        // failed removal, and reporting it as one told them to retry work that
+        // was already done. Answer with what they can still legitimately see:
+        // nothing.
+        //
+        // Only `can()` may be forgiven here, and `can()` always refuses with a
+        // VendoError — so the TYPE is half the test. A hosted store carries a
+        // misbehaving console's failure on a plain Error with the server's code
+        // attached (hosted-store.ts), and "the console said not-found" is not
+        // "the caller may no longer look": that, and every other failure,
+        // surfaces.
+        const remaining = await deps.apps.access.list(appId, ctx).catch((reason: unknown) => {
+          const masked = reason instanceof VendoError
+            && (reason.code === "not-found" || reason.code === "forbidden");
+          if (masked) return [];
+          throw reason;
+        });
+        return json({ grants: remaining });
+      }
+    }
+    if (request.method === "POST" && operation === "promote" && segments.length === 3) {
+      const body = await requestJson(request);
+      return json(await deps.apps.promote(appId, string(body["orgId"], "orgId"), ctx));
     }
     return undefined;
   }),

@@ -13,6 +13,7 @@ import type {
   ApprovalRequest,
   AuditEvent,
   IsoDateTime,
+  Membership,
   RunId,
   ThreadId,
   TriggerSource,
@@ -242,4 +243,7 @@ export interface VendoStatus {
   posture: GuardPosture;
   version: string;
   blocks: Record<string, unknown>;
+  /** Build contract §9.1 — the orgs the host asserted for this caller this
+      request. Absent on a single-player deployment; never stored anywhere. */
+  memberships?: Membership[];
 }

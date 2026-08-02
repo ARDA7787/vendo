@@ -1,5 +1,5 @@
 import type { SecretSource } from "@vendoai/actions/presets";
-import type { ActAs, Principal } from "@vendoai/core";
+import type { ActAs, Membership, Principal } from "@vendoai/core";
 import type { HostOAuthAdapter } from "@vendoai/mcp";
 
 /** 09-vendo §2.1 — one host-identity story, three seams. A HostAuthPreset fills
@@ -12,6 +12,13 @@ export interface HostAuthPreset {
   actAs?: ActAs;
   /** Absent → the MCP door cannot open (`mcp: true` still requires an adapter, 09 §2). */
   oauth?: HostOAuthAdapter;
+  /** Build contract §9.1 — the fourth seam: the caller's orgs and teams, one
+      query against the host's OWN tables. Keyed on `Principal`, not `Request`,
+      which is what makes it callable for unattended runs (a fire-time sponsor
+      check has no session, and the callback is host server code in the same
+      deployment). Absent → no orgs asserted → `can()` degenerates to
+      ownership. Never persisted anywhere. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
 }
 
 /** What a host's subject→user resolver returns. `display` names the resolved
@@ -39,4 +46,8 @@ export interface HostAuthPresetOptions {
       env loading. jwt() has no vendor env to read: its secret is required. */
   secret?: SecretSource;
   user?: HostAuthPresetUserResolver;
+  /** Build contract §9.1 — see HostAuthPreset.memberships. Every preset
+      forwards this verbatim; nothing about it is vendor-specific, because the
+      org chart it reads is the HOST's, not the identity vendor's. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
 }

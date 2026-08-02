@@ -246,7 +246,7 @@ describe("06-apps §8 — pin rebase via intent replay", () => {
       pinBaselines: [baseline(NEW_SOURCE, "sha256:maple-new")],
     });
     const before = await runtime.get(appId, ctx);
-    const versionsBefore = await runtime.history(appId).list();
+    const versionsBefore = await runtime.history(appId, ctx).list();
 
     const result = await runtime.pins.rebase({ appId, slot: SLOT }, ctx);
 
@@ -275,7 +275,7 @@ describe("06-apps §8 — pin rebase via intent replay", () => {
     expect(appVersionHash(result.app)).not.toBe(appVersionHash(before!));
     await expect(runtime.get(appId, ctx)).resolves.toEqual(result.app);
     await expect(runtime.pins.drift(appId, ctx)).resolves.toEqual([]);
-    const versions = await runtime.history(appId).list();
+    const versions = await runtime.history(appId, ctx).list();
     expect(versions).toHaveLength(versionsBefore.length + 1);
     expect(versions[0]).toEqual(result.version);
     expect(result.version.intent).toContain(`Rebase remixed ${SLOT}`);
@@ -391,7 +391,7 @@ describe("06-apps §8 — pin rebase via intent replay", () => {
     const result = await runtime.pins.rebase({ appId, slot: SLOT }, ctx);
     expect(result.status).toBe("rebased");
 
-    await expect(runtime.history(appId).undo()).resolves.toEqual(before);
+    await expect(runtime.history(appId, ctx).undo()).resolves.toEqual(before);
     await expect(runtime.get(appId, ctx)).resolves.toEqual(before);
     await expect(runtime.pins.drift(appId, ctx)).resolves.toMatchObject([{ slot: SLOT }]);
     const trail = await store.records(`vendo:app-pin-intents:${appId}`).list();
@@ -414,7 +414,7 @@ describe("06-apps §8 — pin rebase via intent replay", () => {
       broken,
     ]);
     const before = await runtime.get(appId, ctx);
-    const versionsBefore = await runtime.history(appId).list();
+    const versionsBefore = await runtime.history(appId, ctx).list();
 
     const result = await runtime.pins.rebase({ appId, slot: SLOT }, ctx);
 
@@ -425,7 +425,7 @@ describe("06-apps §8 — pin rebase via intent replay", () => {
     expect(result.remaining).toEqual([]);
     // Nothing was persisted: same document, same history, still drifted.
     await expect(runtime.get(appId, ctx)).resolves.toEqual(before);
-    await expect(runtime.history(appId).list()).resolves.toEqual(versionsBefore);
+    await expect(runtime.history(appId, ctx).list()).resolves.toEqual(versionsBefore);
     await expect(runtime.pins.drift(appId, ctx)).resolves.toMatchObject([{ slot: SLOT }]);
   });
 

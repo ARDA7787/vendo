@@ -99,9 +99,9 @@ describe("06-apps §8 — gesture-owned deterministic fork (pins.fork)", () => {
     }));
     expect(forked.version.intent).toBe(`Remix the host component "${SLOT}"`);
     // The fork is a recorded version: undo returns to the pre-fork app.
-    const versions = await runtime.history(app.id).list();
+    const versions = await runtime.history(app.id, ctx).list();
     expect(versions.map(({ intent }) => intent)).toContain(forked.version.intent);
-    const undone = await runtime.history(app.id).undo();
+    const undone = await runtime.history(app.id, ctx).undo();
     expect(undone.pins ?? []).toEqual([]);
   });
 

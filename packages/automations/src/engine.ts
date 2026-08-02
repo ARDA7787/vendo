@@ -470,14 +470,22 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     return true;
   };
 
-  const runContext = (run: InternalRunRecord, subject: string): RunContext => ({
-    principal: { kind: "user", subject },
-    venue: "automation",
-    presence: "away",
-    sessionId: `sess_${run.id}`,
-    appId: run.appId,
-    trigger: { runId: run.id, kind: run.trigger.kind },
-  });
+  /** Build contract §9.1 — an unattended fire resolves the SAME host org query
+      an attended request does. It is host server code in this deployment, so
+      the absence of a session is not in its way; unset seam ⇒ no assertion. */
+  const runContext = async (run: InternalRunRecord, subject: string): Promise<RunContext> => {
+    const principal: Principal = { kind: "user", subject };
+    const memberships = await config.memberships?.(principal);
+    return {
+      principal,
+      venue: "automation",
+      presence: "away",
+      sessionId: `sess_${run.id}`,
+      appId: run.appId,
+      trigger: { runId: run.id, kind: run.trigger.kind },
+      ...(memberships === undefined ? {} : { memberships }),
+    };
+  };
 
   const terminal = async (
     run: InternalRunRecord,
@@ -707,10 +715,14 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       startedAt,
       steps: [],
     };
-    const ctx = runContext(record, app.subject);
     const agentController = trigger.run.kind === "agentic" ? new AbortController() : undefined;
     if (agentController !== undefined) abortControllers.set(runId, agentController);
     const done = (async (): Promise<void> => {
+      // Build contract §9.1 — asserting the owner's orgs is an I/O call now
+      // (the host's own query), so it happens INSIDE the run, not while minting
+      // its id: `launchRun` stays synchronous so the tick can collect run ids
+      // without blocking on any single automation.
+      const ctx = await runContext(record, app.subject);
       try {
         await writeRun(record);
         await audit(ctx, "running");
@@ -864,12 +876,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
 
       const appFound = await appRecord(run.appId);
       if (appFound === null) {
-        const ctx = runContext(run, approvalData.request.ctx.principal.subject);
+        const ctx = await runContext(run, approvalData.request.ctx.principal.subject);
         await terminal(run, ctx, "stopped", "app deleted before resume");
         await dropPark();
         return;
       }
-      const ctx = runContext(run, appFound.row.subject);
+      const ctx = await runContext(run, appFound.row.subject);
       if (!appFound.row.enabled || appFound.row.doc.trigger === undefined) {
         await terminal(run, ctx, "stopped", "automation disabled before resume");
         await dropPark();
@@ -1530,7 +1542,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     stopped.add(runId);
     abortControllers.get(runId)?.abort();
     const parkedApprovalId = run.__resume?.approvalId;
-    const runCtx = runContext(run, app.row.subject);
+    const runCtx = await runContext(run, app.row.subject);
     await terminal(run, runCtx, "stopped", "stopped by user");
     if (parkedApprovalId !== undefined) await config.store.records(PARKED).delete(parkedApprovalId);
     if (!active.has(runId)) stopped.delete(runId);

@@ -29,6 +29,7 @@ export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai
 export { instant, type InstantHarnessDeps, type InstantHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
 import { warnDeprecatedConfigKeys } from "./config-keys.js";
+import { createPromoteApp } from "./promote-app.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -81,12 +82,15 @@ import {
 import { createMcpDoor, type AppsPort, type HostOAuthAdapter, type McpDoor } from "@vendoai/mcp";
 import {
   adoptEphemeralSubject,
+  appAccess,
+  appStore,
   createStore,
   envSecrets,
   registerEphemeralSubject,
   storeFiles,
   sweepEphemeralSubjects,
   threadMessageStore,
+  workspaceStore,
   type SubjectMergeReport,
   type VendoStore,
 } from "@vendoai/store";
@@ -226,7 +230,7 @@ import {
   type WireDeps,
 } from "./wire/shared.js";
 import { appRoutes } from "./wire/apps.js";
-import { boxRoutes, fnProxyRoutes } from "./wire/box.js";
+import { boxRoutes, fnProxyRoutes, servedProxyRoutes } from "./wire/box.js";
 import { approvalRoutes, grantRoutes } from "./wire/approvals.js";
 import { automationRoutes, runRoutes } from "./wire/automations.js";
 import { connectionRoutes } from "./wire/connections.js";
@@ -1294,6 +1298,9 @@ const wireRoutes: readonly RouteEntry[] = [
   ...grantRoutes,
   ...orgsRoutes,
   ...fnProxyRoutes,
+  // Build contract §9.8 — ahead of the grouped /apps arm for the same reason
+  // the fn proxy is: /apps/:id/serve/** must resolve here, not fall through it.
+  ...servedProxyRoutes,
   ...appRoutes,
   ...automationRoutes,
   ...runRoutes,
@@ -1431,6 +1438,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const resolvePrincipal = config.auth?.principal ?? config.principal ?? (async () => null);
   const actAsSeam = config.auth === undefined ? config.actAs : config.auth.actAs;
   const oauthSeam = config.auth === undefined ? config.oauth : config.auth.oauth;
+  // Build contract §9.1 — the fourth seam. It rides the preset (there is no
+  // per-seam twin: the org query has no meaning without an identity story) and
+  // is handed to the wire, the automations engine, and the schedule engine, so
+  // an attended request and an unattended fire resolve the SAME answer.
+  const membershipsSeam = config.auth?.memberships;
   // 02-store §4 (kill-list B3) — ephemeral session policy. Validated like the
   // agent's context config; defaults are the recommended knobs. The store takes
   // the clock per call (register/sweep), so one time source needs no seam.
@@ -1997,6 +2009,22 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // environment — VENDO_API_KEY fills its CloudAppsClient slot HERE, at the
   // composition seam; unfilled, share/publish refuse with cloud-required.
   const appsCloud = cloudKeyOptions();
+  // ADAPTER RULE, multi-party seam (build contract §9.6): sharing is
+  // multi-party coordination, so the WRITES that create it need a key —
+  // filled HERE, from the same one read every other Cloud default uses. The
+  // enforcement half below (`appAccess`) is OSS and never key-conditional:
+  // with no key no grant row can exist, so `can()` degenerates to ownership.
+  const multiParty = appsCloud !== undefined;
+  // §9.5's promote crosses subjects and moves workspace rows — raw-row work
+  // that needs a local engine handle. A Cloud-hosted store answers through the
+  // wire door instead and has none, so the seam stays unset there and promote
+  // refuses loudly rather than half-moving an app. Resolved on FIRST PROMOTE,
+  // never at compose: a host-passed store that is not a local engine handle
+  // must not take down createVendo for a verb it may never call.
+  const promoteRows = isHostedStore(store) ? undefined : {
+    get rows() { return appStore(store); },
+    get workspace() { return workspaceStore(store, { files }); },
+  };
   // Wave 9 — the arming seam for ladder-authored automations: filled with the
   // automations engine composed BELOW (arming only happens inside requests,
   // which run after createVendo returns, so the closure reference is safe —
@@ -2009,6 +2037,38 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     model: inference.agent.model,
     catalog,
     pinBaselines,
+    // Build contract §9 — the multi-party half. `can()` over whatever store the
+    // host wired (OSS, unconditional); `multiParty` is the Cloud gate on the
+    // three writes that create sharing; `promoteApp` is the store's sanctioned
+    // cross-subject door; `memberships` lets an unattended schedule fire assert
+    // the same orgs a request does.
+    appAccess: appAccess(store),
+    multiParty,
+    // §9.5's order and its rollback rule live in promote-app.ts, where the
+    // failure interleavings are testable; the getters keep `dbFor` lazy.
+    ...(promoteRows === undefined ? {} : { promoteApp: createPromoteApp(promoteRows) }),
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+    // Build contract §9.8 — where the authenticated served-app proxy lives. The
+    // wire owns its base path, so it is filled here and nowhere else; the apps
+    // block never invents a URL for a door it does not mount.
+    //
+    // ABSOLUTE, like the personal branch's provider URL: an MCP client (or
+    // anything not already sitting on the host origin) cannot resolve a relative
+    // path. Serving an app means a machine, and machine provisioning already
+    // requires VENDO_BASE_URL (see machineEnv), so the origin is always there —
+    // and when it is not, the refusal names it rather than handing out a URL
+    // nobody can follow.
+    servedProxyPath: (appId: AppId) => {
+      if (configuredBaseUrl === undefined) {
+        throw new VendoError(
+          "validation",
+          "serving a team app needs VENDO_BASE_URL — the app's URL has to be absolute for anything "
+          + "that is not already on this origin (an MCP client, a native app). Set it to this "
+          + "deployment's public origin and restart.",
+        );
+      }
+      return `${configuredBaseUrl.replace(/\/+$/, "")}${BASE_PATH}/apps/${encodeURIComponent(appId)}/serve/`;
+    },
     // execution-v2 Waves 4+9 — the layer-2/3 experimental opt-ins, host-config
     // only (never an env var: enabling machine-backed execution or a surface
     // that runs generated web apps is a deliberate per-project decision).
@@ -2298,6 +2358,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     capabilityMiss,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
+    // Build contract §9.1/§9.7 — the same host org query the wire resolves per
+    // request, so a harness turn's façade mounts the team's files too.
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
   });
   /**
    * THE harness door — one object, served two ways.
@@ -2474,6 +2537,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     guard,
     store,
     runner: agent.asRunner(),
+    // Build contract §9.1 — an away run asserts the owner's orgs the same way a
+    // request does; the callback is host server code in this deployment, so the
+    // absence of a session is not in its way.
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     ...(hostedStoreComposed ? { localTriggerKinds: new Set<"schedule" | "external">() } : {}),
   });
   automationsForArming = automations;
@@ -2596,6 +2663,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const runtimeCapture = development ? createRuntimeCapture(developmentPaths) : null;
   const handler = createWireHandler({
     principal: resolvePrincipal,
+    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     ready,
     trustedBaseIsHttps,
     get sessionId() { return sessionId(); },
