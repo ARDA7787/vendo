@@ -711,6 +711,14 @@ class GuardImplementation implements VendoGuard {
     // purpose: an org ask over a remembered grant means confirm-every-time, and
     // that is the point of the layer.
     //
+    // Stated rather than discovered: the carve-out skips the whole org lookup,
+    // so it skips `block` too — an org rule that FORBIDS this call does not stop
+    // a consumed approval for it, even though nothing about `block` is
+    // unsatisfiable. That is the trade, and it is bounded to one already-tapped
+    // call: the alternative is asking the guard to tell `ask` and `block` apart
+    // before it has read the rule, and any such split re-opens the park →
+    // approve → park loop for `ask`.
+    //
     // Known and accepted: an org rule adopted BETWEEN a park and its approval is
     // not applied to that one call — the consumed replay is already authorized by
     // the human who tapped it. That is the same time-of-check window host policy
