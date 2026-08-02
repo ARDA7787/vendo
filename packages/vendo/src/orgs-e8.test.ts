@@ -175,6 +175,44 @@ describe("E8 — two principals, one org, over the real composition", () => {
     expect(await solo.readdir("/")).toEqual(["host", "user"]);
   });
 
+  it("two simultaneous promotes: one wins, and the LOSER undoes nothing of the winner's", async () => {
+    // The dangerous shape is not the collision — it is the rollback. A promote
+    // that loses the row flip must not reverse the document move the winner made
+    // or revoke the grant the winner minted: doing either leaves the owner with
+    // a half-moved app she can no longer see (row in the org, documents back
+    // under /user, no grant to admit her).
+    await seedApp(store, seeded("app_race", "Race"), "dana");
+    const workspace = workspaceStore(store);
+    const mine = await workspace.open(dana);
+    await mine.writeFile("/user/apps/app_race/app.vendo", "page: v1");
+    await mine.commit();
+
+    const both = await Promise.all([
+      call(vendo, dana, "POST", "/apps/app_race/promote", { orgId: ORG }),
+      call(vendo, dana, "POST", "/apps/app_race/promote", { orgId: ORG }),
+    ]);
+    // At least one succeeds, and nothing 5xxes — a lost race is a `conflict`
+    // (409) or, if the loser starts after the winner finished, simply the app
+    // already in its org (200). Never a crash, never a raw database error.
+    expect(both.some((answer) => answer.status === 200)).toBe(true);
+    expect(both.every((answer) => answer.status < 500)).toBe(true);
+
+    // THE INVARIANT, whatever the interleaving was: one living app, wholly in
+    // the org, and its owner still reaches it.
+    expect((await store.records("vendo_apps").get("app_race"))?.refs?.["subject"]).toBe(ORG);
+    const rows = await (store.raw() as {
+      query(sql: string, params: unknown[]): Promise<{ rows: Array<{ path: string; owner: string }> }>;
+    }).query("SELECT path, owner FROM vendo_workspace_files WHERE path LIKE $1 ORDER BY path", ["%app_race%"]);
+    expect(rows.rows).toEqual([
+      { path: `/orgs/${ORG}/apps/app_race/app.vendo`, owner: ORG },
+    ]);
+    const grants = await call(vendo, dana, "GET", "/apps/app_race/grants");
+    expect(grants.body.level).toBe("owner");
+    expect(grants.body.grants.map((grant: { principal: string; level: string }) => grant))
+      .toEqual([expect.objectContaining({ principal: "user:dana", level: "owner" })]);
+    expect((await call(vendo, dana, "GET", "/apps/app_race")).status).toBe(200);
+  });
+
   it("refuses a colliding promote in the consumer's voice, leaving the app WHOLLY personal", async () => {
     // The org workspace already holds documents at this app's subtree. Promote
     // is all-or-nothing: the documents move first and the row flips last, so a

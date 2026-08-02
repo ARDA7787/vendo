@@ -2355,6 +2355,11 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // would have nothing to admit them by — the promoter is not necessarily
       // an org admin.
       const promoter = `user:${ctx.principal.subject}`;
+      // Mint-then-KNOW: what the promoter held BEFORE this call, so a failure
+      // takes back exactly what this call added and nothing else. Inferring it
+      // afterwards cannot tell "I minted this" from "someone else did".
+      const heldBefore = (await config.appAccess?.list(ctx, appId))
+        ?.find((row) => row.principal === promoter)?.level;
       await config.appAccess?.grant(ctx, appId, promoter, "owner");
       // The row's subject becomes the org id VERBATIM — the same convention the
       // workspace `owner` column uses (contract §3.3), so one id names the app's
@@ -2362,9 +2367,16 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       try {
         await config.promoteApp(appId, from, orgId);
       } catch (failure) {
-        // All-or-nothing: the move refused (a destination collision, a lost
-        // race), so the app is still wholly personal — and so is its grant set.
-        await config.appAccess?.revoke(ctx, appId, promoter).catch(() => undefined);
+        // All-or-nothing means undoing what THIS call did — and only that. If
+        // the row no longer names `from`, a concurrent promote won: the grant
+        // now admits the promoter to the app that just moved, and revoking it
+        // would lock her out of her own app.
+        if ((await apps.get(appId))?.refs?.subject === from && config.appAccess !== undefined) {
+          const undo = heldBefore === undefined
+            ? config.appAccess.revoke(ctx, appId, promoter)
+            : config.appAccess.grant(ctx, appId, promoter, heldBefore);
+          await undo.catch(() => undefined);
+        }
         throw failure;
       }
       // Re-stamped now that the row names the org, so the grant's `org_id`

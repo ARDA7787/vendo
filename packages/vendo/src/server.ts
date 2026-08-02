@@ -25,6 +25,7 @@ import { assertHarnessComposable, vendo } from "@vendoai/harnesses";
 // value is called `vendo` (`import { vendo as vendoHarness }`).
 export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
+import { createPromoteApp } from "./promote-app.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
   buildEnv,
@@ -1984,25 +1985,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // the same orgs a request does.
     appAccess: appAccess(store),
     multiParty,
-    ...(promoteRows === undefined ? {} : {
-      promoteApp: async (appId: AppId, from: string, orgId: string) => {
-        // §9.5 is ALL-OR-NOTHING, and the store seam (01-core §12) has no
-        // transaction: so the documents move FIRST — that is the step that can
-        // collide, and it refuses in the consumer's voice before touching a row
-        // — and the row flips LAST. If the flip loses to a concurrent write the
-        // documents go back, so a failed promote always leaves the app WHOLLY
-        // personal rather than half-moved.
-        const personal = { kind: "user", subject: from } as const;
-        const team = { kind: "org", org: orgId } as const;
-        await promoteRows.workspace.moveApp(appId, personal, team);
-        try {
-          await promoteRows.rows.promote(appId, from, orgId);
-        } catch (failure) {
-          await promoteRows.workspace.moveApp(appId, team, personal);
-          throw failure;
-        }
-      },
-    }),
+    // §9.5's order and its rollback rule live in promote-app.ts, where the
+    // failure interleavings are testable; the getters keep `dbFor` lazy.
+    ...(promoteRows === undefined ? {} : { promoteApp: createPromoteApp(promoteRows) }),
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     // Build contract §9.8 — where the authenticated served-app proxy lives. The
     // wire owns its base path, so it is filled here and nowhere else; the apps
