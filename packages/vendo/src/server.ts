@@ -2679,6 +2679,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       // layering keeps mcp off actions, so the file stays the umbrella's to
       // read and the wire stays the door's to shape.
       menuTools: () => actions.surfaceMenu("mcp"),
+      // Build contract §9.1 — the FOURTH door gets the same seam as the wire,
+      // the harness and the automations engine. `can()` reads the caller's orgs
+      // off the ctx and never queries them (§9.3), so without this an
+      // `org:`/`team:` grant can never match here: a team app shared with the
+      // caller would be absent from list and not-found on open, over MCP only.
+      ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
       mount: MCP_MOUNT,
       ...(doorBaseUrl === undefined ? {} : { baseUrl: doorBaseUrl }),
       // 10-mcp §3.1/§3.2 — broker-fronted compositions: trust the external

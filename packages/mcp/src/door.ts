@@ -1,6 +1,7 @@
 import type {
   Guard,
   Json,
+  Membership,
   Principal,
   RiskLabel,
   RunContext,
@@ -78,6 +79,17 @@ export interface McpDoorConfig {
   store: StoreAdapter;
   /** §4 — saved apps ride along as MCP Apps; absent → tools-only door. */
   apps?: AppsPort;
+  /** Build contract §9.1 — the host's org query, keyed on `Principal` (never on
+   * a Request), resolved once per authenticated request and ridden onto every
+   * RunContext this door mints.
+   *
+   * Load-bearing, not decorative: `can()` reads the caller's orgs from the ctx
+   * and never queries them (§9.3), so a door without this seam can never match
+   * an `org:`/`team:` grant — a team app shared with the caller would be absent
+   * from `list` and not-found on `open`, over this door only. Absent seam ⇒ no
+   * orgs asserted ⇒ `can()` degenerates to ownership, which is every unkeyed
+   * deployment. */
+  memberships?: (principal: Principal) => Promise<Membership[]>;
   /** The same resolved host brand the UI pipeline consumes. The prebuilt
    * consent page and MCP Apps shim both emit it as `--vendo-*` variables. */
   theme?: VendoTheme;
@@ -339,15 +351,19 @@ class Door {
     // authenticate host execution via ActAs. The inbound bearer itself is never
     // forwarded; only this clientId/scopes projection travels.
     const consent = { clientId: auth.grant.clientId, scopes: auth.grant.scopes };
+    // §9.1 — resolved ONCE per authenticated request, beside the consent
+    // projection and for the same reason: both are per-request facts about the
+    // caller that every ctx this request mints has to carry.
+    const memberships = await this.#config.memberships?.(principal);
 
     if (requestedSessionId !== undefined) {
-      requestedState!.context = mcpContext(principal, requestedSessionId, consent);
+      requestedState!.context = mcpContext(principal, requestedSessionId, consent, memberships);
       await this.#state.touchSession(requestedSessionId, Date.now() + SESSION_IDLE_MS);
       return requestedState!.handleRequest(req);
     }
 
     const familyId = "familyId" in auth.grant ? auth.grant.familyId : undefined;
-    const state = await this.#newSession(auth.grant.subject, principal, consent, familyId);
+    const state = await this.#newSession(auth.grant.subject, principal, consent, memberships, familyId);
     const response = await state.handleRequest(req);
     if (state.sessionId === undefined) await state.close();
     return response;
@@ -357,6 +373,7 @@ class Door {
     subject: string,
     principal: Principal,
     consent: { clientId: string; scopes: string[] },
+    memberships: Membership[] | undefined,
     grantFamilyId?: string,
   ): Promise<SessionState> {
     const identity = await this.#hostIdentity();
@@ -367,7 +384,7 @@ class Door {
       onsessioninitialized: async (sessionId) => {
         state.sessionId = sessionId;
         state.replayScope = sessionId;
-        state.context = mcpContext(state.context.principal, sessionId, consent);
+        state.context = mcpContext(state.context.principal, sessionId, consent, memberships);
         await this.#state.setSession({
           sessionId,
           subject,
@@ -396,7 +413,7 @@ class Door {
     state = {
       subject,
       replayScope: initialContextKey,
-      context: mcpContext(principal, initialContextKey, consent),
+      context: mcpContext(principal, initialContextKey, consent, memberships),
       server,
       handleRequest: (req) => transport.handleRequest(req),
       close: () => transport.close(),
@@ -1016,8 +1033,17 @@ function mcpContext(
   principal: Principal,
   sessionId: string,
   consent: { clientId: string; scopes: string[] },
+  memberships?: Membership[],
 ): McpRunContext {
-  return { principal, venue: "mcp", presence: "present", sessionId, mcpConsent: consent };
+  return {
+    principal,
+    venue: "mcp",
+    presence: "present",
+    sessionId,
+    mcpConsent: consent,
+    // §9.1 — asserted, never stored, and absent when the host asserts nothing.
+    ...(memberships === undefined ? {} : { memberships }),
+  };
 }
 
 /** Keep the shipped shim byte-for-byte generic. A door instance specializes
