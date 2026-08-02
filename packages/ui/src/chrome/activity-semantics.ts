@@ -122,7 +122,8 @@ const KIND_LABEL: Record<AuditEvent["kind"], string> = {
   "tool-call": "Tool",
   approval: "Approval",
   "policy-decision": "Policy",
-  // Never read on its own — a run row is named by the door it arrived through.
+  // Read on its own only for a venue outside the four doors (an older row) —
+  // otherwise a run row is named by the door it arrived through.
   run: "Run",
   "app-lifecycle": "App",
   share: "Share",

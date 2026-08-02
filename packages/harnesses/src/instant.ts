@@ -41,9 +41,9 @@ import { defineHarness } from "./define.js";
  *  here: it means `turn.tools.list()` is a curated subset, not the world. */
 const FIND_TOOLS = "find_tools";
 
-/** The router's one tool. Never user-visible — it is how a closed answer space is
- *  made actually closed (the provider validates the arguments), where free text
- *  can always drift outside it. */
+/** The router's one tool. Never user-visible — forcing the answer through a
+ *  schema'd tool call keeps it in shape where free text can always drift, and
+ *  the branch check after `toolCalls` is what makes the space actually closed. */
 const ROUTE_TOOL = "route";
 
 /**
@@ -236,11 +236,9 @@ async function routeAsk(
         [ROUTE_TOOL]: {
           description: "Record which branch this request belongs to.",
           inputSchema: jsonSchema(ROUTE_SCHEMA as unknown as Parameters<typeof jsonSchema>[0]),
-          // Strict tool use: the provider validates the arguments, so an
-          // out-of-enum branch is unsamplable rather than something to defend
-          // against downstream.
-          strict: true,
-        } as never,
+          // No provider-side strictness to lean on (the ai SDK's tool surface
+          // has no such knob) — the branch check below is the enforcement.
+        },
       },
       toolChoice: { type: "tool", toolName: ROUTE_TOOL },
       maxRetries: 0,
@@ -305,12 +303,15 @@ export function instant(deps: InstantHarnessDeps = {}): Harness<InstantHarnessOp
       }
 
       if (route?.do === "edit" && has(VENDO_APPS_EDIT_TOOL)) {
-        // The id must be one this conversation actually produced. A router asked
-        // to name an app will name one whether or not it exists — measured live
-        // (2026-08-01): after a build failed, the follow-up edit was routed at an
-        // invented id and spent a real tool call on nothing. The transcript is
-        // the authority; no app in it means there is nothing to edit, and the
-        // acting step (which has the create tool too) is the honest recovery.
+        // The id must at least have APPEARED in this conversation's tool
+        // traffic. A router asked to name an app will name one whether or not
+        // it exists — measured live (2026-08-01): after a build failed, the
+        // follow-up edit was routed at an invented id and spent a real tool
+        // call on nothing. HONEST SCOPE: the harvest reads tool INPUTS as well
+        // as outputs, so it stops fresh inventions but not a re-route at an id
+        // an earlier failed call already carried. No app in the transcript
+        // means there is nothing to edit, and the acting step (which has the
+        // create tool too) is the honest recovery.
         const named = route.appId !== undefined && appIds.includes(route.appId) ? route.appId : undefined;
         const appId = named ?? appIds[appIds.length - 1];
         if (appId !== undefined) {

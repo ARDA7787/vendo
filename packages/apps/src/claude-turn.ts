@@ -251,7 +251,6 @@ function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
   const boxAllowed = new Set<string>([...(input.allowedBoxTools ?? BOX_TOOLS), ...SUBAGENT_TOOLS]);
   const settled = new Map<string, GuardedResult[]>();
   const schemas = new Map(input.tools.map((listed) => [listed.name, listed.inputSchema]));
-  const slot = (name: string, args: unknown): string => `${name}\0${JSON.stringify(args ?? {})}`;
 
   const execute = async (bare: string, args: Record<string, unknown>): Promise<GuardedResult> => {
     try {

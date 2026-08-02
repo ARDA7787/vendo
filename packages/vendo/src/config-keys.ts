@@ -25,7 +25,7 @@ import type { CreateVendoConfig } from "./server.js";
  * Every top-level key of {@link CreateVendoConfig}, in declaration order.
  *
  * Adding a key to the interface without adding it here is a typecheck failure
- * (`_noMissingKeys` below); adding one here that does not exist is also a
+ * (`_NoMissingKeys` below); adding one here that does not exist is also a
  * typecheck failure (`_listedKeysExist`).
  */
 export const CREATE_VENDO_CONFIG_KEYS = [

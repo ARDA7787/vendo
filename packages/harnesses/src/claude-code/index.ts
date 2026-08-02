@@ -150,7 +150,10 @@ interface ClaudeState {
   sessionId?: string;
   /**
    * The sleeping machine the session lives on (sandbox path only), and the
-   * control token its restored memory will still demand.
+   * control token its restored memory will still demand. Populated only when a
+   * sweep reclaimed the machine MID-turn (a guarded wait outlived the idle
+   * TTL) — the ordinary sweep runs after the state was already written, so a
+   * process restart normally re-seeds.
    *
    * The token rides here because a woken supervisor keeps the one it slept with,
    * so the next acquire must present it to be allowed to rotate. It is no new
@@ -261,10 +264,11 @@ export function claudeCode(
           | SandboxAdapterLike
           | undefined;
         if (sandbox === undefined) {
-          // The boot gate (`assertHarnessComposable`) passes when the DEPLOYMENT
-          // has an adapter, which is not the same fact as the HARNESS having
-          // been handed one — so this is reachable, and it has to be loud for
-          // the operator and quiet for the user.
+          // On the composed path server.ts now threads the gate-checked
+          // adapter into the slot, so gate-pass implies slot-filled there.
+          // Still reachable by a host driving the runtime directly without a
+          // sandbox — and it has to be loud for the operator and quiet for
+          // the user.
           console.error(
             "[vendo] claudeCode() has no sandbox adapter. Hand it one directly — "
             + "`harness: claudeCode({ sandbox: e2bSandbox({ apiKey }) })` — or pass "
@@ -417,8 +421,9 @@ async function callGuarded(
  * The thread this turn belongs to — the session machine's pool key.
  *
  * `Turn.threadId` (contract §1, amendment 2026-08-01) is the answer on every
- * composed path. The fallbacks exist only for a runtime driven without
- * composition: first message id (stable for the life of one thread,
+ * composed path — the field is required, so the fallbacks are unreachable from
+ * typed callers and exist only for a turn hand-rolled outside the type system:
+ * first message id (stable for the life of one thread,
  * unguessable outside it), else a per-turn random key — sharing a machine
  * (and therefore a native session and a workspace copy) between two
  * conversations because both happened to have no identity is the one outcome

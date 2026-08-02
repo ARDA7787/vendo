@@ -27,9 +27,9 @@ import type { TurnMachine, TurnRequest } from "./machine.js";
 const RUNNER = "@vendoai/apps/claude-turn";
 
 /**
- * The SDK, from HERE, because this package is the one that declares the optional
- * peer — and this function is the ONLY place in the shipped packages that names
- * it on a host path.
+ * The SDK, from HERE, because this package declares the optional peer
+ * (`@vendoai/apps` declares it too, for the box door) — and this function is
+ * the ONLY place in the shipped packages that names it on a host path.
  *
  * `turbopackIgnore`/`webpackIgnore` keep it out of a host's BUILD: a bundler
  * that resolves this specifier refuses to build a Next.js host that has not

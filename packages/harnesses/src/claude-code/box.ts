@@ -46,7 +46,7 @@ export interface SandboxMachineLike {
 
 /** The supervisor's control port, as `box-agent.ts` names it. */
 const CONTROL_PORT = 8811;
-/** How long a reclaimed-for-idleness machine may sit unused. */
+/** How long an unleased machine may sit idle before the sweep reclaims it. */
 export const MACHINE_IDLE_TTL_MS = 5 * 60_000;
 /** The box holds each poll open this long before answering empty. */
 const POLL_WAIT_MS = 10_000;
@@ -320,7 +320,9 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
     carriesSession: entry.carriesSession,
 
     async materialize(files: readonly CheckoutFile[]) {
-      // Chunked so one oversized upload cannot blow the proxy's body limit.
+      // Chunked by COUNT, which bounds the typical upload body — not a hard
+      // byte bound: one large file still travels alone in its chunk, and a
+      // BYO files adapter can hold files the proxy may refuse.
       const CHUNK = 24;
       for (let at = 0; at < files.length; at += CHUNK) {
         await request("/turn/workspace", {
@@ -416,9 +418,11 @@ export async function boxMachine(options: BoxMachineOptions): Promise<TurnMachin
       entry.leased = false;
       armIdle(options.threadId, entry, idleTtlMs);
       // The machine is warm, so there is usually nothing to carry — a `resume`
-      // only becomes real once a sweep has taken it, and the in-process `swept`
-      // map is what the NEXT turn in THIS process reads. Handing it up too is
-      // what lets a restart, or another replica, wake the same session.
+      // only becomes real once a sweep has taken the machine, which by the time
+      // release() runs means a mid-turn sweep (a guarded wait that outlived the
+      // idle TTL). The in-process `swept` map is what the NEXT turn in THIS
+      // process reads; the ref handed up covers only that rare case, so a
+      // restart normally pays an honest re-seed.
       const resume = entry.resume ?? swept.get(options.threadId);
       return resume === undefined ? undefined : { resume };
     },
