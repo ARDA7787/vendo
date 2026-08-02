@@ -94,6 +94,22 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
   const canWrite = async (caller: WorkspaceCaller, path: string): Promise<boolean> =>
     await access.can(runContextOf(caller), "editor", { path });
 
+  /** Build contract §9.4 — what a caller who cannot even VIEW a path is told:
+      exactly what a path that isn't there is told. Existence-masking is the
+      default posture, and a `forbidden` handed to a non-viewer inverts it into
+      an oracle ("this org has an app by that id"). */
+  const notFound = (path: string): VendoError =>
+    new VendoError("not-found", `no such path: ${path}`, { path });
+
+  /** §9.4's other half: a caller who provably SEES the path but may not change
+      it gets `forbidden` — the code the consumer-voice fork offer renders from.
+      Keeping "forbidden implies caller is >= viewer" true is what makes that
+      offer safe to show. */
+  const refusal = async (caller: WorkspaceCaller, path: string): Promise<VendoError> => {
+    if (!(await canRead(caller, path))) return notFound(path);
+    return new VendoError("forbidden", `you cannot write ${path}`, { path });
+  };
+
   /** Build contract §9.7 — owner derivation is a PURE FUNCTION OF THE PATH, in
       every door and not just the façade: the org for `/orgs/<org>/**`, the
       bound subject for `/user/**`. Deriving it from the principal instead made
@@ -134,6 +150,7 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
           subject: principal.subject,
           orgs: (opts?.memberships ?? []).map((membership) => membership.org),
           canCommit: (path) => canWrite(caller, path),
+          canView: (path) => canRead(caller, path),
         },
         index,
         hostFiles(opts?.host),
@@ -142,14 +159,16 @@ export function workspaceStore(store: VendoStore, options: { files?: FilesAdapte
     async undo(caller, path) {
       const normalized = normalizePath(path);
       if (!(await canWrite(caller, normalized))) {
-        throw new VendoError("forbidden", `you cannot write ${normalized}`, { path: normalized });
+        throw await refusal(caller, normalized);
       }
       return await rows.undo(ownerOfPath(caller, normalized), normalized);
     },
     async history(caller, path) {
       const normalized = normalizePath(path);
       if (!(await canRead(caller, normalized))) {
-        throw new VendoError("forbidden", `you cannot read ${normalized}`, { path: normalized });
+        // The failing predicate IS the viewer check, so this is never
+        // `forbidden` — see `refusal`.
+        throw notFound(normalized);
       }
       return await rows.history(ownerOfPath(caller, normalized), normalized);
     },

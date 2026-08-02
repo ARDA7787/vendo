@@ -128,14 +128,57 @@ for (const backend of backends()) {
     });
 
     it("refuses undo/history on an org the host did not assert", async () => {
+      // §9.4 — the failing predicate here IS the viewer check, so the answer is
+      // the one a path that does not exist gets. `forbidden` would have told a
+      // stranger that `/orgs/acme` is a real place with something in it.
       const path = "/orgs/acme/files/private.md";
       const seed = await workspace().open(dana, { memberships: acme });
       await seed.writeFile(path, "team only");
       await seed.commit();
 
       const stranger = { principal: kim, venue: "app" as const, presence: "present" as const, sessionId: "s" };
-      await expect(workspace().history(stranger, path)).rejects.toMatchObject({ code: "forbidden" });
-      await expect(workspace().undo(stranger, path)).rejects.toMatchObject({ code: "forbidden" });
+      await expect(workspace().history(stranger, path)).rejects.toMatchObject({ code: "not-found" });
+      await expect(workspace().undo(stranger, path)).rejects.toMatchObject({ code: "not-found" });
+    });
+
+    describe("§9.4 — `forbidden` implies the caller is at least a viewer", () => {
+      it("answers a VIEWER denied an edit with forbidden, at all three doors", async () => {
+        // The fork offer renders off this code, so it must keep meaning exactly
+        // "you can see it, but not do this to it".
+        const app = "app_orgviewerdoors";
+        await appStore(made.store).put({ kind: "user", subject: "acme" }, appFixture(app));
+        await appAccess(made.store).grant(ctxOf(dana, acmeAdmin), app, "user:kim", "viewer");
+        const path = `/orgs/acme/apps/${app}/app.vendo`;
+        const seed = await workspace().open(dana, { memberships: acmeAdmin });
+        await seed.writeFile(path, "page: v1");
+        await seed.commit();
+
+        await expect(workspace().undo(ctxOf(kim, acme), path)).rejects.toMatchObject({ code: "forbidden" });
+        const viewer = await workspace().open(kim, { memberships: acme });
+        await viewer.writeFile(path, "page: mine");
+        await expect(viewer.commit()).rejects.toMatchObject({ code: "forbidden" });
+        // ...and the viewer-level door lets them through.
+        expect(await workspace().history(ctxOf(kim, acme), path)).toHaveLength(0);
+      });
+
+      it("answers a NON-viewer with not-found at all three doors, inside an asserted org", async () => {
+        // The org mount is asserted, so EACCES does not fire — the only thing
+        // standing between sam and the app subtree is the grant she does not
+        // hold. `forbidden` there is an existence oracle for every app id.
+        const app = "app_orgmasked";
+        await appStore(made.store).put({ kind: "user", subject: "acme" }, appFixture(app));
+        const path = `/orgs/acme/apps/${app}/app.vendo`;
+        const seed = await workspace().open(dana, { memberships: acmeAdmin });
+        await seed.writeFile(path, "page: v1");
+        await seed.commit();
+
+        const sam = { kind: "user" as const, subject: "sam" };
+        await expect(workspace().history(ctxOf(sam, acme), path)).rejects.toMatchObject({ code: "not-found" });
+        await expect(workspace().undo(ctxOf(sam, acme), path)).rejects.toMatchObject({ code: "not-found" });
+        const outsider = await workspace().open(sam, { memberships: acme });
+        await outsider.writeFile(path, "page: mine");
+        await expect(outsider.commit()).rejects.toMatchObject({ code: "not-found" });
+      });
     });
 
     it("keeps an org's scratch out of the store, exactly like /user/scratch", async () => {
@@ -153,9 +196,11 @@ for (const backend of backends()) {
       // Without the app grant governing the bare `/orgs/<org>/apps/<id>` path,
       // any member could write it AS A FILE and the real app subtree could
       // never exist underneath it (a file cannot also be a directory).
+      // §9.4 — kim holds no grant on `app_squatted` (there is no such app), so
+      // the refusal wears the masked code rather than confirming the namespace.
       const squatter = await workspace().open(kim, { memberships: acme });
       await squatter.writeFile("/orgs/acme/apps/app_squatted", "mine now");
-      await expect(squatter.commit()).rejects.toMatchObject({ code: "forbidden" });
+      await expect(squatter.commit()).rejects.toMatchObject({ code: "not-found" });
     });
 
     describe("commit policy per mount (§9.7)", () => {

@@ -157,6 +157,12 @@ export interface WorkspaceMounts {
   /** Live-rows `can(editor)` for one path. Runs at commit, never at read: the
       box is a snapshot, so reads age gracefully and writes never sneak through. */
   canCommit?: (path: string) => Promise<boolean>;
+  /** Live-rows `can(viewer)` for one path — consulted ONLY to choose the code a
+      refused commit wears (§9.4): `forbidden` for a caller who provably sees the
+      path, the masked `not-found` for everyone else. Absent ⇒ every refusal is
+      `forbidden`, which is correct for a single-player façade where the only
+      reachable paths are the caller's own. */
+  canView?: (path: string) => Promise<boolean>;
 }
 
 export class WorkspaceStoreFs implements WorkspaceFs {
@@ -491,6 +497,13 @@ export class WorkspaceStoreFs implements WorkspaceFs {
       for (const path of [...this.staged.keys(), ...this.removed]) {
         if (!this.persists(path)) continue;
         if (!(await this.mounts.canCommit(path))) {
+          // §9.4 — `forbidden` says "you can see this, but not change it", and
+          // the fork offer renders off exactly that. A caller who cannot even
+          // view the path gets what a path that isn't there gets, or the code
+          // itself becomes an existence oracle for every org app id.
+          if (this.mounts.canView !== undefined && !(await this.mounts.canView(path))) {
+            throw new VendoError("not-found", `no such path: ${path}`, { path });
+          }
           throw new VendoError("forbidden", `you cannot write ${path}`, { path });
         }
       }
