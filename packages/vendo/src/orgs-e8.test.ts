@@ -68,12 +68,15 @@ async function boot(store: VendoStore, opts: { key?: boolean } = {}): Promise<Ve
   if (opts.key !== false) vi.stubEnv("VENDO_API_KEY", "vnd_e8_key");
   const vendo = createVendo({
     store,
-    tools,
     auth: {
       principal: async () => acting,
       memberships: async (principal) => memberships[principal.subject] ?? [],
     },
   });
+  // Wave-2's §10 config consolidation narrowed `tools:` to the host's own
+  // ExtractedTool[] declarations; a live registry arrives through the actions
+  // door (integration, 2026-08-01 — same migration the rest of the suite made).
+  vendo.actions.add(tools);
   await store.ensureSchema();
   return vendo;
 }
@@ -474,13 +477,13 @@ describe("E8 — §9.8: open() hands an org served app a RESOLVABLE url", () => 
     vi.stubEnv("VENDO_API_KEY", "vnd_e8_key");
     const vendo = createVendo({
       store,
-      tools,
       auth: {
         principal: async () => acting,
         memberships: async (principal) => memberships[principal.subject] ?? [],
       },
       apps: { experimentalMachines: true, experimentalServedApps: true },
     });
+    vendo.actions.add(tools);
     await store.ensureSchema();
     // A served (layer-3) app the org holds. No wake happens on this path — the
     // proxy wakes the machine only after IT has re-checked access.
