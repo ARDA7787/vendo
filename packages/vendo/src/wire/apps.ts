@@ -267,10 +267,18 @@ export const appRoutes: RouteEntry[] = [
         // it — that is §9.4's masking answering a different question, not a
         // failed removal, and reporting it as one told them to retry work that
         // was already done. Answer with what they can still legitimately see:
-        // nothing. Any other failure is a real one and still surfaces.
+        // nothing.
+        //
+        // Only `can()` may be forgiven here, and `can()` always refuses with a
+        // VendoError — so the TYPE is half the test. A hosted store carries a
+        // misbehaving console's failure on a plain Error with the server's code
+        // attached (hosted-store.ts), and "the console said not-found" is not
+        // "the caller may no longer look": that, and every other failure,
+        // surfaces.
         const remaining = await deps.apps.access.list(appId, ctx).catch((reason: unknown) => {
-          const code = (reason as { code?: string } | null)?.code;
-          if (code === "not-found" || code === "forbidden") return [];
+          const masked = reason instanceof VendoError
+            && (reason.code === "not-found" || reason.code === "forbidden");
+          if (masked) return [];
           throw reason;
         });
         return json({ grants: remaining });
