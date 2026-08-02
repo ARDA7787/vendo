@@ -1011,6 +1011,11 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
 /* Grant-set wait state (mockup §2): enabled but permissions outstanding. */
 .fl-auto-wait { background: var(--vendo-warn);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vendo-warn) 18%, transparent); }
+/* §9.9 — why a stopped automation stopped. An accent border rather than another
+   badge: it is one sentence of explanation, and the row above already carries
+   the state word. Warn, not danger — nothing is broken, it is waiting. */
+.fl-auto-stopped { border-left: 2px solid var(--vendo-warn); padding-left: 8px; margin-top: 6px;
+  color: var(--vendo-fg); }
 .fl-auto-toggle { margin-left: auto; width: 40px; height: 23px; border-radius: 999px; background: var(--vendo-accent);
   position: relative; flex-shrink: 0; border: 0; cursor: pointer; }
 .fl-auto-toggle::after { content: ""; position: absolute; top: 2.5px; right: 2.5px; width: 18px; height: 18px;

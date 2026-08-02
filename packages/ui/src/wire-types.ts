@@ -239,6 +239,12 @@ export interface AutomationEntry {
    *  sponsor: Vendo holds no directory, so a name for anyone else would be
    *  invented; the subject is the honest fallback. */
   sponsor?: { subject: string; display?: string };
+  /** Build contract §9.9 — set exactly while the automation is STOPPED and
+   *  waiting to be adopted. `summary` is the same consumer sentence the adoption
+   *  card and the stopped run row carry, so the list is a route back to a paused
+   *  automation instead of the one place it vanished from. It never names the
+   *  sponsor: anyone who can edit the app reads it. */
+  stopped?: { reason: "edit" | "departure" | "grants"; summary: string };
   /** How many principals hold a grant on the app, when the deployment has an
    *  access seam at all — the wider editor set the label names. */
   editors?: number;

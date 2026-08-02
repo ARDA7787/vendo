@@ -332,15 +332,30 @@ export function AutomationsPanel() {
                               : undefined}
                           />
                         ) : null}
-                        {entry.enabled
-                          ? waitingOn > 0
-                            ? `Enabled · waiting on ${waitingOn} permission${waitingOn === 1 ? "" : "s"}`
-                            : "Enabled"
-                          : "Disabled"}
+                        {/* §9.9 — a lapsed sponsorship STOPS the automation, and
+                            "Disabled" reads as something somebody switched off,
+                            so nobody had a reason to come looking. It is paused
+                            and waiting to be taken on. */}
+                        {entry.stopped !== undefined
+                          ? "Stopped"
+                          : entry.enabled
+                            ? waitingOn > 0
+                              ? `Enabled · waiting on ${waitingOn} permission${waitingOn === 1 ? "" : "s"}`
+                              : "Enabled"
+                            : "Disabled"}
                         {nextRun ? <span className="fl-auto-nextrun">· {nextRun}</span> : null}
                       </>
                     )}
                   </div>
+                  {/* §9.9 — WHY it stopped, in the server's own consumer sentence
+                      (the same one the adoption card carries, so the list and the
+                      card never say two different things). The card in the app is
+                      where it gets taken on; this is how it gets found. */}
+                  {entry.stopped === undefined ? null : (
+                    <div className="fl-auto-sub fl-auto-stopped" style={{ display: "block" }} role="status">
+                      {entry.stopped.summary}
+                    </div>
+                  )}
                   {/* §13 — an automation always runs as a named person, and its
                       window says so. */}
                   {sponsorLabel(entry.sponsor, entry.editors) === null
