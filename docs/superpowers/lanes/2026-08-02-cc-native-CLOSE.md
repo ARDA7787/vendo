@@ -89,22 +89,23 @@ message as a cold start". Removing the cold start did **not** shrink it.
 
 | file | before | after | delta |
 |---|---|---|---|
-| `box.ts` | 446 | 340 | **−106** |
-| `claude-turn.ts` | 416 | 598 | **+182** |
-| `local.ts` | 184 | 249 | +65 |
-| `turn-routes.mjs` | 359 | 404 | +45 |
-| `machine.ts` | 58 | 84 | +26 |
-| `index.ts` | 444 | 447 | +3 |
+| `box.ts` | 446 | 341 | **−105** |
+| `claude-turn.ts` | 416 | 622 | **+206** |
+| `local.ts` | 184 | 277 | +93 |
+| `turn-routes.mjs` | 359 | 405 | +46 |
+| `machine.ts` | 58 | 87 | +29 |
+| `index.ts` | 444 | 457 | +13 |
 | `materialize.ts` | 192 | 192 | 0 |
-| **production total** | **2,099** | **2,314** | **+215** |
-| tests | 1,304 | 1,580 | +276 |
-| **contract's 3,403** | **3,403** | **3,894** | **+491** |
+| **production total** | **2,099** | **2,381** | **+282** |
+| tests | 1,304 | 1,802 | +498 |
+| **contract's 3,403** | **3,403** | **4,183** | **+780** |
 
-**Why.** The deletions landed exactly where predicted (`box.ts` −106: the pool,
+**Why.** The deletions landed exactly where predicted (`box.ts` −105: the pool,
 sweep, snapshot, resume-ref and rotation). But holding a session OPEN costs more code
 than starting one per turn: a push-driven input inbox, a turn-boundary settle, a
-send-serializing queue, interrupt plumbing, and reopen-on-tool-change. "Call
-`query()` and return" needed none of that.
+send-serializing queue, interrupt plumbing, reopen-on-tool-change, and — in both
+drivers — an indirection so the session's sinks point at the turn currently in flight
+instead of the one that opened it. "Call `query()` and return" needed none of that.
 
 The honest reading: the 3,403 lines were never mostly cold-start cost. ~200 lines
 were pool/snapshot/rotation (deleted). The rest is the bridge, the projection, the
@@ -165,7 +166,9 @@ skill works and invoking an unlisted operator skill returns **FAILED**.
 ## 5. Gates
 
 `pnpm build` ✅ · `pnpm typecheck` ✅ 43/43 · `pnpm lint` ✅ 6/6 (dependency-guard +
-portability) · `pnpm test --force --concurrency=1` from the repo root — see §7.
+portability) · `pnpm test --force --concurrency=1` from the repo root, twice, both on
+the FINAL commit (the earlier green pair predated the skills wiring and the
+NUL-separator fix, so it was re-run rather than cited).
 
 Per-package on the clean run: apps 642 · harnesses 234 · vendo 1753 · ui 683 ·
 bench 525 · corpus-harness 390 · demo-accounting 152 · genui-bench 122 ·

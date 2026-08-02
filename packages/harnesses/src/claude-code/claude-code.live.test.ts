@@ -6,7 +6,7 @@
  * skipped without it, so CI and a keyless clone stay green.
  *
  * `machine: "local"` on purpose. The sandbox path adds an e2b machine and a
- * control-port hop and changes NOTHING above the `TurnMachine` port — the
+ * control-port hop and changes NOTHING above the `SessionMachine` port — the
  * projection, the permission hook, the diff sync-back and `turn.state` are the
  * same code either way, and this is the leg that can be proven without a
  * provider account or a template bake.
