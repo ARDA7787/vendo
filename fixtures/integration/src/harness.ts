@@ -461,55 +461,70 @@ export function vendoApprovalId(read: StreamRead): string {
 }
 
 // ---------------------------------------------------------------------------
-// Present-approval resume over the wire. A present chat approval pauses the
-// turn; resuming is client-driven (03 §agent): the client re-posts the thread
-// with the parked tool part flipped to `approval-responded`. This replays that
-// exactly through the public /threads route.
+// Mid-stream approval sync (build contract §1.4): an interactive harness turn
+// BLOCKS INSIDE the guarded call awaiting the tap, holding the SAME request
+// open rather than parking the turn for a client-driven resume (the pre-flip
+// `createAgent` shape, native `tool-approval-request` + a re-posted thread —
+// gone from this wire). A test that needs to decide, or merely observe, an
+// approval while its turn is still in flight reads the open response
+// progressively instead of draining it first.
 // ---------------------------------------------------------------------------
 
-interface WireMessage {
-  id: string;
-  role: string;
-  parts: Array<Record<string, unknown>>;
+/** The `data-vendo-approval` wire part's payload (01-core §16). */
+export interface VendoApprovalWireData {
+  toolCallId: string;
+  risk: string;
+  approvalId?: string;
+  invalidatedGrant?: { id: string; grantedAt: string };
 }
 
-interface WireThread {
-  id: string;
-  messages: WireMessage[];
+export interface MidStreamRead {
+  /** Resolves with the approval card's data the MOMENT it lands on the wire —
+   *  before the turn itself completes. The synchronization point a test acts
+   *  on: decide the approval, or just read pending state, while the guarded
+   *  call is still blocked awaiting it. */
+  approval: Promise<VendoApprovalWireData>;
+  /** Resolves with the fully drained stream once the turn ends: decided,
+   *  denied, or timed out at the frozen `APPROVAL_WAIT_MS` bound. */
+  done: Promise<StreamRead>;
 }
 
-export async function resumeApproval(
-  stack: Stack,
-  threadId: string,
-  toolCallId: string,
-  approved: boolean,
-  user: Principal,
-): Promise<Response> {
-  const thread = (await (await stack.wireFetch(`/threads/${threadId}`, {}, user)).json()) as WireThread;
-  const assistant = [...thread.messages].reverse().find((message) => message.role === "assistant");
-  if (assistant === undefined) throw new Error("thread has no assistant message to resume");
-  let flipped = false;
-  const parts = assistant.parts.map((part) => {
-    if (part.type !== "dynamic-tool" || part.toolCallId !== toolCallId) return part;
-    const approval = part.approval as { id?: unknown } | undefined;
-    if (approval === undefined || typeof approval.id !== "string") {
-      throw new Error("parked tool part carried no native approval id");
-    }
-    flipped = true;
-    return {
-      type: "dynamic-tool",
-      toolName: part.toolName,
-      toolCallId,
-      state: "approval-responded",
-      input: part.input,
-      approval: { id: approval.id, approved },
-    };
+/** Read a still-open `/threads` SSE response, exposing the approval card as
+ *  soon as it arrives rather than only once the whole turn finishes. */
+export function readSseMidStream(response: Response): MidStreamRead {
+  let resolveApproval!: (data: VendoApprovalWireData) => void;
+  const approval = new Promise<VendoApprovalWireData>((resolve) => {
+    resolveApproval = resolve;
   });
-  if (!flipped) throw new Error(`no parked tool part for toolCallId ${toolCallId}`);
-  return stack.wireFetch("/threads", {
-    method: "POST",
-    body: JSON.stringify({ threadId, message: { ...assistant, parts } }),
-  }, user);
+  const done = (async (): Promise<StreamRead> => {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let raw = "";
+    const parts: Array<Record<string, unknown>> = [];
+    let notified = false;
+    for (;;) {
+      const { done: finished, value } = await reader.read();
+      if (finished) break;
+      const chunk = decoder.decode(value, { stream: true });
+      raw += chunk;
+      buffer += chunk;
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) {
+        const trimmed = block.trim();
+        if (!trimmed.startsWith("data: ") || trimmed === "data: [DONE]") continue;
+        const part = JSON.parse(trimmed.slice("data: ".length)) as Record<string, unknown>;
+        parts.push(part);
+        if (!notified && part.type === "data-vendo-approval") {
+          notified = true;
+          resolveApproval(part.data as VendoApprovalWireData);
+        }
+      }
+    }
+    return { parts, raw };
+  })();
+  return { approval, done };
 }
 
 // ---------------------------------------------------------------------------

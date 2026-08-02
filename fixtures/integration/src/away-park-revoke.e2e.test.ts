@@ -22,13 +22,10 @@ import {
   decideApprovals,
   hostFetch,
   importAutomation,
-  partsOfType,
-  readSse,
+  readSseMidStream,
   resetFixture,
-  resumeApproval,
   textTurn,
   toolCallTurn,
-  vendoApprovalId,
   waitForRunStatus,
   type Stack,
   type WireApproval,
@@ -203,7 +200,10 @@ describe("J5: away capture, park, resume, revoke through the composed wire", () 
     });
 
     // --- Mint a chat-source, un-app-bound grant for DELETE ----------------
-    const paused = await readSse(
+    // Build contract §1.4: the guarded call blocks INSIDE the tool call
+    // awaiting the tap, holding this one request open — decide against the
+    // still-open stream rather than a later, separately-posted resume.
+    const paused = readSseMidStream(
       await stack.wireFetch("/threads", {
         method: "POST",
         body: JSON.stringify({
@@ -212,15 +212,22 @@ describe("J5: away capture, park, resume, revoke through the composed wire", () 
         }),
       }, ADA),
     );
-    expect(partsOfType(paused, "tool-approval-request")[0]).toMatchObject({ toolCallId: "call_1" });
-    const approvalId = vendoApprovalId(paused);
+    // Build contract §1.5: tool calls are mirrored by the RUNTIME on its own
+    // freshly-minted id — never the scripted model's own toolCallId ("call_1"
+    // only ever reached the wire under `createAgent`'s direct ai-SDK
+    // pass-through), so the check here is that the card carries ONE, not that
+    // literal value.
+    const approvalCard = await paused.approval;
+    expect(typeof approvalCard.toolCallId).toBe("string");
+    const approvalId = approvalCard.approvalId;
+    if (approvalId === undefined) throw new Error("approval card carried no approvalId");
     expect((await decideApprovals(
       stack,
       [approvalId],
       { approve: true, remember: { scope: { kind: "tool" }, duration: "standing" } },
       ADA,
     )).status).toBe(200);
-    await readSse(await resumeApproval(stack, "thr_j5", "call_1", true, ADA));
+    await paused.done;
     // The minted chat grant is standing and carries NO appId (05 §6 preconditions).
     expect(await stack.sql<{ source: string; app_id: string | null; duration: string }>(
       "SELECT source, app_id, duration FROM vendo_grants WHERE tool = $1",
