@@ -961,7 +961,7 @@ function projectAppsOpenOutput(
   return projected;
 }
 function replayKey(tool: string, args: Record<string, unknown>): string {
-  return `${tool} ${canonicalJson(args)}`;
+  return `${tool}\0${canonicalJson(args)}`;
 }
 
 /** Stable JSON with lexicographically-sorted object keys, so two structurally
