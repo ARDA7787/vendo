@@ -1,8 +1,9 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunContext } from "@vendoai/core";
-import { createStore } from "@vendoai/store";
+import type { Principal, RunContext, ToolDescriptor } from "@vendoai/core";
+import { createGuard } from "@vendoai/guard";
+import { createStore, workspaceStore } from "@vendoai/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { orgPolicyPath, orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
 
@@ -163,6 +164,98 @@ describe("org policy over the REAL workspace", () => {
     // only have come from the cache.
     await store.close();
     expect(await source("maple")).toBeUndefined();
+  });
+
+  /** D1 — the seam's WHOLE PURPOSE, end to end: an admin writes a rule into
+   *  `/orgs/<org>/policy.json` through the real workspace, and that rule
+   *  changes a guard decision for a member of that org.
+   *
+   *  Nothing above ever wrote a policy file, and that is exactly the blind spot
+   *  it hid. The façade was opened with NO memberships, so `/orgs/<org>` had no
+   *  mount, the read threw ENOENT (the workspace refuses an unmounted path with
+   *  "no such file", store/workspace-fs.ts), and ENOENT read as "this org set
+   *  no policy". `parseOrgPolicyFile` was unreachable in production: no org's
+   *  policy was ever loaded, anywhere, and the failure was silent. */
+  it("APPLIES a rule an admin actually wrote, all the way to a guard decision", async () => {
+    const store = await realStore();
+    const admin: Principal = { kind: "user", subject: "user_admin" };
+    const fs = await workspaceStore(store).open(admin, {
+      memberships: [{ org: "maple", admin: true }],
+    });
+    await fs.writeFile(
+      orgPolicyPath("maple"),
+      policy([{ match: { risk: "write" }, action: "ask" }]),
+    );
+    expect((await fs.commit()).status).toBe("ok");
+
+    const failures: string[] = [];
+    const guard = createGuard({
+      store,
+      orgPolicy: orgPolicyResolver(
+        workspacePolicySource(store),
+        (org, reason) => { failures.push(`${org}: ${reason}`); },
+      ),
+    });
+    const write: ToolDescriptor = {
+      name: "host_pay_invoice",
+      description: "pay an invoice",
+      inputSchema: { type: "object", additionalProperties: true },
+      risk: "write",
+    };
+    const invoke = { id: "call_1", tool: write.name, args: {} };
+
+    // The red half: the very same call from someone who asserted no org runs.
+    await expect(guard.check(invoke, write, ctx() as RunContext))
+      .resolves.toMatchObject({ action: "run" });
+
+    // The green half: maple's file tightens it to an ask, credited to the org.
+    await expect(guard.check(invoke, write, ctx([{ org: "maple" }]) as RunContext))
+      .resolves.toMatchObject({ action: "ask", decidedBy: "org" });
+    expect(failures).toEqual([]);
+  });
+
+  /** "No file" and "no mount" are DIFFERENT FACTS and only the first is
+   *  silence-worthy — and the workspace reports BOTH as ENOENT, so the message
+   *  alone can never tell them apart. A mount is ONE path segment (§9.7's
+   *  `/orgs/<orgId>/**`), so a host-issued org id carrying a separator has no
+   *  mount at all: nothing at that path could ever be read, and calling it
+   *  "this org set no policy" hides an admin's rules behind an id nobody
+   *  looked at. */
+  it("reports an org id that is not addressable as a mount, rather than calling it silence", async () => {
+    const store = await realStore();
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(
+      workspacePolicySource(store),
+      (org, reason) => { failures.push(`${org}: ${reason}`); },
+    );
+
+    expect(await resolve(ctx([{ org: "maple/eu" }]))).toEqual([]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatch(/maple\/eu/);
+  });
+
+  /** The other fact ENOENT's siblings were covering for: `EISDIR` is not "no
+   *  policy file", it is "something that is not a file is sitting where the
+   *  policy file goes". An admin whose rules are unreachable for that reason
+   *  must hear about it. */
+  it("reports something OTHER THAN A FILE at the policy path", async () => {
+    const store = await realStore();
+    const admin: Principal = { kind: "user", subject: "user_admin" };
+    const fs = await workspaceStore(store).open(admin, {
+      memberships: [{ org: "maple", admin: true }],
+    });
+    await fs.writeFile(`${orgPolicyPath("maple")}/rules.json`, policy([]));
+    expect((await fs.commit()).status).toBe("ok");
+
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(
+      workspacePolicySource(store),
+      (org, reason) => { failures.push(`${org}: ${reason}`); },
+    );
+
+    expect(await resolve(ctx([{ org: "maple" }]))).toEqual([]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatch(/EISDIR/);
   });
 
   it("still REPORTS a read that genuinely fails", async () => {

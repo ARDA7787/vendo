@@ -42,6 +42,28 @@ function runRollup(runs: RunRecord[]): string {
     .join(" · ");
 }
 
+/**
+ * The consumer's half of a refusal (design §3, the consumer-voice law). Every
+ * sentence the wire throws is written for the HOST DEVELOPER — one names an
+ * environment variable, another carries an app id — and rendering
+ * `reason.message` put all of them in front of whoever was using the product.
+ * The developer sentence keeps its home (the server's own error, the browser
+ * console); the person reading this panel is told what it means for THEM. Same
+ * treatment the Share dialog (`refusalCopy`) and the apps page
+ * (`refusalSentence`) already carry.
+ *
+ * One sentence per code, not per verb: turning an automation on, dry-running
+ * it, reading its history and stopping a run all fail for the same few reasons,
+ * and the code is the part that differs.
+ */
+function refusalCopy(reason: unknown): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  if (code === "forbidden") return "You can see this automation, but not change it.";
+  if (code === "not-found") return "That automation isn’t available any more.";
+  if (code === "cloud-required") return "That isn’t turned on for this workspace yet.";
+  return "That didn’t go through — nothing changed. Try again in a moment.";
+}
+
 /** Lane pick 7-A — liveness. `every` durations the wire uses ("30m", "6h",
     "1d", "1w"); anything unparseable yields no countdown (the flow node's
     "Every …" label already states the cadence). */
@@ -198,7 +220,7 @@ export function AutomationsPanel() {
     try {
       await action();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalCopy(reason));
     } finally {
       setBusy(current => ({ ...current, [key]: false }));
     }

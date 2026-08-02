@@ -1044,15 +1044,22 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     return documentFromRecord(record);
   };
 
-  /** Build contract §9.5/§9.8 — is this app held by an ORG rather than by a
-      person? The row subject IS the org id for a promoted app (§9.5), so the
-      question is answered by matching it against the orgs the host asserted
-      for this caller. A personal app never matches. */
+  /** Build contract §9.5/§9.8 — must this app be served through the proxy
+      rather than handed the provider's URL? The question is the one `can()`
+      answers, not a second opinion: the caller reaches the app, and the app is
+      not their own (§9.5 — a promoted app's row subject IS the org id).
+      Matching the subject against ASSERTED MEMBERSHIPS instead missed the
+      caller `can()` admits on a bare `user:` grant with no membership, which is
+      precisely what "share with one person" writes: that viewer passed `open()`
+      and received the provider's raw ingress URL — a bearer-by-obscurity
+      capability with no per-request check, which is what this proxy exists to
+      prevent. Their own app is the ONLY thing that keeps the provider URL. */
   const servedThroughProxy = async (appId: AppId, ctx: RunContext): Promise<boolean> => {
-    const subject = (await apps.get(appId))?.refs?.subject;
+    const record = await apps.get(appId);
+    const subject = record?.refs?.subject;
     return subject !== undefined
       && subject !== ctx.principal.subject
-      && (ctx.memberships ?? []).some((membership) => membership.org === subject);
+      && await holds(appId, ctx, "viewer", record);
   };
 
   /** Build contract §9.6 — the ONE Cloud gate on this block. Sharing is
@@ -1312,6 +1319,23 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
    * {@link requestEgressApproval} directly.
    */
   const ensureEgressApproved = async (app: AppDocument, ctx: RunContext): Promise<void> => {
+    // An egress approval is self-subject like every approval, but its EFFECT is
+    // not: the decision writes `egressApproved` onto the SHARED app document and
+    // binds everyone who uses the app from then on. So the ask belongs to a
+    // caller who can CHANGE the app — which is what this module has always said
+    // it records (`EgressApprovalRequest.owner`: "the only principal who may
+    // approve"). Two doors reach here at viewer level (§9.8's `serve` and
+    // `machine.ping`), and they parked a card in the viewer's name. They now
+    // refuse in the same words a ctx-less wake does, and wait for an editor.
+    const undecided = unapprovedEgress(app);
+    if (undecided.length > 0 && !(await holds(app.id, ctx, "editor"))) {
+      throw new VendoError(
+        "blocked",
+        `machine egress is not approved for: ${undecided.join(", ")}`
+        + " — only someone who can change this app can approve it",
+        { unapprovedDomains: undecided },
+      );
+    }
     const outcome = await requestEgressApproval(app, ctx);
     if (outcome.status === "pending") {
       throw new VendoError(

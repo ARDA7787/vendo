@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from "@vendoai/core";
+import { VendoError, type ApprovalRequest } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoContext, useVendoTools } from "../context.js";
 import type { AdoptionVenue } from "../wire-types.js";
@@ -39,6 +39,27 @@ const STOPPED_BECAUSE: Record<AdoptionVenue["reason"], (sponsor: string | undefi
 
 const RISK_WORD = { read: "Reads", write: "Changes", destructive: "Changes" } as const;
 
+/**
+ * The consumer's half of a refusal (design §3, the consumer-voice law). Every
+ * sentence the wire throws is written for the HOST DEVELOPER — one names an
+ * environment variable, another carries an app id — and rendering
+ * `reason.message` put all of them in front of whoever was using the app. The
+ * developer sentence keeps its home (the server's own error, the browser
+ * console); the person looking at this card is told what it means for THEM.
+ * Same treatment the Share dialog (`refusalCopy`) and the apps page
+ * (`refusalSentence`) already carry.
+ */
+function refusalCopy(reason: unknown): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  // §9.9 — the first editor to accept wins, and the loser is told what actually
+  // happened rather than "something went wrong".
+  if (code === "conflict") return "Someone else already took this automation on.";
+  if (code === "forbidden") return "Only someone who can edit this app can take its automation on.";
+  if (code === "not-found") return "This automation isn’t available any more.";
+  if (code === "cloud-required") return "Taking an automation on isn’t turned on for this workspace yet.";
+  return "That didn’t go through — nothing changed. Try again in a moment.";
+}
+
 /** The declared arguments, as the automation will actually send them: "invoice
  *  inv_42". §12 wants the material arguments on the card, not a promise that
  *  they exist somewhere. */
@@ -60,7 +81,7 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
     try {
       await onAdopt();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalCopy(reason));
     } finally {
       setBusy(false);
     }
@@ -198,7 +219,10 @@ export function AdoptionVenueCard({ card }: { card: AdoptionVenue }) {
         const result = await client.automations.adopt(card.appId);
         // A lost race is not an error to swallow: the person who tapped is told
         // that somebody else got there first, which is what actually happened.
-        if (!result.adopted) throw new Error("Someone else already took this automation on.");
+        // Raised WITH its code so the card's own copy names it — the card owns
+        // every consumer sentence it shows, and a message smuggled up from a
+        // caller is the shape that let developer sentences onto the screen.
+        if (!result.adopted) throw new VendoError("conflict", `adoption of ${card.appId} was lost to another editor`);
         if (result.missing.length > 0) {
           setSet({
             asks: result.missing,

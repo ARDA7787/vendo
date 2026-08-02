@@ -19,8 +19,10 @@ export type AppMount =
 const mountOwner = (mount: AppMount): string =>
   mount.kind === "user" ? mount.subject : mount.org;
 
-const appPrefix = (mount: AppMount, appId: string): string =>
-  mount.kind === "user" ? `/user/apps/${appId}/` : `/orgs/${mount.org}/apps/${appId}/`;
+/** The app's own root path in a mount, with NO trailing slash: the subtree
+    hangs off it, and it is itself a path a row can sit at. */
+const appRoot = (mount: AppMount, appId: string): string =>
+  mount.kind === "user" ? `/user/apps/${appId}` : `/orgs/${mount.org}/apps/${appId}`;
 
 /** The two tables an app's documents live in; both move together. */
 const WORKSPACE_TABLES = ["vendo_workspace_files", "vendo_workspace_history"] as const;
@@ -473,16 +475,22 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
     },
 
     async moveApp(appId, from, to) {
-      const before = appPrefix(from, appId);
-      const after = appPrefix(to, appId);
+      const before = appRoot(from, appId);
+      const after = appRoot(to, appId);
+      // TWO anchors per mount, exactly as erase.byApp matches: the subtree, and
+      // the app's own root row at exactly `…/apps/<appId>` — the path core's
+      // `appOfOrgPath` says the app's grants govern, which a slash-suffixed LIKE
+      // never matched, so a promote left it behind in the promoter's `/user`.
+      const anchored = `(path LIKE $2 ESCAPE '\\' OR path = $3)`;
+      const subtree = `${escapeLike(before)}/%`;
       // The destination is checked FIRST, across both tables: `vendo_workspace_files`
       // is keyed (path, owner), so a collision would fail the UPDATE mid-move and
       // strand half the app. Refuse in the caller's own words instead — a promote
       // is all-or-nothing (§9.5).
       for (const table of WORKSPACE_TABLES) {
         const clash = await db.query(
-          `SELECT 1 FROM ${table} WHERE owner = $1 AND path LIKE $2 ESCAPE '\\' LIMIT 1`,
-          [mountOwner(to), `${escapeLike(after)}%`],
+          `SELECT 1 FROM ${table} WHERE owner = $1 AND ${anchored} LIMIT 1`,
+          [mountOwner(to), `${escapeLike(after)}/%`, after],
         );
         if (clash.rows.length > 0) {
           throw new VendoError(
@@ -494,16 +502,16 @@ export function workspaceRows(db: Db, files: FilesAdapter): WorkspaceRows {
       }
       let moved = 0;
       for (const table of WORKSPACE_TABLES) {
-        // The rewrite replaces exactly the leading `before` prefix and keeps the
+        // The rewrite replaces exactly the leading `before` root and keeps the
         // rest of the path verbatim, so a path that merely CONTAINS the app id
-        // deeper down is untouched; the LIKE keeps the statement anchored at the
-        // mount for the same reason erase.byApp is.
+        // deeper down is untouched — and the root row, whose remainder is the
+        // empty string, lands at exactly `after`.
         const result = await db.query(
           `UPDATE ${table}
-              SET owner = $3, path = $4 || substring(path FROM ${before.length + 1})
-            WHERE owner = $1 AND path LIKE $2 ESCAPE '\\'
+              SET owner = $4, path = $5 || substring(path FROM ${before.length + 1})
+            WHERE owner = $1 AND ${anchored}
             RETURNING 1`,
-          [mountOwner(from), `${escapeLike(before)}%`, mountOwner(to), after],
+          [mountOwner(from), subtree, before, mountOwner(to), after],
         );
         if (table === "vendo_workspace_files") moved = result.rows.length;
       }

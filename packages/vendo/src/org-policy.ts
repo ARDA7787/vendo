@@ -1,4 +1,4 @@
-import type { RunContext } from "@vendoai/core";
+import { orgOfPath, type RunContext } from "@vendoai/core";
 import { parseOrgPolicyFile, type PolicyRule } from "@vendoai/guard";
 import { workspaceStore, type VendoStore } from "@vendoai/store";
 
@@ -37,9 +37,16 @@ const assertedOrgs = (ctx: RunContext): string[] => {
  *  policy — took the FAILURE path: a warning and an audit row on every guarded
  *  call, with the throw skipping the cache so the TTL never engaged. Matching the
  *  prefix is exactly what `workspaceBash`'s REFUSAL regex does with these same
- *  errors. ENOENT: no file · EACCES: no `/orgs` mount in this deployment yet ·
- *  EISDIR: something other than a file at that path. */
-const ABSENT_POLICY = /^(ENOENT|EACCES|EISDIR):/;
+ *  errors.
+ *
+ *  ENOENT ALONE. `EACCES` and `EISDIR` used to be swept in here as if they were
+ *  the same answer, and they are not: EACCES is "there is no mount at this path"
+ *  and EISDIR is "something that is not a file is sitting where the policy file
+ *  goes". Neither is "this org set no policy", and reading them as silence is
+ *  how an admin's rules go missing with nothing anywhere to say so. The mount is
+ *  asserted below, so an ENOENT reaching this line means one thing only: the
+ *  file is not there. */
+const ABSENT_POLICY = /^ENOENT:/;
 
 /** The workspace-backed source of policy bodies, TTL-cached per org.
  *
@@ -92,10 +99,32 @@ export function workspacePolicySource(store: VendoStore): (orgId: string) => Pro
     }
     let body: string | undefined;
     try {
+      // A mount is ONE path segment (§9.7 — `/orgs/<orgId>/**`), so an org id
+      // carrying a separator is not addressable at all: the façade would mount
+      // it, the path would resolve to a DIFFERENT org, and the read would come
+      // back ENOENT — indistinguishable from "this org set no policy". Said out
+      // loud instead, because an admin's rules are not in force either way.
+      const path = orgPolicyPath(orgId);
+      if (orgOfPath(path) !== orgId) {
+        throw new Error(
+          `"${orgId}" cannot be addressed as a workspace mount, so its policy file at ${path}`
+          + " can never be read and this org's rules are not in force"
+          + " — an org id is one path segment (build contract §9.7).",
+        );
+      }
       // The org owns its own subtree, so the file is read as the org (§9.5:
-      // an org id is a workspace owner verbatim).
-      const fs = await workspaces.open({ kind: "user", subject: orgId });
-      body = await fs.readFile(orgPolicyPath(orgId));
+      // an org id is a workspace owner verbatim) — and the façade is built with
+      // the MEMBERSHIP that justifies reading it, exactly as every other
+      // production door resolves its mounts (§9.7: a mount exists only for an
+      // ASSERTED org). Without it there was no `/orgs` mount at all, every read
+      // came back ENOENT, ENOENT read as "no policy", and so `parseOrgPolicyFile`
+      // was unreachable in production: no org's policy was ever loaded, and
+      // nothing said so.
+      const fs = await workspaces.open(
+        { kind: "user", subject: orgId },
+        { memberships: [{ org: orgId }] },
+      );
+      body = await fs.readFile(path);
     } catch (error) {
       // ABSENT is the ordinary case and is CACHED like any other answer, so the
       // TTL engages for it too. Anything else is a real read failure and must

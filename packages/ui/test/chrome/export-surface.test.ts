@@ -104,6 +104,7 @@ const VALUE_EXPORTS = [
 ] as const;
 
 const TYPE_EXPORTS = [
+  "AdoptionCardProps",
   "ApprovalCardProps",
   "AutomationCardProps",
   "ConnectCardProps",

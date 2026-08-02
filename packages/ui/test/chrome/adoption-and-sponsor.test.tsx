@@ -80,7 +80,9 @@ describe("AdoptionCard", () => {
   });
 
   it("hands the decision to the caller and reports a failure instead of pretending", async () => {
-    const onAdopt = vi.fn().mockRejectedValue(new Error("someone else took it on"));
+    const onAdopt = vi.fn().mockRejectedValue(
+      Object.assign(new Error("app not found: app_sweep"), { code: "not-found" }),
+    );
     render(
       <VendoProvider client={client}>
         <AdoptionCard card={WAITING} onAdopt={onAdopt} />
@@ -90,7 +92,46 @@ describe("AdoptionCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /take it on/i }));
 
     await waitFor(() => expect(onAdopt).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("someone else took it on"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/isn’t available/i));
+  });
+
+  /** Design §3, the consumer-voice law. Every sentence the wire throws is
+   *  written for the HOST DEVELOPER — one names an environment variable,
+   *  another carries an app id — and this card rendered `reason.message`
+   *  verbatim, so all of them reached whoever was using the app. The Share
+   *  dialog and the apps page were given this treatment in the same wave; the
+   *  adoption card was missed. */
+  it("answers a refusal in the CONSUMER's voice, never the developer's sentence", async () => {
+    const refuse = (code: string, message: string) =>
+      vi.fn().mockRejectedValue(Object.assign(new Error(message), { code }));
+
+    const forbidden = refuse("forbidden", "editor access is required for app_sweep");
+    render(
+      <VendoProvider client={client}>
+        <AdoptionCard card={WAITING} onAdopt={forbidden} />
+      </VendoProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /take it on/i }));
+    await waitFor(() => {
+      const shown = screen.getByRole("alert").textContent ?? "";
+      expect(shown).not.toContain("app_sweep");
+      expect(shown).not.toMatch(/editor access is required/);
+      expect(shown).toMatch(/edit this app/i);
+    });
+    cleanup();
+
+    const keyless = refuse("cloud-required", "sharing needs Vendo Cloud: set VENDO_API_KEY");
+    render(
+      <VendoProvider client={client}>
+        <AdoptionCard card={WAITING} onAdopt={keyless} />
+      </VendoProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /take it on/i }));
+    await waitFor(() => {
+      const shown = screen.getByRole("alert").textContent ?? "";
+      expect(shown).not.toMatch(/VENDO_API_KEY|Vendo Cloud/);
+      expect(shown).toMatch(/isn’t turned on/i);
+    });
   });
 
   it("shows the settled record once it is adopted, with no decision left to make", () => {

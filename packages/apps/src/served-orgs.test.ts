@@ -33,26 +33,28 @@ const ctx = (subject: string, orgs: string[] = []): RunContext => ({
 
 /** A layer-3 document: the machine serves the whole surface. `snapshotRef` has
     to name a snapshot the fake box actually holds, so setup() mints one. */
-const servedApp = (id: string, snapshotRef: string): AppDocument => ({
+const servedApp = (id: string, snapshotRef: string, egress?: string[]): AppDocument => ({
   format: VENDO_APP_FORMAT,
   id,
   name: "Invoice kanban",
   ui: "http",
   machine: { snapshotRef, provisionedAt: "2026-08-01T00:00:00.000Z" },
+  ...(egress === undefined ? {} : { egress }),
 });
 
-const setup = async (over: Partial<AppsConfig> = {}): Promise<{
+const setup = async (over: Partial<AppsConfig> = {}, guard = guardFixture()): Promise<{
   runtime: AppsRuntime;
   store: ReturnType<typeof memoryStore>;
+  guard: ReturnType<typeof guardFixture>;
   /** A served app the fake box can actually resume, seeded under `subject`. */
-  seed(id: string, subject: string): Promise<void>;
+  seed(id: string, subject: string, egress?: string[]): Promise<void>;
   sandbox: ReturnType<typeof fakeBoxSandbox>;
 }> => {
   const store = memoryStore();
   const sandbox = fakeBoxSandbox();
   const runtime = createApps({
     store,
-    guard: guardFixture(),
+    guard,
     tools,
     catalog: [],
     appAccess: storeAccessFixture(store),
@@ -67,11 +69,12 @@ const setup = async (over: Partial<AppsConfig> = {}): Promise<{
   return {
     runtime,
     store,
+    guard,
     sandbox,
-    async seed(id, subject) {
+    async seed(id, subject, egress) {
       const box = await sandbox.create({ env: {}, template: "node" });
       const snapshotRef = await box.snapshot();
-      await seedAppRow(store, servedApp(id, snapshotRef), subject);
+      await seedAppRow(store, servedApp(id, snapshotRef, egress), subject);
     },
   };
 };
@@ -109,6 +112,25 @@ describe("§9.8 — open() routes ORG-owned served apps through the proxy", () =
     const opened = await runtime.open("app_org_theme", ctx("kim", ["acme"]));
     expect((opened as { url: string }).url)
       .toBe(`/api/vendo/apps/app_org_theme/serve/?vendoTheme=${encodeURIComponent(JSON.stringify(theme))}`);
+  });
+
+  /** `can()` admits a bare `user:` grant on an org-held app with NO membership
+      asserted — the grant is the whole permission, which is exactly what
+      "share with one person" writes. Keying the proxy branch on MEMBERSHIPS
+      alone handed that caller the provider's raw ingress URL: a
+      bearer-by-obscurity capability URL with no per-request check, which is the
+      thing §9.8's proxy exists to prevent. */
+  it("routes a user-granted viewer who asserts NO membership through the proxy too", async () => {
+    const { runtime, store, seed } = await setup();
+    await seed("app_org_nomember", "acme");
+    await seedGrantRows(store, "app_org_nomember", { "user:kim": "viewer" });
+
+    const opened = await runtime.open("app_org_nomember", ctx("kim"));
+    expect(opened).toEqual({
+      kind: "http",
+      url: "/api/vendo/apps/app_org_nomember/serve/",
+    });
+    expect((opened as { url: string }).url).not.toMatch(/^https?:\/\//);
   });
 
   it("leaves a PERSONAL served app on the provider URL, unchanged", async () => {
@@ -170,6 +192,40 @@ describe("§9.8 — serve() checks can(viewer) against live rows, every request"
     expect(crossed).toHaveLength(1);
     expect(Object.keys(crossed[0]!.headers).map((name) => name.toLowerCase()).sort())
       .toEqual(["content-type"]);
+  });
+
+  /** An egress approval is self-subject like every other approval, but its
+      EFFECT is not: a decision writes `egressApproved` onto the SHARED app
+      document and binds everyone who uses the app afterwards. So the ask
+      belongs to a caller who can change the app — which is what
+      `EgressApprovalRequest.owner` has always claimed it records ("the app
+      owner's principal subject — the only principal who may approve"). The
+      §9.8 served door runs at VIEWER level, and it parked a card recorded as
+      the viewer. */
+  it("never lets a VIEWER decide the app's egress, and parks no card in their name", async () => {
+    const { runtime, store, seed, guard, sandbox } = await setup();
+    await seed("app_viewer_egress", "acme", ["api.stripe.com"]);
+    await seedGrantRows(store, "app_viewer_egress", { "user:kim": "viewer" });
+    const before = sandbox.machines.length;
+
+    await expect(runtime.serve("app_viewer_egress", GET, ctx("kim", ["acme"])))
+      .rejects.toMatchObject({ code: "blocked" });
+
+    expect(guard.approvals).toHaveLength(0);
+    expect((await store.records("vendo_egress_approval").list({})).records).toEqual([]);
+    // And it costs no machine, for the same reason the access check comes first.
+    expect(sandbox.machines.length).toBe(before);
+  });
+
+  it("still asks the person who CAN change the app", async () => {
+    const { runtime, store, seed, guard } = await setup();
+    await seed("app_editor_egress", "acme", ["api.stripe.com"]);
+    await seedGrantRows(store, "app_editor_egress", { "user:rae": "editor" });
+
+    await expect(runtime.serve("app_editor_egress", GET, ctx("rae", ["acme"])))
+      .rejects.toMatchObject({ code: "blocked" });
+    expect(guard.approvals).toHaveLength(1);
+    expect(guard.approvals[0]?.ctx.principal.subject).toBe("rae");
   });
 
   it("wakes the machine only AFTER the access check, never before", async () => {

@@ -55,6 +55,51 @@ for (const backend of backends()) {
       )).toEqual([{ path: "/orgs/acme/apps/app_promoted/app.vendo", owner: "acme" }]);
     });
 
+    /** The app's own ROOT row — the path at exactly `/user/apps/<appId>`, with
+        no trailing slash. Core's `appOfOrgPath` says the app's grants govern it
+        (`erase.byApp` matches it for the same reason), so a promote that leaves
+        it behind strands a row of the org's app in the promoter's `/user`. */
+    it("moves the row at EXACTLY the app path, not only its subtree", async () => {
+      const app = "app_root_row";
+      const workspace = workspaceStore(made.store);
+      const fs = await workspace.open(dana);
+      await fs.writeFile(`/user/apps/${app}`, "the app itself");
+      await fs.commit();
+
+      expect(await workspace.moveApp(
+        app,
+        { kind: "user", subject: "dana" },
+        { kind: "org", org: "acme" },
+      )).toBe(1);
+
+      expect(await made.sql(
+        "SELECT path, owner FROM vendo_workspace_files WHERE path LIKE $1",
+        [`/%/apps/${app}%`],
+      )).toEqual([{ path: `/orgs/acme/apps/${app}`, owner: "acme" }]);
+    });
+
+    it("refuses a destination collision at exactly the app path too", async () => {
+      const app = "app_root_clash";
+      const workspace = workspaceStore(made.store);
+      await made.sql(
+        "INSERT INTO vendo_workspace_files (path, owner, content, bytes) VALUES ($1, $2, $3, $4)",
+        [`/orgs/acme/apps/${app}`, "acme", "somebody else's", 16],
+      );
+      const mine = await workspace.open(dana);
+      await mine.writeFile(`/user/apps/${app}`, "mine");
+      await mine.commit();
+
+      await expect(workspace.moveApp(
+        app,
+        { kind: "user", subject: "dana" },
+        { kind: "org", org: "acme" },
+      )).rejects.toMatchObject({ code: "conflict" });
+      expect(await made.sql(
+        "SELECT owner FROM vendo_workspace_files WHERE path = $1",
+        [`/user/apps/${app}`],
+      )).toEqual([{ owner: "dana" }]);
+    });
+
     it("refuses to promote a row that belongs to someone else", async () => {
       const app = "app_not_yours";
       await appStore(made.store).put(dana, appFixture(app));
