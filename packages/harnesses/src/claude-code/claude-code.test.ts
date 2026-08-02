@@ -201,6 +201,9 @@ function makeTurn(input: {
   /** The pool keys on the first message's id, so a test that wants the SAME
    *  session across two turns names it. */
   thread?: string;
+  /** `Turn.threadId` — the pool's FIRST key (contract amendment ccaba80a7).
+   *  Tests that omit it exercise the untyped-caller fallback above. */
+  threadId?: string;
   messages?: Array<{ id: string; text: string }>;
 } = {}): TurnDouble {
   const workspace = testWorkspace(input.files ?? {});
@@ -209,6 +212,7 @@ function makeTurn(input: {
   const messages = (input.messages ?? [{ id: input.thread ?? `m_${(threadSeq += 1)}`, text: "make me a dashboard" }])
     .map((m) => userMessage(m.id, m.text));
   const turn = {
+    ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
     messages,
     tools: {
       list: async () => (input.tools ?? [{ name: "maple_invoices_list", title: "List invoices", description: "d" }])
@@ -736,6 +740,22 @@ describe("a turn on a real box wire", () => {
     const second = makeTurn({ files: { "/user/apps/app_1/app.vendo": "<App/>" } });
     await drain(claudeCode({ sandbox: healthy }), second.turn);
     expect(await second.workspace.readFile("/user/apps/app_1/app.vendo")).toBe("<App>whole</App>");
+  });
+
+  test("the machine pool keys on Turn.threadId FIRST — a history edit cannot orphan the session", async () => {
+    // The amendment's whole point (ccaba80a7): `messages[0].id` changes when
+    // the user edits the first message and resends; the thread's identity does
+    // not. Same threadId + different first-message id must be ONE machine.
+    let creates = 0;
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "ok" }); });
+    const original = sandbox.create.bind(sandbox);
+    sandbox.create = async (spec) => { creates += 1; return original(spec); };
+    const harness = claudeCode({ sandbox });
+    const first = makeTurn({ threadId: "thr_named", messages: [{ id: "m_a", text: "hi" }] });
+    await drain(harness, first.turn);
+    const second = makeTurn({ threadId: "thr_named", messages: [{ id: "m_edited", text: "hi again" }] });
+    await drain(harness, second.turn);
+    expect(creates).toBe(1);
   });
 
   test("D4 · a pooled machine the provider reaped is EVICTED, so the next turn on that thread recovers", async () => {
