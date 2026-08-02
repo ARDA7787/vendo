@@ -29,6 +29,19 @@ Same setup, same production build, `http://localhost:3119`.
 | `11-share-automation-disarm-note.png` | **G6** — on an app that declares a trigger the dialog says it plainly before the move: "Its automation turns off in the move — automations run with a person's access, so it stays off until someone turns it back on." |
 | `12-switcher-unconfigured-honest.png` | **G17** — with password login unconfigured (production, no `MAPLE_DEMO_PASSWORD`) the account menu says **Switching unavailable** and the toast names the env var, instead of an inert "Personal" item. |
 
+## Fix round 2 (2026-08-01, verifier findings R2-1 … R2-8)
+
+| Shot | What it proves |
+| --- | --- |
+| `13-share-dialog-first-read-in-flight.png` | **R2-3** — with the grants read held open (Playwright route delay), the dialog says **"Loading…"**. It used to say "You don't have access to this app." on every open, because `null` is also what the hook holds before the first answer. |
+| `14-share-dialog-first-read-answered.png` | The same dialog once the read answers: the owner gets the personal-copy note and the share controls. |
+
+R2-1's blocker is a concurrency bug, so its proof is a test, not a shot:
+`packages/vendo/src/orgs-e8.test.ts` "two simultaneous promotes: one wins, and
+the LOSER undoes nothing of the winner's" over the real composition, plus
+`packages/vendo/src/promote-app.test.ts` for the interleavings a wire test cannot
+schedule. Both revert-checks are recorded in `PARKED.md`.
+
 ## The §9.1 seam, proven end to end in the browser
 
 `GET /api/vendo/status` as Yousef, over the live server:
