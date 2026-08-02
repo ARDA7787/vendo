@@ -170,7 +170,7 @@ skill works and invoking an unlisted operator skill returns **FAILED**.
 
 ## 5. Gates
 
-All five green, all on the FINAL commit (`55d43d1f9`):
+All five green, re-run in full after independent-check fix round 1:
 
 - `pnpm build` ✅
 - `pnpm typecheck` ✅ **43/43**
@@ -178,6 +178,14 @@ All five green, all on the FINAL commit (`55d43d1f9`):
 - `pnpm test --force --concurrency=1` from the repo root, **TWICE**:
   run A **55/55 successful, 31/31 packages, 0 failures**; run B **55/55 successful,
   31/31 packages, 0 failures**.
+- Live, after re-baking the box template (`packages/apps/box/**` changed):
+  **box 7/7**, **local 5/5**.
+
+Per-package on the post-round-1 run: apps **645** · harnesses **240** · vendo **1753**
+· ui 683 · bench 525 · corpus-harness 390 · core 884 · actions 572 · store 319 ·
+guard 206 · demo-accounting 152 · genui-bench 122 · telemetry 119 · knowledge 114 ·
+demo-bank 96 · demo-template 82 · mcp 85 · integration 52 · engine 49 ·
+automations 47.
 
 (An earlier green-looking pair was discarded rather than cited: one predated the
 skills wiring, and the other was an aborted run whose piped exit code read 0 — see
