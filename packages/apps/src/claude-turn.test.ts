@@ -217,6 +217,31 @@ describe("in-process MCP projection — one guard, one audit row, one mirror", (
     // Nothing about in-box bash reaches the guard: it never touches the world.
     expect(asked).toBe(0);
   });
+
+  test("a tool nobody named — a future SDK built-in — is DENIED, never auto-allowed", async () => {
+    // The hook is an ALLOW-list. A deny-list here meant an SDK upgrade shipping
+    // a new built-in with egress would be silently allowed; unnamed = denied.
+    let asked = 0;
+    const { recorded } = await run(
+      [{ use: { name: "NetworkProbe", input: { host: "169.254.169.254" } } }],
+      async () => { asked += 1; return { status: "ok", output: {} }; },
+    );
+    expect(recorded.permissions[0]?.verdict).toBe("deny");
+    expect(recorded.permissions[0]?.message).toContain("NetworkProbe");
+    // Denied at the hook: it never reaches the guard, and never executes.
+    expect(asked).toBe(0);
+    expect(recorded.handled).toEqual([]);
+  });
+
+  test("the SDK's subagent door stays open — a Task dispatch is allowed", async () => {
+    // A Task grants nothing by itself: the subagent's inner calls come back
+    // through this same hook one by one.
+    const { recorded } = await run(
+      [{ use: { name: "Task", input: { prompt: "survey the workspace" } } }],
+      ok,
+    );
+    expect(recorded.permissions[0]).toEqual({ name: "Task", verdict: "allow" });
+  });
 });
 
 describe("M1 · exactly-once survives every hook/handler arg mismatch", () => {

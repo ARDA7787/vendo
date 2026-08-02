@@ -40,8 +40,16 @@ export const VENDO_MCP_SERVER = "vendo";
 /** The box's own hands (design §4): a real shell over a workspace COPY. */
 export const BOX_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"] as const;
 
-/** Never available to a headless box turn: no user to ask, no egress to spend. */
+/** Never available to a headless box turn: no user to ask, no egress to spend.
+ *  Redundant with the hook's allow-list ON PURPOSE: `disallowedTools` removes
+ *  these from the model's view entirely, so it never plans around them; the
+ *  hook denial below is the backstop for an SDK that offers them anyway. */
 const DISALLOWED_TOOLS = ["WebSearch", "WebFetch", "AskUserQuestion"];
+
+/** The SDK's subagent door. Allowing the dispatcher grants nothing by itself:
+ *  a subagent's inner calls come back through the same permission hook one by
+ *  one, each judged on its own name. */
+const SUBAGENT_TOOLS = ["Task"];
 
 /** Exactly the three statuses a harness sees (contract §1.1), flattened for the
  *  wire the box speaks. Mapping from `ToolResult` is the host's job. */
@@ -236,6 +244,11 @@ const callKey = (name: string, args: Record<string, unknown>): string =>
  */
 function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
   const prefix = `mcp__${VENDO_MCP_SERVER}__`;
+  // The hook's ALLOW-list: the box's own hands plus the subagent door. A
+  // deny-list here meant every tool nobody had foreseen — say an SDK upgrade
+  // shipping a new built-in with egress — was silently allowed; unnamed must
+  // mean denied.
+  const boxAllowed = new Set<string>([...(input.allowedBoxTools ?? BOX_TOOLS), ...SUBAGENT_TOOLS]);
   const settled = new Map<string, GuardedResult[]>();
   const schemas = new Map(input.tools.map((listed) => [listed.name, listed.inputSchema]));
   const slot = (name: string, args: unknown): string => `${name}\0${JSON.stringify(args ?? {})}`;
@@ -280,9 +293,14 @@ function guardedProjection(input: ClaudeTurnInput, z: ZodLike, sdk: SdkModule) {
     rawArgs: Record<string, unknown>,
   ): Promise<Record<string, unknown>> => {
     if (!name.startsWith(prefix)) {
-      // The box IS the permission: its own file/bash work touches a COPY with no
-      // credentials on it, and reality happens at commit.
-      return { behavior: "allow", updatedInput: rawArgs };
+      // ALLOW-LIST, never a deny-list. The box IS the permission for its own
+      // hands — file/bash work touches a COPY with no credentials on it, and
+      // reality happens at commit — but that argument covers exactly the tools
+      // named in {@link boxAllowed}. Anything else (a future SDK built-in with
+      // egress, another server's tools) is denied by not being named, instead
+      // of allowed by not being foreseen.
+      if (boxAllowed.has(name)) return { behavior: "allow", updatedInput: rawArgs };
+      return { behavior: "deny", message: `${name} isn't available in this workspace.` };
     }
     const bare = name.slice(prefix.length);
     const args = normalizeArgs(schemas.get(bare), rawArgs);
