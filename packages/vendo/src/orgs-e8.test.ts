@@ -1,7 +1,14 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { VENDO_APP_FORMAT, type AppDocument, type Membership, type Principal, type ToolRegistry } from "@vendoai/core";
+import {
+  VENDO_APP_FORMAT,
+  type AppDocument,
+  type Membership,
+  type Principal,
+  type ResolvedPerson,
+  type ToolRegistry,
+} from "@vendoai/core";
 import { appAccess, createStore, workspaceStore, type VendoStore } from "@vendoai/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVendo, type Vendo } from "./server.js";
@@ -61,7 +68,10 @@ async function tempStore(): Promise<VendoStore> {
 /** Whose request this is — set per call, the way a real session would. */
 let acting: Principal = dana;
 
-async function boot(store: VendoStore, opts: { key?: boolean } = {}): Promise<Vendo> {
+async function boot(
+  store: VendoStore,
+  opts: { key?: boolean; resolvePerson?: (query: string) => Promise<ResolvedPerson | null> } = {},
+): Promise<Vendo> {
   // §9.6 — multiParty is filled from the SAME cloud-key read every other Cloud
   // default uses, so this env stub is the whole difference between keyed and
   // keyless. Nothing else in the composition changes.
@@ -71,6 +81,7 @@ async function boot(store: VendoStore, opts: { key?: boolean } = {}): Promise<Ve
     auth: {
       principal: async () => acting,
       memberships: async (principal) => memberships[principal.subject] ?? [],
+      ...(opts.resolvePerson === undefined ? {} : { resolvePerson: opts.resolvePerson }),
     },
   });
   // Wave-2's §10 config consolidation narrowed `tools:` to the host's own
@@ -500,6 +511,93 @@ describe("E8 — §9.8: open() hands an org served app a RESOLVABLE url", () => 
       kind: "http",
       url: "https://maple.test/api/vendo/apps/app_abs/serve/",
     });
+  });
+});
+
+/**
+ * Build contract §9.1 companion (ratified 2026-08-01) — a person-share needs the
+ * HOST to name the person. The dialog used to encode what was typed VERBATIM as
+ * the subject, so a share with "Mia" wrote `user:Mia` — a row that matched
+ * nobody, after the app had already been moved into the team to make room for it.
+ */
+describe("E8 — §9.1 companion: only the host can name a person", () => {
+  const roster: Record<string, ResolvedPerson> = {
+    "kim": { subject: "kim", display: "Kim Alvarez" },
+    "kim@maple.test": { subject: "kim", display: "Kim Alvarez" },
+  };
+  const resolvePerson = async (query: string): Promise<ResolvedPerson | null> =>
+    roster[query.trim().toLowerCase()] ?? null;
+
+  it("says on /status that it has no directory, and refuses the lookup, when the seam is unset", async () => {
+    const store = await tempStore();
+    const vendo = await boot(store);
+    await seedApp(store, seeded("app_nodir", "Team pulse"), ORG);
+
+    // The surface learns from the SAME per-request answer everything else uses.
+    expect((await call(vendo, dana, "GET", "/status")).body.namesPeople).toBeUndefined();
+    const refused = await call(vendo, dana, "POST", "/apps/app_nodir/grants/resolve", { query: "kim" });
+    expect(refused.status).toBe(501);
+    // Teams and orgs are untouched by the absence.
+    expect((await call(vendo, dana, "POST", "/apps/app_nodir/grants", {
+      principal: `team:${ORG}/support`,
+      level: "viewer",
+    })).status).toBe(200);
+  });
+
+  it("resolves a typed name to the host's own subject, and writes the grant for THAT", async () => {
+    const store = await tempStore();
+    const vendo = await boot(store, { resolvePerson });
+    await seedApp(store, seeded("app_named", "Team pulse"), ORG);
+
+    expect((await call(vendo, dana, "GET", "/status")).body.namesPeople).toBe(true);
+    const found = await call(vendo, dana, "POST", "/apps/app_named/grants/resolve", {
+      query: "Kim@Maple.test",
+    });
+    expect(found.body).toEqual({ person: { subject: "kim", display: "Kim Alvarez" } });
+
+    // The grant is written for the RESOLVED subject. The typed string never
+    // becomes a principal.
+    expect((await call(vendo, dana, "POST", "/apps/app_named/grants", {
+      principal: `user:${found.body.person.subject}`,
+      level: "editor",
+    })).status).toBe(200);
+    expect((await call(vendo, kim, "GET", "/apps/app_named")).status).toBe(200);
+  });
+
+  it("answers null for a name the host does not know, and refuses the typed string as a principal", async () => {
+    const store = await tempStore();
+    const vendo = await boot(store, { resolvePerson });
+    await seedApp(store, seeded("app_unknown", "Team pulse"), ORG);
+
+    const missing = await call(vendo, dana, "POST", "/apps/app_unknown/grants/resolve", { query: "Mia" });
+    expect(missing.status).toBe(200);
+    expect(missing.body).toEqual({ person: null });
+
+    // And the old behaviour — encode what was typed — is refused at the door,
+    // whatever store is under it (§9.2).
+    const bare = await call(vendo, dana, "POST", "/apps/app_unknown/grants", {
+      principal: "Mia",
+      level: "viewer",
+    });
+    expect(bare.status).toBe(400);
+    expect((await store.records("vendo_app_grants").list({ refs: { app_id: "app_unknown" } })).records)
+      .toEqual([]);
+  });
+
+  it("keeps the directory behind the SAME gate that writes the grant", async () => {
+    // Whoever may ask "who is this person" can enumerate the host's own users.
+    const store = await tempStore();
+    const vendo = await boot(store, { resolvePerson });
+    await seedApp(store, seeded("app_gated", "Team pulse"), ORG);
+    await call(vendo, dana, "POST", "/apps/app_gated/grants", { principal: "user:kim", level: "editor" });
+
+    // Kim is an EDITOR — she sees the app and cannot share it, so she cannot ask.
+    const asEditor = await call(vendo, kim, "POST", "/apps/app_gated/grants/resolve", { query: "kim" });
+    expect(asEditor.status).toBe(403);
+    // A stranger is masked exactly as they are everywhere else.
+    const stranger: Principal = { kind: "user", subject: "stranger" };
+    expect((await call(vendo, stranger, "POST", "/apps/app_gated/grants/resolve", { query: "kim" })).status)
+      .toBe(404);
   });
 });
 

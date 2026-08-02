@@ -1446,6 +1446,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // is handed to the wire, the automations engine, and the schedule engine, so
   // an attended request and an unattended fire resolve the SAME answer.
   const membershipsSeam = config.auth?.memberships;
+  // Build contract §9.1 companion — the fifth seam, on the same preset and for
+  // the same reason: Vendo holds no directory, so only the host can turn what
+  // someone typed into the Share dialog into one of its own subjects. Unset, the
+  // dialog does not offer to share with one person at all.
+  const resolvePersonSeam = config.auth?.resolvePerson;
   // 02-store §4 (kill-list B3) — ephemeral session policy. Validated like the
   // agent's context config; defaults are the recommended knobs. The store takes
   // the clock per call (register/sweep), so one time source needs no seam.
@@ -2741,6 +2746,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const handler = createWireHandler({
     principal: resolvePrincipal,
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+    ...(resolvePersonSeam === undefined ? {} : { resolvePerson: resolvePersonSeam }),
     ready,
     trustedBaseIsHttps,
     get sessionId() { return sessionId(); },

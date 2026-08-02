@@ -1,5 +1,5 @@
 import type { SecretSource } from "@vendoai/actions/presets";
-import type { ActAs, Membership, Principal } from "@vendoai/core";
+import type { ActAs, Membership, Principal, ResolvedPerson } from "@vendoai/core";
 import type { HostOAuthAdapter } from "@vendoai/mcp";
 
 /** 09-vendo §2.1 — one host-identity story, three seams. A HostAuthPreset fills
@@ -19,6 +19,13 @@ export interface HostAuthPreset {
       deployment). Absent → no orgs asserted → `can()` degenerates to
       ownership. Never persisted anywhere. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
+  /** Build contract §9.1 companion — the fifth seam: turn what someone TYPED
+      into the Share dialog ("Mia", "mia@work.com") into one of the host's own
+      subjects, or null. Vendo holds no directory, so a person-share cannot be
+      resolved here; the dialog used to encode the typed string verbatim and
+      write a grant that matched nobody. Absent → the dialog does not offer to
+      share with one person at all (teams, orgs and fork are unaffected). */
+  resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
 }
 
 /** What a host's subject→user resolver returns. `display` names the resolved
@@ -50,4 +57,8 @@ export interface HostAuthPresetOptions {
       forwards this verbatim; nothing about it is vendor-specific, because the
       org chart it reads is the HOST's, not the identity vendor's. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
+  /** Build contract §9.1 companion — see HostAuthPreset.resolvePerson. Forwarded
+      verbatim by every preset, for the same reason `memberships` is: the
+      directory it reads is the HOST's. */
+  resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
 }

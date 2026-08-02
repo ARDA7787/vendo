@@ -255,6 +255,28 @@ export const appRoutes: RouteEntry[] = [
     // list is viewer-gated and OSS; writing one is owner-gated AND
     // Cloud-gated, and the runtime (not this route) is where both are decided,
     // so the MCP door inherits the same rules without a second copy.
+    // Build contract §9.1 companion — the host names the person. Vendo holds no
+    // directory, so the dialog cannot resolve "Mia" and must not pretend to; it
+    // asks here, and the grant is written for the SUBJECT that comes back.
+    //
+    // Owner-gated on purpose: whoever may ask this may enumerate the host's own
+    // directory, so the gate is the same one that writes the grant. A caller who
+    // cannot see the app at all stays masked (§9.4).
+    if (request.method === "POST" && operation === "grants" && segments[3] === "resolve" && segments.length === 4) {
+      const level = await deps.apps.access.levelFor(appId, ctx);
+      if (level === null) throw new VendoError("not-found", `app not found: ${appId}`);
+      if (level !== "owner") throw new VendoError("forbidden", `owner access is required for ${appId}`);
+      if (deps.resolvePerson === undefined) {
+        throw new VendoError(
+          "not-implemented",
+          "sharing with one person needs the auth preset's `resolvePerson` seam:"
+          + " Vendo has no directory, so only your identity system can turn a typed"
+          + " name into one of your subjects",
+        );
+      }
+      const body = await requestJson(request);
+      return json({ person: await deps.resolvePerson(string(body["query"], "query")) });
+    }
     if (operation === "grants" && segments.length === 3) {
       if (request.method === "GET") {
         return json({

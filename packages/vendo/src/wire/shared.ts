@@ -4,6 +4,7 @@ import {
   VendoError,
   type Membership,
   type Principal,
+  type ResolvedPerson,
   type RunContext,
   type ToolOutcome,
   type ToolRegistry,
@@ -54,6 +55,10 @@ export interface WireDeps {
       in createContextResolver and stashed on the ctx. Unset → no orgs asserted
       → `can()` degenerates to ownership. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
+  /** Build contract §9.1 companion — the host's own directory lookup, behind the
+      owner gate on the Share dialog's door. Unset → /status says so and the
+      dialog does not offer to share with one person. */
+  resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
   ready: () => Promise<void>;
   /** VENDO_BASE_URL is https → TLS terminates upstream; see secureRequest. */
   trustedBaseIsHttps: boolean;
