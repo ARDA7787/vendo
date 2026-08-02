@@ -114,24 +114,21 @@ live("claudeCode() — live, in a real e2b box", () => {
     expect(text).toContain("8823");
   }, 600_000);
 
-  test("B1 · a thread idle past the TTL crosses the sweep and WAKES — no 401, no re-seed", async () => {
+  test("PROOF 1 · chat is real: two messages, ONE box, ONE session, no re-materialize between them", async () => {
     const adapter = sandbox();
-    const thread = `thr_live_sweep_${Date.now()}`;
+    const thread = `thr_live_chat_${Date.now()}`;
     const drive = async (
       machine: Awaited<ReturnType<typeof boxMachine>>,
       prompt: string,
-      resume?: string,
     ) => {
       let text = "";
       let sessionId: string | undefined;
-      await machine.materialize([]);
-      await machine.run({
+      await machine.send({
         prompt,
         systemPrompt: "Answer in as few words as possible.",
         tools: [],
         model: MODEL,
         maxTurns: 4,
-        ...(resume === undefined ? {} : { resume }),
         callTool: async () => ({ status: "ok", output: {} }),
         emit: (event) => {
           if (event.type === "text") text += event.delta;
@@ -141,32 +138,68 @@ live("claudeCode() — live, in a real e2b box", () => {
       return { text, sessionId };
     };
 
-    // A short TTL so the sweep is crossed in seconds rather than five minutes.
-    // Everything else is the real path: real e2b snapshot, real destroy, real
-    // resume, real supervisor memory, real token gate.
-    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv(), idleTtlMs: 1_500 });
+    // Message 1 on a FRESH box: materialize once, open the session.
+    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
     expect(first.carriesSession).toBe(false);
+    await first.materialize([]);
     const opened = await drive(first, "Remember the number 7311. Just say ok.");
     expect(opened.sessionId).toMatch(/.+/);
     await first.release();
 
-    // Let the sweep snapshot and destroy the machine.
-    await new Promise((resolve) => setTimeout(resolve, 25_000));
-
-    // THE BLOCKER: this acquire used to throw "refused the turn handshake (401)",
-    // because a woken supervisor still demands the token it slept with while the
-    // host mints a fresh one.
+    // Message 2 on the SAME conversation. The box is warm, so nothing is
+    // materialized and nothing is resumed — the session never stopped.
     const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
     expect(second.carriesSession).toBe(true);
-    const recalled = await drive(
-      second,
-      "What number did I ask you to remember? Digits only.",
-      opened.sessionId,
-    );
-    console.log("[live sweep]", JSON.stringify({ session: opened.sessionId, recalled: recalled.text }));
-    // No re-seed: the native session came home on the snapshot, and the woken box
-    // let us resume it.
+    const recalled = await drive(second, "What number did I ask you to remember? Digits only.");
+    console.log("[live chat]", JSON.stringify({ session: opened.sessionId, recalled: recalled.text }));
+    // Turn 2 depends on turn 1's answer, and it lands — which is the whole lane.
     expect(recalled.text).toContain("7311");
+    await second.release();
+  }, 600_000);
+
+  test("PROOF 5 · recovery: a box that DIED gets replaced, files come back, and the thread re-seeds", async () => {
+    const adapter = sandbox();
+    const thread = `thr_live_recover_${Date.now()}`;
+
+    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    await first.materialize([
+      { path: "/user/memory/note.md", bytes: new TextEncoder().encode("the code is 4417\n"), readOnly: false },
+    ]);
+    await first.send({
+      prompt: "Say ok.",
+      tools: [],
+      model: MODEL,
+      maxTurns: 3,
+      callTool: async () => ({ status: "ok", output: {} }),
+      emit: () => undefined,
+    });
+    await first.release();
+
+    // Kill it the way a provider reap does — no snapshot, nothing published.
+    await disposeSessionMachines();
+
+    // The next message gets a BRAND-NEW box. `carriesSession: false` is what
+    // tells the harness to re-materialize and re-seed rather than resume a
+    // session no disk holds.
+    const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    expect(second.carriesSession).toBe(false);
+    await second.materialize([
+      { path: "/user/memory/note.md", bytes: new TextEncoder().encode("the code is 4417\n"), readOnly: false },
+    ]);
+    let text = "";
+    await second.send({
+      prompt: "Read user/memory/note.md and tell me the code. Digits only.",
+      systemPrompt: "Answer in as few words as possible.",
+      tools: [],
+      model: MODEL,
+      maxTurns: 6,
+      callTool: async () => ({ status: "ok", output: {} }),
+      emit: (event) => { if (event.type === "text") text += event.delta; },
+    });
+    console.log("[live recovery]", JSON.stringify({ text }));
+    // The files really did come back onto a machine that had never seen them.
+    expect(text).toContain("4417");
+    await second.release();
   }, 600_000);
 
   test("E7 · a guarded call executes HOST-side, and the box env holds no credential but inference", async () => {

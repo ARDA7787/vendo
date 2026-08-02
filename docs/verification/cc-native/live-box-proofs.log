@@ -1,0 +1,31 @@
+
+ RUN  v2.1.9 /Users/yousefh/orca/workspaces/flowlet/cc-native/packages/harnesses
+
+stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > E3 · the box's real bash edits the app, and the diff lands in OUR store
+[live box edit] {"text":"I'll find and update that heading for you.Done — the heading now says 'Bills'.","after":"<App name=\"Money\">\n  <Heading text=\"Bills\" />\n</App>\n","commits":[{"changed":["/user/apps/app_box/app.vendo"]}]}
+
+stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > §1.3 · the pooled machine keeps its native session across turns
+[live box session] {"carried":"{\"sessionId\":\"e2ca19a6-1a47-45ee-b25e-42449ecaa345\",\"covers\":1,\"rewind\":[{\"at\":1,\"uuid\":\"8b983272-c5f8-4646-94cb-b4b0279ea7ae\"}]}","text":"8823"}
+
+stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > PROOF 1 · chat is real: two messages, ONE box, ONE session, no re-materialize between them
+[live chat] {"session":"d1821beb-8051-42d7-9f3d-e2815f0af3ac","recalled":"7311"}
+
+stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > PROOF 5 · recovery: a box that DIED gets replaced, files come back, and the thread re-seeds
+[live recovery] {"text":"I'll read the file for you.4417"}
+
+stdout | src/claude-code/claude-code-box.live.test.ts > claudeCode() — live, in a real e2b box > E7 · a guarded call executes HOST-side, and the box env holds no credential but inference
+[live box tools] {"text":"I'll help you with that. Let me first load the invoices tool and then get the information you need.You have **2 outstanding invoices**.\n\nDone.","calls":[{"name":"maple_invoices_list","args":{}}]}
+[live box env] AI_AGENT,ANTHROPIC_API_KEY,CLAUDECODE,CLAUDE_AGENT_SDK_VERSION,CLAUDE_CODE_CHILD_SESSION,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,CLAUDE_CODE_ENTRYPOINT,CLAUDE_CODE_EXECPATH,CLAUDE_CODE_SESSION_ID,CLAUDE_PID,COREPACK_ENABLE_AUTO_PIN,DISABLE_AUTOUPDATER,E2B_EVENTS_ADDRESS,E2B_SANDBOX,E2B_SANDBOX_ID,E2B_TEMPLATE_ID,GIT_EDITOR,HOME,LOGNAME,NODE_VERSION,NoDefaultCurrentDirectoryInExePath,PATH,PWD,SHELL,SHLVL,USER,YARN_VERSION,_
+
+ ✓ src/claude-code/claude-code-box.live.test.ts (5 tests) 115549ms
+   ✓ claudeCode() — live, in a real e2b box > E3 · the box's real bash edits the app, and the diff lands in OUR store 28485ms
+   ✓ claudeCode() — live, in a real e2b box > §1.3 · the pooled machine keeps its native session across turns 10572ms
+   ✓ claudeCode() — live, in a real e2b box > PROOF 1 · chat is real: two messages, ONE box, ONE session, no re-materialize between them 37955ms
+   ✓ claudeCode() — live, in a real e2b box > PROOF 5 · recovery: a box that DIED gets replaced, files come back, and the thread re-seeds 16612ms
+   ✓ claudeCode() — live, in a real e2b box > E7 · a guarded call executes HOST-side, and the box env holds no credential but inference 21793ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  02:09:15
+   Duration  116.21s (transform 320ms, setup 0ms, collect 498ms, tests 115.55s, environment 0ms, prepare 39ms)
+

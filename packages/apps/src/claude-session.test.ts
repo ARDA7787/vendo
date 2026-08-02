@@ -290,4 +290,55 @@ describe("the four channels the live session opens", () => {
     await session.end();
     expect(record.options["includePartialMessages"]).toBe(true);
   });
+
+  test("text that already streamed as deltas is NOT repeated by the assistant message that completes it", async () => {
+    // MEASURED LIVE 2026-08-02: turning `includePartialMessages` on made the SDK
+    // emit BOTH the token deltas and the finished assistant block, and the user
+    // saw every sentence twice ("I'll find and update the dashboard heading for
+    // you.I'll find and update the dashboard heading for you."). The completed
+    // block is the same prose, so whichever arrives first wins and the other is
+    // dropped.
+    const events: ClaudeTurnEvent[] = [];
+    const session = createClaudeSession({
+      tools: listing,
+      cwd: "/workspace",
+      env: {},
+      callTool: ok,
+      emit: (event) => events.push(event),
+      sdk: {
+        tool: () => ({}),
+        createSdkMcpServer: () => ({}),
+        query: ({ prompt }: { prompt: unknown }) => ({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "system", subtype: "init", session_id: "s" };
+            for await (const _message of prompt as AsyncIterable<unknown>) {
+              // Real order: the deltas stream, THEN the finished block arrives.
+              yield { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hello " } } };
+              yield { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "there." } } };
+              yield { type: "assistant", uuid: "a1", message: { content: [{ type: "text", text: "Hello there." }] } };
+              yield { type: "result", subtype: "success", session_id: "s" };
+            }
+          },
+        }),
+      } as never,
+    });
+    await session.send("hi");
+    await session.end();
+
+    const said = events.filter((event) => event.type === "text").map((event) => (event as { delta: string }).delta);
+    expect(said.join("")).toBe("Hello there.");
+    // The checkpoint still comes off the assistant message — only its prose is
+    // dropped, because the rewind ledger needs that uuid.
+    expect(events.filter((event) => event.type === "checkpoint")).toHaveLength(1);
+  });
+
+  test("an SDK that never streams deltas still yields the assistant block's text", async () => {
+    // The fallback must stay real: if partial messages are unavailable, dropping
+    // the completed block would mean the user sees nothing at all.
+    const { session, events } = openSession(() => [{ say: "only the block" }]);
+    await session.send("hi");
+    await session.end();
+    expect(events.filter((event) => event.type === "text").map((event) => (event as { delta: string }).delta))
+      .toEqual(["only the block"]);
+  });
 });

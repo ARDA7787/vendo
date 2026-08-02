@@ -17,6 +17,7 @@ import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { VendoError } from "@vendoai/core";
+import type { ClaudeTurnEvent } from "@vendoai/apps/claude-turn";
 import type { CheckoutFile, SyncFile } from "../materialize.js";
 import { pathAccess } from "../materialize.js";
 import type { SessionMachine, SessionMessage } from "./machine.js";
@@ -100,6 +101,17 @@ interface LocalSession {
   openedWith: string;
   /** Has this thread's workspace been materialized in this process? */
   warm: boolean;
+  /**
+   * The TURN currently in flight, and the only thing the session's sinks are
+   * allowed to close over.
+   *
+   * A session outlives the turn that opened it, so capturing that turn's `emit`
+   * and `callTool` directly sent every later turn's text and tool calls to a
+   * queue nobody was draining — measured live 2026-08-02: the user's second
+   * message came back completely empty. The box path routes through whichever
+   * message is in flight for exactly this reason; local mode does the same.
+   */
+  live?: Pick<SessionMessage, "callTool" | "emit" | "onFileWritten">;
 }
 const locals = new Map<string, LocalSession>();
 
@@ -186,6 +198,12 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
     },
 
     async send(message: SessionMessage) {
+      // Point the session's sinks at THIS turn before anything can arrive.
+      held.live = {
+        callTool: message.callTool,
+        emit: message.emit,
+        ...(message.onFileWritten === undefined ? {} : { onFileWritten: message.onFileWritten }),
+      };
       const wanted = fingerprint(message.tools);
       if (held.session !== undefined && wanted !== held.openedWith) {
         // The equipped set changed. End and reopen — `resume` carries the memory,
@@ -211,9 +229,16 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
           // CLAUDE_CONFIG_DIR is the whole handoff: the SDK reads it from the
           // environment, so the runner is told nothing about where the session lands.
           env: { ...options.env, CLAUDE_CONFIG_DIR: configDir },
-          callTool: message.callTool,
-          emit: message.emit,
-          ...(message.onFileWritten === undefined ? {} : { onFileWritten: message.onFileWritten }),
+          // STABLE indirections, never this turn's closures: the session
+          // outlives the turn that opened it (see LocalSession.live). Between
+          // turns nothing is in flight, and anything arriving then is dropped
+          // rather than attributed to the next turn.
+          callTool: async (name: string, args: Record<string, unknown>) =>
+            held.live === undefined
+              ? { status: "error" as const, message: "That didn't work." }
+              : held.live.callTool(name, args),
+          emit: (event: ClaudeTurnEvent) => held.live?.emit(event),
+          onFileWritten: (written: string | undefined) => held.live?.onFileWritten?.(written),
           ...(sdk === undefined ? {} : { sdk }),
         });
         held.openedWith = wanted;
@@ -231,6 +256,8 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
         await held.session!.send(message.prompt);
       } finally {
         if (stop !== undefined) message.signal!.removeEventListener("abort", stop);
+        // The turn is over; nothing may be attributed to it from here on.
+        held.live = undefined;
       }
     },
 

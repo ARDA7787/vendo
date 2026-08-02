@@ -503,6 +503,8 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
 
     const query = sdk.query({ prompt: inbox.stream(), options });
     live = query;
+    /** Did the message now being assembled already reach the user as deltas? */
+    let streamed = false;
     for await (const message of query) {
       const type = message["type"];
       if (type === "system" && message["subtype"] === "init") {
@@ -518,6 +520,15 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       if (type === "assistant") {
         const uuid = message["uuid"];
         if (typeof uuid === "string") input.emit({ type: "checkpoint", uuid });
+        // An `assistant` message is the COMPLETED form of prose that may already
+        // have streamed as deltas. Emitting both showed the user every sentence
+        // twice (measured live 2026-08-02, once `includePartialMessages` went on).
+        // Whichever arrived first wins; the block is still the only source when
+        // an SDK build streams nothing, so the fallback stays real.
+        if (streamed) {
+          streamed = false;
+          continue;
+        }
         const content = (message["message"] as { content?: Array<Record<string, unknown>> } | undefined)?.content;
         for (const block of content ?? []) {
           if (block["type"] === "text" && typeof block["text"] === "string" && block["text"] !== "") {
@@ -531,6 +542,7 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
         const event = message["event"] as { type?: string; delta?: { type?: string; text?: string } } | undefined;
         if (event?.type === "content_block_delta" && event.delta?.type === "text_delta"
           && typeof event.delta.text === "string" && event.delta.text !== "") {
+          streamed = true;
           input.emit({ type: "text", delta: event.delta.text });
         }
         continue;
