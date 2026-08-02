@@ -225,6 +225,7 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
           ...(message.resume === undefined ? {} : { resume: message.resume }),
           ...(message.resumeAt === undefined ? {} : { resumeAt: message.resumeAt }),
           ...(message.pluginPath === undefined ? {} : { pluginPath: message.pluginPath }),
+          ...(message.skillNames === undefined ? {} : { skillNames: message.skillNames }),
           cwd: root,
           // CLAUDE_CONFIG_DIR is the whole handoff: the SDK reads it from the
           // environment, so the runner is told nothing about where the session lands.

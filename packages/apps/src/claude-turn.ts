@@ -110,6 +110,16 @@ export interface ClaudeSessionInput {
    */
   pluginPath?: string;
   /**
+   * Exactly which discovered skills to enable, by name.
+   *
+   * `skills: "all"` enables EVERY skill the engine discovered — which on a host
+   * running `machine: "local"` includes the operator's own `~/.claude/skills`
+   * (measured 2026-08-02: a probe saw `deep-research`, `dataviz`, `claude-api`…
+   * alongside ours). That is the operator's private tooling leaking into a
+   * customer's agent, so the enabled set is OURS by name, never "all".
+   */
+  skillNames?: readonly string[];
+  /**
    * A file this session's work just wrote, from the SDK's NATIVE `PostToolUse`
    * hook. This is what replaces mid-turn file-watch polling: the host syncs on
    * WRITE instead of on a timer. `undefined` means a tool that writes without
@@ -491,9 +501,11 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
         // `skipMcpDiscovery`: we own the MCP wiring (the in-process projection),
         // so the engine must not read a plugin's own .mcp.json.
         plugins: [{ type: "local", path: input.pluginPath, skipMcpDiscovery: true }],
-        // The SDK's single switch for turning discovered skills ON. A plugin
-        // whose skills are never enabled is a directory nobody reads.
-        skills: "all",
+        // The SDK's single switch for turning discovered skills ON. NAMED, never
+        // "all": "all" also enables whatever the machine's own home directory
+        // happens to carry. A plugin whose skills are never enabled is a
+        // directory nobody reads, so an empty name list still passes [].
+        skills: [...(input.skillNames ?? [])],
       }),
       ...(input.onFileWritten === undefined ? {} : {
         hooks: { PostToolUse: [{ matcher: WRITING_TOOLS, hooks: [onPostToolUse] }] },

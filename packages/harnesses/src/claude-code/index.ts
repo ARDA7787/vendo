@@ -326,6 +326,13 @@ export function claudeCode(
         };
 
         const tools = (await turn.tools.list()).map(listingToTool);
+        // `Turn.skills` finally reaches this harness. Before cc-native the pack
+        // skills were materialized onto the box's disk and NOTHING pointed the
+        // model at them — they were files it might stumble on. Naming them here
+        // is what turns the `/host` mount into a native plugin, and naming them
+        // rather than saying "all" is what stops the MACHINE's own skills (an
+        // operator's ~/.claude/skills, on the local path) from joining the set.
+        const skillNames = (await turn.skills.list().catch(() => [])).map((skill) => skill.name);
         const running = machine.send({
           prompt: promptFor(turn.messages, sessionId !== undefined),
           systemPrompt: `${turn.system ?? ""}${embeddingBrief(rootHintFor(resolved))}`,
@@ -336,8 +343,11 @@ export function claudeCode(
           ...(rewind.resume === undefined ? {} : { resume: rewind.resume }),
           ...(rewind.resumeAt === undefined ? {} : { resumeAt: rewind.resumeAt }),
           // The `/host` mount doubles as the SDK plugin root, so the pack skills
-          // already on this disk are discovered natively — no projection.
-          pluginPath: machine.pluginPath,
+          // already on this disk are discovered natively — no projection. No
+          // skills, no plugin: an empty plugin is a directory nobody reads.
+          ...(skillNames.length === 0
+            ? {}
+            : { pluginPath: machine.pluginPath, skillNames }),
           callTool: (name, args) => callGuarded(turn, name, args),
           emit: (event) => events.push(event),
           onFileWritten: () => syncHotNow(),

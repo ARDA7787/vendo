@@ -30,6 +30,9 @@ export interface SessionOpen {
   resumeAt?: string;
   /** The local plugin root carrying `skills/<name>/SKILL.md` — our `/host` mount. */
   pluginPath?: string;
+  /** Exactly which skills to enable, by name — OURS, never "all" (which would
+   *  also enable whatever the machine's own home directory carries). */
+  skillNames?: readonly string[];
 }
 
 export interface SessionMessage extends SessionOpen {

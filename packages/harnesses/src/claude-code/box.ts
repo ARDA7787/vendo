@@ -255,6 +255,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
         resume: message.resume,
         resumeAt: message.resumeAt,
         pluginPath: message.pluginPath,
+        skillNames: message.skillNames,
       });
       // From here on the box holds a session, so a next message on this thread
       // neither re-materializes nor re-seeds.

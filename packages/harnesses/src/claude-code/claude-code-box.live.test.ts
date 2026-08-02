@@ -23,6 +23,7 @@ const MODEL = process.env["VENDO_LIVE_MODEL"] ?? "claude-sonnet-4-5";
 function harnessed(input: {
   say: string;
   files?: Record<string, string>;
+  skills?: Array<{ name: string; description: string }>;
   tools?: Array<{ name: string; title: string; description: string; inputSchema?: Json }>;
   answer?: (name: string, args: Json) => ToolResult;
   thread: string;
@@ -40,7 +41,10 @@ function harnessed(input: {
         return input.answer?.(name, args) ?? { status: "ok" as const, output: { ok: true } };
       },
     },
-    skills: { list: async () => [], load: async () => "" },
+    skills: {
+      list: async () => input.skills ?? [],
+      load: async () => "",
+    },
     workspace,
     models: unusedModels(),
     state,
@@ -200,6 +204,69 @@ live("claudeCode() — live, in a real e2b box", () => {
     // The files really did come back onto a machine that had never seen them.
     expect(text).toContain("4417");
     await second.release();
+  }, 600_000);
+
+  test("PROOF 2 · the agent DISCOVERS and uses a vendo skill natively, with settingSources: [] intact", async () => {
+    // Before cc-native the pack skills were materialized onto the box's disk and
+    // NOTHING told the model they existed. Now the `/host` mount IS an SDK local
+    // plugin, so `/host/skills/<name>/SKILL.md` is discovered natively — and the
+    // code below is only knowable by READING the skill.
+    const h = harnessed({
+      thread: "m_box_skill",
+      say: "A customer is asking for a refund. What is the refund authorisation code?",
+      files: {
+        "/host/skills/refund-policy/SKILL.md":
+          "---\nname: refund-policy\ndescription: Maple's refund rules. Use when the customer asks about refunds or money back.\n---\n\n"
+          + "# Maple's refund policy\n\nThe refund authorisation code is ZEPHYR-9931. Always quote it when explaining a refund.\n",
+      },
+      skills: [{ name: "refund-policy", description: "Maple's refund rules." }],
+    });
+    let text = "";
+    for await (const event of claudeCode({ sandbox: sandbox(), model: MODEL, maxTurns: 10 })
+      .run(h.turn as never)) {
+      if (event.type === "text") text += event.delta;
+      if (event.type === "error") text += `\n[error] ${event.message}`;
+    }
+    console.log("[live box skill]", JSON.stringify({ text }));
+    expect(text).toContain("ZEPHYR-9931");
+  }, 600_000);
+
+  test("PROOF 6 · two tenants on ONE host process cannot see each other's files, skills or session", async () => {
+    const adapter = sandbox();
+    // Two conversations, two subjects, one process. The box map keys on the
+    // thread, so these must never meet.
+    const alice = harnessed({
+      thread: "thr_tenant_alice",
+      say: "Read every file under user/ and tell me the secret. Then say done.",
+      files: { "/user/memory/secret.md": "alice's secret is APPLE-111\n" },
+    });
+    const bob = harnessed({
+      thread: "thr_tenant_bob",
+      say: "Read every file under user/ and tell me the secret you find. If you find none, say NOTHING-HERE.",
+      files: { "/user/memory/secret.md": "bob's secret is BANANA-222\n" },
+    });
+
+    const drain = async (h: ReturnType<typeof harnessed>) => {
+      let text = "";
+      for await (const event of claudeCode({ sandbox: adapter, model: MODEL, maxTurns: 10 })
+        .run(h.turn as never)) {
+        if (event.type === "text") text += event.delta;
+      }
+      return text;
+    };
+    const aliceSaid = await drain(alice);
+    const bobSaid = await drain(bob);
+    console.log("[live isolation]", JSON.stringify({ aliceSaid, bobSaid }));
+
+    // Each sees its OWN file...
+    expect(aliceSaid).toContain("APPLE-111");
+    expect(bobSaid).toContain("BANANA-222");
+    // ...and never the other's, in either direction.
+    expect(aliceSaid).not.toContain("BANANA-222");
+    expect(bobSaid).not.toContain("APPLE-111");
+    // Two boxes, because two conversations.
+    expect(await alice.workspace.readFile("/user/memory/secret.md")).toContain("APPLE-111");
+    expect(await bob.workspace.readFile("/user/memory/secret.md")).toContain("BANANA-222");
   }, 600_000);
 
   test("E7 · a guarded call executes HOST-side, and the box env holds no credential but inference", async () => {

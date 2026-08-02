@@ -249,7 +249,7 @@ describe("the four channels the live session opens", () => {
     ]);
     // `skills` is the SDK's single switch for turning discovered skills on; a
     // plugin whose skills are never enabled is a directory nobody reads.
-    expect(record.options["skills"]).toBe("all");
+    expect(record.options["skills"]).toEqual([]);
     // Multi-tenant isolation is NOT weakened to get skills: the user's own files
     // still cannot configure the harness.
     expect(record.options["settingSources"]).toEqual([]);
