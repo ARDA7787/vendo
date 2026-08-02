@@ -174,13 +174,20 @@ Per-package on the clean run: apps 642 · harnesses 234 · vendo 1753 · ui 683 
 bench 525 · corpus-harness 390 · demo-accounting 152 · genui-bench 122 ·
 demo-bank 96 · demo-template 82 · integration 52 · automations 47.
 
-**One load-flake, classified not assumed.** On the first full run
+**One load-flake, classified not assumed.** On an early full run
 `@vendoai-fixtures/integration` failed 15 tests with `fetch failed` /
 `ECONNREFUSED` / "Server is not running" — its fixture HTTP server starved under
-`--concurrency=1` contention. Run scoped on a quiet machine it is **52 passed, 1
-skipped**, and `grep -rl "claudeCode\|claude-code\|claude-turn" fixtures/integration/src/`
-returns nothing, so the fixture never touches this lane's code. This is the class the
-contract names as not-mine.
+`--concurrency=1` contention (a sibling lane's suite was running on the same
+machine). Run scoped on a quiet machine it is **52 passed, 1 skipped**; it is also
+green in both final runs; and
+`grep -rl "claudeCode\|claude-code\|claude-turn" fixtures/integration/src/` returns
+nothing, so the fixture never touches this lane's code. This is the class the contract
+names as not-mine.
+
+**A trap worth recording for the next lane:** `pnpm test … | grep … | tail` reports the
+exit code of `tail`, which is ALWAYS 0. An intermediate "green" run here was actually
+an aborted run (40 of 53 tasks) and its exit code said 0. Read the TALLY, never the
+exit line — exactly as the contract says.
 
 ---
 
