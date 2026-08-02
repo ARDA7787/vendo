@@ -350,12 +350,15 @@ describe("§9.6 — cloud gating", () => {
   // The green half: with a key the same three writes go through.
   it("allows them once the key filled the seam", async () => {
     const { runtime, store } = setup();
-    await seedAppRow(store, doc("app_keyed"), "dana");
-    await runtime.access.grant("app_keyed", "user:kim", "editor", ctx("dana"));
-    expect(await runtime.access.list("app_keyed", ctx("dana"))).toHaveLength(1);
+    // Held by the ORG: sharing implies the org workspace, so a live person
+    // grant only exists on an app that has already moved there.
+    await seedAppRow(store, doc("app_keyed"), "acme");
+    const admin: RunContext = { ...ctx("dana"), memberships: [{ org: "acme", admin: true }] };
+    await runtime.access.grant("app_keyed", "user:kim", "editor", admin);
+    expect(await runtime.access.list("app_keyed", admin)).toHaveLength(1);
     expect(await runtime.access.levelFor("app_keyed", ctx("kim"))).toBe("editor");
-    await runtime.access.revoke("app_keyed", "user:kim", ctx("dana"));
-    expect(await runtime.access.list("app_keyed", ctx("dana"))).toHaveLength(0);
+    await runtime.access.revoke("app_keyed", "user:kim", admin);
+    expect(await runtime.access.list("app_keyed", admin)).toHaveLength(0);
     expect(await runtime.access.levelFor("app_keyed", ctx("kim"))).toBeNull();
   });
 });

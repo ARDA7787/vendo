@@ -168,9 +168,11 @@ export function appAccessConformance(options: AppAccessConformanceOptions): Conf
     {
       name: "the owner's grant → revoke round trip changes real access",
       async run() {
+        // Held by the ORG: sharing implies the org workspace, so a live grant to
+        // another person only exists on an app that has already moved (below).
         const appId = nextId();
-        await seedApp(appId, "dana");
-        const owner = ctxFor("dana");
+        await seedApp(appId, ORG);
+        const owner = ctxFor("dana", [{ org: ORG, admin: true }]);
         await access.it.grant(owner, appId, "user:kim", "editor");
         assert(await access.it.levelFor(ctxFor("kim"), appId) === "editor", "the grant did not land");
         await access.it.grant(owner, appId, "user:kim", "viewer");
@@ -178,6 +180,27 @@ export function appAccessConformance(options: AppAccessConformanceOptions): Conf
         assert(await access.it.levelFor(ctxFor("kim"), appId) === "viewer", "re-granting did not update the level");
         await access.it.revoke(owner, appId, "user:kim");
         assert(await access.it.levelFor(ctxFor("kim"), appId) === null, "revoke left access behind");
+      },
+    },
+    {
+      name: "a PERSON grant on a still-personal app is refused — share implies promote",
+      async run() {
+        // Design spec §8: "Live sharing implies the org workspace", ruled
+        // 2026-08-01 to hold for EVERY principal. Without this, the grant
+        // resolved and the grantee's agent then opened an empty directory: the
+        // app's documents live under the holder's `/user` mount, and no `/user`
+        // path is ever another person's.
+        const appId = nextId();
+        await seedApp(appId, "dana");
+        let refused: unknown;
+        await access.it.grant(ctxFor("dana"), appId, "user:kim", "viewer")
+          .catch((error) => { refused = error; });
+        assert((refused as { code?: string })?.code === "validation", "a personal person-share was accepted");
+        assert(await access.it.levelFor(ctxFor("kim"), appId) === null, "the personal person-share landed anyway");
+        // The promoter's OWN row is the exception: promote mints it before the
+        // row flips, so the person handing the app over is not locked out.
+        await access.it.grant(ctxFor("dana"), appId, "user:dana", "owner");
+        assert((await access.it.list(ctxFor("dana"), appId)).length === 1, "the promoter's own grant was refused");
       },
     },
     {

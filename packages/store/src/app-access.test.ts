@@ -77,9 +77,12 @@ for (const backend of backends()) {
     });
 
     it("re-granting one principal updates the level in place", async () => {
+      // Held by the ORG — sharing a personal app with a person is refused
+      // outright ("share implies promote"), so the live grant cases all run on
+      // an app that has already moved.
       const app = "app_regrant";
-      await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
-      const owner = ctxFor("dana");
+      await appStore(made.store).put({ kind: "user", subject: "acme" }, doc(app));
+      const owner = ctxFor("dana", [{ org: "acme", admin: true }]);
       await access().grant(owner, app, "user:kim", "viewer");
       await access().grant(owner, app, "user:kim", "editor");
       const rows = await access().list(owner, app);
@@ -91,8 +94,8 @@ for (const backend of backends()) {
 
     it("revoke removes the grant and access with it", async () => {
       const app = "app_revoke";
-      await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
-      const owner = ctxFor("dana");
+      await appStore(made.store).put({ kind: "user", subject: "acme" }, doc(app));
+      const owner = ctxFor("dana", [{ org: "acme", admin: true }]);
       await access().grant(owner, app, "user:kim", "editor");
       expect(await access().can(ctxFor("kim"), "editor", { app })).toBe(true);
       await access().revoke(owner, app, "user:kim");
@@ -103,8 +106,8 @@ for (const backend of backends()) {
     // §9.4 posture, and the red half of the permission gate: these MUST fail.
     it("refuses grant/revoke to a non-owner and list to a non-viewer", async () => {
       const app = "app_posture";
-      await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
-      await access().grant(ctxFor("dana"), app, "user:kim", "editor");
+      await appStore(made.store).put({ kind: "user", subject: "acme" }, doc(app));
+      await access().grant(ctxFor("dana", [{ org: "acme", admin: true }]), app, "user:kim", "editor");
 
       // An editor provably SEES the app, so denial is `forbidden`.
       await expect(access().grant(ctxFor("kim"), app, "user:mal", "viewer"))
@@ -166,6 +169,36 @@ for (const backend of backends()) {
         ctxFor("sam", [{ org: "other", teams: ["finance"] }]),
         app,
       )).toBeNull();
+    });
+
+    it("refuses a PERSON grant on a still-personal app — the grantee would open an empty directory", async () => {
+      // Design spec §8, "live sharing implies the org workspace", ruled to apply
+      // to EVERY principal: a `user:` grant on a personal app used to resolve to
+      // a real level, and then the grantee's agent found nothing — the app's
+      // documents live under the holder's `/user` mount, and no `/user` path is
+      // ever another person's. Sharing has to move the app first.
+      const app = "app_personal_person";
+      await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
+      await expect(access().grant(ctxFor("dana"), app, "user:kim", "viewer"))
+        .rejects.toMatchObject({ code: "validation" });
+      expect(await access().levelFor(ctxFor("kim"), app)).toBeNull();
+    });
+
+    it("still lets the promoter mint their OWN owner grant before the row flips (§9.5)", async () => {
+      // Promote writes `user:<promoter>` while the row is still personal, so
+      // the check above must not lock the promoter out of their own app.
+      const app = "app_promoter_selfgrant";
+      await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
+      await access().grant(ctxFor("dana"), app, "user:dana", "owner");
+      expect(await access().list(ctxFor("dana"), app)).toHaveLength(1);
+    });
+
+    it("lets an org app be shared with a person — that is the whole point of promote", async () => {
+      const app = "app_org_person";
+      await appStore(made.store).put({ kind: "user", subject: "acme" }, doc(app));
+      const admin = ctxFor("dana", [{ org: "acme", admin: true }]);
+      await access().grant(admin, app, "user:kim", "editor");
+      expect(await access().levelFor(ctxFor("kim"), app)).toBe("editor");
     });
 
     it("refuses a whole-team grant on a still-personal app", async () => {

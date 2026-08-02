@@ -87,6 +87,17 @@ export function storeAccessFixture(store: ReturnType<typeof memoryStore>): AppAc
           + ` — move the app into ${named.org} first (sharing offers to), then share it`,
         );
       }
+      // "Share implies promote" for a PERSON too (design §8, ruled 2026-08-01):
+      // see the same refusal in @vendoai/store's appAccess, pinned by core's
+      // conformance kit that both mount.
+      const heldByAnOrg = (runCtx.memberships ?? []).some((entry) => entry.org === orgId);
+      if (named.kind === "user" && named.subject !== orgId && !heldByAnOrg) {
+        throw new VendoError(
+          "validation",
+          "this app is still one person's, so another person cannot be given access to it"
+          + " — move it into a team first (sharing offers to), or fork a copy for them",
+        );
+      }
       const existing = (await rowsFor(appId)).find((row) => row.principal === principal);
       await grants.put({
         id: existing?.id ?? `ag_${appId}_${principal}`,

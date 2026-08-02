@@ -81,6 +81,22 @@ export function appAccess(store: VendoStore): AppAccess {
     return rows;
   };
 
+  /**
+   * THE UNIQUENESS RULE this file depends on: `vendo_apps.subject` holds EITHER
+   * a person's subject OR an org id (§9.5 — promote writes the org id verbatim),
+   * with no discriminator column. Every resolution below reads it both ways in
+   * the same breath — `subject === ctx.principal.subject` means ownership,
+   * `membershipIn(ctx, subject)` means org-admin — so a host that issues an org
+   * id equal to some person's subject makes that person the owner of the org's
+   * apps. The rule is therefore a HOST INVARIANT: org ids and user subjects
+   * share one namespace and must be unique across it.
+   *
+   * Not fixed in code deliberately: a discriminator means a v8 column, a
+   * backfill of every existing app row, and a widening of every subject-keyed
+   * query and index in the store (apps, state, threads, audit, workspace
+   * `owner`, the erase cascade's `subject = $1` rule, promote's row flip) —
+   * a schema-train change, not a permission fix.
+   */
   const levelFor = async (ctx: RunContext, appId: AppId): Promise<AccessLevel | null> => {
     const subject = await rowSubject(appId);
     if (subject === undefined) return null;
@@ -131,6 +147,22 @@ export function appAccess(store: VendoStore): AppAccess {
           "validation",
           `this app is not in ${named.org}'s workspace, so ${named.org} cannot be given access to it`
           + ` — move the app into ${named.org} first (sharing offers to), then share it`,
+        );
+      }
+      // Design spec §8 — "live sharing implies the org workspace", and the
+      // 2026-08-01 ruling applies it to EVERY principal. A `user:` grant on a
+      // still-personal app resolves to a real level and then finds nothing: the
+      // app's documents live under the holder's `/user` mount, and no `/user`
+      // path is ever another person's (core's `accessForPath`). The app has to
+      // move into an org first — which is what the Share dialog now does before
+      // it writes the grant. Two exceptions, both real: the holder's own row
+      // (promote mints it BEFORE the flip, §9.5), and an app an asserted
+      // membership says is already held by an org.
+      if (named?.kind === "user" && named.subject !== orgId && membershipIn(ctx, orgId ?? "") === undefined) {
+        throw new VendoError(
+          "validation",
+          "this app is still one person's, so another person cannot be given access to it"
+          + " — move it into a team first (sharing offers to), or fork a copy for them",
         );
       }
       await grants.put({
