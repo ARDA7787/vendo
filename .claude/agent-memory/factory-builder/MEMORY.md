@@ -21,3 +21,6 @@
 - [A subpath's graph drags its optional peer](gotcha-subpath-graph-drags-optional-peer.md) — Turbopack RESOLVES `import(CONST)`; split the subpath, don't just declare the peer
 - [hcall_N is a process-wide counter](gotcha-hcall-counter-is-process-wide.md) — never infer "N-1 hidden tool calls" from a high id; count across the whole server boot
 - [`build --force` silently no-ops per package](gotcha-tsc-force-flag-silent-build-fail.md) — tsc rejects `--force`, dist keeps old code, and a red-green check then proves nothing
+- [server.close() hangs on a keep-alive MCP socket](gotcha-server-close-hangs-on-keepalive.md) — vitest then reports PASSING live tests as failed; closeAllConnections() first
+- [cloudflared prints its URL before DNS](gotcha-cloudflared-url-before-dns.md) — poll the real public URL, and drive the tunnel from OUTSIDE the script under test
+- [Compare against the record, not live state](feedback-compare-against-the-record-not-live-state.md) — a "differs from the current value?" check is vacuous when that value is cleared between uses
