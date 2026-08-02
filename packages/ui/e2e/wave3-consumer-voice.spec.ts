@@ -23,11 +23,42 @@ test.beforeAll(async () => {
   await mkdir(SHOTS, { recursive: true });
 });
 
+type SpecPage = Parameters<Parameters<typeof test>[1]>[0]["page"];
+
 /** One named card, so a second app on the page can never be the one under test. */
-const cardFor = (page: Parameters<Parameters<typeof test>[1]>[0]["page"], name: string) =>
+const cardFor = (page: SpecPage, name: string) =>
   page.locator("article").filter({ hasText: name }).first();
 
+/**
+ * The two doors the Share dialog reads, stubbed HERE rather than in the shared
+ * wire fixture: `/status` carries an exact shape that test/hooks.test.tsx pins
+ * (`memberships: []`), and widening it for one browser spec broke that test.
+ * The doors themselves are covered by their own suites (@vendoai/store's
+ * app-access, @vendoai/apps' access, wire/apps.grants) — what this spec is for
+ * is the rendered surface.
+ */
+async function stubSharingDoors(page: SpecPage): Promise<void> {
+  await page.route("**/api/vendo/status", async (route) => {
+    const answer = await route.fetch();
+    const status = await answer.json() as Record<string, unknown>;
+    await route.fulfill({
+      response: answer,
+      json: { ...status, memberships: [{ org: "acme", display: "Acme", teams: ["finance"] }] },
+    });
+  });
+  // §9.5 — the caller OWNS this app and it is still personal, which is the state
+  // "share implies promote" is about.
+  await page.route("**/api/vendo/apps/*/grants", async (route) => {
+    if (route.request().method() !== "GET") return await route.fallback();
+    await route.fulfill({ json: { level: "owner", grants: [], personal: true } });
+  });
+  await page.route("**/api/vendo/apps/*/promote", async (route) => {
+    await route.fulfill({ json: { id: "app_1", name: "Invoices" } });
+  });
+}
+
 test("the share picker speaks human, and offers a person", async ({ page }) => {
+  await stubSharingDoors(page);
   await openScenario(page, "page");
   const card = cardFor(page, "Invoices");
   await card.getByRole("button", { name: "Share", exact: true }).click();
@@ -49,7 +80,7 @@ test("the share picker speaks human, and offers a person", async ({ page }) => {
 });
 
 test("a keyless deployment's refusal is a consumer sentence, not an env var", async ({ page }) => {
-  await openScenario(page, "page");
+  await stubSharingDoors(page);
   // Exactly what the wire throws with no Cloud key (runtime.ts requireMultiParty).
   await page.route("**/api/vendo/apps/*/grants", async (route) => {
     if (route.request().method() !== "POST") return await route.fallback();
@@ -65,6 +96,7 @@ test("a keyless deployment's refusal is a consumer sentence, not an env var", as
       }),
     });
   });
+  await openScenario(page, "page");
 
   const card = cardFor(page, "Invoices");
   await card.getByRole("button", { name: "Share", exact: true }).click();
