@@ -43,46 +43,68 @@ const ABSENT_POLICY = /^(ENOENT|EACCES|EISDIR):/;
 
 /** The workspace-backed source of policy bodies, TTL-cached per org.
  *
- *  Resolved LAZILY and tolerantly: `workspaceStore` wants a SQL handle, which a
- *  hosted store has not got (harness-turn makes the same allowance). A
- *  deployment with no workspace has no org policy files, which is `undefined`,
- *  not an error — and never a loosening, because org rules can only tighten. */
+ *  Resolved LAZILY: `workspaceStore` wants a SQL handle, which a hosted store
+ *  has not got (harness-turn makes the same allowance).
+ *
+ *  A deployment with no workspace is NOT the same thing as an org with no
+ *  policy file, and it used to be treated as one — memoized as a permanent
+ *  silent `null`. That is the deployment org policy is SOLD for: org policy is
+ *  a Cloud feature, and a keyed deployment with no explicit store selects the
+ *  hosted store. Every org resolved to no rules, forever, with nothing anywhere
+ *  to tell an admin their policy was never in force. So it is reported — once
+ *  per deployment, through the same `onFailure` channel a broken read uses
+ *  (warning + audit row at the composition seam), and then it goes quiet: an
+ *  operator must not be drowned in one unfixable fact on every guarded call.
+ *
+ *  Reporting it never LOOSENS anything: org rules only tighten, so their
+ *  absence leaves the pipeline's own verdict standing. */
 export function workspacePolicySource(store: VendoStore): (orgId: string) => Promise<string | undefined> {
   const cache = new Map<string, { body: string | undefined; at: number }>();
   let workspace: ReturnType<typeof workspaceStore> | null | undefined;
+  let why = "";
   const open = (): ReturnType<typeof workspaceStore> | null => {
     if (workspace === undefined) {
       try {
         workspace = workspaceStore(store);
-      } catch {
+      } catch (error) {
         workspace = null;
+        why = error instanceof Error ? error.message : String(error);
       }
     }
     return workspace;
   };
+  let announced = false;
   return async (orgId) => {
     const cached = cache.get(orgId);
     if (cached !== undefined && Date.now() - cached.at < POLICY_TTL_MS) return cached.body;
-    // No SQL handle at all (a hosted store) — no workspace, so no policy files
-    // anywhere in this deployment. That is an absence, not a failure.
     const workspaces = open();
-    let body: string | undefined;
-    if (workspaces !== null) {
-      try {
-        // The org owns its own subtree, so the file is read as the org (§9.5:
-        // an org id is a workspace owner verbatim).
-        const fs = await workspaces.open({ kind: "user", subject: orgId });
-        body = await fs.readFile(orgPolicyPath(orgId));
-      } catch (error) {
-        // ABSENT is the ordinary case and is CACHED like any other answer, so the
-        // TTL engages for it too. Anything else is a real read failure and must
-        // be heard — treating a broken read as "no policy" is a silent loosening
-        // of whatever the admin actually wrote. A failure is deliberately NOT
-        // cached: a transient one must not disable an org's policy for the whole
-        // TTL, so it is re-read (and re-reported) until it answers.
-        if (!ABSENT_POLICY.test(error instanceof Error ? error.message : String(error))) throw error;
-        body = undefined;
+    if (workspaces === null) {
+      if (!announced) {
+        announced = true;
+        throw new Error(
+          `this deployment has no workspace, so NO org's policy.json can be read and no org policy is in force anywhere (${why}). `
+          + "Org policy files live in the workspace, which needs a store this runtime can open directly — "
+          + "a Vendo Cloud hosted store has no local handle. Wire an explicit store (createVendo({ store })) to enforce org policy here.",
+        );
       }
+      cache.set(orgId, { body: undefined, at: Date.now() });
+      return undefined;
+    }
+    let body: string | undefined;
+    try {
+      // The org owns its own subtree, so the file is read as the org (§9.5:
+      // an org id is a workspace owner verbatim).
+      const fs = await workspaces.open({ kind: "user", subject: orgId });
+      body = await fs.readFile(orgPolicyPath(orgId));
+    } catch (error) {
+      // ABSENT is the ordinary case and is CACHED like any other answer, so the
+      // TTL engages for it too. Anything else is a real read failure and must
+      // be heard — treating a broken read as "no policy" is a silent loosening
+      // of whatever the admin actually wrote. A failure is deliberately NOT
+      // cached: a transient one must not disable an org's policy for the whole
+      // TTL, so it is re-read (and re-reported) until it answers.
+      if (!ABSENT_POLICY.test(error instanceof Error ? error.message : String(error))) throw error;
+      body = undefined;
     }
     cache.set(orgId, { body, at: Date.now() });
     return body;

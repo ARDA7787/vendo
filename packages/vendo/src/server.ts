@@ -29,7 +29,7 @@ export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai
 export { instant, type InstantHarnessDeps, type InstantHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
 import { warnDeprecatedConfigKeys } from "./config-keys.js";
-import { orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
+import { orgPolicyPath, orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
 import { createPromoteApp } from "./promote-app.js";
 import { memoizedSurfaceMenu } from "./surface-menu.js";
 import {
@@ -1597,8 +1597,8 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // is the same late-binding `resolveRisk` above uses.
     orgPolicy: orgPolicyResolver(workspacePolicySource(store), async (org, reason) => {
       console.warn(
-        `[vendo] org policy for "${org}" was not applied: ${reason}. `
-        + "Fix /orgs/<org>/policy.json — until then this org's rules are not in force.",
+        `[vendo] org policy for "${org}" was not applied: ${reason} `
+        + `(its rules live at ${orgPolicyPath(org)}) — until then this org's rules are not in force.`,
       );
       await guard.report({
         id: `aud_${globalThis.crypto.randomUUID()}`,

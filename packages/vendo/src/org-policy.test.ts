@@ -181,3 +181,34 @@ describe("org policy over the REAL workspace", () => {
     expect(failures[0]).toContain("cadence");
   });
 });
+
+/** F5 (wave-3 independent check) — the deployment org policy is SOLD for is the
+ *  keyed one, and a keyed deployment with no explicit store gets the HOSTED
+ *  store, which has no SQL handle for the workspace to open. That absence used
+ *  to be memoized silently: every org resolved to no rules forever, with no
+ *  warning, no audit row, and no way for an admin to learn their policy was
+ *  never in force. */
+describe("org policy in a deployment with no workspace at all", () => {
+  /** The hosted store's shape as far as this seam is concerned: a VendoStore
+   *  that is not a local engine handle, so `workspaceStore` cannot open it. */
+  const noWorkspaceStore = () => ({ records: () => { throw new Error("unused"); } } as unknown as Parameters<typeof workspacePolicySource>[0]);
+
+  it("reports the absence LOUDLY, exactly once per deployment", async () => {
+    const failures: string[] = [];
+    const resolve = orgPolicyResolver(
+      workspacePolicySource(noWorkspaceStore()),
+      (org, reason) => { failures.push(`${org}: ${reason}`); },
+    );
+
+    // Never a loosening: with no rules readable the pipeline's own verdict
+    // stands, exactly as it does for an org that set no policy.
+    expect(await resolve(ctx([{ org: "maple" }]))).toEqual([]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatch(/workspace/i);
+
+    // ...and ONCE. Not per org, not per guarded call — an admin needs to see it,
+    // an operator must not be drowned in it.
+    expect(await resolve(ctx([{ org: "maple" }, { org: "cadence" }]))).toEqual([]);
+    expect(failures).toHaveLength(1);
+  });
+});
