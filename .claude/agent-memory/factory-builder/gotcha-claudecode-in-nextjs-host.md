@@ -1,28 +1,28 @@
 ---
 name: gotcha-claudecode-in-nextjs-host
-description: Putting harness claudeCode() in a Next.js host (demo-bank) needs an uncommittable rig patch — Turbopack refuses dynamic loads and the SDK can't resolve from @vendoai/apps
+description: RESOLVED 2026-08-01 — claudeCode() is now committable in a Next.js host; the old "Turbopack refuses every dynamic form" diagnosis was wrong
 metadata:
   type: project
 ---
 
-`harness: claudeCode()` cannot currently be added to a Next.js host such as
-`apps/demo-bank` in a committable way. Both escape routes are closed:
+**Status: FIXED.** `harness: claudeCode()` is committable in a Next.js host as of
+2026-08-01 (`apps/demo-bank/src/vendo/proof-harness.ts`, `namedHarness()`, gated
+on `MAPLE_HARNESS`). `pnpm --filter demo-bank build` is green with
+`@anthropic-ai/claude-agent-sdk` absent from the app's `node_modules`.
 
-- **Dynamic load** — `createRequire(import.meta.url)(specifier)` with any
-  computed specifier fails Turbopack at boot with `Cannot find module as
-  expression is too dynamic`, and `/* turbopackIgnore: true */` is NOT honored
-  on `require` (only on `import()`).
-- **Static import** — `import { claudeCode } from "@vendoai/harnesses/claude-code"`
-  pulls `@anthropic-ai/claude-agent-sdk` into the host's build graph, where it
-  cannot resolve: `packages/apps/src/claude-turn.ts` imports that SDK
-  (`SDK_PACKAGE`, lines 37 and 328) but `packages/apps/package.json` declares it
-  neither as a dependency nor as an optional peer. Only `@vendoai/harnesses`
-  (optional peer) and `@vendoai/engine` (dependency) declare it.
+**The old diagnosis recorded here was wrong** and is kept because it cost a
+proof run. It claimed Turbopack "refuses every dynamic form" with `Cannot find
+module as expression is too dynamic`. Turbopack in fact CONSTANT-FOLDS
+`await import(SOME_CONST)`, resolves the specifier, and fails with a plain
+`Module not found: Can't resolve '@anthropic-ai/claude-agent-sdk'` plus a full
+import trace naming the chain. The trace is the useful artifact — read it rather
+than guessing which form the bundler dislikes.
 
-**How to apply:** to drive `claudeCode()` through a Next host locally, symlink
-`@vendoai/harnesses` into the host's `node_modules/@vendoai/` and the SDK's real
-`.pnpm` directory into BOTH the host's and `packages/apps/node_modules/@anthropic-ai/`
-(a symlink-to-a-symlink is not enough — Turbopack needs the direct path), use a
-static import, and revert the host source before committing. Until
-`packages/apps` declares the SDK, any committed static import breaks the
-deployed demo's build.
+The real cause was reachability, not import syntax: `@vendoai/apps/internal`
+re-exported the SDK-touching turn runner, and the harnesses render seam imports
+`./internal` on every composed host's server path.
+
+**How to apply:** the node_modules-symlink workaround described in the old
+version of this note is obsolete — do not do it. Just set `MAPLE_HARNESS` to
+`instant`, `claude-code`, or `claude-code-local`. For the underlying rule, see
+[[gotcha-subpath-graph-drags-optional-peer]].
