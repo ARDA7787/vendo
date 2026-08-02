@@ -339,6 +339,59 @@ describe("09 §3 public wire", () => {
     expect(await flagged.json()).toEqual({ kind: "pending" });
   });
 
+  it("open?pending=1 answers a REAL-STORE failed record to a real VIEWER: {kind:'failed'} with the server-written reason (#532 · D2)", async () => {
+    // The cross-seam pin this file lost. Both real-store cases above were
+    // correctly re-pointed to `pending` because their caller is a non-viewer, so
+    // the only test left asserting `{kind:"failed"}` hand-stubs
+    // `store.records().get()` (wire/apps.grants.test.ts) — nothing proved that a
+    // REAL row's `doc.buildFailed` still reaches the embed. Renaming that field
+    // would have broken every failed build's surface with the suite green.
+    //
+    // A §9.2 viewer GRANT is what makes the caller a viewer here, which is also
+    // the first time this path is proven for someone who is not the owner.
+    const store = await tempStore("vendo-wire-viewer-failed-");
+    vi.stubEnv("VENDO_API_KEY", "vnd_viewer_failed");
+    const vendo = createVendo({ model: {} as LanguageModel, principal: async () => principal, store });
+    stubRouteBlocks(vendo);
+    await store.ensureSchema();
+    await store.records("vendo_apps").put({
+      id: "app_team_dead",
+      data: {
+        subject: "team_org",
+        enabled: false,
+        doc: {
+          format: VENDO_APP_FORMAT,
+          id: "app_team_dead",
+          name: "Dead team app",
+          buildFailed: { reason: "the build timed out", retryable: true, at: new Date().toISOString() },
+        },
+      },
+      refs: { subject: "team_org" },
+    });
+    await store.records("vendo_app_grants").put({
+      id: "ag_viewer_failed",
+      data: {
+        appId: "app_team_dead",
+        orgId: "team_org",
+        principal: `user:${principal.subject}`,
+        level: "viewer",
+        createdBy: "someone_else",
+      },
+      refs: { app_id: "app_team_dead", principal: `user:${principal.subject}`, level: "viewer" },
+    });
+    // A failed app has no servable document, so open() refuses — which is
+    // exactly the case the probe exists for.
+    vi.spyOn(vendo.apps, "open").mockRejectedValue(new VendoError("not-found", "app not found: app_team_dead"));
+
+    const flagged = await vendo.handler(request("GET", "/apps/app_team_dead/open?pending=1"));
+    expect(flagged.status).toBe(200);
+    expect(await flagged.json()).toEqual({
+      kind: "failed",
+      reason: "the build timed out",
+      retryable: true,
+    });
+  });
+
   it("open?pending=1 disambiguates on a HOSTED wire-door store: pending only while no record exists, terminal failures and principal mismatches resolve (defect D2)", async () => {
     // The 0.4.6 cert environment: VENDO_API_KEY makes Cloud the hosted store,
     // which has NO local db handle — the old appStore()-based existence probe
@@ -384,6 +437,12 @@ describe("09 §3 public wire", () => {
     // (c) a live record under another subject: the B4 diagnosis is logged for
     // the host (reachable on hosted stores for the first time) and the caller
     // stays masked.
+    //
+    // The spy is CLEARED first: it was installed once at the top of this case
+    // and (b) already logged through it, so the assertion below read accumulated
+    // calls and would have passed even if (c) logged nothing at all — the same
+    // vacuous shape this wave fixed elsewhere.
+    vi.mocked(console.warn).mockClear();
     await store.records("vendo_apps").put({
       id: "app_foreign",
       data: { subject: "someone_else", enabled: true, doc: app("app_foreign") },
