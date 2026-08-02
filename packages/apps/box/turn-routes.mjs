@@ -206,11 +206,16 @@ export const createSessionRoutes = (options = {}) => {
 
     if (session === undefined) {
       await openSession(payload);
-    } else if (fingerprint(payload.tools) !== openedWith) {
-      // The equipped set changed. End and reopen on the same session id.
+    } else if (payload.reopen === true || fingerprint(payload.tools) !== openedWith) {
       const closing = session;
       session = undefined;
       await closing.end().catch(() => undefined);
+      // `reopen` is a TRUNCATION (§1.3): the host says this session remembers an
+      // answer the user threw away, so it must NOT come back with its memory —
+      // the fresh one resumes nothing and the host's prompt carries the re-seed.
+      // A changed tool listing is the other reason to reopen, and that one keeps
+      // its id so nothing is forgotten.
+      if (payload.reopen === true) sessionId = undefined;
       await openSession(payload);
     }
 

@@ -76,10 +76,7 @@ export type ClaudeTurnEvent =
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; model?: string }
   /** Not a `HarnessEvent`: the native session ref the caller puts in `turn.state`. */
   | { type: "session"; sessionId: string }
-  /** Not a `HarnessEvent` either: an assistant message's own uuid, which is what
-   *  `resumeSessionAt` rewinds to. The caller ledgers these so a prefix
-   *  truncation can use the SDK's NATIVE rewind instead of paying a re-seed. */
-  | { type: "checkpoint"; uuid: string };
+  ;
 
 export interface ClaudeSessionInput {
   /** `Turn.system` — appended to the SDK's own claude_code preset, never replacing
@@ -92,8 +89,6 @@ export interface ClaudeSessionInput {
   /** The native session to continue — only meaningful on a machine whose disk
    *  still holds it (`turn.state`). */
   resume?: string;
-  /** Resume only up to this message uuid — the SDK's native prefix rewind. */
-  resumeAt?: string;
   /** The materialized workspace root on this machine. */
   cwd: string;
   /** `CLAUDE_CONFIG_DIR` included: where the SDK keeps its session file is the
@@ -129,7 +124,6 @@ export interface ClaudeSessionInput {
   onFileWritten?: (path: string | undefined) => void;
   callTool: GuardedCall;
   emit: (event: ClaudeTurnEvent) => void;
-  signal?: AbortSignal;
   /**
    * The Agent SDK module, supplied by whoever supplied the machine: the box door
    * loads it from the image, `machine: "local"` loads it from the optional peer
@@ -156,8 +150,6 @@ export interface ClaudeSession {
    * aborting the whole session would throw away everything it remembers.
    */
   interrupt(): Promise<void>;
-  /** The SDK's native session id, once it has announced one. */
-  sessionId(): string | undefined;
   /** Close the input stream and let the SDK's own loop finish. */
   end(): Promise<void>;
 }
@@ -478,7 +470,6 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       ...(input.effort === undefined ? {} : { effort: input.effort }),
       ...(input.maxTurns === undefined ? {} : { maxTurns: input.maxTurns }),
       ...(input.resume === undefined ? {} : { resume: input.resume }),
-      ...(input.resumeAt === undefined ? {} : { resumeSessionAt: input.resumeAt }),
       // Append, never replace: the co-trained Claude Code harness IS the product
       // decision behind this adapter.
       systemPrompt: { type: "preset", preset: "claude_code", append: input.systemPrompt ?? "" },
@@ -510,7 +501,6 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       ...(input.onFileWritten === undefined ? {} : {
         hooks: { PostToolUse: [{ matcher: WRITING_TOOLS, hooks: [onPostToolUse] }] },
       }),
-      ...(input.signal === undefined ? {} : { abortController: abortFor(input.signal) }),
     };
 
     const query = sdk.query({ prompt: inbox.stream(), options });
@@ -530,8 +520,6 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
         continue;
       }
       if (type === "assistant") {
-        const uuid = message["uuid"];
-        if (typeof uuid === "string") input.emit({ type: "checkpoint", uuid });
         // An `assistant` message is the COMPLETED form of prose that may already
         // have streamed as deltas. Emitting both showed the user every sentence
         // twice (measured live 2026-08-02, once `includePartialMessages` went on).
@@ -606,17 +594,9 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       // A session too young to have opened its query has nothing to stop.
       await live?.interrupt?.().catch(() => undefined);
     },
-    sessionId: () => sessionId,
     async end() {
       inbox.close();
       await drain;
     },
   };
-}
-
-function abortFor(signal: AbortSignal): AbortController {
-  const controller = new AbortController();
-  if (signal.aborted) controller.abort();
-  else signal.addEventListener("abort", () => controller.abort(), { once: true });
-  return controller;
 }

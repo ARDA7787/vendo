@@ -34,7 +34,8 @@
  */
 import { VendoError } from "@vendoai/core";
 import type { GuardedResult } from "@vendoai/apps/claude-turn";
-import type { CheckoutFile, SyncFile } from "../materialize.js";
+import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
+import { emptyTree } from "../materialize.js";
 import type { SessionMachine, SessionMessage } from "./machine.js";
 
 /** The subset of `SandboxAdapter` (`@vendoai/apps`) a session box needs.
@@ -71,6 +72,8 @@ interface BoxEntry {
   token: string;
   /** Has this box been materialized and had its session opened? */
   warm: boolean;
+  /** What this box's disk holds — the sync-back baseline, per conversation. */
+  tree: TreeState;
   idle?: ReturnType<typeof setTimeout>;
 }
 
@@ -170,7 +173,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
         "the workspace machine refused the session handshake",
       );
     }
-    const fresh: BoxEntry = { machine, token, warm: false };
+    const fresh: BoxEntry = { machine, token, warm: false, tree: emptyTree() };
     boxes.set(options.threadId, fresh);
     return fresh;
   };
@@ -216,6 +219,8 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
     // The frozen layout (§3.1) one level under the box's root.
     pluginPath: "/workspace/host",
 
+    tree: box.tree,
+
     async materialize(files: readonly CheckoutFile[]) {
       // Chunked by COUNT, which bounds the typical upload body — not a hard
       // byte bound: one large file still travels alone in its chunk, and a
@@ -253,7 +258,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
         effort: message.effort,
         maxTurns: message.maxTurns,
         resume: message.resume,
-        resumeAt: message.resumeAt,
+        reopen: message.reopen,
         pluginPath: message.pluginPath,
         skillNames: message.skillNames,
       });

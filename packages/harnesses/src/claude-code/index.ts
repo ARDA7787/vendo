@@ -165,46 +165,30 @@ interface ClaudeState {
    * (design §3, "Harness state").
    */
   sessionId?: string;
-  /** How long our transcript was when this session last answered. A SHORTER
-   *  transcript next turn is a prefix truncation (§1.3) — the runtime keeps the
-   *  state precisely so the harness can rewind natively. */
+  /** How long our transcript was when this session last answered — the ONLY
+   *  thing that makes a truncation detectable. */
   covers?: number;
-  /** transcript length → the assistant uuid `resumeSessionAt` rewinds to. */
-  rewind?: Array<{ at: number; uuid: string }>;
 }
 
-/** Enough history to rewind through a plausible run of edits; a session id is
- *  disposable, so an over-old truncation honestly costs a re-seed. */
-const REWIND_LEDGER_LIMIT = 24;
-
 /**
- * §1.3's prefix truncation, through the SDK's own rewind.
+ * §1.3's prefix truncation: did the user throw away the answer this session still
+ * remembers?
  *
- * What reaches here with state intact is a REGENERATE or a delete-from-here:
- * a real edit never does, because the runtime already CLEARS the state for one
- * (`classifyHistory` calls a differing overlap an arbitrary edit). Resuming the
- * session unchanged would leave the model remembering exactly what the user
- * removed, so this picks the checkpoint that predates the removal and hands it
- * to `resumeSessionAt`. With no usable checkpoint the session is dropped and
- * the turn re-seeds from our transcript — never wrong, only slower.
+ * `covers` counts the answering turn's INPUTS — its reply lands at transcript
+ * index `covers` — so a history that did not GROW means that reply is gone. That
+ * is a REGENERATE or a delete-from-here; a real mid-history edit never reaches
+ * here, because the runtime already CLEARS the state for one (`classifyHistory`
+ * calls a differing overlap an arbitrary edit).
+ *
+ * This replaced a rewind LEDGER (`rewindFor`, `resumeSessionAt`, per-message
+ * checkpoint uuids, a 24-entry history). That machinery was dead: the box door
+ * never read `payload.resumeAt` and a warm session never reopened, so a
+ * regenerate left the discarded answer in the model's memory — the exact failure
+ * it existed to prevent. Dropping the session and re-seeding from OUR transcript
+ * is never wrong, only slower, and regenerate is the rare path.
  */
-export function rewindFor(
-  state: ClaudeState,
-  messageCount: number,
-): { resume?: string; resumeAt?: string } {
-  if (state.sessionId === undefined) return {};
-  // STRICTLY longer is the only plain resume. `covers` counts the answering
-  // turn's INPUTS — its reply lands at transcript index `covers` — so an
-  // EQUAL-length history means that reply was thrown away (a regenerate), and
-  // resuming unrewound left the model remembering the answer the user just
-  // deleted. Rewind past it like any other truncation.
-  if (state.covers === undefined || messageCount > state.covers) return { resume: state.sessionId };
-  const point = [...(state.rewind ?? [])]
-    .filter((entry) => entry.at < messageCount)
-    .sort((left, right) => left.at - right.at)
-    .at(-1);
-  if (point === undefined) return {};
-  return { resume: state.sessionId, resumeAt: point.uuid };
+export function truncated(state: ClaudeState, messageCount: number): boolean {
+  return state.covers !== undefined && messageCount <= state.covers;
 }
 
 const readState = (raw: string | undefined): ClaudeState => {
@@ -258,8 +242,10 @@ export function claudeCode(
       // host's server.
       const resolved = { ...options, ...(turn.options ?? {}), machine: options.machine };
       const state = readState(turn.state.get());
-      const checkout = await checkoutWorkspace(turn.workspace);
 
+      // The MACHINE comes first, because whether it is warm decides what the
+      // checkout may assume: a warm machine's disk is the baseline, a fresh one
+      // is about to be handed the store's own copy.
       let machine: SessionMachine;
       if (resolved.machine === "local") {
         machine = await localMachine({ threadId: threadOf(turn), env: inferenceEnv() });
@@ -288,6 +274,18 @@ export function claudeCode(
         });
       }
 
+      // A WARM machine diffs against what its own disk holds (`machine.tree`),
+      // never against a fresh store read: the store may have moved underneath it
+      // (another thread of the same user, an app tool, an automation) and the
+      // box's stale copy must not be written back over the newer state. A FRESH
+      // machine passes nothing, so the baseline is derived here and is exactly
+      // what materialize is about to put on its disk.
+      const checkout = await checkoutWorkspace(
+        turn.workspace,
+        machine.tree,
+        !machine.carriesSession,
+      );
+
       const events = eventQueue<ClaudeTurnEvent>();
       /** One sync at a time: the façade stages in memory, and two overlapping
        *  commits would race each other's staging set. */
@@ -298,13 +296,12 @@ export function claudeCode(
         return next;
       };
 
-      // A machine whose disk does not carry the session cannot resume it — asking
-      // the SDK to would fail the turn outright, so the honest move is to re-seed
-      // from OUR transcript, which is the truth anyway.
-      const rewind = machine.carriesSession ? rewindFor(state, turn.messages.length) : {};
-      let sessionId = rewind.resume;
-      /** The newest assistant uuid this turn produced — the next rewind point. */
-      let checkpoint: string | undefined;
+      // Two reasons a live session cannot be continued. A machine whose disk does
+      // not carry it cannot resume it at all; and a TRUNCATION means the session
+      // remembers an answer the user threw away, so it has to go. Either way the
+      // honest move is to re-seed from OUR transcript, which is the truth anyway.
+      const stale = truncated(state, turn.messages.length);
+      let sessionId = machine.carriesSession && !stale ? state.sessionId : undefined;
       let finished = false;
 
       try {
@@ -340,8 +337,10 @@ export function claudeCode(
           ...(resolved.model === undefined ? {} : { model: resolved.model }),
           ...(resolved.effort === undefined ? {} : { effort: resolved.effort }),
           ...(resolved.maxTurns === undefined ? {} : { maxTurns: resolved.maxTurns }),
-          ...(rewind.resume === undefined ? {} : { resume: rewind.resume }),
-          ...(rewind.resumeAt === undefined ? {} : { resumeAt: rewind.resumeAt }),
+          ...(sessionId === undefined ? {} : { resume: sessionId }),
+          // A truncation on a WARM machine has to close the session it is holding
+          // open, or the model keeps the answer the user deleted.
+          ...(stale && machine.carriesSession ? { reopen: true } : {}),
           // The `/host` mount doubles as the SDK plugin root, so the pack skills
           // already on this disk are discovered natively — no projection. No
           // skills, no plugin: an empty plugin is a directory nobody reads.
@@ -363,10 +362,6 @@ export function claudeCode(
         for await (const event of events.drain()) {
           if (event.type === "session") {
             sessionId = event.sessionId;
-            continue;
-          }
-          if (event.type === "checkpoint") {
-            checkpoint = event.uuid;
             continue;
           }
           yield event;
@@ -398,17 +393,8 @@ export function claudeCode(
         } catch {
           // A machine we cannot release is the box map's problem, never the turn's.
         }
-        // A rewind that landed replaces the ledger's tail: everything after the
-        // rewind point is a branch the session no longer holds.
-        const kept = machine.carriesSession
-          ? (state.rewind ?? []).filter((entry) => entry.at < turn.messages.length)
-          : [];
-        const ledger = checkpoint === undefined
-          ? kept
-          : [...kept, { at: turn.messages.length, uuid: checkpoint }].slice(-REWIND_LEDGER_LIMIT);
         const next: ClaudeState = {
           ...(sessionId === undefined ? {} : { sessionId, covers: turn.messages.length }),
-          ...(ledger.length === 0 ? {} : { rewind: ledger }),
         };
         if (next.sessionId === undefined) turn.state.clear();
         else turn.state.set(JSON.stringify(next));

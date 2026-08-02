@@ -80,10 +80,37 @@ export interface SyncFile {
   bytes: Uint8Array;
 }
 
+/**
+ * What a machine's disk is KNOWN to hold — the baseline every sync-back diffs
+ * against, persisted for the life of one conversation.
+ *
+ * It exists because a warm box is not re-materialized between turns (that is
+ * what makes turn 2 free), so its tree dates from conversation start. Diffing
+ * turn-end contents against a FRESH store read instead would compare the box's
+ * copy to a store someone else may have moved underneath it: a file changed
+ * out-of-band (another thread of the same user, an app tool, an automation)
+ * hash-mismatches the box's stale copy and gets written BACK, destroying the
+ * newer state; an out-of-band delete gets resurrected. Measured, then pinned.
+ *
+ * With this baseline, "unchanged in the box" means SKIP — the store keeps
+ * whatever it has — and only what the box actually changed is written.
+ */
+export interface TreeState {
+  /** Syncable path → content hash the machine's disk holds. */
+  hashes: Map<string, string>;
+  /** Checked-out paths the box walk cannot carry back — see WALK_SKIP_BYTES. */
+  oversized: Set<string>;
+}
+
+export const emptyTree = (): TreeState => ({ hashes: new Map(), oversized: new Set() });
+
 export interface WorkspaceCheckout {
   /** Every file this caller may see, filtered at checkout — the box is born
    *  filtered, because there are no checks inside it (design §8). */
   readonly files: readonly CheckoutFile[];
+  /** The baseline this checkout is diffing against, so the caller can persist it
+   *  alongside the machine that now holds that tree. */
+  readonly tree: TreeState;
   /**
    * Mid-turn sync of the hot paths only. Never deletes: a mid-turn view of the
    * box's disk is a snapshot of work in progress, not a statement about what the
@@ -112,14 +139,28 @@ const syncable = (path: string): boolean =>
  */
 const WALK_SKIP_BYTES = 8 * 1024 * 1024;
 
-export async function checkoutWorkspace(workspace: WorkspaceFs): Promise<WorkspaceCheckout> {
+export async function checkoutWorkspace(
+  workspace: WorkspaceFs,
+  /** The machine's persisted baseline, filled in place when `reseed`. */
+  tree: TreeState = emptyTree(),
+  /**
+   * True when the machine's disk is about to be materialized FROM this checkout,
+   * so the baseline is derived here — after materialize the box holds exactly
+   * what the store just handed it.
+   *
+   * False for a WARM machine, whose tree already IS the truth about its disk. The
+   * store is then deliberately not consulted for the baseline: it may have moved
+   * underneath the box, and the box's stale copy must never be written back over
+   * the newer state. That is the whole stale-clobber fix.
+   */
+  reseed = true,
+): Promise<WorkspaceCheckout> {
   const files: CheckoutFile[] = [];
-  /** Path → hash of what the STORE holds, as far as this checkout knows. A
-   *  mid-turn sync updates it, so turn end does not re-commit what already
-   *  landed. */
-  const hashes = new Map<string, string>();
-  /** Checked-out files the box walk cannot carry back — see WALK_SKIP_BYTES. */
-  const oversized = new Set<string>();
+  const { hashes, oversized } = tree;
+  if (reseed) {
+    hashes.clear();
+    oversized.clear();
+  }
 
   for (const path of workspace.getAllPaths()) {
     const access = pathAccess(path);
@@ -134,7 +175,7 @@ export async function checkoutWorkspace(workspace: WorkspaceFs): Promise<Workspa
       continue;
     }
     files.push({ path, bytes, readOnly: access === "ro" });
-    if (syncable(path)) {
+    if (reseed && syncable(path)) {
       hashes.set(path, contentHash(bytes));
       if (bytes.length > WALK_SKIP_BYTES) oversized.add(path);
     }
@@ -186,6 +227,7 @@ export async function checkoutWorkspace(workspace: WorkspaceFs): Promise<Workspa
 
   return {
     files,
+    tree,
     syncHot: (incoming) => apply(incoming, { hotOnly: true, deleteMissing: false }),
     syncAll: (incoming) => apply(incoming, { hotOnly: false, deleteMissing: true }),
   };

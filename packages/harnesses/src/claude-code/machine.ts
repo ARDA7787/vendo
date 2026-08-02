@@ -14,7 +14,7 @@
  * (its disk already carries both the files and the native session).
  */
 import type { ClaudeTurnEvent, ClaudeTurnTool, GuardedCall } from "@vendoai/apps/claude-turn";
-import type { CheckoutFile, SyncFile } from "../materialize.js";
+import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
 
 /** What opening a session needs. Fixed for the life of the session, except that
  *  a changed tool listing reopens it (resuming its own id). */
@@ -26,8 +26,6 @@ export interface SessionOpen {
   maxTurns?: number;
   /** The native session to continue (`turn.state`), on a disk that holds it. */
   resume?: string;
-  /** Resume only up to this assistant uuid — the SDK's native prefix rewind. */
-  resumeAt?: string;
   /** The local plugin root carrying `skills/<name>/SKILL.md` — our `/host` mount. */
   pluginPath?: string;
   /** Exactly which skills to enable, by name — OURS, never "all" (which would
@@ -37,6 +35,15 @@ export interface SessionOpen {
 
 export interface SessionMessage extends SessionOpen {
   prompt: string;
+  /**
+   * Close the live session before answering, and open a fresh one that resumes
+   * NOTHING.
+   *
+   * Set on a detected prefix truncation (§1.3): the session is holding an answer
+   * the user threw away, so continuing it would have the model remember what was
+   * deleted. The prompt then carries the full re-seed from our transcript.
+   */
+  reopen?: boolean;
   callTool: GuardedCall;
   emit: (event: ClaudeTurnEvent) => void;
   /** A file the turn wrote, from the SDK's native PostToolUse hook. `undefined`
@@ -63,6 +70,12 @@ export interface SessionMachine {
    * plugin. The machine owns it because the machine owns the disk layout.
    */
   readonly pluginPath: string;
+  /**
+   * What this machine's disk is known to hold, persisted across the turns of one
+   * conversation. A warm machine is never re-materialized, so this — not a fresh
+   * store read — is what turn-end sync diffs against. See `TreeState`.
+   */
+  readonly tree: TreeState;
   /** Land the checkout on this machine's disk. `/host` lands read-only. */
   materialize(files: readonly CheckoutFile[]): Promise<void>;
   /**

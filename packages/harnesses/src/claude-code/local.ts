@@ -18,7 +18,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { VendoError } from "@vendoai/core";
 import type { ClaudeTurnEvent } from "@vendoai/apps/claude-turn";
-import type { CheckoutFile, SyncFile } from "../materialize.js";
+import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
+import { emptyTree } from "../materialize.js";
 import { pathAccess } from "../materialize.js";
 import type { SessionMachine, SessionMessage } from "./machine.js";
 
@@ -101,6 +102,8 @@ interface LocalSession {
   openedWith: string;
   /** Has this thread's workspace been materialized in this process? */
   warm: boolean;
+  /** What this thread's disk holds — the sync-back baseline, per conversation. */
+  tree: TreeState;
   /**
    * The TURN currently in flight, and the only thing the session's sinks are
    * allowed to close over.
@@ -138,7 +141,7 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
   // measured: turn 2 of a live thread failed outright instead of remembering.
   const root = path.join(home, "workspace");
   const configDir = path.join(home, "claude");
-  const held = locals.get(options.threadId) ?? { openedWith: "", warm: false };
+  const held = locals.get(options.threadId) ?? { openedWith: "", warm: false, tree: emptyTree() };
   locals.set(options.threadId, held);
   // A FRESH thread gets an emptied tree: the STORE is the truth, and
   // re-materializing from it is what makes "a different harness sees the
@@ -154,6 +157,8 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
     carriesSession: held.warm,
 
     pluginPath: path.join(root, "host"),
+
+    tree: held.tree,
 
     async materialize(files) {
       for (const file of files) {
@@ -205,9 +210,10 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
         ...(message.onFileWritten === undefined ? {} : { onFileWritten: message.onFileWritten }),
       };
       const wanted = fingerprint(message.tools);
-      if (held.session !== undefined && wanted !== held.openedWith) {
-        // The equipped set changed. End and reopen — `resume` carries the memory,
-        // so a new tool costs a restart and never a conversation.
+      // `reopen` is a TRUNCATION: the session remembers an answer the user threw
+      // away, so it must not survive. A changed tool listing is the other reason
+      // to reopen, and that one keeps its memory (the caller still passes resume).
+      if (held.session !== undefined && (message.reopen === true || wanted !== held.openedWith)) {
         const closing = held.session;
         held.session = undefined;
         await closing.end().catch(() => undefined);
@@ -223,7 +229,6 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
           effort: message.effort,
           maxTurns: message.maxTurns,
           ...(message.resume === undefined ? {} : { resume: message.resume }),
-          ...(message.resumeAt === undefined ? {} : { resumeAt: message.resumeAt }),
           ...(message.pluginPath === undefined ? {} : { pluginPath: message.pluginPath }),
           ...(message.skillNames === undefined ? {} : { skillNames: message.skillNames }),
           cwd: root,

@@ -177,7 +177,7 @@ describe("one session per conversation, chat in / stream out", () => {
 
     const ids = events.filter((event) => event.type === "session").map((event) => event.sessionId);
     expect(new Set(ids).size).toBe(1);
-    expect(session.sessionId()).toBe("sess_live");
+    expect(ids[0]).toBe("sess_live");
   });
 
   test("text from every message's turn reaches the caller in order", async () => {
@@ -212,6 +212,26 @@ describe("one session per conversation, chat in / stream out", () => {
     expect(called).toEqual(["maple_invoices_list"]);
     expect(record.permissions[0]?.verdict).toBe("allow");
     expect(record.options["mcpServers"]).toHaveProperty(VENDO_MCP_SERVER);
+  });
+
+  test("two CONCURRENT sends are serialized — both settle, in order, and neither hangs", async () => {
+    // Why the queue is kept rather than deleted. `settleTurn` is ONE slot: two
+    // overlapping sends would both write it, so the first caller's promise would
+    // never be resolved — a request that hangs forever, which is strictly worse
+    // than a 409.
+    //
+    // The box door does 409 a concurrent /session/message, so the sandbox path is
+    // safe without this. `machine: "local"` has no such door: two POSTs for the
+    // same thread reach ONE in-process session, and nothing above guarantees the
+    // runtime serializes same-thread turns. Eight lines to rule out a permanent
+    // hang is the cheaper side of that trade.
+    const { session, record } = openSession((prompt) => [{ say: `re: ${prompt}` }]);
+
+    const both = Promise.all([session.send("first"), session.send("second")]);
+    await expect(both).resolves.toEqual([undefined, undefined]);
+    expect(record.prompts).toEqual(["first", "second"]);
+    expect(record.queries).toBe(1);
+    await session.end();
   });
 
   test("end() closes the input stream, so the SDK's own loop finishes", async () => {
@@ -327,9 +347,9 @@ describe("the four channels the live session opens", () => {
 
     const said = events.filter((event) => event.type === "text").map((event) => (event as { delta: string }).delta);
     expect(said.join("")).toBe("Hello there.");
-    // The checkpoint still comes off the assistant message — only its prose is
-    // dropped, because the rewind ledger needs that uuid.
-    expect(events.filter((event) => event.type === "checkpoint")).toHaveLength(1);
+    // The completed block is dropped ENTIRELY, not merged: nothing else on it is
+    // needed now that the rewind ledger (which wanted its uuid) is gone.
+    expect(said).toEqual(["Hello ", "there."]);
   });
 
   test("an SDK that never streams deltas still yields the assistant block's text", async () => {

@@ -11,7 +11,7 @@ import { assertHarnessComposable } from "../compose.js";
 import { createTurnState } from "../harness-state.js";
 import { provideHarnessAdapters } from "../harness-sandbox.js";
 import { testWorkspace, unusedModels, userMessage } from "../test-doubles.test-util.js";
-import { claudeCode, inferenceEnv, promptFor, rewindFor } from "./index.js";
+import { claudeCode, inferenceEnv, promptFor, truncated } from "./index.js";
 import { boxMachine, disposeSessionMachines, type SandboxAdapterLike, type SandboxMachineLike } from "./box.js";
 
 const decoder = new TextDecoder();
@@ -50,7 +50,11 @@ type BoxScript = (box: {
   /** The provider reaping the machine mid-turn. A script that merely THROWS is a
    *  failing thinker, which is a different fact. */
   kill: () => void;
+  /** The native session the harness asked this session to continue, if any. */
   resume?: string;
+  /** What the user's message actually looked like by the time it reached the SDK —
+   *  either just what they said, or the full re-seed from OUR transcript. */
+  prompt?: string;
 }) => Promise<void>;
 
 interface FakeBox extends SandboxMachineLike {
@@ -111,9 +115,10 @@ function makeBox(
       resume?: string;
       systemPrompt?: string;
     }) => ({
-      async send() {
+      async send(prompt: string) {
         box.messages += 1;
         await script({
+          prompt,
           callTool: input.callTool,
           emit: input.emit,
           ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
@@ -176,6 +181,9 @@ interface TurnDouble {
 
 function makeTurn(input: {
   files?: Record<string, string>;
+  /** ONE store across several turns — what a real conversation has, and the only
+   *  way an out-of-band write between turns is expressible. */
+  workspace?: ReturnType<typeof testWorkspace>;
   tools?: Array<{ name: string; title: string; description: string }>;
   answer?: (name: string, args: Json) => ToolResult;
   state?: string;
@@ -186,8 +194,9 @@ function makeTurn(input: {
    *  Tests that omit it exercise the untyped-caller fallback above. */
   threadId?: string;
   messages?: Array<{ id: string; text: string }>;
+  skills?: Array<{ name: string; description: string }>;
 } = {}): TurnDouble {
-  const workspace = testWorkspace(input.files ?? {});
+  const workspace = input.workspace ?? testWorkspace(input.files ?? {});
   const calls: Array<{ name: string; args: Json }> = [];
   const state = createTurnState(input.state);
   const messages = (input.messages ?? [{ id: input.thread ?? `m_${(threadSeq += 1)}`, text: "make me a dashboard" }])
@@ -203,7 +212,7 @@ function makeTurn(input: {
         return input.answer?.(name, args) ?? { status: "ok" as const, output: { ok: true } };
       },
     },
-    skills: { list: async () => [], load: async () => "" },
+    skills: { list: async () => input.skills ?? [], load: async () => "" },
     workspace,
     models: unusedModels(),
     state,
@@ -449,83 +458,78 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
   });
 });
 
-describe("§1.3 · a prefix truncation uses the SDK's NATIVE rewind", () => {
-  test("an APPEND resumes the session untouched", () => {
-    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 3, uuid: "u3" }] }, 5))
-      .toEqual({ resume: "s" });
-  });
-
-  test("an EQUAL-length history is a REGENERATE — rewind past the reply the user threw away", () => {
-    // `covers` counts the answering turn's inputs, so the discarded reply sits
-    // at transcript index `covers` and its own checkpoint (at 3) is unusable:
-    // resuming there still remembers the deleted answer. The previous turn's
-    // checkpoint is the target. (A real last-message EDIT never reaches here —
-    // the runtime clears the state for a differing overlap.)
-    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 1, uuid: "u1" }, { at: 3, uuid: "u3" }] }, 3))
-      .toEqual({ resume: "s", resumeAt: "u1" });
-  });
-
-  test("a regenerate with no checkpoint before the discarded reply drops the session and re-seeds", () => {
-    expect(rewindFor({ sessionId: "s", covers: 3, rewind: [{ at: 3, uuid: "u3" }] }, 3)).toEqual({});
-  });
-
-  test("a SHORTER transcript rewinds to the checkpoint that predates the edit", () => {
-    const state = { sessionId: "s", covers: 5, rewind: [{ at: 1, uuid: "u1" }, { at: 3, uuid: "u3" }] };
-    // The user edited message index 2 and resent: history is 0..1, the new
-    // message is at 2, so the newest usable checkpoint is the one at 1.
-    // A checkpoint AT the incoming length answered a transcript that still
-    // contained the message the user just replaced, so only strictly-older ones
-    // are usable.
-    expect(rewindFor(state, 4)).toEqual({ resume: "s", resumeAt: "u3" });
-    expect(rewindFor(state, 2)).toEqual({ resume: "s", resumeAt: "u1" });
-  });
-
-  test("a truncation past every checkpoint drops the session and re-seeds — never wrong, only slower", () => {
-    expect(rewindFor({ sessionId: "s", covers: 5, rewind: [{ at: 3, uuid: "u3" }] }, 1)).toEqual({});
-  });
-
-  test("no session means nothing to rewind", () => {
-    expect(rewindFor({}, 3)).toEqual({});
-  });
-
-  test("end to end: turn 2 on an EDITED history resumes at turn 1's checkpoint", async () => {
-    const resumes: Array<{ resume?: string; resumeAt?: string }> = [];
-    const sandbox = fakeSandbox(async (box) => {
-      box.emit({ type: "session", sessionId: "sess_rw" });
-      box.emit({ type: "checkpoint", uuid: "uuid_turn1" });
-    });
+describe("skills are OURS by name — the machine's own skills never join the set", () => {
+  /** What the harness actually told the box to enable. */
+  const enabledFor = async (skills?: Array<{ name: string; description: string }>) => {
+    let sent: unknown;
+    const sandbox = fakeSandbox(async () => undefined);
     const original = sandbox.create.bind(sandbox);
     sandbox.create = async (spec) => {
       const box = await original(spec);
       const request = box.request.bind(box);
       box.request = async (req) => {
         if (req.path === "/session/message" && req.body !== undefined) {
-          const body = JSON.parse(decoder.decode(req.body as Uint8Array));
-          resumes.push({ resume: body["resume"], resumeAt: body["resumeAt"] });
+          sent = JSON.parse(decoder.decode(req.body as Uint8Array));
         }
         return request(req);
       };
       return box;
     };
-    const harness = claudeCode({ sandbox });
-    const first = makeTurn({ thread: "thr_rw" });
-    await drain(harness, first.turn);
-    const carried = first.state.pending().value!;
-    expect(JSON.parse(carried)).toMatchObject({
-      sessionId: "sess_rw",
-      covers: 1,
-      rewind: [{ at: 1, uuid: "uuid_turn1" }],
-    });
+    await drain(claudeCode({ sandbox }), makeTurn({ ...(skills === undefined ? {} : { skills }) }).turn);
+    return sent as { skillNames?: string[]; pluginPath?: string };
+  };
 
-    // A THIRD message would be an append; two is the user resending an edit.
-    const edited = makeTurn({
-      thread: "thr_rw",
-      state: JSON.stringify({ sessionId: "sess_rw", covers: 3, rewind: [{ at: 1, uuid: "uuid_turn1" }] }),
-      messages: [{ id: "thr_rw", text: "make me a dashboard" }, { id: "m_edit", text: "no, a chart" }],
-    });
-    await drain(harness, edited.turn);
-    console.log("[rewind resumes]", JSON.stringify(resumes));
-    expect(resumes[1]).toEqual({ resume: "sess_rw", resumeAt: "uuid_turn1" });
+  test("the enabled set is exactly turn.skills.list() — an operator skill on the machine is NOT in it", async () => {
+    // MEASURED LIVE 2026-08-02: `skills: "all"` enabled every skill the engine
+    // DISCOVERED, which on a host running machine:"local" included the operator's
+    // own ~/.claude/skills (a probe saw deep-research, dataviz, claude-api beside
+    // ours). That is the operator's private tooling joining a customer's agent.
+    // The live probe then confirmed a named filter excludes them: invoking an
+    // unlisted operator skill returns FAILED. This pins the mechanism that makes
+    // it true — the enabled list is ours, by name, and nothing else can get in.
+    const sent = await enabledFor([
+      { name: "refund-policy", description: "Maple's refund rules." },
+      { name: "invoice-tone", description: "How Maple writes to late payers." },
+    ]);
+    expect(sent.skillNames).toEqual(["refund-policy", "invoice-tone"]);
+    // Never the wildcard, whose whole problem is that it is not a list.
+    expect(sent.skillNames).not.toContain("all");
+    // `dataviz` etc. exist on the operator's disk, not in the turn's listing, so
+    // they are absent by construction rather than by filtering.
+    expect(sent.skillNames).not.toContain("dataviz");
+  });
+
+  test("a host with NO skills sends no plugin and no skill names at all", async () => {
+    const sent = await enabledFor();
+    expect(sent.skillNames).toBeUndefined();
+    expect(sent.pluginPath).toBeUndefined();
+  });
+});
+
+describe("§1.3 · truncated() — the one bit that replaced the rewind ledger", () => {
+  test("a GROWN transcript is an ordinary next message", () => {
+    expect(truncated({ sessionId: "s", covers: 3 }, 5)).toBe(false);
+  });
+
+  test("an EQUAL-length transcript is a REGENERATE — the reply it remembers is gone", () => {
+    // `covers` counts the answering turn's INPUTS, so its reply lands at index
+    // `covers`; an equal-length history means that reply was thrown away.
+    expect(truncated({ sessionId: "s", covers: 3 }, 3)).toBe(true);
+  });
+
+  test("a SHORTER transcript is a delete-from-here", () => {
+    expect(truncated({ sessionId: "s", covers: 5 }, 2)).toBe(true);
+  });
+
+  test("a session that never answered has nothing to have thrown away", () => {
+    expect(truncated({ sessionId: "s" }, 3)).toBe(false);
+    expect(truncated({}, 3)).toBe(false);
+  });
+
+  test("a LEGACY rewind ledger in carried state is simply ignored", () => {
+    // Threads mid-flight when this shipped carry `rewind: [...]`. It is not read,
+    // and its presence must not change the verdict.
+    expect(truncated({ sessionId: "s", covers: 3, rewind: [{ at: 1, uuid: "u1" }] } as never, 3)).toBe(true);
   });
 });
 
@@ -761,6 +765,140 @@ describe("a turn on a real box wire", () => {
     expect(sandbox.boxes).toHaveLength(1);
     expect(sandbox.boxes[0]?.messages).toBe(2);
     expect(opens).toEqual([undefined, undefined]);
+  });
+
+  test("§1.3 · a REGENERATE on a warm session drops the session and re-seeds, so the discarded answer is forgotten", async () => {
+    // The failure this replaces: `rewindFor` computed resume/resumeAt and the box
+    // driver sent them, but the box door never read `payload.resumeAt` and a warm
+    // session never reopened — so a regenerate left the answer the user just threw
+    // away sitting in the model's memory. The machinery existed and did nothing.
+    //
+    // The fix is deletion plus one honest fallback: a transcript that did not GROW
+    // means a truncation, so the session is dropped and the thread re-seeds from
+    // OUR transcript. Never wrong, only slower — and regenerate is the rare path.
+    const seen: Array<{ resume?: string; prompt?: string }> = [];
+    const sandbox = fakeSandbox(async (box) => {
+      seen.push({ ...(box.resume === undefined ? {} : { resume: box.resume }), prompt: box.prompt });
+      box.emit({ type: "session", sessionId: "sess_regen" });
+      box.emit({ type: "text", delta: "answer" });
+    });
+    const harness = claudeCode({ sandbox });
+
+    // Turn 1 — one user message, session opens.
+    const first = makeTurn({ thread: "thr_regen" });
+    await drain(harness, first.turn);
+    expect(JSON.parse(first.state.pending().value!)).toMatchObject({
+      sessionId: "sess_regen",
+      covers: 1,
+    });
+
+    // The user REGENERATES: the transcript did not grow (2 messages against a
+    // session that already answered 3), so the reply it remembers is gone. The
+    // carried state holds a checkpoint BEFORE the removal — precisely the case
+    // the old ledger claimed to rewind through, and silently did not.
+    const regenerated = makeTurn({
+      thread: "thr_regen",
+      state: JSON.stringify({
+        sessionId: "sess_regen",
+        covers: 3,
+        rewind: [{ at: 1, uuid: "uuid_turn1" }],
+      }),
+      messages: [{ id: "thr_regen", text: "make me a dashboard" }, { id: "m2", text: "no, a chart" }],
+    });
+    await drain(harness, regenerated.turn);
+
+    // A FRESH session, not a resumed one — nothing carried over.
+    expect(seen[1]?.resume).toBeUndefined();
+    // And the history arrives as OUR re-seed, so the conversation continues while
+    // the discarded answer does not.
+    expect(seen[1]?.prompt).toContain("conversation so far");
+    expect(seen[1]?.prompt).toContain("make me a dashboard");
+    // One box: the session was reopened on it, not replaced with a new machine.
+    expect(sandbox.boxes).toHaveLength(1);
+  });
+
+  test("an APPEND on a warm session keeps it — only a truncation costs the session", async () => {
+    const seen: Array<string | undefined> = [];
+    const sandbox = fakeSandbox(async (box) => {
+      seen.push(box.prompt);
+      box.emit({ type: "session", sessionId: "sess_append" });
+    });
+    const harness = claudeCode({ sandbox });
+
+    await drain(harness, makeTurn({ thread: "thr_append" }).turn);
+    // Transcript GREW (2 > 1), which is an ordinary next message.
+    await drain(harness, makeTurn({
+      thread: "thr_append",
+      state: JSON.stringify({ sessionId: "sess_append", covers: 1 }),
+      messages: [{ id: "thr_append", text: "make me a dashboard" }, { id: "m2", text: "add a total" }],
+    }).turn);
+
+    // The live session already holds the history, so turn 2 says only what the
+    // user just said — no re-seed.
+    expect(seen[1]).toBe("add a total");
+    expect(seen[1]).not.toContain("conversation so far");
+  });
+
+  test("an out-of-band store WRITE mid-conversation is not reverted by the warm box's stale copy", async () => {
+    // The hazard: a warm box's tree dates from conversation start and is never
+    // re-materialized (that is what makes turn 2 free). If the turn-end diff is
+    // taken against a FRESH store read, then a file someone else changed in the
+    // store hash-mismatches the box's stale copy and gets written BACK — the
+    // newer state is destroyed by a turn that never touched the file.
+    //
+    // Who else writes: another thread of the same user, an app tool, an
+    // automation, a second harness. All real.
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "ok" }); });
+    const harness = claudeCode({ sandbox });
+    const workspace = testWorkspace({ "/user/memory/note.md": "turn-1 content\n" });
+
+    await drain(harness, makeTurn({ thread: "thr_clobber", workspace }).turn);
+
+    // OUT OF BAND, between turns. The box never learns about this.
+    await workspace.writeFile("/user/memory/note.md", new TextEncoder().encode("newer content\n"));
+    await workspace.commit();
+
+    // Turn 2 on the WARM box. The box touched nothing.
+    await drain(harness, makeTurn({ thread: "thr_clobber", workspace }).turn);
+
+    // "Unchanged in the box" has to mean SKIP, never overwrite.
+    expect(new TextDecoder().decode(await workspace.readFileBuffer("/user/memory/note.md")))
+      .toBe("newer content\n");
+  });
+
+  test("an out-of-band store DELETE mid-conversation is not resurrected by the warm box's stale copy", async () => {
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "ok" }); });
+    const harness = claudeCode({ sandbox });
+    const workspace = testWorkspace({ "/user/memory/gone.md": "delete me\n" });
+
+    await drain(harness, makeTurn({ thread: "thr_resurrect", workspace }).turn);
+
+    await workspace.rm("/user/memory/gone.md", { force: true });
+    await workspace.commit();
+
+    await drain(harness, makeTurn({ thread: "thr_resurrect", workspace }).turn);
+
+    // A file the box still has on disk but nobody owns any more must stay gone.
+    expect(workspace.getAllPaths()).not.toContain("/user/memory/gone.md");
+  });
+
+  test("the box's OWN edit still lands on a warm box — the fix must not turn sync-back off", async () => {
+    // The other half of the invariant: skipping unchanged files must not skip
+    // CHANGED ones. Turn 2 writes, and that write is the box's, so it commits.
+    let turn = 0;
+    const sandbox = fakeSandbox(async (box) => {
+      turn += 1;
+      if (turn === 2) box.write("/user/memory/note.md", "the box wrote this\n");
+      box.emit({ type: "text", delta: "ok" });
+    });
+    const harness = claudeCode({ sandbox });
+    const workspace = testWorkspace({ "/user/memory/note.md": "original\n" });
+
+    await drain(harness, makeTurn({ thread: "thr_boxedit", workspace }).turn);
+    await drain(harness, makeTurn({ thread: "thr_boxedit", workspace }).turn);
+
+    expect(new TextDecoder().decode(await workspace.readFileBuffer("/user/memory/note.md")))
+      .toBe("the box wrote this\n");
   });
 
   test("a second turn on a WARM box does not re-materialize the workspace", async () => {
