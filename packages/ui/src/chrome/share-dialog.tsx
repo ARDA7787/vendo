@@ -47,15 +47,25 @@ const PERSON = "person";
  */
 function refusalCopy(reason: unknown, phase: "move" | "share" | "remove" | "name"): string {
   const code = (reason as { code?: unknown } | null)?.code;
+  // The NAMING step answers for itself, before the shared codes: `forbidden`
+  // there does not mean "only an owner may do this" — the person asking IS the
+  // owner. It means the door refused because they hold no asserted org, so a
+  // person-share could never complete and the lookup would be pure directory
+  // exposure (§9.1 companion).
+  if (phase === "name") {
+    if (code === "not-implemented") {
+      return "Sharing with one person isn’t set up here"
+        + " — you can share with a team, or hand them a copy.";
+    }
+    if (code === "forbidden") {
+      return "You’re not in a team here, so there’s nobody to share it with"
+        + " — you can hand them a copy instead.";
+    }
+    if (code === "not-found") return "This app isn’t available any more.";
+    return "We couldn’t look them up just now — try again in a moment.";
+  }
   if (code === "forbidden") return "Only an owner can change who this app is shared with.";
   if (code === "not-found") return "This app isn’t available any more.";
-  // §9.1 companion — the host wired no way to look a person up. The wire's own
-  // sentence names the config seam; this one names what they can still do.
-  if (code === "not-implemented") {
-    return "Sharing with one person isn’t set up here"
-      + " — you can share with a team, or hand them a copy.";
-  }
-  if (phase === "name") return "We couldn’t look them up just now — try again in a moment.";
   if (phase === "move") {
     if (code === "cloud-required") {
       return "Moving this app into a team isn’t available here yet."

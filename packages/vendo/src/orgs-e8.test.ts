@@ -70,7 +70,7 @@ let acting: Principal = dana;
 
 async function boot(
   store: VendoStore,
-  opts: { key?: boolean; resolvePerson?: (query: string) => Promise<ResolvedPerson | null> } = {},
+  opts: { key?: boolean; resolvePerson?: (query: string, asker: Principal) => Promise<ResolvedPerson | null> } = {},
 ): Promise<Vendo> {
   // §9.6 — multiParty is filled from the SAME cloud-key read every other Cloud
   // default uses, so this env stub is the whole difference between keyed and
@@ -525,8 +525,14 @@ describe("E8 — §9.1 companion: only the host can name a person", () => {
     "kim": { subject: "kim", display: "Kim Alvarez" },
     "kim@maple.test": { subject: "kim", display: "Kim Alvarez" },
   };
-  const resolvePerson = async (query: string): Promise<ResolvedPerson | null> =>
-    roster[query.trim().toLowerCase()] ?? null;
+  /** Every asker the host was handed, in order — the seam is only useful if the
+      host is told WHO is asking. */
+  let askers: Principal[] = [];
+  beforeEach(() => { askers = []; });
+  const resolvePerson = async (query: string, asker: Principal): Promise<ResolvedPerson | null> => {
+    askers.push(asker);
+    return roster[query.trim().toLowerCase()] ?? null;
+  };
 
   it("says on /status that it has no directory, and refuses the lookup, when the seam is unset", async () => {
     const store = await tempStore();
@@ -582,6 +588,39 @@ describe("E8 — §9.1 companion: only the host can name a person", () => {
     expect(bare.status).toBe(400);
     expect((await store.records("vendo_app_grants").list({ refs: { app_id: "app_unknown" } })).records)
       .toEqual([]);
+  });
+
+  it("hands the host the ASKER, through the real composition", async () => {
+    // The seam exists so a host can scope its OWN directory ("only people in the
+    // asker's org"). It cannot, if it is never told who asked — and the runtime
+    // thread is the half a preset-level test cannot see, because presets forward
+    // the callback by reference.
+    const store = await tempStore();
+    const vendo = await boot(store, { resolvePerson });
+    await seedApp(store, seeded("app_asker", "Team pulse"), ORG);
+
+    expect((await call(vendo, dana, "POST", "/apps/app_asker/grants/resolve", { query: "kim" })).status)
+      .toBe(200);
+    expect(askers).toEqual([dana]);
+  });
+
+  it("refuses a caller in NO org before the host's directory is ever consulted", async () => {
+    // The checker's attack: a signed-in user with zero memberships owns their own
+    // personal app, so they are its owner — and were handed the host's real
+    // subjects and display names at HTTP 200, from a share they could never
+    // complete (a person-share implies an org workspace, §9.5).
+    const store = await tempStore();
+    const vendo = await boot(store, { resolvePerson });
+    const loner: Principal = { kind: "user", subject: "loner" };
+    await seedApp(store, seeded("app_loner", "Just mine"), loner.subject);
+
+    // They really do own it — this is not a masking case.
+    expect((await call(vendo, loner, "GET", "/apps/app_loner/grants")).body.level).toBe("owner");
+    const probe = await call(vendo, loner, "POST", "/apps/app_loner/grants/resolve", { query: "kim" });
+    expect(probe.status).toBe(403);
+    expect(probe.body.error.code).toBe("forbidden");
+    // The host's directory was never touched, so nothing leaked to be filtered.
+    expect(askers).toEqual([]);
   });
 
   it("keeps the directory behind the SAME gate that writes the grant", async () => {

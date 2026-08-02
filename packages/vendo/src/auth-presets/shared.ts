@@ -24,8 +24,14 @@ export interface HostAuthPreset {
       subjects, or null. Vendo holds no directory, so a person-share cannot be
       resolved here; the dialog used to encode the typed string verbatim and
       write a grant that matched nobody. Absent → the dialog does not offer to
-      share with one person at all (teams, orgs and fork are unaffected). */
-  resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
+      share with one person at all (teams, orgs and fork are unaffected).
+
+      `asker` is WHO is asking, so the host can scope its own directory — "only
+      people in the asker's own org" is the common rule and it is unimplementable
+      without this. Keyed on Principal for the same reason `memberships` is. Vendo
+      also gates the door on the asker holding at least one asserted membership,
+      but only the host knows its own org chart. */
+  resolvePerson?: (query: string, asker: Principal) => Promise<ResolvedPerson | null>;
 }
 
 /** What a host's subject→user resolver returns. `display` names the resolved
@@ -59,6 +65,7 @@ export interface HostAuthPresetOptions {
   memberships?: (principal: Principal) => Promise<Membership[]>;
   /** Build contract §9.1 companion — see HostAuthPreset.resolvePerson. Forwarded
       verbatim by every preset, for the same reason `memberships` is: the
-      directory it reads is the HOST's. */
-  resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
+      directory it reads is the HOST's, and so is the decision about who may see
+      which part of it. */
+  resolvePerson?: (query: string, asker: Principal) => Promise<ResolvedPerson | null>;
 }

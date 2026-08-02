@@ -161,7 +161,7 @@ export interface ComposeHostAuthPresetOptions {
   /** Build contract §9.1 — forwarded verbatim; presets never interpret it. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
   /** Build contract §9.1 companion — forwarded verbatim, same as memberships. */
-  resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
+  resolvePerson?: (query: string, asker: Principal) => Promise<ResolvedPerson | null>;
 }
 
 /** The three-seam shape every named preset shares (authJs is the template):

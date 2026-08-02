@@ -262,6 +262,17 @@ export const appRoutes: RouteEntry[] = [
       const level = await deps.apps.access.levelFor(appId, ctx);
       if (level === null) throw new VendoError("not-found", `app not found: ${appId}`);
       if (level !== "owner") throw new VendoError("forbidden", `owner access is required for ${appId}`);
+      // ...and an owner with NO asserted org, on top of that. A person-share
+      // implies an org workspace (§9.5), so a caller in no org can never complete
+      // the share this lookup exists for — answering them is nothing but
+      // directory exposure. A signed-in stranger probing from their own personal
+      // app was handed the host's real subjects and display names at HTTP 200.
+      if ((ctx.memberships ?? []).length === 0) {
+        throw new VendoError(
+          "forbidden",
+          `no org is asserted for this caller, so a person-share on ${appId} could never be completed`,
+        );
+      }
       if (deps.resolvePerson === undefined) {
         throw new VendoError(
           "not-implemented",
@@ -271,7 +282,9 @@ export const appRoutes: RouteEntry[] = [
         );
       }
       const body = await requestJson(request);
-      return json({ person: await deps.resolvePerson(string(body["query"], "query")) });
+      // The asker rides along: only the host knows which part of its own
+      // directory this person may see.
+      return json({ person: await deps.resolvePerson(string(body["query"], "query"), ctx.principal) });
     }
     // Build contract §9.2–§9.6 — the Share dialog's door. Reading the grant
     // list is viewer-gated and OSS; writing one is owner-gated AND

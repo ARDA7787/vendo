@@ -103,6 +103,11 @@ export function isGrantPrincipal(encoded: string): boolean {
  * encode whatever was typed VERBATIM as the subject, which wrote a `user:` grant
  * that matched nobody — after the app had already moved into the team. The
  * `user:` principal is minted from `subject`, never from the query.
+ *
+ * The seam that produces this takes `(query, asker)`: only the host can scope its
+ * own directory, and "people in the asker's own org" is unimplementable if the
+ * host is never told who asked. Vendo's own half of that is the door, which
+ * refuses an asker holding no asserted membership at all.
  */
 export interface ResolvedPerson {
   /** The host's own stable subject — the one the grant is written for. */

@@ -292,6 +292,30 @@ describe("ShareDialog — a person-share needs the HOST to name the person", () 
     expect(calls.some((call) => call.verb === "share")).toBe(false);
   });
 
+  it("says they have no team to share into, rather than talking about ownership", async () => {
+    // The door refuses an owner who is in NO org: a person-share implies an org
+    // workspace (§9.5), so the lookup could only ever expose the host's
+    // directory. `forbidden` normally means "only an owner may do this", which is
+    // the one thing this person definitely IS — so the naming step answers for
+    // itself.
+    const { calls } = mount({
+      personal: false,
+      memberships: soleOrg,
+      roster,
+      resolveFails: Object.assign(new Error("no org is asserted for this caller"), { code: "forbidden" }),
+    });
+    await choose(/specific person/i);
+    await typePerson("Mia");
+    clickShare();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/team/i);
+    expect(alert.textContent).toMatch(/copy/i);
+    expect(alert.textContent).not.toMatch(/owner/i);
+    expect(calls.some((call) => call.verb === "promote")).toBe(false);
+    expect(calls.some((call) => call.verb === "share")).toBe(false);
+  });
+
   it("says so in the consumer's voice when the lookup is not set up at all", async () => {
     // A host that mounted the dialog with the option on but wired no seam. The
     // wire's own sentence names a config key; this one names what they can do.

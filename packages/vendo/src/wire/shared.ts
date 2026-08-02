@@ -56,9 +56,10 @@ export interface WireDeps {
       → `can()` degenerates to ownership. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
   /** Build contract §9.1 companion — the host's own directory lookup, behind the
-      owner gate on the Share dialog's door. Unset → /status says so and the
-      dialog does not offer to share with one person. */
-  resolvePerson?: (query: string) => Promise<ResolvedPerson | null>;
+      owner gate on the Share dialog's door. Takes the ASKER so the host can scope
+      its directory to them. Unset → /status says so and the dialog does not offer
+      to share with one person. */
+  resolvePerson?: (query: string, asker: Principal) => Promise<ResolvedPerson | null>;
   ready: () => Promise<void>;
   /** VENDO_BASE_URL is https → TLS terminates upstream; see secureRequest. */
   trustedBaseIsHttps: boolean;

@@ -1,4 +1,4 @@
-import type { ResolvedPerson } from "@vendoai/core";
+import type { Principal, ResolvedPerson } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { auth0 } from "./auth0.js";
 import { authJs } from "./auth-js.js";
@@ -15,8 +15,16 @@ import type { HostAuthPreset, HostAuthPresetOptions } from "./shared.js";
  * written for the SUBJECT it returns and never for what was typed.
  */
 
-const resolvePerson = async (query: string): Promise<ResolvedPerson | null> =>
-  query.toLowerCase().includes("mia") ? { subject: "maple-mia", display: "Mia Nakamura" } : null;
+/** A host directory that scopes by the ASKER — the reason the seam is given one
+    (compare `memberships`, keyed on Principal for exactly this). Only staff Maple
+    itself issued get answers. */
+const resolvePerson = async (query: string, asker: Principal): Promise<ResolvedPerson | null> => {
+  if (!asker.subject.startsWith("host_")) return null;
+  return query.toLowerCase().includes("mia") ? { subject: "maple-mia", display: "Mia Nakamura" } : null;
+};
+
+const yousef: Principal = { kind: "user", subject: "host_yousef" };
+const outsider: Principal = { kind: "user", subject: "someone-elses-tenant" };
 
 const secret = "vendo-preset-resolve-person-secret-with-entropy";
 
@@ -32,11 +40,18 @@ describe("§9.1 companion — the resolvePerson auth-preset seam", () => {
   for (const [name, build] of Object.entries(presets)) {
     it(`${name}() forwards the resolvePerson callback onto the preset`, async () => {
       const preset = build({ resolvePerson });
-      expect(preset.resolvePerson).toBeDefined();
-      expect(await preset.resolvePerson?.("mia@maple.com"))
+      // Forwarded VERBATIM — the same function object. A preset that wrapped it
+      // would be free to drop the second argument, which is the whole point of
+      // giving the seam one; the build/typecheck tsconfig excludes test files, so
+      // identity is what actually holds that line here.
+      expect(preset.resolvePerson).toBe(resolvePerson);
+      expect(await preset.resolvePerson?.("mia@maple.com", yousef))
         .toEqual({ subject: "maple-mia", display: "Mia Nakamura" });
       // A name the host does not know is NULL — never a guess, never the query.
-      expect(await preset.resolvePerson?.("someone from another company")).toBeNull();
+      expect(await preset.resolvePerson?.("someone from another company", yousef)).toBeNull();
+      // ...and the ASKER reaches the host, so scoping the directory to them is
+      // implementable at all. Same name, different asker, different answer.
+      expect(await preset.resolvePerson?.("mia@maple.com", outsider)).toBeNull();
     });
 
     it(`${name}() leaves the seam unset when the host has no directory to offer`, () => {
