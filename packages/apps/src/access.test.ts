@@ -347,6 +347,21 @@ describe("§9.6 — cloud gating", () => {
     expect(await runtime.access.list("app_gate2", ctx("kim"))).toHaveLength(1);
   });
 
+  it("answers the grant LIST from an unwired seam the way levelFor already does — never 402 on a read", async () => {
+    // `levelFor` degenerates to ownership when no app-access seam is wired (the
+    // OSS single-player default); `list` threw `cloud-required` from the same
+    // absence, so the Share dialog's FIRST READ 402'd on every keyless
+    // deployment and the two doors disagreed about the same fact.
+    const { runtime, store } = setup({ appAccess: undefined, multiParty: false });
+    await seedAppRow(store, doc("app_noseam"), "dana");
+    expect(await runtime.access.levelFor("app_noseam", ctx("dana"))).toBe("owner");
+    // With no seam no grant row can exist (§9.6), so the empty list is the
+    // honest answer — and it stays viewer-gated.
+    expect(await runtime.access.list("app_noseam", ctx("dana"))).toEqual([]);
+    await expect(runtime.access.list("app_noseam", ctx("mal")))
+      .rejects.toMatchObject({ code: "not-found" });
+  });
+
   // The green half: with a key the same three writes go through.
   it("allows them once the key filled the seam", async () => {
     const { runtime, store } = setup();

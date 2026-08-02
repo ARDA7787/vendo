@@ -2087,12 +2087,29 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // The edit hook is what makes "anyone else editing invalidates the
     // sponsorship" true: the apps runtime knows who edited, the automations
     // engine knows who sponsors.
+    //
+    // Why these two seams NO-OP on an unset engine while `armAutomation` below
+    // THROWS (F26 — deliberate, not an oversight): all three are unreachable
+    // today, because nothing in this composition can skip constructing the
+    // engine. If the invariant ever broke, the difference is what the caller
+    // asked for. Arming is a request to CHANGE something; silently not arming an
+    // automation the person just authored is the exact "quietly dropped work"
+    // failure, so it refuses out loud. These two are enrichments of somebody
+    // else's write and read: an app open and a landed edit must not fail because
+    // the automations half is missing — there is simply no card and no
+    // invalidation to report.
     onDocumentEdit: async (previous, next, editor) =>
       automationsForArming?.onDocumentEdit(previous, next, editor),
     // The adoption card is additive venue state on the open payload, under the
     // one key the tree renderer reads. Without this line the card exists and
     // nothing can ever show it, so a stopped automation would wait forever.
     venueState: async (app, ctx) => {
+      // F24 — an app with no trigger has never been an automation, so it has no
+      // sponsorship and nothing to adopt. Answering that from the document the
+      // opener already holds keeps the adoption lookup's two store reads off
+      // EVERY app open in every deployment, including the single-player ones
+      // that have no automations at all.
+      if (app.trigger === undefined) return undefined;
       const card = await automationsForArming?.adoption(app.id, ctx);
       return card === undefined ? undefined : { [ADOPTION_VENUE_KEY]: card };
     },

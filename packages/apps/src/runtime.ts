@@ -1065,6 +1065,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     }
   };
 
+  /** Only the WRITE verbs reach this: an unwired seam is an absence, and the
+      reads (`levelFor`, `list`) report it as ownership + an empty list rather
+      than as something to go buy. */
   const requireAccess = (): AppAccess => {
     if (config.appAccess === undefined) {
       throw new VendoError("cloud-required", "this deployment has no app-access store wired");
@@ -1074,12 +1077,15 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
 
   /** Build contract §9.2 — the grant-principal encodings THIS ctx satisfies.
       Derived from the asserted memberships alone, so a team the host did not
-      assert this request simply is not in the list. */
+      assert this request simply is not in the list. Through core's ONE encoder,
+      so a query here can never miss a shape a surface wrote. */
   const grantPrincipalsOf = (ctx: RunContext): string[] => {
-    const encodings = [`user:${ctx.principal.subject}`];
+    const encodings = [encodeGrantPrincipal({ kind: "user", subject: ctx.principal.subject })];
     for (const membership of ctx.memberships ?? []) {
-      encodings.push(`org:${membership.org}`);
-      for (const team of membership.teams ?? []) encodings.push(`team:${membership.org}/${team}`);
+      encodings.push(encodeGrantPrincipal({ kind: "org", org: membership.org }));
+      for (const team of membership.teams ?? []) {
+        encodings.push(encodeGrantPrincipal({ kind: "team", org: membership.org, team }));
+      }
     }
     return encodings;
   };
@@ -2402,7 +2408,19 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
 
     access: {
       async list(appId, ctx) {
-        return await requireAccess().list(ctx, appId);
+        if (config.appAccess === undefined) {
+          // No seam wired ⇒ no grant row can exist (§9.6), so the empty list is
+          // the honest answer — the same absence `levelFor` reports without
+          // throwing. A 402 from a READ told the Share dialog to go buy
+          // something on every keyless (default OSS) deployment. Still
+          // viewer-gated: a caller who cannot see the app is told nothing.
+          const record = await apps.get(appId);
+          if (record === null || !(await holds(appId, ctx, "viewer", record))) {
+            throw new VendoError("not-found", `app not found: ${appId}`);
+          }
+          return [];
+        }
+        return await config.appAccess.list(ctx, appId);
       },
       async grant(appId, principal, level, ctx) {
         requireMultiParty("sharing");

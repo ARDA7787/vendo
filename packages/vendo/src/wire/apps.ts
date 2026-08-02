@@ -138,6 +138,27 @@ export const appRoutes: RouteEntry[] = [
           return json(await deps.apps.open(appId, ctx));
         } catch (reason) {
           if (reason instanceof VendoError && reason.code === "not-found") {
+            // Build contract §9.4 — the probe is a DIAGNOSTIC for a caller who
+            // can already see the app, never a lookup for one who cannot. It
+            // reads UNSCOPED rows, so running it for a non-viewer made
+            // `?pending=1` an existence oracle: any stranger with an app id
+            // learned whether a team app was real, at HTTP 200, while the same
+            // request without the flag correctly 404'd. A non-viewer now gets
+            // exactly what a non-existent app gets.
+            if (await deps.apps.access.levelFor(appId, ctx) === null) {
+              // The principal-mismatch diagnosis (0.4.1 E2E cert B4) is a HOST
+              // wiring problem in a developer's voice, so it keeps its signal
+              // where only the host reads it — the server log — instead of
+              // being served to whoever asked.
+              if ((await probeUnownedAppRecord(deps.store, appId)).exists) {
+                console.warn(
+                  `[vendo] GET /apps/${appId}/open answered not-found, but a record with that id `
+                  + "exists under another subject: this wire route's principal must resolve the same "
+                  + "subject your agent loop uses (see docs.vendo.run/existing-agents)",
+                );
+              }
+              return json({ kind: "pending" });
+            }
             const probe = await probeUnownedAppRecord(deps.store, appId);
             // A terminal build failure is terminal for EVERY caller: pass the
             // server-written reason through instead of masking it as a build
@@ -149,15 +170,11 @@ export const appRoutes: RouteEntry[] = [
                 ...(probe.buildFailed.retryable === undefined ? {} : { retryable: probe.buildFailed.retryable }),
               });
             }
-            if (probe.exists) {
-              return json({
-                kind: "failed",
-                reason: "this app exists but is not visible to this surface's caller — "
-                  + "the wire route's principal must resolve the same subject your agent loop uses "
-                  + "(see the principal comment in the generated route, or docs.vendo.run/existing-agents)",
-                retryable: false,
-              });
-            }
+            // This caller CAN see the app (checked above) and it carries no
+            // terminal marker, so "still building" is the honest answer. The
+            // principal-mismatch diagnosis that used to live here belongs to the
+            // non-viewer branch, where it is now logged for the host instead of
+            // served to the caller.
             return json({ kind: "pending" });
           }
           throw reason;

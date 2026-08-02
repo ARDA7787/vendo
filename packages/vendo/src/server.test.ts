@@ -280,13 +280,15 @@ describe("09 §3 public wire", () => {
     expect(await flagged.json()).toEqual({ kind: "failed", reason: "quota exhausted", retryable: false });
   });
 
-  it("open?pending=1 answers {kind:'failed'} — not pending — when the record exists under another principal (0.4.1 E2E cert B4)", async () => {
-    // Principal mismatch (wire principal ≠ chat principal): the record
-    // EXISTS, just not for this caller, and it never will — masking that
-    // owner-scoped not-found as {kind:"pending"} was the infinite skeleton.
-    // The flag now answers the terminal failed vocabulary with the diagnosis
-    // so the embed resolves promptly. A genuinely absent record (the build
-    // window) keeps answering pending, covered above.
+  it("open?pending=1 keeps the principal-mismatch diagnosis for the HOST, and stays masked to the caller (0.4.1 E2E cert B4 · §9.4)", async () => {
+    // Principal mismatch (wire principal ≠ chat principal): the record EXISTS,
+    // just not for this caller. That diagnosis is a HOST wiring problem in a
+    // developer's voice, and serving it made ?pending=1 an existence oracle —
+    // a stranger with an app id learned a team app was real, at HTTP 200, while
+    // the same request without the flag correctly 404'd (wave-3 finding F3).
+    // So the signal stays, in the server log, and the caller hears exactly what
+    // a caller of a non-existent app hears.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const store = await tempStore("vendo-wire-b4-");
     const vendo = createVendo({ model: {} as LanguageModel, principal: async () => principal, store });
     stubRouteBlocks(vendo);
@@ -296,22 +298,22 @@ describe("09 §3 public wire", () => {
 
     const flagged = await vendo.handler(request("GET", "/apps/app_foreign/open?pending=1"));
     expect(flagged.status).toBe(200);
-    const body = await flagged.json() as { kind: string; reason?: string; retryable?: boolean };
-    expect(body.kind).toBe("failed");
-    expect(body.retryable).toBe(false);
-    expect(body.reason).toContain("principal");
+    expect(await flagged.json()).toEqual({ kind: "pending" });
+    expect(warn.mock.calls.flat().join(" ")).toContain("principal");
 
     // Unflagged callers keep the contracted 404 envelope.
     const bare = await vendo.handler(request("GET", "/apps/app_foreign/open"));
     expect(bare.status).toBe(404);
   });
 
-  it("open?pending=1 passes a TERMINAL failed record through with its server-written reason when open() refuses the caller (0.4.6 cert defect D2)", async () => {
-    // A terminal build failure is terminal for EVERY caller: a subject the
-    // owner-scoped open() refuses must still see {kind:"failed"} with the
-    // persisted reason — masking it as {kind:"pending"} is the D2 infinite
-    // skeleton. The record shape mirrors the runtime's #532 write exactly
-    // (records-door put; a failed doc has no ui payload).
+  it("open?pending=1 masks a TERMINAL failed record from a caller who cannot see the app (0.4.6 cert defect D2 · §9.4)", async () => {
+    // A terminal build failure is terminal for every caller who can SEE the
+    // app — and a failed build is still an existence proof, so a caller who
+    // cannot view it hears pending like anyone asking after an app that isn't
+    // there (wave-3 finding F3). The owner-side half of D2 is unchanged and is
+    // pinned in wire/apps.grants.test.ts. The record shape mirrors the
+    // runtime's #532 write exactly (records-door put; a failed doc has no ui
+    // payload).
     const store = await tempStore("vendo-wire-d2-");
     const vendo = createVendo({ model: {} as LanguageModel, principal: async () => principal, store });
     stubRouteBlocks(vendo);
@@ -334,7 +336,7 @@ describe("09 §3 public wire", () => {
 
     const flagged = await vendo.handler(request("GET", "/apps/app_dead/open?pending=1"));
     expect(flagged.status).toBe(200);
-    expect(await flagged.json()).toEqual({ kind: "failed", reason: "quota exhausted", retryable: false });
+    expect(await flagged.json()).toEqual({ kind: "pending" });
   });
 
   it("open?pending=1 disambiguates on a HOSTED wire-door store: pending only while no record exists, terminal failures and principal mismatches resolve (defect D2)", async () => {
@@ -359,7 +361,9 @@ describe("09 §3 public wire", () => {
     const building = await vendo.handler(request("GET", "/apps/app_building/open?pending=1"));
     expect(await building.json()).toEqual({ kind: "pending" });
 
-    // (b) a terminal failed record resolves with its reason for any caller.
+    // (b) a terminal failed record: the probe reaches it through the adapter on
+    // a hosted store (the D2 fix), and §9.4 then masks the answer because this
+    // caller cannot see the app at all.
     await store.records("vendo_apps").put({
       id: "app_dead",
       data: {
@@ -375,19 +379,19 @@ describe("09 §3 public wire", () => {
       refs: { subject: "someone_else" },
     });
     const dead = await vendo.handler(request("GET", "/apps/app_dead/open?pending=1"));
-    expect(await dead.json()).toEqual({ kind: "failed", reason: "the build never finished", retryable: true });
+    expect(await dead.json()).toEqual({ kind: "pending" });
 
-    // (c) a live record under another subject answers the B4 principal-
-    // mismatch diagnosis — reachable on hosted stores for the first time.
+    // (c) a live record under another subject: the B4 diagnosis is logged for
+    // the host (reachable on hosted stores for the first time) and the caller
+    // stays masked.
     await store.records("vendo_apps").put({
       id: "app_foreign",
       data: { subject: "someone_else", enabled: true, doc: app("app_foreign") },
       refs: { subject: "someone_else" },
     });
     const foreign = await vendo.handler(request("GET", "/apps/app_foreign/open?pending=1"));
-    const body = await foreign.json() as { kind: string; reason?: string };
-    expect(body.kind).toBe("failed");
-    expect(body.reason).toContain("principal");
+    expect(await foreign.json()).toEqual({ kind: "pending" });
+    expect(vi.mocked(console.warn).mock.calls.flat().join(" ")).toContain("principal");
   });
 
   it("does not read history for an unowned app on GET or undo", async () => {
