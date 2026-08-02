@@ -9,6 +9,7 @@ import {
   type RunContext,
   type ToolRegistry,
 } from "@vendoai/core";
+import { appAccessConformance } from "@vendoai/core/conformance";
 import { describe, expect, it } from "vitest";
 import { createApps, type AppsConfig, type AppsRuntime } from "./index.js";
 import { fakeBoxSandbox, guardFixture, memoryStore, seedAppRow } from "./testing/index.js";
@@ -60,6 +61,27 @@ const setup = (
   });
   return { runtime, store };
 };
+
+// The SHARED rule (core's conformance kit), mounted against the stand-in these
+// tests run on. @vendoai/store mounts the SAME cases against the real
+// `appAccess(store)`, so the two implementations cannot drift: mutating either
+// one fails here. Without this, mutating the real `can()` to `return true` left
+// this suite green.
+describe("core's app-access conformance kit, over the runtime's stand-in", () => {
+  const store = memoryStore();
+  const suite = appAccessConformance({
+    access: storeAccess(store),
+    seedApp: (appId, subject) => seedAppRow(store, doc(appId), subject).then(() => undefined),
+    seedGrant: async (appId, principal, level) => {
+      await store.records("vendo_app_grants").put({
+        id: `ag_${appId}_${principal}`,
+        data: { appId, orgId: "conformance-org", principal, level, createdBy: "seed" },
+        refs: { app_id: appId, principal, level },
+      });
+    },
+  });
+  for (const conformanceCase of suite.cases) it(conformanceCase.name, conformanceCase.run);
+});
 
 describe("§9.3 — reads need viewer, edits editor, delete owner", () => {
   it("serves a granted viewer the app and masks it from everyone else", async () => {

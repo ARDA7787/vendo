@@ -1,5 +1,10 @@
 import {
   VendoError,
+  accessForPath,
+  grantMatches,
+  holdsLevel,
+  parseGrantPrincipal,
+  strongerLevel,
   type AccessLevel,
   type AppAccess,
   type AppGrantRecord,
@@ -8,56 +13,80 @@ import {
 } from "@vendoai/core";
 import type { memoryStore } from "./memory-store.js";
 
-const RANK: Record<AccessLevel, number> = { viewer: 1, editor: 2, owner: 3 };
-
-
-
 /**
  * A stand-in for `appAccess(store)` over the same rows: the real function lives
  * in @vendoai/store and `apps → core` is the only edge layering allows the
- * runtime (or its tests). It reads the SAME `vendo_app_grants` records with the
- * SAME frozen principal encoding, so the runtime's own grant queries (the
- * `list()` union) are genuinely exercised; the real function is proven against
- * a real database in @vendoai/store's own suite.
+ * runtime (or its tests).
+ *
+ * Every RULE it applies comes from core (`accessForPath`, `grantMatches`,
+ * `strongerLevel`, `holdsLevel`, `parseGrantPrincipal`) — the very functions the
+ * real implementation applies — so all that is left here is reading rows, and
+ * there is nothing for the two to disagree about. What remains is pinned by
+ * core's `appAccessConformance` kit, which BOTH suites mount (access.test.ts
+ * here, app-access.test.ts in @vendoai/store): a rule that moves on either side
+ * fails on both. Before that, mutating the real `can()` to `return true` left
+ * this file's suite entirely green.
  */
 export function storeAccessFixture(store: ReturnType<typeof memoryStore>): AppAccess {
   const grants = store.records("vendo_app_grants");
+  const apps = store.records("vendo_apps");
+
+  const rowSubject = async (appId: AppId): Promise<string | undefined> =>
+    (await apps.get(appId))?.refs?.["subject"];
+
   const rowsFor = async (appId: AppId): Promise<AppGrantRecord[]> =>
     (await grants.list({ refs: { app_id: appId } })).records.map((record) => ({
       ...record.data as Omit<AppGrantRecord, "id" | "createdAt">,
       id: record.id,
       createdAt: record.createdAt,
     }));
-  const matches = (runCtx: RunContext, principal: string): boolean => {
-    if (principal === `user:${runCtx.principal.subject}`) return true;
-    return (runCtx.memberships ?? []).some((membership) =>
-      principal === `org:${membership.org}`
-      || (membership.teams ?? []).some((team) => principal === `team:${membership.org}/${team}`));
+
+  /** §9.4 posture: masked when they cannot see it, `forbidden` when they can. */
+  const require = async (runCtx: RunContext, appId: AppId, level: AccessLevel): Promise<void> => {
+    const held = await access.levelFor(runCtx, appId);
+    if (held === null) throw new VendoError("not-found", `app not found: ${appId}`);
+    if (!holdsLevel(held, level)) {
+      throw new VendoError("forbidden", `${level} access is required for ${appId}`);
+    }
   };
+
   const access: AppAccess = {
     async levelFor(runCtx, appId) {
-      const subject = (await store.records("vendo_apps").get(appId))?.refs?.["subject"];
+      const subject = await rowSubject(appId);
       if (subject === undefined) return null;
       if (subject === runCtx.principal.subject) return "owner";
       let level: AccessLevel | null =
         (runCtx.memberships ?? []).some((m) => m.org === subject && m.admin === true) ? "owner" : null;
       for (const row of await rowsFor(appId)) {
-        if (matches(runCtx, row.principal) && (level === null || RANK[row.level] > RANK[level])) {
-          level = row.level;
-        }
+        if (grantMatches(runCtx, row.principal)) level = strongerLevel(level, row.level);
       }
       return level;
     },
+
     async can(runCtx, level, thing) {
-      if ("path" in thing) return thing.path.startsWith("/user/");
-      const held = await access.levelFor(runCtx, thing.app);
-      return held !== null && RANK[held] >= RANK[level];
-    },
-    async grant(runCtx, appId, principal, level) {
-      if (await access.levelFor(runCtx, appId) !== "owner") {
-        throw new VendoError("forbidden", "owner access is required");
+      if ("path" in thing) {
+        const resolved = accessForPath(runCtx, level, thing.path);
+        return "app" in resolved
+          ? await access.can(runCtx, level, { app: resolved.app })
+          : resolved.decision;
       }
-      const orgId = (await store.records("vendo_apps").get(appId))?.refs?.["subject"] ?? "";
+      return holdsLevel(await access.levelFor(runCtx, thing.app), level);
+    },
+
+    async grant(runCtx, appId, principal, level) {
+      await require(runCtx, appId, "owner");
+      const orgId = await rowSubject(appId) ?? "";
+      const named = parseGrantPrincipal(principal);
+      if (named === undefined) {
+        throw new VendoError("validation", `unknown grant principal encoding: ${principal}`);
+      }
+      if (named.kind !== "user" && named.org !== orgId) {
+        throw new VendoError(
+          "validation",
+          `this app is not in ${named.org}'s workspace, so ${named.org} cannot be given access to it`
+          + ` — move the app into ${named.org} first (sharing offers to), then share it`,
+        );
+      }
       const existing = (await rowsFor(appId)).find((row) => row.principal === principal);
       await grants.put({
         id: existing?.id ?? `ag_${appId}_${principal}`,
@@ -65,17 +94,15 @@ export function storeAccessFixture(store: ReturnType<typeof memoryStore>): AppAc
         refs: { app_id: appId, principal, level },
       });
     },
+
     async revoke(runCtx, appId, principal) {
-      if (await access.levelFor(runCtx, appId) !== "owner") {
-        throw new VendoError("forbidden", "owner access is required");
-      }
+      await require(runCtx, appId, "owner");
       const existing = (await rowsFor(appId)).find((row) => row.principal === principal);
       if (existing !== undefined) await grants.delete(existing.id);
     },
+
     async list(runCtx, appId) {
-      if (await access.levelFor(runCtx, appId) === null) {
-        throw new VendoError("not-found", `app not found: ${appId}`);
-      }
+      await require(runCtx, appId, "viewer");
       return await rowsFor(appId);
     },
   };

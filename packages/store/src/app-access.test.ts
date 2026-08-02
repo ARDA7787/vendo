@@ -1,4 +1,5 @@
 import { VendoError, type Membership, type RunContext } from "@vendoai/core";
+import { appAccessConformance } from "@vendoai/core/conformance";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appAccess } from "./helpers/app-access.js";
 import { appStore } from "./helpers/apps.js";
@@ -153,6 +154,25 @@ for (const backend of backends()) {
       await appStore(made.store).put({ kind: "user", subject: "dana" }, doc(app));
       await expect(access().grant(ctxFor("dana", [{ org: "acme" }]), app, "org:acme", "viewer"))
         .rejects.toMatchObject({ code: "validation" });
+    });
+
+    // The SHARED rule (core's conformance kit), mounted against the real
+    // implementation. @vendoai/apps mounts the same cases against its own
+    // stand-in, so the two cannot drift: a mutation here fails there too.
+    describe("core's app-access conformance kit", () => {
+      const suite = appAccessConformance({
+        get access() { return appAccess(made.store); },
+        seedApp: async (appId, subject) => {
+          await appStore(made.store).put({ kind: "user", subject }, doc(appId));
+        },
+        seedGrant: async (appId, principal, level) => {
+          await made.store.records("vendo_app_grants").put({
+            id: `ag_${appId}_${principal}`,
+            data: { appId, orgId: "conformance-org", principal, level, createdBy: "seed" },
+          });
+        },
+      });
+      for (const conformanceCase of suite.cases) it(conformanceCase.name, conformanceCase.run);
     });
 
     describe("path access (§9.3)", () => {

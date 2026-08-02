@@ -1,5 +1,10 @@
 import {
   VendoError,
+  accessForPath,
+  grantMatches,
+  holdsLevel,
+  parseGrantPrincipal,
+  strongerLevel,
   type AccessLevel,
   type AppAccess,
   type AppGrantRecord,
@@ -11,78 +16,15 @@ import {
 } from "@vendoai/core";
 import type { VendoStore } from "../store.js";
 
-/** Build contract §9.3 — the SHAPES live in core (the apps runtime and the MCP
- *  door speak them, and `apps → core` is the only edge layering allows); the
- *  implementation is here, because only the store can read the grant rows. */
-export type { AccessLevel, AppAccess, AppGrantRecord, CanThing } from "@vendoai/core";
-
-const RANK: Record<AccessLevel, number> = { viewer: 1, editor: 2, owner: 3 };
-
-/** The grant-principal encoding (§9.2): one string, ref-queryable. Parsed here
- *  and nowhere else — the store door validates writes through this same
- *  function, so a row can never name a shape the matcher below cannot read. */
-export type GrantPrincipal =
-  | { kind: "user"; subject: string }
-  | { kind: "team"; org: string; team: string }
-  | { kind: "org"; org: string };
-
-export function parseGrantPrincipal(encoded: string): GrantPrincipal | undefined {
-  const separator = encoded.indexOf(":");
-  if (separator === -1) return undefined;
-  const kind = encoded.slice(0, separator);
-  const rest = encoded.slice(separator + 1);
-  if (rest === "") return undefined;
-  if (kind === "user") return { kind: "user", subject: rest };
-  if (kind === "org") return rest.includes("/") ? undefined : { kind: "org", org: rest };
-  if (kind === "team") {
-    const slash = rest.indexOf("/");
-    const org = rest.slice(0, slash);
-    const team = rest.slice(slash + 1);
-    if (slash === -1 || org === "" || team === "" || team.includes("/")) return undefined;
-    return { kind: "team", org, team };
-  }
-  return undefined;
-}
-
-export function isGrantPrincipal(encoded: string): boolean {
-  return parseGrantPrincipal(encoded) !== undefined;
-}
-
-/** Build contract §3.1 / §9.7 — owner derivation is a pure function of the
- *  path: `/user/**` is the bound subject's, `/orgs/<orgId>/**` is the org's. */
-export function orgOfPath(path: string): string | undefined {
-  const match = /^\/orgs\/([^/]+)(?:\/|$)/.exec(path);
-  return match?.[1];
-}
-
-/** `/orgs/<orgId>/apps/<appId>` and everything under it — the app grant governs
- *  the whole subtree INCLUDING its root, or a member with no grant could write
- *  the root as a file and the app's own subtree could never exist beneath it. */
-export function appOfOrgPath(path: string): AppId | undefined {
-  const match = /^\/orgs\/[^/]+\/apps\/([^/]+)(?:\/|$)/.exec(path);
-  return match?.[1] as AppId | undefined;
-}
-
-const memberships = (ctx: RunContext): readonly Membership[] => ctx.memberships ?? [];
+/** Build contract §9.3 — the SHAPES and the PURE rules (the principal grammar,
+ *  the level order, the path rules) live in core, so the apps runtime's test
+ *  stand-in resolves access through the very same functions; only the ROW
+ *  reading is here, because only the store can do it. */
+export type { AccessLevel, AppAccess, AppGrantRecord, CanThing, GrantPrincipal } from "@vendoai/core";
+export { appOfOrgPath, isGrantPrincipal, orgOfPath, parseGrantPrincipal } from "@vendoai/core";
 
 const membershipIn = (ctx: RunContext, org: string): Membership | undefined =>
-  memberships(ctx).find((entry) => entry.org === org);
-
-/** Does an asserted membership satisfy this grant row's principal? */
-function matches(ctx: RunContext, encoded: string): boolean {
-  const principal = parseGrantPrincipal(encoded);
-  if (principal === undefined) return false;
-  if (principal.kind === "user") return principal.subject === ctx.principal.subject;
-  const membership = membershipIn(ctx, principal.org);
-  if (membership === undefined) return false;
-  return principal.kind === "org" || (membership.teams ?? []).includes(principal.team);
-}
-
-const higher = (left: AccessLevel | null, right: AccessLevel | null): AccessLevel | null => {
-  if (left === null) return right;
-  if (right === null) return left;
-  return RANK[left] >= RANK[right] ? left : right;
-};
+  (ctx.memberships ?? []).find((entry) => entry.org === org);
 
 /**
  * Build contract §9.3 — `can()`, one function, three doors (the workspace
@@ -126,7 +68,7 @@ export function appAccess(store: VendoStore): AppAccess {
     if (subject === ctx.principal.subject) return "owner";
     let level: AccessLevel | null = membershipIn(ctx, subject)?.admin === true ? "owner" : null;
     for (const row of await grantsFor(appId)) {
-      if (matches(ctx, row.principal)) level = higher(level, row.level);
+      if (grantMatches(ctx, row.principal)) level = strongerLevel(level, row.level);
     }
     return level;
   };
@@ -136,32 +78,19 @@ export function appAccess(store: VendoStore): AppAccess {
   const require = async (ctx: RunContext, appId: AppId, level: AccessLevel): Promise<void> => {
     const held = await levelFor(ctx, appId);
     if (held === null) throw new VendoError("not-found", `app not found: ${appId}`);
-    if (RANK[held] < RANK[level]) {
+    if (!holdsLevel(held, level)) {
       throw new VendoError("forbidden", `${level} access is required for ${appId}`);
     }
   };
 
-  const canPath = (ctx: RunContext, level: AccessLevel, path: string): Promise<boolean> | boolean => {
-    if (path === "/user" || path.startsWith("/user/")) return true;
-    const org = orgOfPath(path);
-    if (org === undefined) return false;
-    const membership = membershipIn(ctx, org);
-    if (membership === undefined) return false;
-    // The org's policy file is the org admins' (§9.10 is lane H's; the mount
-    // rule is ours): everyone in the org reads it, only an admin rewrites it.
-    if (path === `/orgs/${org}/policy.json`) {
-      return RANK[level] <= RANK["viewer"] || membership.admin === true;
-    }
-    const appId = appOfOrgPath(path);
-    // An app's subtree is governed by the app's own grants; the rest of the org
-    // mount is the membership's.
-    return appId === undefined ? true : can(ctx, level, { app: appId });
-  };
-
   const can = async (ctx: RunContext, level: AccessLevel, thing: CanThing): Promise<boolean> => {
-    if ("path" in thing) return await canPath(ctx, level, thing.path);
-    const held = await levelFor(ctx, thing.app);
-    return held !== null && RANK[held] >= RANK[level];
+    if ("path" in thing) {
+      // core decides everything a path decides without rows; what is left is the
+      // one case that needs them — an app's own subtree, governed by its grants.
+      const resolved = accessForPath(ctx, level, thing.path);
+      return "app" in resolved ? await can(ctx, level, { app: resolved.app }) : resolved.decision;
+    }
+    return holdsLevel(await levelFor(ctx, thing.app), level);
   };
 
   return {
