@@ -191,142 +191,144 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
   };
 
   return (
-    <ChromeRoot className="fl-share">
-      <div className="fl-share-head">
-        <div className="fl-share-title">Share{appName === undefined ? "" : ` ${appName}`}</div>
-        {onClose === undefined ? null : (
-          <button type="button" className="fl-btn fl-btn--ghost" onClick={onClose}>Done</button>
+    <ChromeRoot>
+      <div className="fl-share">
+        <div className="fl-share-head">
+          <div className="fl-share-title">Share{appName === undefined ? "" : ` ${appName}`}</div>
+          {onClose === undefined ? null : (
+            <button type="button" className="fl-btn fl-btn--ghost" onClick={onClose}>Done</button>
+          )}
+        </div>
+
+        {/* Nothing is said about access until the first read has answered: `null`
+            is also what the hook holds while it is still in flight, so rendering
+            it told every caller they had no access for as long as the fetch took. */}
+        {canShare || isLoading ? null : (
+          <p className="fl-share-note">
+            {level === null
+              ? "You don’t have access to this app."
+              : "Only an owner can change who this app is shared with."}
+          </p>
         )}
-      </div>
 
-      {/* Nothing is said about access until the first read has answered: `null`
-          is also what the hook holds while it is still in flight, so rendering
-          it told every caller they had no access for as long as the fetch took. */}
-      {canShare || isLoading ? null : (
-        <p className="fl-share-note">
-          {level === null
-            ? "You don’t have access to this app."
-            : "Only an owner can change who this app is shared with."}
-        </p>
-      )}
-
-      {canShare && personal && orgs.length > 0 ? (
-        <p className="fl-share-note">
-          This is your own copy. Sharing it moves it into your team, so everyone works on
-          the same one.
-          {automation ? " Its automation turns off in the move — automations run with a person’s"
-            + " access, so it stays off until someone turns it back on." : ""}
-        </p>
-      ) : null}
-
-      {/* The permission-shaped empty state: a personal app can only be shared
-          live by moving into a team, and there is no team here. The spec's own
-          fallback, in the person's words rather than the API's. */}
-      {canShare && nowhereToShare ? (
-        <p className="fl-share-note">
-          This app is just yours. Sharing it live needs a team workspace, and there isn’t one
-          here — you can still hand someone a copy of it instead.
-        </p>
-      ) : null}
-
-      {moved === undefined ? null : (
-        <p className="fl-share-note" role="status">
-          Moved into <b>{nameOf(moved)}</b>.
-          {automation ? " Its automation is off until someone turns it back on — automations run"
-            + " with a person’s access." : ""}
-        </p>
-      )}
-
-      {canShare && !nowhereToShare ? (
-        <>
-          <div className="fl-share-add">
-            <select
-              className="fl-share-input"
-              value={target}
-              aria-label="Who to share with"
-              disabled={busy}
-              onChange={(event) => { setTarget(event.target.value); setError(undefined); }}
-            >
-              <option value="">Choose who…</option>
-              {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-            <select
-              className="fl-share-level"
-              value={nextLevel}
-              aria-label="Access level"
-              disabled={busy}
-              onChange={(event) => setNextLevel(event.target.value as AccessLevel)}
-            >
-              {LEVELS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
-            </select>
-            <button type="button" className="fl-btn fl-btn--primary" disabled={busy || target === ""} onClick={() => void submit()}>
-              Share
-            </button>
-          </div>
-
-          {/* Vendo has no directory of its own (§9.1), so a person is typed. The
-              field appears with its own label rather than as a placeholder,
-              because it arrives mid-task and has to explain itself. */}
-          {target === PERSON ? (
-            <div className="fl-share-field">
-              <label className="fl-share-note" htmlFor={`fl-share-person-${appId}`}>
-                Their name or email at work
-              </label>
-              <input
-                id={`fl-share-person-${appId}`}
-                className="fl-share-input"
-                value={person}
-                autoComplete="off"
-                disabled={busy}
-                onChange={(event) => { setPerson(event.target.value); setError(undefined); }}
-              />
-            </div>
-          ) : null}
-
-          {asksWhichTeam ? (
-            <div className="fl-share-field">
-              <label className="fl-share-note" htmlFor={`fl-share-org-${appId}`}>
-                Which team to move it into
-              </label>
-              <select
-                id={`fl-share-org-${appId}`}
-                className="fl-share-input"
-                value={moveInto}
-                disabled={busy}
-                onChange={(event) => { setMoveInto(event.target.value); setError(undefined); }}
-              >
-                <option value="">Choose a team…</option>
-                {orgs.map((org) => <option key={org} value={org}>{nameOf(org)}</option>)}
-              </select>
-            </div>
-          ) : null}
-        </>
-      ) : null}
-
-      {error === undefined ? null : <p className="fl-share-error" role="alert">{error}</p>}
-
-      <ul className="fl-share-list">
-        {isLoading && grants.length === 0 ? <li className="fl-share-empty">Loading…</li> : null}
-        {!isLoading && grants.length === 0 ? (
-          <li className="fl-share-empty">Nobody else yet — it’s just you.</li>
+        {canShare && personal && orgs.length > 0 ? (
+          <p className="fl-share-note">
+            This is your own copy. Sharing it moves it into your team, so everyone works on
+            the same one.
+            {automation ? " Its automation turns off in the move — automations run with a person’s"
+              + " access, so it stays off until someone turns it back on." : ""}
+          </p>
         ) : null}
-        {grants.map((grant) => (
-          <li key={grant.id} className="fl-share-row">
-            <span className="fl-share-who">{describePrincipal(grant.principal, memberships)}</span>
-            <span className="fl-share-lvl">{LEVELS.find((entry) => entry.value === grant.level)?.label ?? grant.level}</span>
-            {canShare ? (
-              <button
-                type="button"
-                className="fl-btn fl-btn--ghost fl-share-revoke"
+
+        {/* The permission-shaped empty state: a personal app can only be shared
+            live by moving into a team, and there is no team here. The spec's own
+            fallback, in the person's words rather than the API's. */}
+        {canShare && nowhereToShare ? (
+          <p className="fl-share-note">
+            This app is just yours. Sharing it live needs a team workspace, and there isn’t one
+            here — you can still hand someone a copy of it instead.
+          </p>
+        ) : null}
+
+        {moved === undefined ? null : (
+          <p className="fl-share-note" role="status">
+            Moved into <b>{nameOf(moved)}</b>.
+            {automation ? " Its automation is off until someone turns it back on — automations run"
+              + " with a person’s access." : ""}
+          </p>
+        )}
+
+        {canShare && !nowhereToShare ? (
+          <>
+            <div className="fl-share-add">
+              <select
+                className="fl-share-input"
+                value={target}
+                aria-label="Who to share with"
                 disabled={busy}
-                onClick={() => void run("remove", () => unshare(grant.principal))}
+                onChange={(event) => { setTarget(event.target.value); setError(undefined); }}
               >
-                Remove
+                <option value="">Choose who…</option>
+                {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+              <select
+                className="fl-share-level"
+                value={nextLevel}
+                aria-label="Access level"
+                disabled={busy}
+                onChange={(event) => setNextLevel(event.target.value as AccessLevel)}
+              >
+                {LEVELS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+              </select>
+              <button type="button" className="fl-btn fl-btn--primary" disabled={busy || target === ""} onClick={() => void submit()}>
+                Share
               </button>
+            </div>
+
+            {/* Vendo has no directory of its own (§9.1), so a person is typed. The
+                field appears with its own label rather than as a placeholder,
+                because it arrives mid-task and has to explain itself. */}
+            {target === PERSON ? (
+              <div className="fl-share-field">
+                <label className="fl-share-note" htmlFor={`fl-share-person-${appId}`}>
+                  Their name or email at work
+                </label>
+                <input
+                  id={`fl-share-person-${appId}`}
+                  className="fl-share-input"
+                  value={person}
+                  autoComplete="off"
+                  disabled={busy}
+                  onChange={(event) => { setPerson(event.target.value); setError(undefined); }}
+                />
+              </div>
             ) : null}
-          </li>
-        ))}
-      </ul>
+
+            {asksWhichTeam ? (
+              <div className="fl-share-field">
+                <label className="fl-share-note" htmlFor={`fl-share-org-${appId}`}>
+                  Which team to move it into
+                </label>
+                <select
+                  id={`fl-share-org-${appId}`}
+                  className="fl-share-input"
+                  value={moveInto}
+                  disabled={busy}
+                  onChange={(event) => { setMoveInto(event.target.value); setError(undefined); }}
+                >
+                  <option value="">Choose a team…</option>
+                  {orgs.map((org) => <option key={org} value={org}>{nameOf(org)}</option>)}
+                </select>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+        {error === undefined ? null : <p className="fl-share-error" role="alert">{error}</p>}
+
+        <ul className="fl-share-list">
+          {isLoading && grants.length === 0 ? <li className="fl-share-empty">Loading…</li> : null}
+          {!isLoading && grants.length === 0 ? (
+            <li className="fl-share-empty">Nobody else yet — it’s just you.</li>
+          ) : null}
+          {grants.map((grant) => (
+            <li key={grant.id} className="fl-share-row">
+              <span className="fl-share-who">{describePrincipal(grant.principal, memberships)}</span>
+              <span className="fl-share-lvl">{LEVELS.find((entry) => entry.value === grant.level)?.label ?? grant.level}</span>
+              {canShare ? (
+                <button
+                  type="button"
+                  className="fl-btn fl-btn--ghost fl-share-revoke"
+                  disabled={busy}
+                  onClick={() => void run("remove", () => unshare(grant.principal))}
+                >
+                  Remove
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
     </ChromeRoot>
   );
 }
@@ -347,25 +349,30 @@ export interface ForkOfferProps {
 export function ForkOffer({ instruction, onFork, onDismiss }: ForkOfferProps) {
   const [busy, setBusy] = useState(false);
   return (
-    <ChromeRoot className="fl-share-fork">
-      <p className="fl-share-fork-copy">
-        I can’t change the team’s copy{instruction === undefined ? "" : ` to ${instruction}`} — but I can make you your own.
-      </p>
-      <div className="fl-share-fork-actions">
-        <button
-          type="button"
-          className="fl-btn fl-btn--primary"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            void Promise.resolve(onFork()).finally(() => setBusy(false));
-          }}
-        >
-          Make me my own copy
-        </button>
-        {onDismiss === undefined ? null : (
-          <button type="button" className="fl-btn fl-btn--ghost" onClick={onDismiss}>Never mind</button>
-        )}
+    // The class lives on an INNER div, not on ChromeRoot: a NESTED ChromeRoot
+    // returns a bare fragment (chrome-root.tsx), so a container class handed to it
+    // silently disappears — which is every mount inside another surface.
+    <ChromeRoot>
+      <div className="fl-share-fork">
+        <p className="fl-share-fork-copy">
+          I can’t change the team’s copy{instruction === undefined ? "" : ` to ${instruction}`} — but I can make you your own.
+        </p>
+        <div className="fl-share-fork-actions">
+          <button
+            type="button"
+            className="fl-btn fl-btn--primary"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              void Promise.resolve(onFork()).finally(() => setBusy(false));
+            }}
+          >
+            Make me my own copy
+          </button>
+          {onDismiss === undefined ? null : (
+            <button type="button" className="fl-btn fl-btn--ghost" onClick={onDismiss}>Never mind</button>
+          )}
+        </div>
       </div>
     </ChromeRoot>
   );

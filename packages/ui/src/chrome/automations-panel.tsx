@@ -316,7 +316,18 @@ export function AutomationsPanel() {
                 <div>
                   <div className="fl-auto-title">{entry.app.name}</div>
                   <div className="fl-auto-sub">
-                    {runningRun ? (
+                    {/* §9.9 — `stopped` is the SERVER's word on the automation
+                        itself and it outranks any run row: the fire-time check
+                        stops a run before its first tool call, so a run left
+                        looking live cannot be allowed to report "running now"
+                        about something that will not run again until it is
+                        taken on. */}
+                    {entry.stopped !== undefined ? (
+                      <>
+                        <span className="fl-auto-live fl-auto-wait" aria-hidden="true" />
+                        Stopped
+                      </>
+                    ) : runningRun ? (
                       <>
                         <span className="fl-act-spin" aria-hidden="true" />
                         <span className="fl-auto-nextrun">running now{runningStep}</span>
@@ -332,17 +343,11 @@ export function AutomationsPanel() {
                               : undefined}
                           />
                         ) : null}
-                        {/* §9.9 — a lapsed sponsorship STOPS the automation, and
-                            "Disabled" reads as something somebody switched off,
-                            so nobody had a reason to come looking. It is paused
-                            and waiting to be taken on. */}
-                        {entry.stopped !== undefined
-                          ? "Stopped"
-                          : entry.enabled
-                            ? waitingOn > 0
-                              ? `Enabled · waiting on ${waitingOn} permission${waitingOn === 1 ? "" : "s"}`
-                              : "Enabled"
-                            : "Disabled"}
+                        {entry.enabled
+                          ? waitingOn > 0
+                            ? `Enabled · waiting on ${waitingOn} permission${waitingOn === 1 ? "" : "s"}`
+                            : "Enabled"
+                          : "Disabled"}
                         {nextRun ? <span className="fl-auto-nextrun">· {nextRun}</span> : null}
                       </>
                     )}

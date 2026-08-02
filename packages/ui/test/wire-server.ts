@@ -229,6 +229,8 @@ export async function createWireServer(options: WireServerOptions = {}) {
   };
   const state = {
     apps: [baseApp, automationApp, ...(options.islandApp === true ? [islandApp()] : [])],
+    /** §9.2 — the grant rows the Share dialog reads back and revokes. */
+    appGrants: [] as Array<Record<string, unknown>>,
     approvals: [approval()],
     // Existing-agents — decided approvals move here so GET /approvals/:id can
     // answer the embed's poll; tests may also seed terminal states directly.
@@ -895,7 +897,51 @@ export async function createWireServer(options: WireServerOptions = {}) {
         // no-policy notice while the rest render as a configured host).
         const forced = request.headers["x-vendo-force-posture"];
         const posture = typeof forced === "string" ? forced : state.posture;
-        return json(response, { posture, version: "0.3.0", blocks: { guard: true } });
+        // Build contract §9.1 — the host's asserted orgs ride the status read,
+        // and the Share dialog offers them BY NAME. Present here so the one
+        // surface that writes permissions is reachable in the browser harness at
+        // all: it shipped with three consumer-voice defects (wave-3 F1/F2/F12)
+        // partly because nothing ever rendered it.
+        return json(response, {
+          posture,
+          version: "0.3.0",
+          blocks: { guard: true },
+          memberships: [{ org: "acme", display: "Acme", teams: ["finance"] }],
+        });
+      }
+      // Build contract §9.2–§9.6 — the Share dialog's door. The fixture caller
+      // OWNS its apps and they are still personal, which is the state
+      // "share implies promote" is about.
+      const grantsMatch = url.pathname.match(/^\/apps\/([^/]+)\/grants$/);
+      if (grantsMatch) {
+        const id = decodeURIComponent(grantsMatch[1] ?? "");
+        if (!state.apps.some(item => item.id === id)) {
+          return wireError(response, "not-found", "App not found", 404);
+        }
+        if (method === "GET") return json(response, { level: "owner", grants: state.appGrants, personal: true });
+        if (method === "POST") {
+          const body = parsedBody as { principal?: string; level?: string };
+          state.appGrants.push({
+            id: `ag_${state.appGrants.length + 1}`,
+            appId: id,
+            orgId: "acme",
+            principal: String(body.principal),
+            level: String(body.level),
+            createdBy: "user_fixture",
+            createdAt: NOW,
+          });
+          return json(response, { grants: state.appGrants });
+        }
+        if (method === "DELETE") {
+          const principal = url.searchParams.get("principal");
+          state.appGrants = state.appGrants.filter(grant => grant.principal !== principal);
+          return json(response, { grants: state.appGrants });
+        }
+      }
+      const promoteMatch = url.pathname.match(/^\/apps\/([^/]+)\/promote$/);
+      if (method === "POST" && promoteMatch) {
+        const id = decodeURIComponent(promoteMatch[1] ?? "");
+        return json(response, state.apps.find(item => item.id === id));
       }
       if (method === "POST" && url.pathname === "/tick") return json(response, []);
       if (method === "POST" && url.pathname.startsWith("/webhooks/")) return json(response, { accepted: true });

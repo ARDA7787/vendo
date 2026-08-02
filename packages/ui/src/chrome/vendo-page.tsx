@@ -182,17 +182,6 @@ function AppsWorkspace() {
   return (
     <div className="fl-page-pane" style={{ gap: 14, overflowY: "auto", padding: 14 }}>
       {error ? <div role="alert" className="fl-error">{error}</div> : null}
-      {denied ? (
-        <ForkOffer
-          {...(denied.instruction === undefined ? {} : { instruction: denied.instruction })}
-          onFork={() => during(async () => {
-            const copy = await fork(denied.appId);
-            setDenied(undefined);
-            setSelected(copy.id);
-          })}
-          onDismiss={() => setDenied(undefined)}
-        />
-      ) : null}
       <form className="fl-picker-toprow" aria-label="Create app" onSubmit={event => void submit(event)}>
         <label style={{ flex: 1 }}>
           <span className="fl-picker-group" style={{ display: "block", margin: "0 2px 7px" }}>Describe a new app</span>
@@ -247,6 +236,22 @@ function AppsWorkspace() {
                 }
               }}>Remove</button>
             </div>
+            {/* The answer belongs beside the question: the offer is about THIS
+                app, so it renders in this card rather than at the top of the
+                pane, where it read as a page-level announcement. */}
+            {denied?.appId === app.id ? (
+              <div style={{ padding: "0 12px 12px" }}>
+                <ForkOffer
+                  {...(denied.instruction === undefined ? {} : { instruction: denied.instruction })}
+                  onFork={() => during(async () => {
+                    const copy = await fork(app.id);
+                    setDenied(undefined);
+                    setSelected(copy.id);
+                  })}
+                  onDismiss={() => setDenied(undefined)}
+                />
+              </div>
+            ) : null}
             {changing === app.id ? (
               <form
                 className="fl-picker-toprow"
