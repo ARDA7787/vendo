@@ -112,8 +112,8 @@ sync-back, the send-serializing queue, tenant isolation, `machine: "local"`.
 The contract predicted the deletion "should make this lane strongly
 net-negative". It did not. Reporting the measurement, not the prediction.
 
-**The 8 files the contract named** (7 cc-native + `door.ts`): 3,524 → 3,488,
-**−36**.
+**The 8 files the contract named** (7 cc-native + `door.ts`): 3,524 → 3,510,
+**−14**.
 
 | file | before | after | delta |
 |---|---|---|---|
