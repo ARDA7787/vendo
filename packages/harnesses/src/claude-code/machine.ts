@@ -42,6 +42,11 @@ export interface TurnMachine {
    * Read the workspace back, in WORKSPACE paths. `paths` narrows the read to the
    * mid-turn hot set; omitted, it is the whole writable tree — which is what
    * makes deletions visible at turn end.
+   *
+   * A `paths` entry may name a `*` segment (`/user/apps/&#42;/plan.vendo`), matching
+   * exactly one segment. That is the only way a file the turn INVENTED — a plan
+   * for an app whose id did not exist when the turn started — reaches the hot
+   * sync, and it is matched machine-side so the wire carries the hot files only.
    */
   collect(paths?: readonly string[]): Promise<SyncFile[]>;
   run(request: TurnRequest): Promise<void>;

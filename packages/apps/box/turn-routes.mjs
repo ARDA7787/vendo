@@ -34,6 +34,21 @@ const TURNS_RETAINED = 4;
 const toDisk = (root, workspacePath) => path.join(root, workspacePath.replace(/^\/+/, ""));
 const toWorkspace = (root, diskPath) => `/${path.relative(root, diskPath).split(path.sep).join("/")}`;
 
+/**
+ * Does this workspace path match a wanted entry that names a `*` segment?
+ *
+ * `*` stands for exactly ONE segment, which is all the hot set needs
+ * (`/user/apps/&#42;/plan.vendo`) and the only shape a caller may ask for. Segment
+ * comparison rather than a built regex: a path is user-controlled text, and
+ * there is no escaping to get wrong.
+ */
+const matchesPattern = (pattern, workspacePath) => {
+  const wanted = pattern.split("/");
+  const actual = workspacePath.split("/");
+  if (wanted.length !== actual.length) return false;
+  return wanted.every((segment, at) => segment === "*" || segment === actual[at]);
+};
+
 const walk = (directory, out) => {
   let entries;
   try {
@@ -237,7 +252,22 @@ export const createTurnRoutes = (options = {}) => {
         const wanted = Array.isArray(payload?.paths) ? payload.paths : undefined;
         const files = [];
         if (wanted !== undefined) {
-          for (const workspacePath of wanted) {
+          // A wanted entry naming a `*` segment is how a file that did NOT exist
+          // when the turn started reaches the mid-turn sync: the host cannot
+          // pre-name `/user/apps/<a brand-new id>/plan.vendo`, so it asks by
+          // shape. Filtered HERE, so the wire carries the hot files and not the
+          // tree they were found in.
+          const patterns = wanted.filter((entry) => typeof entry === "string" && entry.includes("*"));
+          const literals = wanted.filter((entry) => typeof entry === "string" && !entry.includes("*"));
+          const matched = patterns.length === 0
+            ? []
+            : walk(root, [])
+              .map((diskPath) => toWorkspace(root, diskPath))
+              // Same rule as the whole-tree branch below: a route that WALKS
+              // answers about the user's own space and nothing else.
+              .filter((workspacePath) => workspacePath.startsWith("/user/")
+                && patterns.some((pattern) => matchesPattern(pattern, workspacePath)));
+          for (const workspacePath of [...new Set([...literals, ...matched])]) {
             try {
               files.push({
                 path: workspacePath,

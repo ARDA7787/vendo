@@ -27,6 +27,7 @@ import { z } from "zod";
 import { defineHarness } from "../define.js";
 import { harnessAdapters } from "../harness-sandbox.js";
 import { checkoutWorkspace, type SyncFile } from "../materialize.js";
+import { HOT_PATH_FILES } from "../render-seam.js";
 import type { TurnMachine } from "./machine.js";
 import { localMachine } from "./local.js";
 import { boxMachine, type SandboxAdapterLike } from "./box.js";
@@ -62,9 +63,10 @@ export interface ClaudeCodeDeps {
   sandbox?: SandboxAdapterLike;
 }
 
-/** §3.5's hot paths, as workspace globs are not a thing here: the two files that
- *  sync mid-turn, resolved per app the checkout carries. */
-const HOT_FILES = ["app.vendo", "plan.vendo"];
+/** §3.5's hot paths as SHAPES: the two files that sync mid-turn, under any app —
+ *  including one whose id the turn is about to invent. The seam owns the frozen
+ *  layout (`hotPathAppId`) and drops anything else that comes back. */
+const HOT_WATCH = HOT_PATH_FILES.map((name) => `/user/apps/*/${name}`);
 const HOT_SYNC_INTERVAL_MS = 1_200;
 
 /** The recorded v0 inference exception (design §9): a boxed harness must reach a
@@ -299,31 +301,20 @@ export function claudeCode(
       try {
         await machine.materialize(checkout.files);
 
-        const hotPaths = checkout.files
-          .map((file) => file.path)
-          .filter((path) => HOT_FILES.some((name) => path.endsWith(`/${name}`)));
-        // Paths that do not exist YET are the interesting ones — a plan file the
-        // agent is about to write is exactly what puts the skeleton on screen.
-        const appIds = new Set(
-          checkout.files
-            .map((file) => /^\/user\/apps\/(app_[^/]+)\//.exec(file.path)?.[1])
-            .filter((id): id is string => id !== undefined),
-        );
-        const watched = new Set([
-          ...hotPaths,
-          ...[...appIds].flatMap((id) => HOT_FILES.map((name) => `/user/apps/${id}/${name}`)),
-        ]);
-
-        if (watched.size > 0) {
-          hotTimer = setInterval(() => {
-            if (finished) return;
-            void serialize(async () => {
-              const hot = await machine.collect([...watched]);
-              await checkout.syncHot(hot);
-            }).catch(() => undefined);
-          }, HOT_SYNC_INTERVAL_MS);
-          hotTimer.unref?.();
-        }
+        // By SHAPE, never by enumeration. Enumerating the hot paths from files
+        // that already existed watched nothing at all on the one ask the skeleton
+        // exists for — "make me an app" — because a brand-new appId has no
+        // directory yet: measured 52.8s of silence against 5.0s when the file
+        // happened to pre-exist. The `*` is matched machine-side (§3.1 freezes
+        // the layout, so the shape is knowable without the id).
+        hotTimer = setInterval(() => {
+          if (finished) return;
+          void serialize(async () => {
+            const hot = await machine.collect(HOT_WATCH);
+            await checkout.syncHot(hot);
+          }).catch(() => undefined);
+        }, HOT_SYNC_INTERVAL_MS);
+        hotTimer.unref?.();
 
         const tools = (await turn.tools.list()).map(listingToTool);
         const running = machine.run({

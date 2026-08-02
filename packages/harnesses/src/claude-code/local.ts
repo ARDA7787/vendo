@@ -37,6 +37,15 @@ const toDisk = (root: string, workspacePath: string): string =>
 const toWorkspace = (root: string, diskPath: string): string =>
   `/${path.relative(root, diskPath).split(path.sep).join("/")}`;
 
+/** `*` stands for exactly ONE segment — the box door's rule, kept identical so
+ *  both machines answer the same question the same way. */
+const matchesPattern = (pattern: string, workspacePath: string): boolean => {
+  const wanted = pattern.split("/");
+  const actual = workspacePath.split("/");
+  if (wanted.length !== actual.length) return false;
+  return wanted.every((segment, at) => segment === "*" || segment === actual[at]);
+};
+
 async function walk(root: string, directory: string, out: string[]): Promise<void> {
   let entries;
   try {
@@ -93,8 +102,20 @@ export async function localMachine(options: LocalMachineOptions): Promise<TurnMa
 
     async collect(paths) {
       if (paths !== undefined) {
+        // An entry naming a `*` segment asks by SHAPE, which is how a file that
+        // did not exist at turn start reaches the mid-turn sync.
+        const patterns = paths.filter((entry) => entry.includes("*"));
+        let matched: string[] = [];
+        if (patterns.length > 0) {
+          const diskPaths: string[] = [];
+          await walk(root, root, diskPaths);
+          matched = diskPaths
+            .map((diskPath) => toWorkspace(root, diskPath))
+            .filter((workspacePath) =>
+              patterns.some((pattern) => matchesPattern(pattern, workspacePath)));
+        }
         const found: SyncFile[] = [];
-        for (const workspacePath of paths) {
+        for (const workspacePath of new Set([...paths.filter((entry) => !entry.includes("*")), ...matched])) {
           try {
             found.push({ path: workspacePath, bytes: await readFile(toDisk(root, workspacePath)) });
           } catch {

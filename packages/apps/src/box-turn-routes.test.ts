@@ -106,6 +106,33 @@ describe("materialize + collect", () => {
     ]);
   });
 
+  test("D5 · a `*` segment asks by SHAPE, which is how a file invented mid-turn is collectable", async () => {
+    const root = newRoot();
+    const door = routes(root);
+    // The appId the host could NOT have named when the turn started.
+    mkdirSync(path.join(root, "user/apps/app_invented"), { recursive: true });
+    writeFileSync(path.join(root, "user/apps/app_invented/plan.vendo"), "plan");
+    // Deliberate near-misses: `*` is ONE segment, and the hot names are exact.
+    mkdirSync(path.join(root, "user/apps/app_invented/nested"), { recursive: true });
+    writeFileSync(path.join(root, "user/apps/app_invented/nested/plan.vendo"), "deeper");
+    writeFileSync(path.join(root, "user/apps/app_invented/notes.md"), "notes");
+    const answer = await door.handle("POST", "/turn/collect", auth, {
+      paths: ["/user/apps/*/plan.vendo"],
+    });
+    expect(answer.body.files).toEqual([
+      { path: "/user/apps/app_invented/plan.vendo", base64: b64("plan") },
+    ]);
+  });
+
+  test("D5 · a walking collect answers about /user only, `*` included", async () => {
+    const root = newRoot();
+    const door = routes(root);
+    mkdirSync(path.join(root, "host/skills/refund"), { recursive: true });
+    writeFileSync(path.join(root, "host/skills/refund/SKILL.md"), "# refund");
+    const answer = await door.handle("POST", "/turn/collect", auth, { paths: ["/host/*/*"] });
+    expect(answer.body.files).toEqual([]);
+  });
+
   test("the SDK's own session store is machine state, never the user's files", async () => {
     const root = newRoot();
     const door = routes(root);
