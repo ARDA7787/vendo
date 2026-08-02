@@ -10,14 +10,38 @@ import {
   type ToolRegistry,
 } from "@vendoai/core";
 import { appAccessConformance } from "@vendoai/core/conformance";
+import type { LanguageModel } from "ai";
 import { describe, expect, it } from "vitest";
 import { createApps, type AppsConfig, type AppsRuntime } from "./index.js";
-import { fakeBoxSandbox, guardFixture, memoryStore, seedAppRow } from "./testing/index.js";
+import {
+  fakeBoxSandbox,
+  guardFixture,
+  memoryStore,
+  scriptedLanguageModel,
+  seedAppRow,
+  type ScriptedModelCall,
+} from "./testing/index.js";
 // One copy of the AppAccess stand-in, shared with served-orgs.test.ts.
 import { seedGrantRows as seedGrants, storeAccessFixture as storeAccess } from "./testing/app-access-fixture.js";
 
 /** Build contract §9.3–§9.6 — the apps runtime is level-aware through ONE
     `can()`; the wire and the MCP door inherit it rather than re-deriving it. */
+
+/** The brain, scripted: it answers every ask whole and names the app after what
+ *  was said, so a create and an edit both land through the real persist path
+ *  without a model call. Same fixture shape as lifecycle.test.ts. */
+const brainModel = (): LanguageModel => scriptedLanguageModel((call: ScriptedModelCall) => {
+  const prompt = call.prompt.map((message) => (
+    typeof message.content === "string"
+      ? message.content
+      : message.content.map((part) => part.text ?? "").join("")
+  )).join("\n");
+  const marker = "THEY ARE ASKING NOW: ";
+  const at = prompt.lastIndexOf(marker);
+  const said = (at === -1 ? "Untitled app" : prompt.slice(at + marker.length).split("\n")[0]?.trim() ?? "")
+    .slice(0, 40).replaceAll('"', "'") || "Untitled app";
+  return `<App name="${said}"><Text text="${said}"/><Disclaimer reason="Scripted fixture app."/></App>`;
+});
 
 const tools: ToolRegistry = {
   async descriptors() { return []; },
@@ -379,20 +403,70 @@ describe("§9.6 — cloud gating", () => {
 });
 
 describe("§9.9 — the onDocumentEdit choke point", () => {
-  it("rings once per landed edit, with previous, next, and the editor", async () => {
-    const seen: Array<{ from: string; to: string; editor: string }> = [];
-    const { runtime, store } = setup({
+  /**
+   * Lane H's OWN rule, so these cases assert the consequence the hook exists for
+   * rather than merely that a function got called: a sponsorship survives its
+   * sponsor's own changes and dies on anybody else's.
+   *
+   * The previous version of the first case asserted `seen.every(...)` over an
+   * array that stayed EMPTY — both writes it drove threw and were swallowed by
+   * `.catch(() => undefined)` — so it could not fail. `toHaveLength` is the
+   * whole difference between a test and a decoration.
+   */
+  const sponsoredBy = (sponsor: string): {
+    state: { active: boolean; edits: Array<{ from: string; to: string; editor: string }> };
+    onDocumentEdit: NonNullable<AppsConfig["onDocumentEdit"]>;
+  } => {
+    const state = { active: true, edits: [] as Array<{ from: string; to: string; editor: string }> };
+    return {
+      state,
       onDocumentEdit: async (previous, next, editor) => {
-        seen.push({ from: previous.name ?? "", to: next.name ?? "", editor });
+        state.edits.push({ from: previous.name ?? "", to: next.name ?? "", editor });
+        if (editor !== sponsor) state.active = false;
       },
-    });
-    await seedAppRow(store, doc("app_hook", "Before"), "dana");
-    await runtime.inClient.approve({ appId: "app_hook", approvedBy: "dana" }, ctx("dana"))
-      .catch(() => undefined);
-    // The rename rides the ordinary persist path (schedule is the smallest
-    // model-free write that reaches it).
-    await runtime.schedule("app_hook", "0 9 * * *", ctx("dana")).catch(() => undefined);
-    expect(seen.every((entry) => entry.editor === "dana")).toBe(true);
+    };
+  };
+
+  it("rings once per landed edit, with previous, next, and the editor", async () => {
+    const { state, onDocumentEdit } = sponsoredBy("dana");
+    const { runtime } = setup({ onDocumentEdit, model: brainModel() });
+    const app = await runtime.create({ prompt: "Before" }, ctx("dana"));
+    await runtime.edit(app.id, "After", ctx("dana"));
+
+    expect(state.edits).toHaveLength(1);
+    expect(state.edits[0]).toMatchObject({ from: "Before", to: "After", editor: "dana" });
+    // The sponsor changing their own app is not a third-party edit.
+    expect(state.active).toBe(true);
+  });
+
+  it("treats an UNDO as an edit: a third party's rollback invalidates the sponsorship", async () => {
+    // §9.9 calls persistEdit "the ONE choke point every document edit passes
+    // through", and undo wrote the app row directly — so rolling the team's app
+    // back was the one way to change what an app IS without the sponsorship
+    // hearing about it. Silently skipping the invalidation lane H exists for.
+    const { state, onDocumentEdit } = sponsoredBy("dana");
+    const { runtime, store } = setup({ onDocumentEdit, model: brainModel() });
+    const app = await runtime.create({ prompt: "Before" }, ctx("dana"));
+    await runtime.edit(app.id, "After", ctx("dana"));
+    expect(state.active).toBe(true);
+
+    await seedGrants(store, app.id, { "user:kim": "editor" });
+    const restored = await runtime.history(app.id, ctx("kim")).undo();
+
+    expect(restored.name).toBe("Before");
+    expect(state.edits.at(-1)).toMatchObject({ from: "After", to: "Before", editor: "kim" });
+    expect(state.active).toBe(false);
+  });
+
+  it("leaves the sponsorship alone when the SPONSOR rolls their own app back", async () => {
+    const { state, onDocumentEdit } = sponsoredBy("dana");
+    const { runtime } = setup({ onDocumentEdit, model: brainModel() });
+    const app = await runtime.create({ prompt: "Before" }, ctx("dana"));
+    await runtime.edit(app.id, "After", ctx("dana"));
+
+    await runtime.history(app.id, ctx("dana")).undo();
+    expect(state.edits.at(-1)).toMatchObject({ editor: "dana" });
+    expect(state.active).toBe(true);
   });
 });
 

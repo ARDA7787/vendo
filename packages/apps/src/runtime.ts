@@ -1485,6 +1485,27 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     },
   });
 
+  /**
+   * Build contract §9.9 — the ONE announcement every change to what an app IS
+   * passes through, so lane H's sponsorship invalidation hears about a
+   * third-party change without a second write path to police. Called by
+   * `persistEdit` and by `undo` (which writes the row itself, in the history
+   * module, and so cannot go through persistEdit). The change has ALREADY
+   * landed: a listener that throws must never unwind it.
+   */
+  const reportDocumentEdit = async (
+    previous: AppDocument,
+    next: AppDocument,
+    subject: string,
+  ): Promise<void> => {
+    if (config.onDocumentEdit === undefined) return;
+    try {
+      await config.onDocumentEdit(previous, next, subject);
+    } catch (error) {
+      console.warn(`[vendo] onDocumentEdit hook failed for ${next.id}: ${safeErrorMessage(error)}`);
+    }
+  };
+
   const persistEdit = async (
     previous: AppDocument,
     app: AppDocument,
@@ -1543,17 +1564,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       : enabledAfterDocumentEdit(previous, app, wasEnabled);
     const appRow = appRecordInput(app, rowSubject, enabled, session ?? sessionOf(previous));
     await apps.put(appRow);
-    // Build contract §9.9 — the ONE choke point every document edit passes
-    // through, so lane H's sponsorship invalidation hears about a third-party
-    // edit without a second write path to police. The edit has already landed;
-    // a listener that throws must never unwind it.
-    if (config.onDocumentEdit !== undefined) {
-      try {
-        await config.onDocumentEdit(previous, appRow.data.doc, subject);
-      } catch (error) {
-        console.warn(`[vendo] onDocumentEdit hook failed for ${app.id}: ${safeErrorMessage(error)}`);
-      }
-    }
+    await reportDocumentEdit(previous, appRow.data.doc, subject);
     // The stored row keeps the conversation; the document handed BACK never
     // carries it. One rule, every path out of the runtime (get/list/fork/undo
     // strip it too), so what an edit returns is exactly what a list returns.
@@ -2697,8 +2708,15 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           return await surface.list();
         },
         undo: async () => {
-          await requireOwned(appId, ctx, "editor");
-          return withoutSession(await surface.undo());
+          const previous = await requireOwned(appId, ctx, "editor");
+          const restored = await surface.undo();
+          // §9.9 — a rollback CHANGES WHAT THE APP IS, so it is an edit for every
+          // purpose the choke point serves: a third party rewinding the team's
+          // app has to invalidate the sponsorship exactly as their edit would.
+          // The history module writes the row itself, so the announcement is made
+          // here, at the one door every undo comes through.
+          await reportDocumentEdit(previous, restored, ctx.principal.subject);
+          return withoutSession(restored);
         },
       });
     },
