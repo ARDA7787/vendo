@@ -251,10 +251,6 @@ export const appRoutes: RouteEntry[] = [
     if (request.method === "POST" && operation === "fork" && segments.length === 3) {
       return json(await deps.apps.fork(appId, ctx));
     }
-    // Build contract §9.2–§9.6 — the Share dialog's door. Reading the grant
-    // list is viewer-gated and OSS; writing one is owner-gated AND
-    // Cloud-gated, and the runtime (not this route) is where both are decided,
-    // so the MCP door inherits the same rules without a second copy.
     // Build contract §9.1 companion — the host names the person. Vendo holds no
     // directory, so the dialog cannot resolve "Mia" and must not pretend to; it
     // asks here, and the grant is written for the SUBJECT that comes back.
@@ -277,6 +273,10 @@ export const appRoutes: RouteEntry[] = [
       const body = await requestJson(request);
       return json({ person: await deps.resolvePerson(string(body["query"], "query")) });
     }
+    // Build contract §9.2–§9.6 — the Share dialog's door. Reading the grant
+    // list is viewer-gated and OSS; writing one is owner-gated AND
+    // Cloud-gated, and the runtime (not this route) is where both are decided,
+    // so the MCP door inherits the same rules without a second copy.
     if (operation === "grants" && segments.length === 3) {
       if (request.method === "GET") {
         return json({

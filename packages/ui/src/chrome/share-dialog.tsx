@@ -127,10 +127,11 @@ export function ShareDialog({
   /** The org this app was just moved into, so the note that follows a move is
       about what happened, not about what might. */
   const [moved, setMoved] = useState<string>();
-  /** Who the last share actually reached, in their own name. For a person that
-      is the only place the host's display name is ever shown — the grant list
-      can only show the subject the row holds — so a WRONG match is visible
-      rather than silent. */
+  /** The NAME the host resolved for a person-share. It is the one thing on this
+      surface the person did not choose themselves — they typed "mia" and the
+      host picked a subject — and the grant list can only show that subject, so
+      without this a wrong match is silent. A team or org share needs no such
+      note: its label is what they picked, still on screen. */
   const [sharedWith, setSharedWith] = useState<string>();
 
   const canShare = level === "owner";
@@ -207,7 +208,7 @@ export function ShareDialog({
     // The dialog used to encode what was typed as the subject, which promoted
     // the app into the team and then wrote a grant that matched nobody.
     let principal = chosen;
-    let reached = option?.label;
+    let matched: string | undefined;
     if (chosen === PERSON) {
       let found: ResolvedPerson | null | undefined;
       await run("name", async () => { found = await resolvePerson(typed); });
@@ -221,7 +222,7 @@ export function ShareDialog({
         return;
       }
       principal = encodeGrantPrincipal({ kind: "user", subject: found.subject });
-      reached = found.display ?? found.subject;
+      matched = found.display ?? found.subject;
     }
     if (personal && into !== undefined && into !== "") {
       let landed = false;
@@ -236,7 +237,7 @@ export function ShareDialog({
     }
     await run("share", async () => {
       await share(principal, nextLevel);
-      setSharedWith(reached);
+      setSharedWith(matched);
       setTarget("");
       setPerson("");
     });
@@ -290,9 +291,8 @@ export function ShareDialog({
           </p>
         )}
 
-        {/* Who it actually reached. For a person the host resolved a name into
-            one of its own subjects, and this is the only place that name is
-            shown — so matching the wrong Mia is visible, not silent. */}
+        {/* Who the host matched, by name — so the wrong Mia is visible rather
+            than silent (the row below can only carry her subject). */}
         {sharedWith === undefined ? null : (
           <p className="fl-share-note" role="status">Shared with <b>{sharedWith}</b>.</p>
         )}
