@@ -28,6 +28,19 @@ export function encodeGrantPrincipal(
   return `team:${target.org}/${target.team}`;
 }
 
+/** Which org a chosen principal names — the org a personal app moves into.
+    `user:` names a person, not a team, so it moves nothing. */
+function orgOf(encoded: string): string | undefined {
+  const [kind, ...rest] = encoded.split(":");
+  const value = rest.join(":");
+  if (kind === "org") return value === "" ? undefined : value;
+  if (kind === "team") {
+    const org = value.split("/")[0];
+    return org === "" ? undefined : org;
+  }
+  return undefined;
+}
+
 /** Consumer voice, not the encoding: "the finance team", not "team:acme/finance". */
 function describePrincipal(encoded: string, memberships: readonly Membership[]): string {
   const [kind, ...rest] = encoded.split(":");
@@ -50,18 +63,24 @@ export interface ShareDialogProps {
   /** The orgs and teams the host asserted for this caller — the only
       principals a share can name (§9.1: Vendo has no org chart of its own). */
   memberships?: readonly Membership[];
-  /** Present when the app is still personal: sharing it into an org promotes
-      it first. Absent ⇒ the app already belongs to an org. */
-  personal?: boolean;
+  /** The app declares an automation. Moving it into a team turns that
+      automation OFF, and the dialog says so before it happens (§9.5). */
+  automation?: boolean;
   onClose?(): void;
 }
 
-export function ShareDialog({ appId, appName, memberships = [], personal = false, onClose }: ShareDialogProps) {
-  const { level, grants, isLoading, share, unshare, promote } = useAppGrants(appId);
+export function ShareDialog({ appId, appName, memberships = [], automation = false, onClose }: ShareDialogProps) {
+  // Whether this is still the caller's own copy comes from the SAME read that
+  // answers their level — no caller can forget to pass it, which is exactly how
+  // "share implies promote" never fired in the shipped surface.
+  const { level, grants, personal, isLoading, share, unshare, promote } = useAppGrants(appId);
   const [target, setTarget] = useState("");
   const [nextLevel, setNextLevel] = useState<AccessLevel>("viewer");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  /** The org this app was just moved into, so the note that follows a move is
+      about what happened, not about what might. */
+  const [moved, setMoved] = useState<string>();
 
   const canShare = level === "owner";
   const orgs = memberships.map((membership) => membership.org);
@@ -92,10 +111,15 @@ export function ShareDialog({ appId, appName, memberships = [], personal = false
   const submit = async (): Promise<void> => {
     const principal = target.trim();
     if (principal === "") return;
+    const named = orgOf(principal);
     await run(async () => {
-      // §9.5 — share implies promote: a personal app moves into the org the
-      // share names before the grant is written, so everyone lands on ONE app.
-      if (personal && orgs[0] !== undefined) await promote(orgs[0]);
+      // §9.5 — share implies promote: a personal app moves into the org THIS
+      // SHARE NAMES (never "the first org you belong to") before the grant is
+      // written, so everyone lands on ONE app, in the right team.
+      if (personal && named !== undefined) {
+        await promote(named);
+        setMoved(named);
+      }
       await share(principal, nextLevel);
       setTarget("");
     });
@@ -118,12 +142,22 @@ export function ShareDialog({ appId, appName, memberships = [], personal = false
         </p>
       )}
 
-      {canShare && personal && orgs[0] !== undefined ? (
+      {canShare && personal && orgs.length > 0 ? (
         <p className="fl-share-note">
-          This is your own copy. Sharing it moves it into{" "}
-          <b>{memberships[0]?.display ?? orgs[0]}</b> so everyone works on the same one.
+          This is your own copy. Sharing it with a team moves it there, so everyone works on
+          the same one.
+          {automation ? " Its automation turns off in the move — automations run with a person’s"
+            + " access, so it stays off until someone turns it back on." : ""}
         </p>
       ) : null}
+
+      {moved === undefined ? null : (
+        <p className="fl-share-note" role="status">
+          Moved into <b>{memberships.find((entry) => entry.org === moved)?.display ?? moved}</b>.
+          {automation ? " Its automation is off until someone turns it back on — automations run"
+            + " with a person’s access." : ""}
+        </p>
+      )}
 
       {canShare ? (
         <div className="fl-share-add">

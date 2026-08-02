@@ -243,6 +243,10 @@ export const appRoutes: RouteEntry[] = [
         return json({
           level: await deps.apps.access.levelFor(appId, ctx),
           grants: await deps.apps.access.list(appId, ctx),
+          // §9.5 — "share implies promote" needs to know whether this is still
+          // the caller's own copy. Derived from who HOLDS the row, so the
+          // dialog never has to guess from an empty grant list.
+          personal: await deps.apps.access.holder(appId, ctx) === ctx.principal.subject,
         });
       }
       if (request.method === "POST") {

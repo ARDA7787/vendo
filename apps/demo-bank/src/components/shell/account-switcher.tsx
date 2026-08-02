@@ -63,11 +63,18 @@ export function AccountSwitcher() {
           Switch account
         </DropdownLabel>
         {staff.length === 0 ? (
+          // Honest about WHY there is nobody to switch to: the roster is empty
+          // exactly when password login is unconfigured (production without
+          // MAPLE_DEMO_PASSWORD), and the fix is one env var. Saying "Personal"
+          // here made a configuration gap look like a feature that does nothing.
           <DropdownItem
-            onSelect={() => toast({ title: "Demo only", description: "Password login is not configured for this demo." })}
+            onSelect={() => toast({
+              title: "Account switching is off",
+              description: "Set MAPLE_DEMO_PASSWORD on this deployment to sign in as the other seeded user.",
+            })}
           >
             <UserRound className="h-4 w-4 text-muted" />
-            Personal
+            Switching unavailable
           </DropdownItem>
         ) : (
           staff.map((member) => (

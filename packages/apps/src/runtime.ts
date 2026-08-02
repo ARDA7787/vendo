@@ -622,6 +622,11 @@ export interface AppsRuntime {
     /** The caller's own level, or null when they cannot see the app at all —
      *  what the surface reads to decide between "Edit" and the fork offer. */
     levelFor(appId: AppId, ctx: RunContext): Promise<AccessLevel | null>;
+    /** Who HOLDS the app: a person's subject, or an org id for a promoted one
+     *  (§9.5 — the row subject is the org verbatim). Null when the caller
+     *  cannot see the app. The Share dialog reads it to know whether sharing
+     *  has to promote first, and into which org. */
+    holder(appId: AppId, ctx: RunContext): Promise<string | null>;
   };
   edit(appId: AppId, instruction: string, ctx: RunContext): Promise<EditResult>;
   /**
@@ -2414,6 +2419,13 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           return (await apps.get(appId))?.refs?.subject === ctx.principal.subject ? "owner" : null;
         }
         return await config.appAccess.levelFor(ctx, appId);
+      },
+      async holder(appId, ctx) {
+        // Viewer-gated like the grant list: a caller who cannot see the app is
+        // told nothing about who holds it.
+        const record = await apps.get(appId);
+        if (record === null || !(await holds(appId, ctx, "viewer", record))) return null;
+        return record.refs?.subject ?? null;
       },
     },
 

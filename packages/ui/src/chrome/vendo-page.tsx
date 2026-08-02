@@ -238,6 +238,9 @@ function AppsWorkspace() {
                   appId={app.id}
                   appName={app.name}
                   memberships={memberships}
+                  // §9.5 — an app that declares a trigger loses it in the move;
+                  // the dialog says so before and after.
+                  automation={app.trigger !== undefined}
                   onClose={() => setSharing(undefined)}
                 />
               </div>

@@ -391,15 +391,20 @@ describe("Maple away drill (ENG-260)", () => {
       // valid session" and "no session at all".
       expect(stack.hostAnswers).toHaveLength(1);
       const answer = stack.hostAnswers[0]!;
-      expect(answer).toContain(GRANTING_USER.email);
-      expect(answer).toContain(GRANTING_USER.display);
+      const identity = (JSON.parse(answer) as { data?: { name?: string; email?: string } }).data ?? {};
+      expect(identity.email).toBe(GRANTING_USER.email);
+      expect(identity.name).toBe(GRANTING_USER.display);
 
       // §12, "reads are silent, always": the away run really executed, and it
       // left the effect ledger empty. This is the assertion the drill could not
       // make while `host_getProfile` voted `write` — back then the row below was
       // the drill's evidence channel.
       expect(await effectRows(stack, subject)).toEqual([]);
-      expect(answer).not.toContain(SEED_IDENTITY_USER.email);
+      // Asserted on the IDENTITY fields, not the whole body: since E8 the same
+      // payload also carries the seeded roster (the account switcher offers the
+      // other staff member by email), and whose ROSTER came back says nothing
+      // about whose SESSION ran the call — whose identity came back does.
+      expect(identity.email).not.toBe(SEED_IDENTITY_USER.email);
     } finally {
       await stack.close();
     }

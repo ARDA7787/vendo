@@ -11,13 +11,17 @@ interface AppGrantsState {
       consumer-voice fork offer, so it never has to guess from an error. */
   level: AccessLevel | null;
   grants: AppGrantRecord[];
+  /** Still the caller's own copy? "Share implies promote" (§9.5) reads this,
+      so no surface has to be told — and none can forget to pass it. */
+  personal: boolean;
 }
 
-const EMPTY: AppGrantsState = { level: null, grants: [] };
+const EMPTY: AppGrantsState = { level: null, grants: [], personal: false };
 
 export function useAppGrants(appId: AppId | undefined, options?: PollOptions): {
   level: AccessLevel | null;
   grants: AppGrantRecord[];
+  personal: boolean;
   error: Error | undefined;
   isLoading: boolean;
   refresh(): Promise<void>;
@@ -55,5 +59,15 @@ export function useAppGrants(appId: AppId | undefined, options?: PollOptions): {
     await refresh();
   }, [client, appId, refresh]);
 
-  return { level: data.level, grants: data.grants, error, isLoading, refresh, share, unshare, promote };
+  return {
+    level: data.level,
+    grants: data.grants,
+    personal: data.personal,
+    error,
+    isLoading,
+    refresh,
+    share,
+    unshare,
+    promote,
+  };
 }
