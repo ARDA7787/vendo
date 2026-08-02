@@ -172,27 +172,40 @@ const runRowDataSchema = z.object({
 });
 
 /** §9.9 — what a stopped automation says, in the consumer's voice. It names the
- *  person it used to run as and what anyone who can edit the app may do about
- *  it; the machinery (hashes, grants, principals) stays out of the sentence.
+ *  automation and what anyone who can edit the app may do about it; the
+ *  machinery (hashes, grants, principals) stays out of the sentence.
  *
- *  `who` is absent exactly when the sponsor's row is gone (their data was
- *  erased), and then the sentence stays anonymous rather than inventing a name
- *  or resurrecting an identifier the erase removed. */
-const SPONSORSHIP_STOP: Record<
-  NonNullable<Sponsorship["reason"]>,
-  (name: string, who: string | undefined) => string
-> = {
-  edit: (name, who) =>
-    `stopped: ${name} changed after ${who ?? "the person who set it up"} allowed it`
+ *  It never names the SPONSOR, and that is a durability rule rather than a
+ *  style one: this sentence is PERSISTED on the run row, `vendo_runs` has no
+ *  subject column (02-store §2), and the erase cascade reaches run rows only
+ *  through the apps the subject OWNS — which for an org-owned automation is the
+ *  org, and the org outlives the person (§9.7). A name written here would
+ *  therefore survive its owner's own erasure. The name belongs on the adoption
+ *  card and the audit row instead: both are derived from rows the cascade does
+ *  reach. */
+const SPONSORSHIP_STOP: Record<NonNullable<Sponsorship["reason"]>, (name: string) => string> = {
+  edit: (name) =>
+    `stopped: ${name} changed after the person who set it up allowed it`
     + " — anyone who can edit this app can take it on",
-  departure: (name, who) => (who === undefined
-    ? `stopped: the person ${name} ran as no longer has access to it`
-    : `stopped: ${who} no longer has access to ${name}`)
+  departure: (name) =>
+    `stopped: the person ${name} ran as no longer has access to it`
     + " — anyone who can edit this app can take it on",
-  grants: (name, who) =>
-    `stopped: ${who ?? "the person who set it up"}'s permissions for ${name} were removed`
+  grants: (name) =>
+    `stopped: the permissions ${name} ran with were removed`
     + " — anyone who can edit this app can take it on",
 };
+
+/** §9.9 + F10 — what a run says when the identity checks could not ANSWER (the
+ *  host's memberships callback or access seam threw). The raw failure is a host
+ *  system's error text — a DSN, a stack, a driver message — and the run row is
+ *  rendered verbatim to consumers (`automations-panel.tsx` prints `summary` and
+ *  `error.message`), so it says what happened and nothing about how. The raw
+ *  detail goes to the audit row, which is where an operator looks. */
+const IDENTITY_UNAVAILABLE = (name: string): string =>
+  `stopped: ${name} could not check who it runs as — nothing ran, and it will try again on its next trigger`;
+
+const IDENTITY_UNAVAILABLE_RESUME =
+  "stopped: this run could not check who it runs as — nothing further ran; run it again to continue";
 
 /** Captures are a GENERIC collection, and the 02-store §5 erase cascade finds
  *  generic rows by their refs — so an unref'd capture outlives both the person
@@ -203,9 +216,12 @@ const captureRefs = (subject: string, appId: string): Record<string, string> =>
 
 /** §9.9 — what a run says when the automation changed hands while it waited. The
  *  automation itself is fine; it is this RUN that belongs to a sponsor who no
- *  longer holds it, and re-running is the whole remedy. */
-const SPONSOR_CHANGED = (who: string): string =>
-  `stopped: this run was waiting with ${who}'s access, which has changed — run it again to continue`;
+ *  longer holds it, and re-running is the whole remedy. Anonymous for the same
+ *  durability reason as {@link SPONSORSHIP_STOP}: it is persisted on a run row
+ *  no subject erase can reach. */
+const SPONSOR_CHANGED =
+  "stopped: this run was waiting with the access of the person who used to run it,"
+  + " which has changed — run it again to continue";
 
 const clone = <T>(value: T): T => globalThis.structuredClone(value);
 const id = (prefix: string): string => `${prefix}${globalThis.crypto.randomUUID()}`;
@@ -610,12 +626,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     // write would re-create the row an erase just removed), and the card is
     // derived from this same state below.
     if (state.kind === "erased") {
-      return { reason: "departure", summary: SPONSORSHIP_STOP.departure(app.doc.name, undefined) };
+      return { reason: "departure", summary: SPONSORSHIP_STOP.departure(app.doc.name) };
     }
     const { row } = state;
     const refusal = (reason: NonNullable<Sponsorship["reason"]>) => ({
       reason,
-      summary: SPONSORSHIP_STOP[reason](app.doc.name, sponsorName(row)),
+      summary: SPONSORSHIP_STOP[reason](app.doc.name),
     });
     if (row.status !== "active") return refusal(row.reason ?? "edit");
     const invalidate = async (reason: NonNullable<Sponsorship["reason"]>) => {
@@ -628,7 +644,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       return refusal(reason);
     };
     if (row.intentHash !== currentIntentHash(app.doc)) return await invalidate("edit");
-    if (!await canEdit(ctx, app, app.doc.id)) return await invalidate("departure");
+    // §9.9's vocabulary distinguishes the two ways a sponsor stops being able to
+    // run it: "departure" is the person being GONE (the erased-sponsor branch
+    // above), "grants" is the person still being there and having lost access —
+    // which is exactly what a failed `can(editor)` means. They produce different
+    // consumer sentences, so the label is not cosmetic.
+    if (!await canEdit(ctx, app, app.doc.id)) return await invalidate("grants");
     return undefined;
   };
 
@@ -880,21 +901,28 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         //    the schedule path swallows a rejected run, so the whole firing
         //    vanished: no row, no audit, nothing to look at.
         let ctx = baseRunContext(record, app.subject);
-        let stop: { reason?: NonNullable<Sponsorship["reason"]>; summary: string } | undefined;
+        let stop:
+          | { reason?: NonNullable<Sponsorship["reason"]>; summary: string; detail?: string }
+          | undefined;
         try {
           ctx = await runContext(record, app.subject);
           stop = await sponsorshipRefusal(app, ctx);
         } catch (error) {
-          stop = {
-            summary: `stopped: ${app.doc.name} could not check who it runs as (${message(error)})`,
-          };
+          // F10 — the consumer sentence and the operator's detail part ways
+          // here: `summary` is rendered verbatim in the automations panel, so
+          // the host's raw throw rides the audit row below instead.
+          stop = { summary: IDENTITY_UNAVAILABLE(app.doc.name), detail: message(error) };
         }
         if (stop !== undefined) {
           await writeRun(record);
           await audit(
             ctx,
             stop.reason === undefined ? "sponsorship-check-failed" : "sponsorship-invalidated",
-            { ...(stop.reason === undefined ? {} : { reason: stop.reason }), summary: stop.summary },
+            {
+              ...(stop.reason === undefined ? {} : { reason: stop.reason }),
+              summary: stop.summary,
+              ...(stop.detail === undefined ? {} : { detail: stop.detail }),
+            },
           );
           await terminal(record, ctx, "error", stop.summary, {
             code: stop.reason === undefined ? "error" : "blocked",
@@ -1070,10 +1098,15 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         ctx = await runContext(run, appFound.row.subject);
       } catch (error) {
         const fallback = baseRunContext(run, appFound.row.subject);
-        await audit(fallback, "sponsorship-check-failed", { summary: message(error) });
-        await terminal(run, fallback, "error", `stopped at resume: ${message(error)}`, {
+        // F10 again, the resume half: the raw throw is the audit row's, and the
+        // consumer reads a sentence about their automation.
+        await audit(fallback, "sponsorship-check-failed", {
+          summary: IDENTITY_UNAVAILABLE_RESUME,
+          detail: message(error),
+        });
+        await terminal(run, fallback, "error", IDENTITY_UNAVAILABLE_RESUME, {
           code: "error",
-          message: message(error),
+          message: IDENTITY_UNAVAILABLE_RESUME,
         });
         await dropPark();
         return;
@@ -1143,9 +1176,8 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         // is granted, and the automation simply runs again from the top.
         const parked = approvalData.request.ctx.principal;
         if (parked.subject !== ctx.principal.subject) {
-          const summary = SPONSOR_CHANGED(parked.display ?? parked.subject);
-          await audit(ctx, "sponsorship-changed", { parked: parked.subject, summary });
-          await terminal(run, ctx, "error", summary, { code: "blocked", message: summary });
+          await audit(ctx, "sponsorship-changed", { parked: parked.subject, summary: SPONSOR_CHANGED });
+          await terminal(run, ctx, "error", SPONSOR_CHANGED, { code: "blocked", message: SPONSOR_CHANGED });
           await dropPark();
           return;
         }

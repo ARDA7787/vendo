@@ -229,7 +229,7 @@ describe("sponsorship — the fire-time gate", () => {
       (event.detail as { status?: string }).status === "sponsorship-invalidated")).toBe(true);
   });
 
-  it("stops when the sponsor can no longer edit the app (departure), and runs when they can", async () => {
+  it("stops when the sponsor can no longer edit the app (grants), and runs when they can", async () => {
     // The real departure shape: an ORG-owned app (its row subject is the org, so
     // the sponsor is never its owner) that Dana could edit through a grant —
     // until the grant went away.
@@ -248,8 +248,10 @@ describe("sponsorship — the fire-time gate", () => {
     await engine.emit("go", {}, { kind: "user", subject: "maple" });
 
     expect(calls).toHaveLength(2);
+    // §9.9's word for "the person is still here and lost access" is `grants`;
+    // `departure` is reserved for a sponsor who is GONE (row erased).
     expect(await sponsorshipRow(store, app.id)).toMatchObject({
-      status: "invalidated", reason: "departure",
+      status: "invalidated", reason: "grants",
     });
   });
 
@@ -511,7 +513,11 @@ describe("sponsorship — an erased sponsor", () => {
  *  display name is captured at enable and at adoption (their Principal carries
  *  it) and used everywhere the automation talks about them. */
 describe("sponsorship — consumer-voice names", () => {
-  it("captures the sponsor's display name and uses it in the stop summary", async () => {
+  it("captures the sponsor's display name and uses it on the adoption card", async () => {
+    // F8 (wave-3 check) moved the NAME off the persisted run summary and onto
+    // the card: the run row outlives a subject erase, the sponsorship row the
+    // card is derived from does not. The consumer-voice law is unchanged —
+    // nothing a person reads says `user_dana`.
     const app = doc("app_named");
     const { store, engine } = harness();
     await seedApp(store, app);
@@ -521,8 +527,10 @@ describe("sponsorship — consumer-voice names", () => {
     await engine.onDocumentEdit(app, app, "user_omar");
     const runIds = await engine.emit("go", {}, ctx().principal);
     const run = await engine.runs.get(runIds[0]!, ctx());
+    const card = await engine.adoption(app.id, ctx("user_dana", "Dana"));
 
-    expect(run?.summary).toContain("Dana");
+    expect(card?.sponsor).toBe("Dana");
+    expect(run?.summary).not.toContain("Dana");
     expect(run?.summary).not.toContain("user_dana");
   });
 
@@ -569,9 +577,12 @@ describe("sponsorship — a broken identity seam", () => {
     expect(runId).toBeDefined();
     const run = await engine.runs.get(runId!, ctx());
     expect(run).toMatchObject({ status: "error" });
-    expect(run?.error?.message).toContain("host directory is down");
+    // F10 (wave-3 check): the host's raw throw is the AUDIT row's, never the
+    // consumer's — the panel renders `summary` and `error.message` verbatim.
+    expect(run?.error?.message).not.toContain("host directory is down");
     expect(guard.audit.some((event) =>
-      (event.detail as { status?: string }).status === "sponsorship-check-failed")).toBe(true);
+      (event.detail as { status?: string; detail?: string }).status === "sponsorship-check-failed"
+      && (event.detail as { detail?: string }).detail === "host directory is down")).toBe(true);
   });
 
   it("terminates a claimed RESUME loudly rather than stranding it in \"running\"", async () => {
@@ -850,5 +861,91 @@ describe("sponsorship — the window label", () => {
 
     expect(entry?.sponsor).toEqual({ subject: "user_dana" });
     expect(entry).not.toHaveProperty("editors");
+  });
+});
+
+/** F8/F10/F18 (wave-3 independent check) — what a STOPPED run is allowed to
+ *  leave behind. Two constraints meet on the same row:
+ *
+ *  1. It is read by people: `automations-panel.tsx` renders `summary` and
+ *     `error.message` verbatim.
+ *  2. It is not reachable by a subject erase. `vendo_runs` has no subject column
+ *     (02-store §2), so the cascade reaches run rows only through the apps the
+ *     subject OWNS — and for an ORG-owned automation the owner is the org, which
+ *     outlives the person (§9.7). Adoption is exactly what makes sponsor ≠
+ *     row-owner possible, so this wave created the case.
+ *
+ *  So the persisted row may carry neither a person's NAME nor a host system's
+ *  raw error text. The live, derived surfaces (the adoption card, the audit
+ *  trail) carry both — and both ARE erasable. */
+describe("sponsorship — what the stopped run row is allowed to say", () => {
+  /** The raw persisted row, not the gated `runs.get` projection: what survives
+   *  an erase is what is ON DISK, whoever can or cannot read it back. */
+  const runRow = async (store: StoreAdapter, runId: string): Promise<{ summary?: string; error?: { message: string } }> =>
+    ((await store.records("vendo_runs").get(runId))?.data as { record: { summary?: string; error?: { message: string } } })
+      .record;
+
+  /** An ORG-owned automation Dana sponsors through a grant — the only shape in
+   *  which the sponsor is not the row owner. */
+  const orgHarness = async (id: string, editors: Set<string>) => {
+    const app = doc(id);
+    const h = harness({ appAccess: appAccessStub(editors) });
+    await seedApp(h.store, app, "maple");
+    await h.engine.enable(app.id, ctx("user_dana", "Dana"));
+    return { ...h, app };
+  };
+
+  it("calls a lost permission 'grants' — the frozen §9.9 word for it", async () => {
+    const editors = new Set(["user_dana"]);
+    const { store, engine, app } = await orgHarness("app_grants_label", editors);
+
+    editors.delete("user_dana");
+    const [runId] = await engine.emit("go", {}, { kind: "user", subject: "maple" });
+
+    // "departure" is the word for a sponsor who is GONE (their row erased);
+    // this sponsor still exists and simply lost access, which is "grants" —
+    // and the two produce different consumer sentences.
+    expect(await sponsorshipRow(store, app.id)).toMatchObject({
+      status: "invalidated", reason: "grants",
+    });
+    expect((await runRow(store, runId!)).summary).toMatch(/permissions/i);
+  });
+
+  it("keeps the sponsor's NAME off the run row, while the adoption card still says it", async () => {
+    const editors = new Set(["user_dana", "user_omar"]);
+    const { store, engine, app } = await orgHarness("app_name_survives", editors);
+
+    editors.delete("user_dana");
+    const [runId] = await engine.emit("go", {}, { kind: "user", subject: "maple" });
+
+    // The row is written BEFORE any erase — that is the whole problem: nothing
+    // rewrites it later, so the name must never go in.
+    const persisted = JSON.stringify(await store.records("vendo_runs").get(runId!));
+    expect(persisted).not.toContain("Dana");
+    expect(persisted).not.toContain("user_dana");
+
+    // The name is not lost to the product: the card is derived from the
+    // sponsorship row, which an erase DOES collect.
+    expect(await engine.adoption(app.id, ctx("user_omar"))).toMatchObject({ sponsor: "Dana" });
+  });
+
+  it("says a broken identity seam in the consumer's voice, and audits the raw failure", async () => {
+    const app = doc("app_seam_voice");
+    const raw = "connect ECONNREFUSED postgres://svc:hunter2@10.0.0.7:5432/directory";
+    const { store, engine, guard } = harness({
+      memberships: async () => { throw new Error(raw); },
+    });
+    await seedApp(store, app);
+    await engine.enable(app.id, ctx("user_dana", "Dana"));
+
+    const [runId] = await engine.emit("go", {}, ctx().principal);
+
+    const row = await runRow(store, runId!);
+    expect(row.summary).not.toContain("ECONNREFUSED");
+    expect(row.error?.message).not.toContain("ECONNREFUSED");
+    expect(row.summary).toMatch(/could not check who it runs as/);
+    // The operator still gets the whole truth — on the audit row, which is
+    // subject-keyed and erasable, and which no consumer surface renders.
+    expect(guard.audit.some((event) => JSON.stringify(event.detail).includes(raw))).toBe(true);
   });
 });
