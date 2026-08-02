@@ -37,6 +37,20 @@ export interface ClaudeCodeOptions {
   maxTurns?: number;
   /** Run the SDK on the host's own server instead of a sandbox. Never default. */
   machine?: "local";
+  /**
+   * Extra outbound domains the box may reach, ADDED to the minimum set
+   * ({@link boxEgress}). Bare hostnames, as `vendo.json`'s `egress` writes them.
+   *
+   * The box's network policy is deny-by-default, so a host whose agent legitimately
+   * needs a third party — their own API on another origin, an allowed vendor —
+   * names it here. There is no approval flow on this list, unlike an app
+   * document's `egress` (`egress-approval.ts`): that one is an ASK from generated
+   * code, this one is the host developer's own source at boot, the same authority
+   * that sets `implicitDomains`.
+   *
+   * Sandbox path only: `machine: "local"` has no network boundary to widen.
+   */
+  egress?: string[];
 }
 
 /**
@@ -47,6 +61,10 @@ export interface ClaudeCodeOptions {
  * caller pull the ~250MB SDK onto the host's own server and run it there, which
  * is a deployment decision, never a request's. The compose gate reads the
  * constructor arg for the same reason.
+ *
+ * `egress` is absent for a harder version of the same reason: it IS the box's
+ * network boundary, so a per-turn override would let request text — which is
+ * where prompt injection lives — name the host it wants to be reachable.
  */
 const optionsSchema = z.object({
   model: z.string().optional(),
@@ -83,7 +101,8 @@ export function inferenceEnv(): Record<string, string> {
   const url = source["ANTHROPIC_BASE_URL"] ?? source["VENDO_INFERENCE_URL"];
   const env: Record<string, string> = {
     // Nothing the CLI reaches for on the side: the box's egress is deny-by-default
-    // and a stalled telemetry call is a hung turn.
+    // (`boxEgress` below is the list), so a telemetry or update call would not
+    // resolve anyway, and a stalled one is a hung turn.
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     DISABLE_AUTOUPDATER: "1",
   };
@@ -92,6 +111,58 @@ export function inferenceEnv(): Record<string, string> {
     env["ANTHROPIC_BASE_URL"] = url.replace(/\/+$/, "").replace(/\/v1$/, "");
   }
   return env;
+}
+
+/** The host the Agent SDK talks to when nothing overrides `ANTHROPIC_BASE_URL`. */
+const DEFAULT_INFERENCE_HOST = "api.anthropic.com";
+
+/** Domains compare case-insensitively and may carry stray spacing — the same
+ *  normalization `normalizeEgressDomain` applies to a declaration. */
+const normalizeDomain = (domain: string): string => domain.trim().toLowerCase();
+
+const hostOf = (url: string | undefined): string | undefined => {
+  if (url === undefined || url === "") return undefined;
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * The conversational box's outbound allowlist — the ONE place its network
+ * boundary is assembled, and the reason the deny-by-default claim above is true.
+ *
+ * Same shape as the served-app machine's (`boxAllowlist` in `@vendoai/apps`
+ * `egress-approval.ts`): the box's OWN skin rides unconditionally, and
+ * everything else is denied at the provider's network layer. Two skin entries,
+ * because a session box needs exactly two things to function:
+ *
+ *   1. the INFERENCE host — the SDK runs the model from inside the box, so a box
+ *      that cannot reach it cannot think. Read off the env the box is actually
+ *      handed, never guessed, so a managed-inference gateway
+ *      (`VENDO_INFERENCE_URL` → `ANTHROPIC_BASE_URL`) is allowed and
+ *      `api.anthropic.com` is not.
+ *   2. the DOOR origin — every host tool travels the host's MCP door now
+ *      (10-mcp §3b), so this is what replaced "the box holds nothing and reaches
+ *      nothing". Per DEPLOYMENT, so it arrives from composition's `toolDoor`
+ *      rather than being written down here.
+ *
+ * Nothing else: no npm registry, no telemetry, no update endpoint. The SDK is
+ * baked into the machine image, and the CLI's side traffic is switched off in
+ * `inferenceEnv()`.
+ */
+export function boxEgress(
+  inference: Record<string, string>,
+  doorUrl: string | undefined,
+  extra: readonly string[] = [],
+): string[] {
+  const domains = [
+    hostOf(inference["ANTHROPIC_BASE_URL"]) ?? DEFAULT_INFERENCE_HOST,
+    hostOf(doorUrl),
+    ...extra.map(normalizeDomain),
+  ].filter((domain): domain is string => domain !== undefined && domain !== "");
+  return [...new Set(domains)];
 }
 
 /** The plain text of one message, for the re-seed. Parts we cannot render as
@@ -256,15 +327,51 @@ export function claudeCode(
       // Per-turn options may override the model knobs and NOTHING else: `machine`
       // is read off the constructor, so a request can never move the SDK onto the
       // host's server.
-      const resolved = { ...options, ...(turn.options ?? {}), machine: options.machine };
+      const resolved = {
+        ...options,
+        ...(turn.options ?? {}),
+        machine: options.machine,
+        egress: options.egress,
+      };
       const state = readState(turn.state.get());
 
-      // The MACHINE comes first, because whether it is warm decides what the
+      // The DOOR is resolved before the machine, because its origin is part of
+      // the box's network boundary and that is fixed at create. Only its
+      // deployment half is read here; the per-conversation credential is minted
+      // below, once there is a machine to say whether it is carrying a session.
+      const doorPort = harnessAdapters(harness).toolDoor as ToolDoorPort | undefined;
+      if (doorPort === undefined) {
+        // No door was composed at all, so this turn has the box's own hands and
+        // NONE of the product's actions. That is a legitimate deployment (a host
+        // using the harness purely for workspace work) and it is also, far more
+        // often, someone who has not noticed that `claudeCode()` reaches its
+        // tools through the door now. Loud once per process for the operator;
+        // the user is never lied to, because a model with no tool refuses
+        // honestly rather than inventing one.
+        warnNoDoorOnce();
+      } else if (doorPort.url === undefined) {
+        // A door exists but nothing can reach it. Loud for the operator,
+        // because only they can fix it, and one plain sentence for the user —
+        // the same shape as the missing-sandbox branch below. Running on
+        // anyway would hand the model a workspace and no hands, which is the
+        // polite-refusal-at-HTTP-200 failure this codebase refuses to ship.
+        console.error(
+          "[vendo] claudeCode() cannot reach the MCP door: set VENDO_BASE_URL (or "
+          + "`mcp: { baseUrl }`) to the deployment's public origin. The agent's tools "
+          + "travel over that door, so without it the model has no way to act.",
+        );
+        yield { type: "error", message: "I can't use this product's actions right now." };
+        return;
+      }
+
+      const boxEnv = inferenceEnv();
+
+      // The MACHINE comes next, because whether it is warm decides what the
       // checkout may assume: a warm machine's disk is the baseline, a fresh one
       // is about to be handed the store's own copy.
       let machine: SessionMachine;
       if (resolved.machine === "local") {
-        machine = await localMachine({ threadId: threadOf(turn), env: inferenceEnv() });
+        machine = await localMachine({ threadId: threadOf(turn), env: boxEnv });
       } else {
         const sandbox = (options.sandbox ?? harnessAdapters(harness).sandbox) as
           | SandboxAdapterLike
@@ -286,7 +393,8 @@ export function claudeCode(
         machine = await boxMachine({
           sandbox,
           threadId: threadOf(turn),
-          env: inferenceEnv(),
+          env: boxEnv,
+          allowedDomains: boxEgress(boxEnv, doorPort?.url, resolved.egress),
         });
       }
 
@@ -303,33 +411,11 @@ export function claudeCode(
       );
 
       // The host's MCP door — the ONLY way this harness reaches the world now
-      // that the in-process projection is gone (10-mcp §3b).
-      const doorPort = harnessAdapters(harness).toolDoor as ToolDoorPort | undefined;
+      // that the in-process projection is gone (10-mcp §3b). Its ORIGIN was
+      // needed above, to bound the box's egress; its credential is minted here,
+      // because only a machine can say whether it already carries a session.
       let door: { url: string; token: string } | undefined;
-      if (doorPort === undefined) {
-        // No door was composed at all, so this turn has the box's own hands and
-        // NONE of the product's actions. That is a legitimate deployment (a host
-        // using the harness purely for workspace work) and it is also, far more
-        // often, someone who has not noticed that `claudeCode()` reaches its
-        // tools through the door now. Loud once per process for the operator;
-        // the user is never lied to, because a model with no tool refuses
-        // honestly rather than inventing one.
-        warnNoDoorOnce();
-      } else {
-        if (doorPort.url === undefined) {
-          // A door exists but nothing can reach it. Loud for the operator,
-          // because only they can fix it, and one plain sentence for the user —
-          // the same shape as the missing-sandbox branch above. Running on
-          // anyway would hand the model a workspace and no hands, which is the
-          // polite-refusal-at-HTTP-200 failure this codebase refuses to ship.
-          console.error(
-            "[vendo] claudeCode() cannot reach the MCP door: set VENDO_BASE_URL (or "
-            + "`mcp: { baseUrl }`) to the deployment's public origin. The agent's tools "
-            + "travel over that door, so without it the model has no way to act.",
-          );
-          yield { type: "error", message: "I can't use this product's actions right now." };
-          return;
-        }
+      if (doorPort?.url !== undefined) {
         const conversation = threadOf(turn);
         if (!machine.carriesSession) {
           const previous = doorTokens.get(conversation);

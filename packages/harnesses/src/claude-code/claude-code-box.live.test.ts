@@ -11,7 +11,7 @@ import type { Json, ToolResult, Turn } from "@vendoai/core";
 import { afterAll, describe, expect, test } from "vitest";
 import { createTurnState } from "../harness-state.js";
 import { testWorkspace, unusedModels, userMessage } from "../test-doubles.test-util.js";
-import { claudeCode } from "./index.js";
+import { boxEgress, claudeCode } from "./index.js";
 import { boxMachine, disposeSessionMachines, type SandboxAdapterLike } from "./box.js";
 
 const ready = process.env["E2B_API_KEY"] !== undefined
@@ -79,6 +79,10 @@ const liveEnv = (): Record<string, string> => ({
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   DISABLE_AUTOUPDATER: "1",
 });
+
+/** These tests drive `boxMachine` directly, so they own the network policy the
+ *  harness would otherwise assemble. No door here — inference only. */
+const liveEgress = (): string[] => boxEgress(liveEnv(), undefined);
 
 live("claudeCode() — live, in a real e2b box", () => {
   afterAll(async () => { await disposeSessionMachines(); });
@@ -164,7 +168,7 @@ live("claudeCode() — live, in a real e2b box", () => {
     };
 
     // Message 1 on a FRESH box: materialize once, open the session.
-    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv(), allowedDomains: liveEgress() });
     expect(first.carriesSession).toBe(false);
     await first.materialize([]);
     const opened = await drive(first, "Remember the number 7311. Just say ok.");
@@ -173,7 +177,7 @@ live("claudeCode() — live, in a real e2b box", () => {
 
     // Message 2 on the SAME conversation. The box is warm, so nothing is
     // materialized and nothing is resumed — the session never stopped.
-    const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv(), allowedDomains: liveEgress() });
     expect(second.carriesSession).toBe(true);
     const recalled = await drive(second, "What number did I ask you to remember? Digits only.");
     console.log("[live chat]", JSON.stringify({ session: opened.sessionId, recalled: recalled.text }));
@@ -186,7 +190,7 @@ live("claudeCode() — live, in a real e2b box", () => {
     const adapter = sandbox();
     const thread = `thr_live_recover_${Date.now()}`;
 
-    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    const first = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv(), allowedDomains: liveEgress() });
     await first.materialize([
       { path: "/user/memory/note.md", bytes: new TextEncoder().encode("the code is 4417\n"), readOnly: false },
     ]);
@@ -199,7 +203,7 @@ live("claudeCode() — live, in a real e2b box", () => {
     // The next message gets a BRAND-NEW box. `carriesSession: false` is what
     // tells the harness to re-materialize and re-seed rather than resume a
     // session no disk holds.
-    const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv() });
+    const second = await boxMachine({ sandbox: adapter, threadId: thread, env: liveEnv(), allowedDomains: liveEgress() });
     expect(second.carriesSession).toBe(false);
     await second.materialize([
       { path: "/user/memory/note.md", bytes: new TextEncoder().encode("the code is 4417\n"), readOnly: false },

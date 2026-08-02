@@ -16,6 +16,17 @@
  * neither `tsc`, nor a host's BUILD, nor a host who never opts in ever needs the
  * ~250MB platform binary on disk. This file is the only place on any host path
  * that names it.
+ *
+ * **What this mode does NOT have: a box.** The session's tools are auto-allowed
+ * by `boxPermission` on the stated grounds that "the box IS the permission —
+ * copies only, no credentials, reality happens at commit". Two thirds of that
+ * are false here. `cwd` is a directory the shell is POINTED at, not a boundary
+ * it is held inside — `Bash` runs as the host's own server process, over the
+ * host's own filesystem and the host's own network, with no egress allowlist
+ * because there is no provider network layer to hang one on. Everything driving
+ * that shell is end-user chat. So this mode grants what a shell account on the
+ * deployment grants, and the operator is told so, once, on the first turn
+ * ({@link warnLocalRiskOnce}). The sandbox path is the safe one, and the default.
  */
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { chmodSync } from "node:fs";
@@ -58,6 +69,29 @@ async function loadAgentSdk(): Promise<unknown> {
       { cause },
     );
   }
+}
+
+/**
+ * The one thing an operator who opted into `machine: "local"` has to be told,
+ * said once per process — it is a deployment fact, not a per-turn event (the
+ * same shape as the missing-door warning).
+ *
+ * Not a refusal: the mode is a documented, explicit opt-in and removing it is a
+ * product decision, not this file's. But the code's own permission rationale
+ * reads "the box IS the permission", and on this path there is no box, so
+ * choosing it silently would let a host believe they had a boundary they do not.
+ */
+let localRiskWarned = false;
+function warnLocalRiskOnce(): void {
+  if (localRiskWarned) return;
+  localRiskWarned = true;
+  console.error(
+    "[vendo] claudeCode({ machine: \"local\" }) runs the agent's shell on THIS server, not in a box. "
+    + "Bash, Write and Edit are auto-allowed and are not confined to the workspace copy, so a user's "
+    + "message — or text an app, document or tool result put in front of the model — can read and write "
+    + "this server's files and reach anything this server can reach on the network. There is no egress "
+    + "allowlist on this path. Use the sandbox path (`claudeCode({ sandbox })`) for anything a customer talks to.",
+  );
 }
 
 /** A stable home per thread, so the SDK's own session file survives between
@@ -131,6 +165,7 @@ export interface LocalMachineOptions {
 }
 
 export async function localMachine(options: LocalMachineOptions): Promise<SessionMachine> {
+  warnLocalRiskOnce();
   const home = homeFor(options.threadId);
   // STABLE per thread, not a fresh mkdtemp per turn. The SDK files its session
   // under `CLAUDE_CONFIG_DIR/projects/<slug of cwd>`, so a moving working
