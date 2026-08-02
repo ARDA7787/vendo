@@ -48,6 +48,7 @@ import {
   type AutomationsEngine,
 } from "@vendoai/automations";
 import {
+  ADOPTION_VENUE_KEY,
   RESERVED_SUBJECT_PREFIX,
   VendoError,
   descriptorHash,
@@ -2078,6 +2079,23 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // failure interleavings are testable; the getters keep `dbFor` lazy.
     ...(promoteRows === undefined ? {} : { promoteApp: createPromoteApp(promoteRows) }),
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
+    // Build contract §9.9 — sponsorship's two halves, composed HERE because
+    // they cross the apps↔automations line and neither block may reach into
+    // the other. Both ride the same late binding as `armAutomation` above
+    // (automations is constructed after apps; every call happens later).
+    //
+    // The edit hook is what makes "anyone else editing invalidates the
+    // sponsorship" true: the apps runtime knows who edited, the automations
+    // engine knows who sponsors.
+    onDocumentEdit: async (previous, next, editor) =>
+      automationsForArming?.onDocumentEdit(previous, next, editor),
+    // The adoption card is additive venue state on the open payload, under the
+    // one key the tree renderer reads. Without this line the card exists and
+    // nothing can ever show it, so a stopped automation would wait forever.
+    venueState: async (app, ctx) => {
+      const card = await automationsForArming?.adoption(app.id, ctx);
+      return card === undefined ? undefined : { [ADOPTION_VENUE_KEY]: card };
+    },
     // Build contract §9.8 — where the authenticated served-app proxy lives. The
     // wire owns its base path, so it is filled here and nowhere else; the apps
     // block never invents a URL for a door it does not mount.
@@ -2567,6 +2585,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     guard,
     store,
     runner: agent.asRunner(),
+    // Build contract §9.3 — the fire-time sponsorship gate and the adoption
+    // card ask `can(editor)` through this seam. Same `appAccess(store)` the
+    // apps runtime holds, so one rule answers both sides; unwired it would
+    // silently fall back to ownership and an editor-adopted automation would
+    // stop dead at its next fire.
+    appAccess: appAccess(store),
     // Build contract §9.1 — an away run asserts the owner's orgs the same way a
     // request does; the callback is host server code in this deployment, so the
     // absence of a session is not in its way.

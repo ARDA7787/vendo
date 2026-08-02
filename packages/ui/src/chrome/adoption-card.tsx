@@ -143,11 +143,10 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
 }
 
 /** The payload key the adoption ask rides on the app's open surface
- *  (`payload.adoption`). ONE name, exported, because two sides have to agree on
- *  it: the composition seam attaches `{ [ADOPTION_VENUE_KEY]: card }` from the
- *  automations engine's `adoption()` provider, and the tree renderer reads it
- *  from there. A silent disagreement is a card nobody ever sees. */
-export const ADOPTION_VENUE_KEY = "adoption";
+ *  (`payload.adoption`). Re-exported from core (integration, 2026-08-01) so
+ *  the renderer, the composition seam and the automations engine all read ONE
+ *  definition — the server composes the key but cannot import this file. */
+export { ADOPTION_VENUE_KEY } from "@vendoai/core";
 
 /**
  * The card as the APP SURFACE renders it: bound to the client, so taking it on
