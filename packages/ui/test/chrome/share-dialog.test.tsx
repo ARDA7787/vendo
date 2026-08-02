@@ -23,6 +23,10 @@ interface FakeOptions {
   promoteFails?: unknown;
   /** Throw from `share` (F1's keyless-deployment refusal). */
   shareFails?: unknown;
+  /** §9.1 companion — the host's own directory. Absent = it knows nobody. */
+  roster?: Record<string, { subject: string; display?: string }>;
+  /** Throw from the lookup (a host whose `resolvePerson` seam is unset). */
+  resolveFails?: unknown;
 }
 
 function fakeClient(options: FakeOptions) {
@@ -45,6 +49,11 @@ function fakeClient(options: FakeOptions) {
         return { grants: [] };
       },
       async unshare() { return { grants: [] }; },
+      async resolvePerson(id: string, query: string) {
+        calls.push({ verb: "resolvePerson", args: [id, query] });
+        if (options.resolveFails !== undefined) throw options.resolveFails;
+        return { person: options.roster?.[query.trim().toLowerCase()] ?? null };
+      },
     },
   } as unknown as VendoClient;
   return { client, calls };
@@ -73,10 +82,25 @@ const mount = (options: FakeOptions, props: Record<string, unknown> = {}): {
   const { client, calls } = fakeClient(options);
   render(
     <VendoProvider client={client}>
-      <ShareDialog appId="app_1" appName="Dash" memberships={options.memberships ?? memberships} {...props} />
+      <ShareDialog
+        appId="app_1"
+        appName="Dash"
+        memberships={options.memberships ?? memberships}
+        // §9.1 companion — most cases below are about a host that CAN name a
+        // person; the ones about a host that cannot say so explicitly.
+        namesPeople
+        {...props}
+      />
     </VendoProvider>,
   );
   return { calls };
+};
+
+/** Type a person's name into the field the dialog opens for it. The label says
+    LOOK THEM UP, because that is what happens: the host resolves it. */
+const PERSON_FIELD = "Look them up by name or email";
+const typePerson = async (value: string): Promise<void> => {
+  fireEvent.change(await screen.findByLabelText(PERSON_FIELD), { target: { value } });
 };
 
 describe("the §9.2 grammar has ONE encoder", () => {
@@ -164,28 +188,30 @@ describe("ShareDialog — share implies promote", () => {
  */
 describe("ShareDialog — sharing with a person also promotes", () => {
   const soleOrg = [{ org: "acme", display: "Acme" }];
+  /** What Acme's OWN identity system answers — Vendo has no directory (§9.1). */
+  const roster = {
+    "mia": { subject: "acme-mia", display: "Mia Nakamura" },
+    "mia@acme.test": { subject: "acme-mia", display: "Mia Nakamura" },
+  };
 
   it("promotes into the ONE asserted org, then grants", async () => {
-    const { calls } = mount({ personal: true, memberships: soleOrg });
+    const { calls } = mount({ personal: true, memberships: soleOrg, roster });
     await choose(/specific person/i);
-    fireEvent.change(await screen.findByLabelText("Their name or email at work"), {
-      target: { value: "mia@acme.test" },
-    });
+    await typePerson("mia@acme.test");
     clickShare();
 
     await waitFor(() => expect(calls.some((call) => call.verb === "share")).toBe(true));
     expect(calls.filter((call) => call.verb !== "grants")).toEqual([
+      { verb: "resolvePerson", args: ["app_1", "mia@acme.test"] },
       { verb: "promote", args: ["app_1", "acme"] },
-      { verb: "share", args: ["app_1", "user:mia@acme.test", "viewer"] },
+      { verb: "share", args: ["app_1", "user:acme-mia", "viewer"] },
     ]);
   });
 
   it("ASKS which team when there are several — never silently the first", async () => {
-    const { calls } = mount({ personal: true });
+    const { calls } = mount({ personal: true, roster });
     await choose(/specific person/i);
-    fireEvent.change(await screen.findByLabelText("Their name or email at work"), {
-      target: { value: "mia" },
-    });
+    await typePerson("mia");
     clickShare();
 
     // Nothing moved and nothing was granted: the dialog is waiting to be told
@@ -198,8 +224,9 @@ describe("ShareDialog — sharing with a person also promotes", () => {
     clickShare();
     await waitFor(() => expect(calls.some((call) => call.verb === "share")).toBe(true));
     expect(calls.filter((call) => call.verb !== "grants")).toEqual([
+      { verb: "resolvePerson", args: ["app_1", "mia"] },
       { verb: "promote", args: ["app_1", "other"] },
-      { verb: "share", args: ["app_1", "user:mia", "viewer"] },
+      { verb: "share", args: ["app_1", "user:acme-mia", "viewer"] },
     ]);
   });
 
@@ -211,6 +238,81 @@ describe("ShareDialog — sharing with a person also promotes", () => {
     // ...and there is no way to write a grant that could never work.
     expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
     expect(calls.filter((call) => call.verb !== "grants")).toEqual([]);
+  });
+});
+
+/**
+ * B1 — a person-share used to encode whatever was typed VERBATIM as the subject,
+ * so "Mia" became `user:Mia`: a grant that matched nobody. And because the same
+ * wave made sharing imply promote, the app had ALREADY been moved into the team
+ * by the time that useless grant landed. Vendo holds no directory (§9.1 — the
+ * host's identity system IS the org), so the host names the person, and nothing
+ * moves until it has.
+ */
+describe("ShareDialog — a person-share needs the HOST to name the person", () => {
+  const soleOrg = [{ org: "acme", display: "Acme" }];
+  const roster = { "mia": { subject: "acme-mia", display: "Mia Nakamura" } };
+
+  it("does not offer to share with one person where the host has no directory", async () => {
+    mount({ personal: true, memberships: soleOrg }, { namesPeople: false });
+    const picker = await screen.findByLabelText("Who to share with");
+    const labels = within(picker).getAllByRole("option").map((option) => option.textContent ?? "");
+    expect(labels.some((label) => /specific person/i.test(label))).toBe(false);
+    // Teams and orgs are untouched by the absence — this is one option, not a mode.
+    expect(labels).toContain("Everyone at Acme");
+  });
+
+  it("grants the SUBJECT the host resolved, and confirms who that was", async () => {
+    const { calls } = mount({ personal: false, memberships: soleOrg, roster });
+    await choose(/specific person/i);
+    await typePerson("Mia");
+    clickShare();
+
+    await waitFor(() => expect(calls.some((call) => call.verb === "share")).toBe(true));
+    // Never `user:Mia`.
+    expect(calls.find((call) => call.verb === "share")?.args)
+      .toEqual(["app_1", "user:acme-mia", "viewer"]);
+    // ...and the person is told WHO was matched, by name, so a wrong match is
+    // visible instead of silent.
+    expect((await screen.findByRole("status")).textContent).toMatch(/Mia Nakamura/);
+  });
+
+  it("leaves the app PERSONAL and ungranted when the host does not know them", async () => {
+    // The whole defect in one case: the app must not move for a grant that is
+    // never going to be written.
+    const { calls } = mount({ personal: true, memberships: soleOrg, roster });
+    await choose(/specific person/i);
+    await typePerson("Mia from the other company");
+    clickShare();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/couldn’t find|copy/i);
+    expect(alert.textContent).not.toMatch(/user:|principal|subject|resolvePerson/);
+    expect(calls.some((call) => call.verb === "promote")).toBe(false);
+    expect(calls.some((call) => call.verb === "share")).toBe(false);
+  });
+
+  it("says so in the consumer's voice when the lookup is not set up at all", async () => {
+    // A host that mounted the dialog with the option on but wired no seam. The
+    // wire's own sentence names a config key; this one names what they can do.
+    const { calls } = mount({
+      personal: true,
+      memberships: soleOrg,
+      roster,
+      resolveFails: Object.assign(new Error("needs the auth preset's `resolvePerson` seam"), {
+        code: "not-implemented",
+      }),
+    });
+    await choose(/specific person/i);
+    await typePerson("Mia");
+    clickShare();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/isn’t set up here/i);
+    expect(alert.textContent).toMatch(/team|copy/i);
+    expect(alert.textContent).not.toMatch(/resolvePerson|auth preset|seam/);
+    expect(calls.some((call) => call.verb === "promote")).toBe(false);
+    expect(calls.some((call) => call.verb === "share")).toBe(false);
   });
 });
 
@@ -234,9 +336,7 @@ describe("ShareDialog — the picker speaks human", () => {
   it("refuses an empty person in consumer voice instead of writing a dead grant row", async () => {
     const { calls } = mount({ personal: false });
     await choose(/specific person/i);
-    fireEvent.change(await screen.findByLabelText("Their name or email at work"), {
-      target: { value: "   " },
-    });
+    await typePerson("   ");
     clickShare();
 
     const alert = await screen.findByRole("alert");

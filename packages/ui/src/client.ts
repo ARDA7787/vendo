@@ -17,6 +17,7 @@ import type {
   GrantId,
   Json,
   PermissionGrant,
+  ResolvedPerson,
   RunId,
   ThreadId,
   ToolOutcome,
@@ -122,6 +123,14 @@ export interface VendoClient {
     share(id: AppId, principal: string, level: AccessLevel): Promise<{ grants: AppGrantRecord[] }>;
     unshare(id: AppId, principal: string): Promise<{ grants: AppGrantRecord[] }>;
     promote(id: AppId, orgId: string): Promise<AppDocument>;
+    /**
+     * Build contract §9.1 companion — ask the HOST who a typed name is. Vendo
+     * holds no directory, so the dialog cannot resolve "Mia" and must not guess:
+     * `null` means the host does not know them, and the grant is written for the
+     * `subject` that comes back, never for what was typed. Owner-gated; refuses
+     * with `not-implemented` where the host wired no `resolvePerson` seam.
+     */
+    resolvePerson(id: AppId, query: string): Promise<{ person: ResolvedPerson | null }>;
     /** GET /apps/:id/ship-diff — the reviewable diff vs the captured host baselines (06 §8–§9). */
     shipDiff(id: AppId): Promise<ShipDiff>;
     /** GET /apps/:id/pin-drift — the pins whose captured host baseline changed under the fork (06 §8). */

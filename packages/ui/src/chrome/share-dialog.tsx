@@ -1,4 +1,11 @@
-import { encodeGrantPrincipal, parseGrantPrincipal, type AccessLevel, type AppId, type Membership } from "@vendoai/core";
+import {
+  encodeGrantPrincipal,
+  parseGrantPrincipal,
+  type AccessLevel,
+  type AppId,
+  type Membership,
+  type ResolvedPerson,
+} from "@vendoai/core";
 import { useState } from "react";
 import { useAppGrants } from "../hooks/use-app-grants.js";
 import { ChromeRoot } from "./chrome-root.js";
@@ -38,10 +45,17 @@ const PERSON = "person";
  * reading this dialog is told what it means for THEM (design §3, the consumer
  * voice law).
  */
-function refusalCopy(reason: unknown, phase: "move" | "share" | "remove"): string {
+function refusalCopy(reason: unknown, phase: "move" | "share" | "remove" | "name"): string {
   const code = (reason as { code?: unknown } | null)?.code;
   if (code === "forbidden") return "Only an owner can change who this app is shared with.";
   if (code === "not-found") return "This app isn’t available any more.";
+  // §9.1 companion — the host wired no way to look a person up. The wire's own
+  // sentence names the config seam; this one names what they can still do.
+  if (code === "not-implemented") {
+    return "Sharing with one person isn’t set up here"
+      + " — you can share with a team, or hand them a copy.";
+  }
+  if (phase === "name") return "We couldn’t look them up just now — try again in a moment.";
   if (phase === "move") {
     if (code === "cloud-required") {
       return "Moving this app into a team isn’t available here yet."
@@ -78,17 +92,30 @@ export interface ShareDialogProps {
   /** The orgs and teams the host asserted for this caller — the only
       principals a share can name (§9.1: Vendo has no org chart of its own). */
   memberships?: readonly Membership[];
+  /** Build contract §9.1 companion — the host can turn a typed name into one of
+      its own subjects (the `resolvePerson` auth-preset seam, echoed by
+      /status). False ⇒ sharing with ONE PERSON is not offered at all: Vendo has
+      no directory, and encoding what was typed wrote a grant matching nobody.
+      Teams, orgs and fork are unaffected either way. */
+  namesPeople?: boolean;
   /** The app declares an automation. Moving it into a team turns that
       automation OFF, and the dialog says so before it happens (§9.5). */
   automation?: boolean;
   onClose?(): void;
 }
 
-export function ShareDialog({ appId, appName, memberships = [], automation = false, onClose }: ShareDialogProps) {
+export function ShareDialog({
+  appId,
+  appName,
+  memberships = [],
+  namesPeople = false,
+  automation = false,
+  onClose,
+}: ShareDialogProps) {
   // Whether this is still the caller's own copy comes from the SAME read that
   // answers their level — no caller can forget to pass it, which is exactly how
   // "share implies promote" never fired in the shipped surface.
-  const { level, grants, personal, isLoading, share, unshare, promote } = useAppGrants(appId);
+  const { level, grants, personal, isLoading, share, unshare, promote, resolvePerson } = useAppGrants(appId);
   const [target, setTarget] = useState("");
   const [person, setPerson] = useState("");
   /** Which org a person-share moves the app into, when the caller belongs to
@@ -100,6 +127,11 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
   /** The org this app was just moved into, so the note that follows a move is
       about what happened, not about what might. */
   const [moved, setMoved] = useState<string>();
+  /** Who the last share actually reached, in their own name. For a person that
+      is the only place the host's display name is ever shown — the grant list
+      can only show the subject the row holds — so a WRONG match is visible
+      rather than silent. */
+  const [sharedWith, setSharedWith] = useState<string>();
 
   const canShare = level === "owner";
   const orgs = memberships.map((membership) => membership.org);
@@ -107,17 +139,25 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
     memberships.find((membership) => membership.org === org)?.display ?? org;
   /** Human labels, always — the §9.2 encoding rides underneath as the option's
       value, where nobody has to read it (F12: the old input put
-      `team:acme/finance` in front of the person using it). */
-  const options: Array<{ value: string; label: string }> = [
+      `team:acme/finance` in front of the person using it). Each option carries
+      the org it belongs to, so "share implies promote" never has to re-parse an
+      encoding this file just produced. */
+  const options: Array<{ value: string; label: string; org?: string }> = [
     ...memberships.flatMap((membership) => [
-      { value: encodeGrantPrincipal({ kind: "org", org: membership.org }), label: `Everyone at ${nameOf(membership.org)}` },
+      {
+        value: encodeGrantPrincipal({ kind: "org", org: membership.org }),
+        label: `Everyone at ${nameOf(membership.org)}`,
+        org: membership.org,
+      },
       ...(membership.teams ?? []).map((team) => ({
         value: encodeGrantPrincipal({ kind: "team", org: membership.org, team }),
         label: `The ${team} team`,
+        org: membership.org,
       })),
     ]),
-    // The option the old placeholder promised and never offered.
-    { value: PERSON, label: "A specific person…" },
+    // The option the old placeholder promised and never offered — and only where
+    // the host can actually name a person (§9.1 companion).
+    ...(namesPeople ? [{ value: PERSON, label: "A specific person…" }] : []),
   ];
   /** A personal app has to MOVE before anyone else can reach it live (§9.5), and
       with no team asserted there is nowhere for it to go. */
@@ -127,7 +167,7 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
   const asksWhichTeam = personal && target === PERSON && orgs.length > 1;
 
   const run = async (
-    phase: "move" | "share" | "remove",
+    phase: "move" | "share" | "remove" | "name",
     work: () => Promise<void>,
   ): Promise<void> => {
     setBusy(true);
@@ -147,31 +187,42 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
       setError("Choose who to share this with.");
       return;
     }
-    // A person is typed, not listed, so this is the one place an unusable value
-    // can arrive — and it is refused here rather than becoming a grant row that
-    // could never match anyone (F12).
-    const subject = person.trim();
-    if (chosen === PERSON && subject === "") {
-      setError("Say who you’re sharing this with — their name or email at work.");
+    const typed = person.trim();
+    if (chosen === PERSON && typed === "") {
+      setError("Say who you’re sharing this with — the name or email they use at work.");
       return;
     }
-    const named = chosen === PERSON
-      ? { kind: "user" as const, subject }
-      : parseGrantPrincipal(chosen);
-    if (named === undefined) {
-      setError("That isn’t someone this app can be shared with.");
-      return;
-    }
+    const option = options.find((entry) => entry.value === chosen);
     // §9.5 — "share implies promote", for EVERY principal (design §8: live
     // sharing implies the org workspace). A team share moves the app into the
     // org THAT SHARE NAMES; a person share has no org in it, so it moves into
     // the caller's one asserted org, or the one they chose.
-    const into = named.kind === "user" ? (orgs.length === 1 ? orgs[0] : moveInto) : named.org;
+    const into = chosen === PERSON ? (orgs.length === 1 ? orgs[0] : moveInto) : option?.org;
     if (personal && (into === undefined || into === "")) {
       setError("Choose which team this app should live in first.");
       return;
     }
-    const principal = encodeGrantPrincipal(named);
+    // A person is TYPED, not listed, and Vendo has no directory of its own
+    // (§9.1) — so the host names them, and it happens BEFORE anything moves.
+    // The dialog used to encode what was typed as the subject, which promoted
+    // the app into the team and then wrote a grant that matched nobody.
+    let principal = chosen;
+    let reached = option?.label;
+    if (chosen === PERSON) {
+      let found: ResolvedPerson | null | undefined;
+      await run("name", async () => { found = await resolvePerson(typed); });
+      // The lookup itself failed and has already been explained.
+      if (found === undefined) return;
+      if (found === null) {
+        setError(
+          `We couldn’t find ${typed} here. Check how it’s spelled,`
+          + " or hand them a copy of the app instead.",
+        );
+        return;
+      }
+      principal = encodeGrantPrincipal({ kind: "user", subject: found.subject });
+      reached = found.display ?? found.subject;
+    }
     if (personal && into !== undefined && into !== "") {
       let landed = false;
       await run("move", async () => {
@@ -185,6 +236,7 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
     }
     await run("share", async () => {
       await share(principal, nextLevel);
+      setSharedWith(reached);
       setTarget("");
       setPerson("");
     });
@@ -238,6 +290,13 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
           </p>
         )}
 
+        {/* Who it actually reached. For a person the host resolved a name into
+            one of its own subjects, and this is the only place that name is
+            shown — so matching the wrong Mia is visible, not silent. */}
+        {sharedWith === undefined ? null : (
+          <p className="fl-share-note" role="status">Shared with <b>{sharedWith}</b>.</p>
+        )}
+
         {canShare && !nowhereToShare ? (
           <>
             <div className="fl-share-add">
@@ -265,13 +324,16 @@ export function ShareDialog({ appId, appName, memberships = [], automation = fal
               </button>
             </div>
 
-            {/* Vendo has no directory of its own (§9.1), so a person is typed. The
-                field appears with its own label rather than as a placeholder,
-                because it arrives mid-task and has to explain itself. */}
+            {/* Vendo has no directory of its own (§9.1), so a person is typed and
+                the HOST looks them up. The label says so: what goes in is a
+                search, not an identifier, and the grant is written for whoever
+                comes back. The field appears with its own label rather than as a
+                placeholder, because it arrives mid-task and has to explain
+                itself. */}
             {target === PERSON ? (
               <div className="fl-share-field">
                 <label className="fl-share-note" htmlFor={`fl-share-person-${appId}`}>
-                  Their name or email at work
+                  Look them up by name or email
                 </label>
                 <input
                   id={`fl-share-person-${appId}`}

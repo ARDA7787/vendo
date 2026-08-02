@@ -76,11 +76,34 @@ describe("the fork offer answers an EDIT a viewer may not make", () => {
     await waitFor(() => expect(screen.queryByText(/I can’t change the team’s copy/i)).toBeNull());
 
     // 3 — the offer is for `forbidden` ALONE. Anything else is not "you may not",
-    // so answering it with "want your own copy?" would be a lie.
+    // so answering it with "want your own copy?" would be a lie. It is still
+    // answered in the CONSUMER's voice: the page used to render the server's own
+    // sentence verbatim (`refusalCopy`'s treatment reached the Share dialog and
+    // never the page), which put "app not found: app_1" on a bank customer's
+    // screen.
     refuse("unavailable", "the model is unavailable");
     askForAChange("add a chart");
-    expect((await screen.findByRole("alert", {}, { timeout: 12000 })).textContent)
-      .toContain("the model is unavailable");
+    const alert = await screen.findByRole("alert", {}, { timeout: 12000 });
+    expect(alert.textContent).not.toContain("the model is unavailable");
+    expect(alert.textContent).toMatch(/didn’t go through/i);
     expect(screen.queryByText(/I can’t change the team’s copy/i)).toBeNull();
+
+    // 4 — and the developer-voice ones the page could always raise: an app id,
+    // and a sentence naming an environment variable.
+    refuse("not-found", "app not found: app_1");
+    askForAChange("rename it");
+    await waitFor(() => {
+      const shown = screen.getByRole("alert").textContent ?? "";
+      expect(shown).not.toContain("app_1");
+      expect(shown).toMatch(/isn’t available/i);
+    });
+
+    refuse("cloud-required", "sharing needs Vendo Cloud: set VENDO_API_KEY");
+    askForAChange("share it");
+    await waitFor(() => {
+      const shown = screen.getByRole("alert").textContent ?? "";
+      expect(shown).not.toMatch(/VENDO_API_KEY|Vendo Cloud/);
+      expect(shown).toMatch(/isn’t turned on/i);
+    });
   });
 });

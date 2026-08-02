@@ -4,29 +4,45 @@ import { useVendoContext } from "../context.js";
 import type { Membership } from "@vendoai/core";
 import type { GuardPosture } from "../wire-types.js";
 
-export function useVendoStatus(): {
+interface StatusState {
   posture: GuardPosture;
   connected: boolean;
   /** Build contract §9.1 — the orgs the host asserted for this caller, or []
       when the deployment is single-player. */
   memberships: Membership[];
-} {
+  /** Build contract §9.1 companion — the host can name a person from a typed
+      query (`resolvePerson`). False ⇒ the Share dialog does not offer to share
+      with one person at all. */
+  namesPeople: boolean;
+}
+
+const OFFLINE: StatusState = {
+  posture: "unconfigured",
+  connected: false,
+  memberships: [],
+  namesPeople: false,
+};
+
+export function useVendoStatus(): StatusState {
   const { client } = useVendoContext();
-  const [state, setState] = useState<{ posture: GuardPosture; connected: boolean; memberships: Membership[] }>({
-    posture: "unconfigured",
-    connected: false,
-    memberships: [],
-  });
+  const [state, setState] = useState<StatusState>(OFFLINE);
 
   useEffect(() => {
     let active = true;
     void client
       .status()
       .then(status => {
-        if (active) setState({ posture: status.posture, connected: true, memberships: status.memberships ?? [] });
+        if (active) {
+          setState({
+            posture: status.posture,
+            connected: true,
+            memberships: status.memberships ?? [],
+            namesPeople: status.namesPeople === true,
+          });
+        }
       })
       .catch(() => {
-        if (active) setState({ posture: "unconfigured", connected: false, memberships: [] });
+        if (active) setState(OFFLINE);
       });
     return () => {
       active = false;

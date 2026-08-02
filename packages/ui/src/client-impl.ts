@@ -218,6 +218,7 @@ export function createVendoClient(config: VendoClientConfig): VendoClient {
       unshare: (id, principal) =>
         json(`/apps/${idPath(id)}/grants?principal=${encodeURIComponent(principal)}`, "DELETE"),
       promote: (id, orgId) => json(`/apps/${idPath(id)}/promote`, "POST", { orgId }),
+      resolvePerson: (id, query) => json(`/apps/${idPath(id)}/grants/resolve`, "POST", { query }),
       shipDiff: id => readJson(`/apps/${idPath(id)}/ship-diff`),
       pinDrift: id => readJson(`/apps/${idPath(id)}/pin-drift`),
       rebasePin: (id, slot) => json(`/apps/${idPath(id)}/rebase-pin`, "POST", { slot }),

@@ -1,6 +1,6 @@
 /** App-access transport (build contract §9.2–§9.6): who this app is shared
     with, and what the caller themselves may do with it. */
-import type { AccessLevel, AppGrantRecord, AppId } from "@vendoai/core";
+import type { AccessLevel, AppGrantRecord, AppId, ResolvedPerson } from "@vendoai/core";
 import { useCallback } from "react";
 import { useVendoContext } from "../context.js";
 import { type PollOptions, useResource } from "./use-resource.js";
@@ -33,6 +33,9 @@ export function useAppGrants(appId: AppId | undefined, options?: PollOptions): {
   unshare(principal: string): Promise<void>;
   /** "Share implies promote": handing a personal app to an org moves it. */
   promote(orgId: string): Promise<void>;
+  /** §9.1 companion — ask the HOST who a typed name is. `null` = it does not
+      know them; the grant is then never written, and the app never moves. */
+  resolvePerson(query: string): Promise<ResolvedPerson | null>;
 } {
   const { client } = useVendoContext();
   const load = useCallback(
@@ -59,6 +62,11 @@ export function useAppGrants(appId: AppId | undefined, options?: PollOptions): {
     await refresh();
   }, [client, appId, refresh]);
 
+  const resolvePerson = useCallback(async (query: string) => {
+    if (appId === undefined) return null;
+    return (await client.apps.resolvePerson(appId, query)).person;
+  }, [client, appId]);
+
   return {
     level: data.level,
     grants: data.grants,
@@ -69,5 +77,6 @@ export function useAppGrants(appId: AppId | undefined, options?: PollOptions): {
     share,
     unshare,
     promote,
+    resolvePerson,
   };
 }

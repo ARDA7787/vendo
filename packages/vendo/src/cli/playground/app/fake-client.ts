@@ -116,6 +116,10 @@ export function createFakeClient(fixtures: PlaygroundFixtures): VendoClient {
       share: async () => ({ grants: [] }),
       unshare: async () => ({ grants: [] }),
       promote: async (id: string) => app(id),
+      // §9.1 companion — the playground has no host directory behind it, so it
+      // knows nobody. The dialog does not offer the person option here anyway
+      // (/status carries no `namesPeople`).
+      resolvePerson: async () => ({ person: null }),
       create: async ({ prompt }) => {
         const created: AppDocument = {
           format: "vendo/app@1",

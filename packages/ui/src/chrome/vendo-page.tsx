@@ -137,12 +137,36 @@ function OpenApp({ appId }: { appId: string }) {
   return <AppFrame key={appId} surface={surface} components={components} keepalive={keepalive} onAction={({ action, payload }) => client.apps.call(appId, action, payload ?? {})} />;
 }
 
+/**
+ * The consumer's half of a refusal, for the verbs THIS page has (design §3 — the
+ * consumer-voice law). The Share dialog got this treatment and the page never
+ * did: it rendered `reason.message` verbatim, so every developer-voice sentence
+ * the wire raises — "app not found: app_1", one naming VENDO_API_KEY — was shown
+ * to whoever was using the app. The developer sentence keeps its home (the
+ * server's own error, the browser console); the person is told what it means for
+ * them. The dialog keeps its own phase-aware twin (`refusalCopy` in
+ * share-dialog.tsx): "the move was refused" and "the change was refused" are
+ * different sentences, and a shared generic one would be worse copy than both.
+ */
+function refusalSentence(reason: unknown): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  // `forbidden` normally becomes the fork offer; this is the leg with no app id
+  // to offer a fork OF (Create).
+  if (code === "forbidden") return "You can look at this app, but not change it.";
+  if (code === "not-found") return "This app isn’t available any more.";
+  if (code === "cloud-required") return "That isn’t turned on for this workspace yet.";
+  return "That didn’t go through — nothing changed. Try again in a moment.";
+}
+
 function AppsWorkspace() {
   const { client } = useVendoContext();
   const { apps, create, fork, remove, refresh } = useApps();
   // §9.1 — the orgs the host asserted for this caller; the Share dialog offers
   // them by name. Empty on a single-player deployment, which is the point.
-  const { memberships } = useVendoStatus();
+  // `namesPeople` is §9.1's companion: the host wired `resolvePerson`, so the
+  // dialog may offer to share with one person. Unset, it must not — Vendo holds
+  // no directory of its own.
+  const { memberships, namesPeople } = useVendoStatus();
   const [selected, setSelected] = useState<string>();
   const [sharing, setSharing] = useState<string>();
   /** §9.4 — the app whose CHANGE was refused, and what was asked for, so the
@@ -166,7 +190,7 @@ function AppsWorkspace() {
         setDenied({ appId, ...(asked === undefined ? {} : { instruction: asked }) });
         return;
       }
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalSentence(reason));
     }
   };
   const submit = async (event: FormEvent) => {
@@ -282,6 +306,7 @@ function AppsWorkspace() {
                   appId={app.id}
                   appName={app.name}
                   memberships={memberships}
+                  namesPeople={namesPeople}
                   // §9.5 — an app that declares a trigger loses it in the move;
                   // the dialog says so before and after.
                   automation={app.trigger !== undefined}

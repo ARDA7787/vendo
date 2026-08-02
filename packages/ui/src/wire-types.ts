@@ -297,4 +297,9 @@ export interface VendoStatus {
   /** Build contract §9.1 — the orgs the host asserted for this caller this
       request. Absent on a single-player deployment; never stored anywhere. */
   memberships?: Membership[];
+  /** Build contract §9.1 companion — the host wired `resolvePerson`, so it can
+      turn a typed name into one of its own subjects. Absent ⇒ the Share dialog
+      does not offer to share with one person (Vendo has no directory of its
+      own, and encoding what was typed wrote a grant that matched nobody). */
+  namesPeople?: boolean;
 }

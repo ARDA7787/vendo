@@ -4,7 +4,7 @@ import { vendoAutoJudge } from "@vendoai/guard";
 import { createStore } from "@vendoai/store";
 import { authJs } from "@vendoai/vendo/auth/auth-js";
 import { createVendo, vendoModel } from "@vendoai/vendo/server";
-import { authSecret, primaryMapleUser, resolveMapleSubject } from "@/server/users";
+import { authSecret, primaryMapleUser, resolveMaplePerson, resolveMapleSubject } from "@/server/users";
 import { mapleKnowledgeDocs } from "./knowledge";
 import { mapleMcpConfig } from "./mcp-config";
 import { namedHarness } from "./proof-harness";
@@ -40,6 +40,15 @@ export const mapleAuth = authJs({
       teams: ["support"],
       admin: user.subject === primaryMapleUser().subject,
     }];
+  },
+  // Build contract §9.1 companion — Maple's OWN roster answers "who is the
+  // person they typed?". Vendo holds no directory, so this seam is the only
+  // reason the Share dialog may offer to share with one person: without it the
+  // dialog does not offer it, and the app is never moved for a grant that could
+  // not be written. The grant is written for the SUBJECT this returns.
+  resolvePerson: async (query) => {
+    const user = resolveMaplePerson(query);
+    return user ? { subject: user.subject, display: user.display } : null;
   },
 });
 
