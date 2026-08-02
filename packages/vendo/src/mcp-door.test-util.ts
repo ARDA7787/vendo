@@ -13,7 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuditEvent, Principal, ToolDescriptor, ToolRegistry } from "@vendoai/core";
-import { defineHarness } from "@vendoai/harnesses";
+import { defineHarness, harnessAdapters } from "@vendoai/harnesses";
 import { createStore, type VendoStore } from "@vendoai/store";
 import type { LanguageModel } from "ai";
 import { createVendo, type Vendo } from "./server.js";
@@ -84,11 +84,22 @@ export interface Row {
   principal?: { subject?: string };
 }
 
-export const toolRows = async (store: VendoStore, tool: string): Promise<Row[]> => {
+/**
+ * The audit rows one tool left behind, of one KIND.
+ *
+ * `tool-call` is the executed-call ledger. `approval` is the OTHER ledger, and
+ * it is the only one an UNATTENDED run writes: nothing executes, so the truth
+ * about who asked, from where, and whether anyone was watching lives there.
+ */
+export const toolRows = async (
+  store: VendoStore,
+  tool: string,
+  kind: "tool-call" | "approval" = "tool-call",
+): Promise<Row[]> => {
   const { records } = await store.records("vendo_audit").list({ refs: { subject: SUBJECT } });
   return records
     .map((record) => record.data as unknown as AuditEvent as unknown as Row)
-    .filter((row) => row.kind === "tool-call" && row.tool === tool);
+    .filter((row) => row.kind === kind && row.tool === tool);
 };
 
 /**
@@ -98,11 +109,12 @@ export const toolRows = async (store: VendoStore, tool: string): Promise<Row[]> 
 export async function rowsAddedBy(
   store: VendoStore,
   tool: string,
-  leg: () => Promise<void>,
+  leg: () => Promise<unknown>,
+  kind: "tool-call" | "approval" = "tool-call",
 ): Promise<Row[]> {
-  const before = new Set((await toolRows(store, tool)).map((row) => row.id));
+  const before = new Set((await toolRows(store, tool, kind)).map((row) => row.id));
   await leg();
-  return (await toolRows(store, tool)).filter((row) => !before.has(row.id));
+  return (await toolRows(store, tool, kind)).filter((row) => !before.has(row.id));
 }
 
 /** The five fields the contract names, as one comparable shape. */
@@ -161,8 +173,59 @@ export async function composedHost(
   return { vendo, store, observed };
 }
 
-/** The chat wire's own turn — the in-process path. */
-export async function runHarnessTurn(vendo: Vendo, threadId: string, text: string): Promise<void> {
+/**
+ * The SAME composed host, but the probe harness reaches its tools THROUGH the
+ * door with a minted turn credential — which is exactly what a `claudeCode()`
+ * box does over native remote MCP, minus the network hop.
+ *
+ * `vendo.handler` is the door's real fetch-style entry point, so nothing here is
+ * a shortcut: the request carries a Bearer, opens an MCP session, and speaks
+ * JSON-RPC. The only thing the box adds on top is HTTPS.
+ */
+export async function composedHostOverDoor(
+  script: (door: DoorSession, mint: () => string | undefined) => Promise<void>,
+): Promise<ComposedHost> {
+  const store = await tempStore();
+  const observed: string[] = [];
+  let composed: Vendo;
+  const harness = defineHarness({
+    name: "door-probe",
+    async *run(turn) {
+      const port = harnessAdapters(harness).toolDoor;
+      if (port === undefined) throw new Error("composition did not provide a tool door");
+      const mint = (): string | undefined => port.mint(turn.threadId as string);
+      const token = mint();
+      if (token === undefined) throw new Error("no credential could be minted inside a live turn");
+      const session = await openDoor(composed, token);
+      observed.push(`minted:${token.slice(0, 4)}`);
+      await script(session, mint);
+      yield { type: "text", delta: "done" };
+    },
+  });
+  composed = createVendo({
+    model: {} as LanguageModel,
+    principal: async () => principal,
+    store,
+    policy: "cautious",
+    harness: harness as never,
+    mcp: true,
+    oauth: {
+      async authorize() {
+        return { subject: SUBJECT };
+      },
+      async principal(subject) {
+        return { kind: "user", subject };
+      },
+    },
+  } as Parameters<typeof createVendo>[0]);
+  composed.actions.add(hostTools());
+  await store.ensureSchema();
+  return { vendo: composed, store, observed };
+}
+
+/** The chat wire's own turn — the in-process path. Returns the raw UI-message
+ *  stream, so a caller can read the RUNTIME's mirror parts off it. */
+export async function runHarnessTurn(vendo: Vendo, threadId: string, text: string): Promise<string> {
   const response = await vendo.handler(new Request("https://host.test/api/vendo/threads", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -173,8 +236,38 @@ export async function runHarnessTurn(vendo: Vendo, threadId: string, text: strin
   }));
   if (response.status !== 200) throw new Error(`turn failed ${response.status}: ${await response.text()}`);
   // Drain the stream: the turn only completes as the body is consumed.
-  await response.text();
+  return response.text();
 }
+
+/**
+ * The tool-call MIRROR the runtime wrote onto one turn's stream (§1.5: "tool
+ * calls are mirrored by the runtime, never yielded"), as `chunk:toolName`.
+ *
+ * This is the TRANSCRIPT half of parity — what the user's screen and the stored
+ * thread saw — as opposed to the audit row, which is what the ledger saw. Names
+ * are correlated through `toolCallId` because only the opening chunk carries one.
+ */
+export function mirroredToolParts(stream: string): string[] {
+  const names = new Map<string, string>();
+  const seen: string[] = [];
+  for (const line of stream.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    let part: { type?: string; toolCallId?: string; toolName?: string };
+    try {
+      part = JSON.parse(line.slice(6)) as typeof part;
+    } catch {
+      continue;
+    }
+    if (typeof part.type !== "string" || !part.type.startsWith("tool-")) continue;
+    if (typeof part.toolCallId === "string" && typeof part.toolName === "string") {
+      names.set(part.toolCallId, part.toolName);
+    }
+    const named = part.toolCallId === undefined ? undefined : names.get(part.toolCallId);
+    seen.push(`${part.type}:${named ?? "?"}`);
+  }
+  return seen;
+}
+
 
 /**
  * An UNATTENDED turn on the same host — the shape an automation fires with
@@ -182,7 +275,7 @@ export async function runHarnessTurn(vendo: Vendo, threadId: string, text: strin
  * the handle composition exposes for exactly this, because the chat wire always
  * mints `presence: "present"` (`wire/context.ts`) and can never produce one.
  */
-export async function runUnattendedTurn(vendo: Vendo, threadId: string, text: string): Promise<void> {
+export async function runUnattendedTurn(vendo: Vendo, threadId: string, text: string): Promise<string> {
   const response = await vendo.harness.stream({
     threadId,
     message: { id: `m_${threadId}`, role: "user", parts: [{ type: "text", text }] },
@@ -194,7 +287,7 @@ export async function runUnattendedTurn(vendo: Vendo, threadId: string, text: st
     },
   });
   if (response.status !== 200) throw new Error(`unattended turn failed ${response.status}`);
-  await response.text();
+  return response.text();
 }
 
 /** The user's tap over the public wire, polled because the turn blocks on it. */

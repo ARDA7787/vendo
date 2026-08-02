@@ -8,6 +8,7 @@ import type {
   ToolDescriptor,
   ToolOutcome,
   ToolRegistry,
+  ToolResult,
   VendoTheme,
 } from "@vendoai/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -33,8 +34,10 @@ import {
   type McpRunContext,
   type McpStateSession,
 } from "./state.js";
+import type { LiveTurn, TurnCredentialPort } from "./turn-credential.js";
 
 export type { McpRunContext } from "./state.js";
+export type { LiveTurn, TurnCredentialPort } from "./turn-credential.js";
 
 const PRM_PREFIX = "/.well-known/oauth-protected-resource";
 const AS_PREFIX = "/.well-known/oauth-authorization-server";
@@ -54,7 +57,26 @@ interface HostIdentity {
 interface SessionState extends McpStateSession {
   server: Server;
   sessionId?: string;
+  /**
+   * Set only on a TURN-credential session (10-mcp §3b). Its presence is what
+   * switches every handler from "the door decides" to "hand it to the turn":
+   * the tool surface, the context, the approval behavior and the audit row all
+   * come from `turn.tools`, which is the in-process path itself.
+   *
+   * Re-read from the credential on EVERY request, never captured at open: one
+   * conversation's box holds one session across many turns, and presence, venue
+   * and the equipped tool set are the CURRENT turn's, not the opening turn's.
+   */
+  turn?: LiveTurn;
+  /** The credential this session was opened with. A session belongs to exactly
+   *  the token that created it — the turn-path analogue of the OAuth path's
+   *  subject + clientId binding. */
+  turnToken?: string;
 }
+
+/** The `clientId` a turn session records in door state. Not a secret and not an
+ *  OAuth client: the credential itself is never written anywhere durable. */
+const HARNESS_CLIENT_ID = "vendo-harness-turn";
 
 /** Caps replay state so a client hammering distinct parking calls in one
  * context cannot grow it without bound; the whole scope dies with its session. */
@@ -140,6 +162,25 @@ export interface McpDoorConfig {
    * when the two differ.
    */
   productName?: string;
+  /**
+   * 10-mcp §3b — the host process's own turn-scoped credential seam.
+   *
+   * The door was built for OUTSIDE agents, and an outside agent has no turn: no
+   * venue but `mcp`, no presence but `present`, no stream to put an approval
+   * card on. A `claudeCode()` box reaching its host's tools over native remote
+   * MCP has all three, and losing them at the door made the door unusable for it
+   * (measured — `packages/vendo/src/mcp-door-parity.e2e.test.ts`).
+   *
+   * A bearer this port resolves is answered from the LIVE TURN it names: the
+   * turn's own ctx, the turn's own equipped tools, and `turn.tools.call()` for
+   * execution — which means one guard decision, one audit row, one transcript
+   * mirror, the turn's own approval card, and `workspace.commit()`, none of them
+   * reimplemented here.
+   *
+   * Unset (every deployment that never composed a harness): there is no second
+   * credential space and the door behaves exactly as it did before.
+   */
+  turnCredentials?: TurnCredentialPort;
 }
 
 export interface McpDoor {
@@ -295,6 +336,16 @@ class Door {
     const origin = new URL(req.url).origin;
     const resource = resourceUri(origin, mount);
     await this.#sweepIdleSessions();
+
+    // 10-mcp §3b, FIRST and separate: a turn credential is the host's own
+    // process talking to itself, not an OAuth grant. It is a different
+    // credential SPACE — resolved by the umbrella's registry, never by the
+    // door's grant store — so nothing about the outside-agent path below can be
+    // reached with one, and nothing here can be reached with a grant.
+    const presented = bearerOf(req);
+    const turn = presented === undefined ? null : await this.#resolveTurn(presented);
+    if (turn !== null) return this.#handleTurnMcp(req, mount, presented!, turn);
+
     const auth = this.#remoteAs === undefined
       ? await this.#oauth.authenticate(req)
       : await this.#remoteAs.authenticate(req);
@@ -311,7 +362,9 @@ class Door {
       && (
         !requestedState
         || requestedState.subject !== auth.grant.subject
-        || requestedState.context.mcpConsent.clientId !== auth.grant.clientId
+        // A TURN session is never reachable with an OAuth grant: it carries no
+        // consent projection, so this comparison can only ever fail for one.
+        || requestedState.context.mcpConsent?.clientId !== auth.grant.clientId
       )
     ) {
       return unknownSession();
@@ -353,11 +406,66 @@ class Door {
     return response;
   }
 
+  /** Never throws and never distinguishes "no port" from "no such token": both
+   *  mean this bearer is not a turn credential, and the OAuth path answers. */
+  async #resolveTurn(token: string): Promise<LiveTurn | null> {
+    if (this.#config.turnCredentials === undefined) return null;
+    try {
+      return await this.#config.turnCredentials.resolve(token);
+    } catch (error) {
+      console.error("[vendo] mcp door: turn credential lookup failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * The turn-bearing leg. Everything the door normally decides is deferred to
+   * the live turn, so this function's whole job is session bookkeeping.
+   *
+   * The credential is re-resolved per request (by the caller) and re-attached
+   * here, because one box holds ONE session across MANY turns: a session that
+   * captured its opening turn would report turn 1's presence and turn 1's
+   * equipped tools forever.
+   */
+  async #handleTurnMcp(req: Request, mount: string, token: string, turn: LiveTurn): Promise<Response> {
+    if (this.#config.mount === undefined) this.#cardMount = normalizeMount(mount);
+    const requestedSessionId = req.headers.get("mcp-session-id") ?? undefined;
+    const requested = requestedSessionId === undefined
+      ? undefined
+      : (await this.#state.getSession(requestedSessionId) ?? undefined) as SessionState | undefined;
+    if (requestedSessionId !== undefined && requested?.turnToken !== token) {
+      // Wrong credential for this session — including an OAuth client that
+      // learned a session id, and a credential for a different conversation.
+      return unknownSession();
+    }
+    if (requested !== undefined) {
+      requested.turn = turn;
+      requested.context = turn.ctx;
+      await this.#state.touchSession(requestedSessionId!, Date.now() + SESSION_IDLE_MS);
+      return requested.handleRequest(req);
+    }
+    const state = await this.#newSession(
+      turn.ctx.principal.subject,
+      turn.ctx.principal,
+      { clientId: HARNESS_CLIENT_ID, scopes: [] },
+      undefined,
+      { token, turn },
+    );
+    const response = await state.handleRequest(req);
+    if (state.sessionId === undefined) await state.close();
+    return response;
+  }
+
   async #newSession(
     subject: string,
     principal: Principal,
     consent: { clientId: string; scopes: string[] },
     grantFamilyId?: string,
+    /** Set for a turn-credential session: its context is the TURN's, verbatim,
+     *  so nothing here relabels the venue or invents a consent projection. */
+    bearing?: { token: string; turn: LiveTurn },
   ): Promise<SessionState> {
     const identity = await this.#hostIdentity();
     let state: SessionState;
@@ -367,7 +475,9 @@ class Door {
       onsessioninitialized: async (sessionId) => {
         state.sessionId = sessionId;
         state.replayScope = sessionId;
-        state.context = mcpContext(state.context.principal, sessionId, consent);
+        if (bearing === undefined) {
+          state.context = mcpContext(state.context.principal, sessionId, consent);
+        }
         await this.#state.setSession({
           sessionId,
           subject,
@@ -396,7 +506,10 @@ class Door {
     state = {
       subject,
       replayScope: initialContextKey,
-      context: mcpContext(principal, initialContextKey, consent),
+      context: bearing === undefined
+        ? mcpContext(principal, initialContextKey, consent)
+        : bearing.turn.ctx,
+      ...(bearing === undefined ? {} : { turn: bearing.turn, turnToken: bearing.token }),
       server,
       handleRequest: (req) => transport.handleRequest(req),
       close: () => transport.close(),
@@ -408,7 +521,9 @@ class Door {
 
   #registerHandlers(state: SessionState, identity: HostIdentity): void {
     state.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: await this.#listedTools(),
+      tools: state.turn === undefined
+        ? await this.#listedTools(state)
+        : await turnTools(state.turn),
     }));
     state.server.setRequestHandler(CallToolRequestSchema, async (request) =>
       this.#callTool(request.params.name, request.params.arguments ?? {}, state, identity));
@@ -445,9 +560,15 @@ class Door {
     return names === undefined ? undefined : new Set(names);
   }
 
-  async #listedTools(): Promise<Tool[]> {
+  async #listedTools(state: SessionState): Promise<Tool[]> {
     const menu = await this.#menu();
-    const descriptors = (await this.#config.tools.descriptors())
+    // `ctx` is load-bearing, not decoration: the guard-bound registry answers
+    // `descriptors(ctx)` with `projectableForRun(all, ctx)`, which is where THE
+    // LAW (design §12) withholds destructive tools from an unattended run. The
+    // door used to ask WITHOUT it (divergence 5), which is invisible while
+    // `mcpContext` hardcodes `presence: "present"` and is a hole the moment any
+    // context here can say otherwise. Not projected has to mean not projected.
+    const descriptors = (await this.#config.tools.descriptors(state.context))
       .filter((descriptor) => offeredAtDoor(menu, descriptor.name));
     const appsConfigured = this.#config.apps !== undefined;
     // The bound registry's descriptors are served VERBATIM — name, description,
@@ -490,7 +611,14 @@ class Door {
     state: SessionState,
     identity: HostIdentity,
   ): Promise<CallToolResult> {
-    const descriptors = await this.#config.tools.descriptors();
+    // 10-mcp §3b: a turn-bearing call is handed STRAIGHT to the live turn. The
+    // door adds no guard decision, no audit row, no approval handling and no
+    // menu of its own — `turn.tools.call()` is the in-process path, so this is
+    // parity by construction rather than a second implementation of it. The
+    // turn's own curation (the loadout, `surfaces.agent`, §12) already decided
+    // what is callable, and an unknown name comes back as its own error.
+    if (state.turn !== undefined) return turnResult(await state.turn.tools.call(name, args as Json));
+    const descriptors = await this.#config.tools.descriptors(state.context);
     // An off-menu name answers exactly like a name that does not exist: the
     // menu decides what this door OFFERS, and offering nothing is the whole
     // refusal (the guard, not the menu, is what stops a call that IS offered).
@@ -896,6 +1024,53 @@ function appTools(): Tool[] {
     annotations: toolAnnotations(risk, title),
     _meta: appUiMeta(),
   }));
+}
+
+/** The Authorization header's bearer, or undefined. Case-insensitive scheme,
+ *  because clients differ and the door already accepts both spellings today. */
+function bearerOf(req: Request): string | undefined {
+  const header = req.headers.get("authorization");
+  if (header === null) return undefined;
+  const match = /^Bearer[ ]+(.+)$/i.exec(header.trim());
+  return match?.[1];
+}
+
+/**
+ * The live turn's EQUIPPED listing, as MCP tools.
+ *
+ * `turn.tools.list()` is already the curated, ctx-projected surface — the
+ * loadout, `find_tools`' searched-in set, the host's `surfaces.agent` menu and
+ * THE LAW's §12 withholding all decided it. The door re-decides none of that:
+ * re-applying its own `surfaces.mcp` menu here would curate a CHAT turn's tools
+ * by the MCP door's list, which is the wrong menu for the wrong surface.
+ *
+ * Asked fresh on every `tools/list`, so a tool `find_tools` equipped mid-turn is
+ * visible without reopening anything — the limitation that made the in-process
+ * projection snapshot its tool set at session open dies here.
+ */
+async function turnTools(turn: LiveTurn): Promise<Tool[]> {
+  const listings = await turn.tools.list();
+  return listings.map((listing) => {
+    const label = listing.title === undefined || listing.title.trim() === "" ? undefined : listing.title;
+    return {
+      name: listing.name,
+      description: listing.description,
+      inputSchema: (listing.inputSchema ?? { type: "object", properties: {} }) as Tool["inputSchema"],
+      ...(label === undefined ? {} : { title: label }),
+      annotations: toolAnnotations(listing.risk, label),
+    };
+  });
+}
+
+/**
+ * Contract §1.1's three statuses onto the MCP wire — the SAME mapping the
+ * in-process projection uses (`guardedProjection` in `apps/src/claude-turn.ts`):
+ * a denial is text the model narrates, never a protocol error it reads as a bug.
+ */
+function turnResult(result: ToolResult): CallToolResult {
+  if (result.status === "ok") return textResult(result.output);
+  if (result.status === "denied") return inBandError(result.reason);
+  return inBandError(`${result.error.code}: ${result.error.message}`);
 }
 
 function isHttpOpenSurface(output: unknown): output is { kind: "http"; url: string } {

@@ -44,6 +44,7 @@ import {
   createDiscoveryRails,
   createHarnessRuntime,
   provideHarnessAdapters,
+  type ToolDoorPort,
   type DiscoveryRails,
   type HarnessRuntimeDeps,
 } from "@vendoai/harnesses";
@@ -92,6 +93,13 @@ export interface HarnessTurnsConfig {
   bridge?: (ctx: RunContext, threadId: ThreadId) => HarnessRuntimeDeps["bridge"];
   /** Test seam only; production uses the frozen APPROVAL_WAIT_MS. */
   approvalWaitMs?: number;
+  /** Publish each turn in flight to the process's own doors — the MCP door's
+   *  turn credential (10-mcp §3b) is the one consumer. Composition owns the
+   *  registry because it is the only place that holds both ends. */
+  liveTurn?: HarnessRuntimeDeps["liveTurn"];
+  /** The host's own MCP door, for a harness whose thinker runs on a MACHINE and
+   *  therefore reaches `turn.tools` over the wire rather than in process. */
+  toolDoor?: ToolDoorPort;
 }
 
 export interface HarnessTurns {
@@ -177,6 +185,12 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
   // here could attribute one user's machine to another user's thread.
   if (config.sandbox !== undefined) {
     provideHarnessAdapters(config.harness, { sandbox: config.sandbox });
+  }
+  // The door is a DEPLOYMENT fact too — where it is, and how to mint a
+  // conversation credential for it. The credential itself is per-conversation
+  // and per-turn; this slot only carries the ability to ask for one.
+  if (config.toolDoor !== undefined) {
+    provideHarnessAdapters(config.harness, { toolDoor: config.toolDoor });
   }
 
   /**
@@ -309,6 +323,7 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
           ? {}
           : { bridge: config.bridge(input.ctx, thread.id) as ToolBridgeOptions | undefined }),
         ...(config.approvalWaitMs === undefined ? {} : { approvalWaitMs: config.approvalWaitMs }),
+        ...(config.liveTurn === undefined ? {} : { liveTurn: config.liveTurn }),
       });
 
       const discovery = await discoveryFor(input.ctx, thread.id, thread.messages);

@@ -23,6 +23,7 @@ import {
   type ToolRegistry,
   type Turn,
   type TurnSkills,
+  type TurnTools,
   type WorkspaceFs,
 } from "@vendoai/core";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -123,6 +124,19 @@ export interface HarnessRuntimeDeps {
   bridge?: Omit<ToolBridgeOptions, "registry" | "ctx" | "guard" | "writer" | "connectCards">;
   /** Test seam only; production uses the frozen APPROVAL_WAIT_MS. */
   approvalWaitMs?: number;
+  /**
+   * Publish the turn now in flight to the host process's own doors, and retract
+   * it at turn end (the returned disposer).
+   *
+   * The one consumer today is the MCP door's turn credential (10-mcp §3b): a
+   * `claudeCode()` box reaches its host's tools over native remote MCP, and the
+   * door has to answer with THIS turn's ctx, THIS turn's equipped tools and THIS
+   * turn's approval card — the same `turn.tools` the harness holds, not a
+   * reconstruction of it. Publishing is not a grant: nothing can be reached
+   * without a credential the harness minted, and the credential's whole
+   * authority is the window between this call and its disposer.
+   */
+  liveTurn?: (published: { threadId: ThreadId; ctx: RunContext; tools: TurnTools }) => () => void;
 }
 
 export interface TurnRunInput<Options = unknown> {
@@ -348,6 +362,15 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             threadId: input.threadId,
           };
 
+          // Published for the process's own doors (the MCP door's turn
+          // credential). The SAME `turn.tools` value the harness holds, so a
+          // call arriving over the door is the call the harness would have made.
+          const unpublish = deps.liveTurn?.({
+            threadId: input.threadId,
+            ctx: input.ctx,
+            tools: turn.tools,
+          });
+
           try {
             // Every hire the harness makes inside this turn lands in THIS turn's
             // records, even from a subagent several awaits deep.
@@ -390,6 +413,10 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             failure = { message: HARNESS_FAILED, code: "harness" };
             text.delta(HARNESS_FAILED);
           } finally {
+            // FIRST: the turn is over, so the door must stop answering for it.
+            // A call arriving during turn-end cleanup has nothing to be judged
+            // in, and the credential resolves to nothing from here.
+            unpublish?.();
             // Turn end lands everything the harness staged and never committed —
             // memory notes, uploads, a plan written straight to the workspace.
             // Inside `execute`, so a view from this commit can still reach the
