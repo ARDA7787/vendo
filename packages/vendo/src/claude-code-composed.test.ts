@@ -27,7 +27,7 @@ import type { LanguageModel, UIMessage } from "ai";
 import type { Principal, ToolDescriptor, ToolRegistry } from "@vendoai/core";
 // The REAL box door, over a fake transport — a package subpath, not a relative
 // climb, because the door is the wire contract between the two blocks.
-import { createTurnRoutes } from "@vendoai/apps/box-door";
+import { createSessionRoutes } from "@vendoai/apps/box-door";
 import { claudeCode } from "@vendoai/harnesses/claude-code";
 import { createStore, type VendoStore } from "@vendoai/store";
 import { afterEach, describe, expect, it } from "vitest";
@@ -77,7 +77,6 @@ interface BoxDoor {
  */
 function fakeSandbox(script: (box: BoxScript) => Promise<void>): {
   create: (spec: { env: Record<string, string> }) => Promise<unknown>;
-  resume: (ref: string) => Promise<never>;
   destroy: (ref: string) => Promise<void>;
   creates: number;
 } {
@@ -87,13 +86,17 @@ function fakeSandbox(script: (box: BoxScript) => Promise<void>): {
       adapter.creates += 1;
       const root = mkdtempSync(join(tmpdir(), "vendo-fakebox-"));
       boxRoots.push(root);
-      const routes = createTurnRoutes({
+      const routes = createSessionRoutes({
         root,
-        // Unclaimed, so the host's first `/turn/hello` claims it — the same
+        // Unclaimed, so the host's first `/session/hello` claims it — the same
         // trust-on-first-use a freshly created machine offers.
         token: "",
         env: {},
-        runTurn: async (input: BoxScript) => script({ callTool: input.callTool, emit: input.emit }),
+        openSession: (input: BoxScript) => ({
+          async send() { await script({ callTool: input.callTool, emit: input.emit }); },
+          async interrupt() { /* the turn stops; the session lives */ },
+          async end() { /* the box is going away */ },
+        }),
       }) as BoxDoor;
       return {
         id: `box_${adapter.creates - 1}`,
@@ -109,18 +112,10 @@ function fakeSandbox(script: (box: BoxScript) => Promise<void>): {
           const answer = await routes.handle(req.method, req.path, req.headers ?? {}, payload);
           return { status: answer.status, headers: {}, body: encoder.encode(JSON.stringify(answer.body)) };
         },
-        async snapshot() {
-          return "fake:box_0";
-        },
         async destroy() { /* nothing outlives the test */ },
       };
     },
-    async resume(ref: string): Promise<never> {
-      // One turn on a fresh thread never resumes; a call here would mean the
-      // driver took a path this test does not describe.
-      throw new Error(`unexpected resume of ${ref}`);
-    },
-    async destroy() { /* no sleeping machine to reap */ },
+    async destroy() { /* no machine to reap by ref */ },
   };
   return adapter;
 }

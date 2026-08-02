@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 // The REAL box door, driven over a fake transport — see the block comment below.
 // A package subpath, not a relative climb: the door is the wire contract between
 // these two blocks, and `harnesses → apps` is a layer-legal edge.
-import { createTurnRoutes } from "@vendoai/apps/box-door";
+import { createSessionRoutes } from "@vendoai/apps/box-door";
 import { assertHarnessComposable } from "../compose.js";
 import { createTurnState } from "../harness-state.js";
 import { provideHarnessAdapters } from "../harness-sandbox.js";
@@ -26,17 +26,16 @@ const encoder = new TextEncoder();
 /**
  * A stand-in for a real box that speaks the REAL protocol: the fake machine's
  * `request()` is a thin transport adapter over the ACTUAL box door
- * (`packages/apps/box/turn-routes.mjs`), with only the SDK loop scripted.
+ * (`packages/apps/box/turn-routes.mjs`), with only the SDK session scripted.
  *
  * A hand-written fake let a live BLOCKER hide: it accepted `hello`
- * unconditionally, so it modelled a protocol the real box does not implement and
- * the resume-after-sweep 401 was invisible here. Driving the real door means that
- * class cannot come back.
+ * unconditionally, so it modelled a protocol the real box does not implement.
+ * Driving the real door means that class cannot come back.
  *
- * Two provider behaviours are modelled deliberately, because both are load
- * bearing: a CREATED machine boots with NO token (create-time envs never reach a
- * template's start command), and a RESUMED machine restores the supervisor's
- * MEMORY — so it comes back still holding the token it last accepted.
+ * One provider behaviour is modelled deliberately because it is load bearing: a
+ * CREATED machine boots with NO token, since create-time envs never reach a
+ * template's start command. There is no resumed-machine case any more — a
+ * conversation box is destroyed rather than snapshotted.
  */
 type BoxScript = (box: {
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -57,11 +56,9 @@ type BoxScript = (box: {
 interface FakeBox extends SandboxMachineLike {
   /** The materialized workspace on this machine's disk. */
   root: string;
-  /** The token this box currently accepts — the memory a resume restores. */
-  lastToken: string;
   destroyed: boolean;
-  snapshots: number;
-  snapshotRef?: string;
+  /** How many messages this box's live session has answered. */
+  messages: number;
   env: Record<string, string>;
 }
 
@@ -73,26 +70,13 @@ afterEach(() => {
 const diskPath = (root: string, workspacePath: string): string =>
   path.join(root, workspacePath.replace(/^\/+/, ""));
 
-function fakeSandbox(script: BoxScript): SandboxAdapterLike & {
-  boxes: FakeBox[];
-  failResume?: boolean;
-  resumedFrom: string[];
-} {
+function fakeSandbox(script: BoxScript): SandboxAdapterLike & { boxes: FakeBox[] } {
   const adapter = {
     boxes: [] as FakeBox[],
-    failResume: false,
-    resumedFrom: [] as string[],
     async create(spec: { env: Record<string, string> }) {
       return makeBox(adapter, script, spec.env);
     },
-    async resume(ref: string) {
-      adapter.resumedFrom.push(ref);
-      if (adapter.failResume) throw new VendoError("not-found", "snapshot gone");
-      const source = adapter.boxes.find((box) => box.snapshotRef === ref);
-      if (source === undefined) throw new VendoError("not-found", `no snapshot ${ref}`);
-      return makeBox(adapter, script, {}, source);
-    },
-    async destroy() { /* sleeping-machine teardown; nothing to do here */ },
+    async destroy() { /* teardown by ref; nothing to do here */ },
   };
   return adapter;
 }
@@ -101,68 +85,70 @@ function makeBox(
   adapter: { boxes: FakeBox[] },
   script: BoxScript,
   env: Record<string, string>,
-  source?: FakeBox,
 ): FakeBox {
   const root = mkdtempSync(path.join(tmpdir(), "vendo-fakebox-"));
   boxRoots.push(root);
-  // A resumed machine comes back with the disk it was snapshotted with.
-  if (source !== undefined) cpSync(source.root, root, { recursive: true });
 
   const box = {
     id: `box_${adapter.boxes.length}`,
     root,
-    // A CREATED machine boots with NO token: the provider does not hand
-    // create-time envs to a template's start command. A RESUMED one restores the
-    // supervisor's memory, token included.
-    lastToken: source?.lastToken ?? "",
     env,
     destroyed: false,
-    snapshots: 0,
+    messages: 0,
   } as FakeBox;
 
-  const routes = createTurnRoutes({
+  const routes = createSessionRoutes({
     root,
-    token: box.lastToken,
+    // A CREATED machine boots with NO token: the provider does not hand
+    // create-time envs to a template's start command, so the first hello claims it.
+    token: "",
     env: {},
-    runTurn: async (input: {
+    /** The live session. Opened once per box; `send()` plays the script. */
+    openSession: (input: {
       callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
       emit: (event: Record<string, unknown>) => void;
+      onFileWritten?: (path: string | undefined) => void;
       resume?: string;
       systemPrompt?: string;
-    }) => script({
-      callTool: input.callTool,
-      emit: input.emit,
-      ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
-      write: (workspacePath, text) => {
-        const target = diskPath(root, workspacePath);
-        mkdirSync(path.dirname(target), { recursive: true });
-        try {
-          chmodSync(target, 0o644);
-        } catch {
-          // Not there yet, or already writable.
-        }
-        writeFileSync(target, text);
+    }) => ({
+      async send() {
+        box.messages += 1;
+        await script({
+          callTool: input.callTool,
+          emit: input.emit,
+          ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
+          write: (workspacePath, text) => {
+            const target = diskPath(root, workspacePath);
+            mkdirSync(path.dirname(target), { recursive: true });
+            try {
+              chmodSync(target, 0o644);
+            } catch {
+              // Not there yet, or already writable.
+            }
+            writeFileSync(target, text);
+            // The real SDK's PostToolUse hook fires on every write; the fake must
+            // too, or the hot-path sync has nothing to react to.
+            input.onFileWritten?.(target);
+          },
+          kill: () => { box.destroyed = true; },
+          read: (workspacePath) => {
+            try {
+              return readFileSync(diskPath(root, workspacePath), "utf8");
+            } catch {
+              return undefined;
+            }
+          },
+          ...(input.resume === undefined ? {} : { resume: input.resume }),
+        });
       },
-      kill: () => { box.destroyed = true; },
-      read: (workspacePath) => {
-        try {
-          return readFileSync(diskPath(root, workspacePath), "utf8");
-        } catch {
-          return undefined;
-        }
-      },
-      ...(input.resume === undefined ? {} : { resume: input.resume }),
+      async interrupt() { /* the turn is cut short; the session lives */ },
+      async end() { /* the box is going away */ },
     }),
   }) as {
     handle: (method: string, pathname: string, headers: Record<string, string>, payload: unknown)
       => Promise<{ status: number; body: unknown }>;
   };
 
-  box.snapshot = async () => {
-    box.snapshots += 1;
-    box.snapshotRef = `fake:${box.id}`;
-    return box.snapshotRef;
-  };
   box.destroy = async () => { box.destroyed = true; };
   box.request = async (req) => {
     if (box.destroyed) throw new VendoError("not-found", "machine is gone");
@@ -170,11 +156,6 @@ function makeBox(
       ? {}
       : JSON.parse(typeof req.body === "string" ? req.body : decoder.decode(req.body)) as Record<string, unknown>;
     const answer = await routes.handle(req.method, req.path, (req.headers ?? {}) as Record<string, string>, payload);
-    // The host is the only caller, so it can observe what the box now accepts —
-    // which is how a resumed box knows the token its memory carries.
-    if (req.path === "/turn/hello" && answer.status === 200 && typeof payload["token"] === "string") {
-      box.lastToken = payload["token"];
-    }
     return { status: answer.status, headers: {}, body: encoder.encode(JSON.stringify(answer.body)) };
   };
 
@@ -352,96 +333,62 @@ describe("promptFor — the truth is ours", () => {
   });
 });
 
-describe("the session machine — one per thread, idle-TTL disposed (design §9)", () => {
+describe("one box per conversation, destroyed when it goes idle (design §9)", () => {
   const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-  test("the idle sweep SNAPSHOTS before destroying, and the next turn resumes that snapshot", async () => {
+  test("an idle box is DESTROYED, not snapshotted — there is no resume ref to keep", async () => {
+    // The snapshot existed to make a woken session resumable. A live session has
+    // no cold start to optimise away, so the box simply goes, and the store plus
+    // our transcript are what the next message recovers from.
     const sandbox = fakeSandbox(async () => undefined);
     const first = await boxMachine({ sandbox, threadId: "thr_idle", env: {}, idleTtlMs: 5 });
     await first.release();
     await wait(60);
 
-    expect(sandbox.boxes[0]?.snapshots).toBe(1);
     expect(sandbox.boxes[0]?.destroyed).toBe(true);
-
-    // No ref handed in: the sweep's own ref has to be reachable, or every swept
-    // session pays a re-seed — the exact thing the machine exists to prevent.
-    await boxMachine({ sandbox, threadId: "thr_idle", env: {} });
-    expect(sandbox.resumedFrom).toEqual(["fake:box_0"]);
+    // Nothing on the adapter was ever asked to snapshot or resume: the whole
+    // mechanism is gone, not merely unused.
+    expect("snapshot" in sandbox.boxes[0]!).toBe(false);
+    expect("resume" in sandbox).toBe(false);
   });
 
-  test("a snapshot the provider dropped re-seeds on a FRESH machine instead of failing", async () => {
-    const sandbox = fakeSandbox(async () => undefined);
-    const first = await boxMachine({ sandbox, threadId: "thr_gone", env: {}, idleTtlMs: 5 });
-    await first.release();
-    await wait(60);
-    sandbox.failResume = true;
-    await boxMachine({ sandbox, threadId: "thr_gone", env: {} });
-    expect(sandbox.resumedFrom).toEqual(["fake:box_0"]);
-    // box_0 was swept, the resume failed, so a brand-new machine took over.
-    expect(sandbox.boxes.filter((box) => !box.destroyed)).toHaveLength(1);
-  });
-
-  test("a machine still in use is NOT swept", async () => {
+  test("a box whose conversation is mid-message is NOT destroyed", async () => {
     const sandbox = fakeSandbox(async () => undefined);
     await boxMachine({ sandbox, threadId: "thr_busy", env: {}, idleTtlMs: 5 });
-    // Never released: the turn is still running.
+    // Never released: the message is still running.
     await wait(60);
     expect(sandbox.boxes[0]?.destroyed).toBe(false);
-    expect(sandbox.boxes[0]?.snapshots).toBe(0);
   });
 
-  test("B1 · a woken box that refuses the rotation is abandoned, and the turn re-seeds", async () => {
-    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "session", sessionId: "sess_new" }); });
-    const first = await boxMachine({ sandbox, threadId: "thr_stubborn", env: {}, idleTtlMs: 5 });
-    await first.release();
-    await wait(60);
-    // The woken supervisor forgets the token it slept with — a rotation it cannot
-    // authenticate. The thread must NOT be stranded.
-    const woken = sandbox.boxes[0]!;
-    woken.lastToken = "a-token-the-host-never-had";
-    const second = await boxMachine({ sandbox, threadId: "thr_stubborn", env: {} });
-    // A fresh machine took over, and it says so — the harness re-seeds instead of
-    // asking the SDK to resume a session no disk holds.
-    expect(second.carriesSession).toBe(false);
-    expect(sandbox.boxes.filter((box) => !box.destroyed)).toHaveLength(1);
-  });
-
-  test("B1 · a woken box the host CAN authenticate keeps its session — no re-seed", async () => {
+  test("a WARM box carries the conversation, so the next message neither re-materializes nor re-seeds", async () => {
     const sandbox = fakeSandbox(async () => undefined);
-    const first = await boxMachine({ sandbox, threadId: "thr_woken", env: {}, idleTtlMs: 5 });
+    const first = await boxMachine({ sandbox, threadId: "thr_warm", env: {}, idleTtlMs: 5_000 });
+    // A box only becomes warm once it has answered a message.
+    expect(first.carriesSession).toBe(false);
+    await first.send({ prompt: "hi", tools: [], callTool: async () => ({ status: "ok", output: {} }), emit: () => undefined });
     await first.release();
-    await wait(60);
-    const second = await boxMachine({ sandbox, threadId: "thr_woken", env: {} });
-    expect(sandbox.resumedFrom).toEqual(["fake:box_0"]);
+
+    const second = await boxMachine({ sandbox, threadId: "thr_warm", env: {} });
     expect(second.carriesSession).toBe(true);
+    expect(sandbox.boxes).toHaveLength(1);
   });
 
-  test("m3 · a machine acquired while an older sweep is mid-snapshot is left alone", async () => {
+  test("a box the provider reaped is replaced, and the replacement says it carries nothing", async () => {
     const sandbox = fakeSandbox(async () => undefined);
-    const first = await boxMachine({ sandbox, threadId: "thr_slow", env: {}, idleTtlMs: 5 });
-    const old = sandbox.boxes[0]!;
-    let releaseSnapshot = (): void => undefined;
-    const held = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
-    old.snapshot = async () => {
-      old.snapshots += 1;
-      old.snapshotRef = `fake:${old.id}`;
-      await held;
-      return old.snapshotRef;
-    };
+    const first = await boxMachine({ sandbox, threadId: "thr_reaped", env: {}, idleTtlMs: 5_000 });
+    await first.send({ prompt: "hi", tools: [], callTool: async () => ({ status: "ok", output: {} }), emit: () => undefined });
     await first.release();
-    await wait(60);
-    // The sweep has taken the slot but is still snapshotting. A turn arriving now
-    // must get a machine of its own that the finishing sweep does not touch.
-    const second = await boxMachine({ sandbox, threadId: "thr_slow", env: {} });
-    releaseSnapshot();
-    await wait(40);
+    // Gone without us asking — a provider reap, an idle policy on their side.
+    sandbox.boxes[0]!.destroyed = true;
+
+    const second = await boxMachine({ sandbox, threadId: "thr_reaped", env: {} });
+    // The harness must re-materialize and re-seed rather than resume a session
+    // no disk holds, and `carriesSession: false` is what tells it to.
+    expect(second.carriesSession).toBe(false);
     expect(sandbox.boxes).toHaveLength(2);
-    expect(sandbox.boxes[1]?.destroyed).toBe(false);
-    await second.release();
   });
 
-  test("m4 · the pool keys on turn.threadId when the runtime supplies one", async () => {
+  test("m4 · the box map keys on turn.threadId when the runtime supplies one", async () => {
     const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "hi" }); });
     const harness = claudeCode({ sandbox });
     for (const messageId of ["m_a", "m_b"]) {
@@ -464,12 +411,12 @@ describe("the session machine — one per thread, idle-TTL disposed (design §9)
     expect(sandbox.boxes).toHaveLength(2);
   });
 
-  test("§1.4 · no machine lease is held while a guarded call waits", async () => {
+  test("§1.4 · no box is held immune while a guarded call waits for a human", async () => {
     const sandbox = fakeSandbox(async () => undefined);
-    let leasedDuringCall: boolean | undefined;
+    let aliveDuringCall: boolean | undefined;
     const machine = await boxMachine({ sandbox, threadId: "thr_lease", env: {}, idleTtlMs: 20 });
-    // The driver marks the machine unleased around every host-side call, so the
-    // idle sweep may reclaim it exactly as it may reclaim an idle one.
+    // The driver arms the idle timer around every host-side call, so a box may be
+    // reclaimed under an approval wait exactly as it may under an idle gap.
     const box = sandbox.boxes[0]!;
     const request = box.request.bind(box);
     box.request = async (req) => {
@@ -485,20 +432,20 @@ describe("the session machine — one per thread, idle-TTL disposed (design §9)
       }
       return request(req);
     };
-    const running = machine.run({
+    const running = machine.send({
       prompt: "p",
       tools: [],
       callTool: async () => {
-        // NOTHING releases the machine here — the driver itself must have
-        // dropped the lease and armed the sweep for the duration of the call.
+        // NOTHING releases the box here — the driver itself must have armed the
+        // idle timer for the duration of the call.
         await wait(60);
-        leasedDuringCall = !sandbox.boxes[0]!.destroyed;
+        aliveDuringCall = !sandbox.boxes[0]!.destroyed;
         return { status: "ok", output: {} };
       },
       emit: () => undefined,
     }).catch(() => undefined);
     await running;
-    expect(leasedDuringCall).toBe(false);
+    expect(aliveDuringCall).toBe(false);
   });
 });
 
@@ -552,7 +499,7 @@ describe("§1.3 · a prefix truncation uses the SDK's NATIVE rewind", () => {
       const box = await original(spec);
       const request = box.request.bind(box);
       box.request = async (req) => {
-        if (req.path === "/turn/start" && req.body !== undefined) {
+        if (req.path === "/session/message" && req.body !== undefined) {
           const body = JSON.parse(decoder.decode(req.body as Uint8Array));
           resumes.push({ resume: body["resume"], resumeAt: body["resumeAt"] });
         }
@@ -620,7 +567,7 @@ describe("a turn on a real box wire", () => {
     expect(answered).toEqual({ status: "denied", reason: "You'll need to approve that." });
   });
 
-  test("D2 · Turn.system reaches the box WHOLE, with the workspace brief after it", async () => {
+  test("D2 · Turn.system reaches the box WHOLE, with the embedding note after it", async () => {
     // The D2 plumbing question, measured rather than read: the composed brief
     // (which carries "Never claim a tool ran unless its result confirms that it
     // did") is what `vendo()` thinks with, and it must be what the box thinks
@@ -629,23 +576,25 @@ describe("a turn on a real box wire", () => {
     const sandbox = fakeSandbox(async (box) => { brief = box.systemPrompt; });
     await drain(claudeCode({ sandbox }), makeTurn().turn);
     expect(brief).toContain("PRODUCT BRIEF");
-    // Ours first, the workspace conventions after — never the other way round,
-    // and never instead.
+    // Ours first, the embedding note after — never the other way round, and
+    // never instead. The note is now a few lines, not the old wall: Claude Code
+    // already knows how to work in a directory, so all we add is the EMBEDDING.
     expect(brief?.startsWith("PRODUCT BRIEF")).toBe(true);
-    expect(brief).toContain("Your workspace");
+    expect(brief).toContain("embedded in this product");
+    expect(brief).toContain("app.vendo");
   });
 
   test("the tool listing the box sees is the CURATED one, with its schemas", async () => {
     let projected: unknown;
     const sandbox = fakeSandbox(async () => undefined);
     const { turn } = makeTurn();
-    // Intercept what the driver sends to /turn/start.
+    // Intercept what the driver sends to /session/message.
     const original = sandbox.create.bind(sandbox);
     sandbox.create = async (spec) => {
       const box = await original(spec);
       const request = box.request.bind(box);
       box.request = async (req) => {
-        if (req.path === "/turn/start" && req.body !== undefined) {
+        if (req.path === "/session/message" && req.body !== undefined) {
           projected = JSON.parse(decoder.decode(req.body as Uint8Array))["tools"];
         }
         return request(req);
@@ -793,16 +742,50 @@ describe("a turn on a real box wire", () => {
     expect(sandbox.boxes).toHaveLength(1);
   });
 
-  test("a second turn resumes the native session rather than re-seeding", async () => {
-    let resumedWith: string | undefined;
+  test("a second turn does not RESUME anything — it continues a session that never stopped", async () => {
+    // This is the cc-native change, stated as the thing it replaced. The old
+    // shape opened a NEW query() per message and handed it `resume: <sessionId>`
+    // to buy back the memory it had just thrown away. A live session never threw
+    // it away, so there is nothing to resume: the box is opened once and answers
+    // both messages.
+    const opens: Array<string | undefined> = [];
     const sandbox = fakeSandbox(async (box) => {
-      resumedWith = box.resume;
+      opens.push(box.resume);
       box.emit({ type: "session", sessionId: "sess_1" });
     });
     const harness = claudeCode({ sandbox });
     await drain(harness, makeTurn({ thread: "thr_resume" }).turn);
     await drain(harness, makeTurn({ thread: "thr_resume", state: JSON.stringify({ sessionId: "sess_1" }) }).turn);
-    expect(resumedWith).toBe("sess_1");
+
+    // One box, one session, two messages — and no resume ref on either.
+    expect(sandbox.boxes).toHaveLength(1);
+    expect(sandbox.boxes[0]?.messages).toBe(2);
+    expect(opens).toEqual([undefined, undefined]);
+  });
+
+  test("a second turn on a WARM box does not re-materialize the workspace", async () => {
+    // Proof 1's other half: the box's disk is the conversation's working copy, so
+    // resetting it between messages would throw away exactly what the live
+    // session is holding open.
+    const resets: number[] = [];
+    const sandbox = fakeSandbox(async (box) => { box.emit({ type: "text", delta: "ok" }); });
+    const original = sandbox.create.bind(sandbox);
+    sandbox.create = async (spec) => {
+      const box = await original(spec);
+      const request = box.request.bind(box);
+      box.request = async (req) => {
+        if (req.path === "/session/workspace" && req.body !== undefined) {
+          const body = JSON.parse(decoder.decode(req.body as Uint8Array)) as { reset?: boolean };
+          if (body.reset === true) resets.push(1);
+        }
+        return request(req);
+      };
+      return box;
+    };
+    const harness = claudeCode({ sandbox });
+    await drain(harness, makeTurn({ thread: "thr_mat", files: { "/user/memory/a.md": "one" } }).turn);
+    await drain(harness, makeTurn({ thread: "thr_mat", files: { "/user/memory/a.md": "one" } }).turn);
+    expect(resets).toHaveLength(1);
   });
 
   test("a composed adapter reaches a boot-constructed harness through the slot", async () => {
