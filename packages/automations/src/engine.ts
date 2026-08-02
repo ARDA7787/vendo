@@ -863,11 +863,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     const agentController = trigger.run.kind === "agentic" ? new AbortController() : undefined;
     if (agentController !== undefined) abortControllers.set(runId, agentController);
     const done = (async (): Promise<void> => {
-      // Build contract §9.1 — asserting the owner's orgs is an I/O call now
-      // (the host's own query), so it happens INSIDE the run, not while minting
-      // its id: `launchRun` stays synchronous so the tick can collect run ids
-      // without blocking on any single automation.
-      const ctx = await runContext(record, app.subject);
+      // Build contract §9.1 — asserting the owner's orgs is an I/O call (the
+      // host's own query), so it happens INSIDE the run, not while minting its
+      // id: `launchRun` stays synchronous so the tick can collect run ids
+      // without blocking on any single automation. It is also fallible, which
+      // is why the resolution sits inside the guarded block below and never
+      // above it — a throw out here has no run row to attach itself to.
       try {
         // §9.9's gate runs BEFORE any step or agentic dispatch, and its two
         // outcomes both end the run LOUDLY — a persisted error row plus its own
