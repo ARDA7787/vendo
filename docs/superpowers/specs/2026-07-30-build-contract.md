@@ -187,6 +187,29 @@ at the end shows nothing until it finishes — a bench-visible quality
 difference, not a correctness one). Harnesses never yield view events;
 `HarnessEvent` stays closed.
 
+*Amendment 2026-08-03 (claudeCode() redesign, D4 files-first).* The
+"progressive query-resolver data fill" above was specified here and **never
+wired**: `fillData` had no caller in the repo, so every harness-authored app
+painted its structure and showed no data at all (measured in a live boxed run).
+Wiring it needed an app half, because the fill runs the app's queries as the
+caller and a file-authored app had no row to run them against: `AppsRuntime
+.authored({ appId, compiled }, ctx)` upserts the row through the engine's own
+writer and resolves the tree through the same guard-bound caller `open()` uses
+(`venue: "app"`, one guard decision per query), which is also what makes
+`vendo_apps_open` and the Apps list work for an app nobody called
+`vendo_apps_create` for. The seam now emits the skeleton FIRST and re-emits with
+data on the same stream id, so resolving real queries cannot cost the
+seconds-to-skeleton promise. `authored()` reads an existing row only when the
+caller may write it — an unscoped read let one subject's file land under another
+subject's appId and execute a `fn:` query on their machine. Known gaps at
+landing: island admission (`prepareIslands`) does not run on this path, so
+`validate` is the review floor; a deleted `app.vendo` leaves a listable row
+(`vendo_apps_delete` is the real verb); no per-save history entry; a served
+(`ui: "http"`) app would be demoted if a file were written for its id
+(experimental, off by default); `authored()` bypasses `persistEdit`, so
+`assertCurrent` and the sponsor's own re-bind do not run (sponsorship still
+fails closed at fire time via the intent-hash check).
+
 ## 2. Layering (dependency-guard rows)
 
 ```
