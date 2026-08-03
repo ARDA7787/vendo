@@ -178,7 +178,27 @@ describe("vendo sync", () => {
     });
 
     expect(exit).toBe(2);
-    expect(messages.errors).toContain("--report requires VENDO_API_KEY or --key");
+    expect(messages.errors).toContain("vendo sync: --report needs a Vendo Cloud key — run `vendo login`, set VENDO_API_KEY, or pass --key.");
+  });
+
+  // Self-serve audit B6: a keyless --report used to complain and exit 0, so a
+  // CI reporting lane stayed green for as long as it never reported anything.
+  it("a keyless --report is a failed run, not a note (exit 1)", async () => {
+    vi.stubEnv("VENDO_API_KEY", "");
+    const messages = captureOutput();
+    const fetchImpl = vi.fn() as typeof fetch;
+
+    const exit = await runSync({
+      targetDir: ".",
+      report: true,
+      output: messages.output,
+      fetchImpl,
+      sync: async () => report(),
+    });
+
+    expect(exit).toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(messages.errors).toContain("vendo sync: --report needs a Vendo Cloud key — run `vendo login`, set VENDO_API_KEY, or pass --key.");
   });
 
   it("warns when report push rejects and preserves blast-radius exit three", async () => {
@@ -220,6 +240,19 @@ describe("vendo sync", () => {
     expect(await runSync({ targetDir: ".", output, sync: async () => failed })).toBe(2);
     expect(errors.join("\n")).toContain("src/app/page.tsx:4");
     expect(errors.join("\n")).toContain("extract it into a component and wrap that");
+  });
+
+  it("keeps wrapper errors at exit two under --strict as well", async () => {
+    const failed = {
+      ...report(),
+      remixableErrors: [
+        "src/app/page.tsx:4 — <Remixable> must wrap exactly one component element; extract it into a component and wrap that",
+      ],
+    };
+    // Exit 2 in ANY mode: --strict adds nothing here because the failure is
+    // already hard — a wrapper the host marked remixable that cannot capture
+    // means the remix silently would not exist.
+    expect(await runSync({ targetDir: ".", strict: true, output: captureOutput().output, sync: async () => failed })).toBe(2);
   });
 
   it("prints one line per pruned stale baseline", async () => {
@@ -374,14 +407,14 @@ describe("vendo sync", () => {
       sync: async () => report(),
     });
 
-    expect(exit).toBe(0);
+    expect(exit).toBe(1);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(messages.errors).toHaveLength(0);
     expect(JSON.parse(messages.logs[0]!)).toMatchObject({
-      ok: true,
-      exitCode: 0,
+      ok: false,
+      exitCode: 1,
       impact: [],
-      notes: ["judgment: skipped — this run cannot ask (pass `--ai` to judge non-interactively, `--no-ai` to say so explicitly)", "--report requires VENDO_API_KEY or --key"],
+      notes: ["judgment: skipped — this run cannot ask (pass `--ai` to judge non-interactively, `--no-ai` to say so explicitly)", "vendo sync: --report needs a Vendo Cloud key — run `vendo login`, set VENDO_API_KEY, or pass --key."],
     });
   });
 
