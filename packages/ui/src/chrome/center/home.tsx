@@ -1,0 +1,112 @@
+/** The center's home shelf (redesign spec §10 pick HB, §14 pick CS2).
+ *
+ *  The home is greeting · suggestion rows · SHELF · composer, and the shelf is
+ *  the marquee: your apps as live tiles — real rendered views, not names — with
+ *  asking still first. Day zero there is nothing to render, so the same shelf
+ *  advertises what the product does as dashed ghost tiles built from the host's
+ *  own starter prompts; tapping one runs the first build, and the ghosts retire
+ *  for good the moment an app exists.
+ *
+ *  The greeting, the suggestion rows and the composer are the thread's own
+ *  landing (restyled into rows by the center's stylesheet) — this file is only
+ *  the shelf, mounted through VendoThread's `composerAccessory` seam so the
+ *  composer stays exactly where it sits in a running conversation.
+ */
+import type { AppDocument } from "@vendoai/core";
+import { useMemo } from "react";
+import { useVendoContext } from "../../context.js";
+import { useApp } from "../../hooks/use-app.js";
+import { AppFrame } from "../../tree/frames.js";
+import { defaultSlotSuggestions } from "../discoverability.js";
+import { deliverPrefill } from "../overlay-registry.js";
+import type { VendoSuggestionCard } from "../thread/index.js";
+
+/** How many live tiles the home carries. The shelf is a marquee, not the Apps
+ *  page: each tile is a REAL mounted app (a boot, a poll, sometimes an iframe),
+ *  so the home shows the newest few and the Apps door shows everything. */
+const SHELF_LIMIT = 4;
+
+/** One tile's inert preview: the app's own surface, mounted through the same
+ *  frame every other Vendo surface uses, and made unreachable — the tile's
+ *  affordance is "open this", never "use this at 55%". */
+function TilePreview({ appId }: { appId: string }) {
+  const { components } = useVendoContext();
+  const { surface } = useApp(appId);
+  if (!surface) return <span className="fl-tile-skel" />;
+  // No keepalive and no action handler: a preview must not hold a machine warm
+  // (or accept a click) on behalf of an app nobody has opened yet.
+  return <span className="fl-tile-scale"><AppFrame surface={surface} components={components} /></span>;
+}
+
+/** A live app tile. The preview is decorative (`aria-hidden`) and inert; the
+ *  hit area is one real button over the tile, so nothing interactive is ever
+ *  nested inside a button and assistive tech is offered one honest action. */
+export function AppTile({ app, onOpen, children }: {
+  app: AppDocument;
+  onOpen(): void;
+  /** Secondary actions (the Apps page's change/share/remove row). */
+  children?: React.ReactNode;
+}) {
+  return (
+    <article className="fl-tile">
+      <div className="fl-tile-view" aria-hidden="true"><TilePreview appId={app.id} /></div>
+      <button type="button" className="fl-tile-hit" aria-label={`Open ${app.name}`} onClick={onOpen} />
+      <div className="fl-tile-cap">
+        <span className="fl-tile-name">{app.name}</span>
+        {children}
+      </div>
+    </article>
+  );
+}
+
+/** Host starter prompts, normalized. §14: ghost prompts are host-authorable
+ *  through the starter-suggestion machinery that already exists — the same
+ *  `suggestions` the landing renders — with the generic starters as the
+ *  fallback for a host that has not written its own. */
+function ghostPrompts(suggestions: (string | VendoSuggestionCard)[] | undefined): VendoSuggestionCard[] {
+  const source = suggestions !== undefined && suggestions.length > 0 ? suggestions : defaultSlotSuggestions;
+  return source
+    .slice(0, 3)
+    .map(entry => (typeof entry === "string" ? { title: entry, description: "" } : entry));
+}
+
+export interface AppShelfProps {
+  apps: AppDocument[];
+  /** Opens an app full in the column. */
+  onOpen(appId: string): void;
+  /** Host starter prompts, for the day-zero ghosts. */
+  suggestions?: (string | VendoSuggestionCard)[];
+  /** The center's prefill scope, so a ghost's prompt lands in THIS column's
+   *  composer (§13 strangers: the center never reaches for the overlay). */
+  scope: symbol;
+}
+
+export function AppShelf({ apps, onOpen, suggestions, scope }: AppShelfProps) {
+  const shelf = useMemo(() => apps.slice(0, SHELF_LIMIT), [apps]);
+  if (shelf.length === 0) {
+    const ghosts = ghostPrompts(suggestions);
+    return (
+      <section className="fl-shelf fl-shelf--ghost" aria-label="What you could build">
+        {ghosts.map(ghost => (
+          <button
+            type="button"
+            className="fl-tile fl-tile--ghost"
+            key={ghost.title}
+            onClick={() => deliverPrefill({ prompt: ghost.prompt ?? ghost.title, send: true }, { scope })}
+          >
+            <span className="fl-tile-skel" aria-hidden="true" />
+            <span className="fl-tile-cap">
+              <span className="fl-tile-name">{ghost.title}</span>
+              <small className="fl-tile-hint">{ghost.description ? `${ghost.description} · ` : ""}tap to build</small>
+            </span>
+          </button>
+        ))}
+      </section>
+    );
+  }
+  return (
+    <section className="fl-shelf" aria-label="Your apps">
+      {shelf.map(app => <AppTile app={app} key={app.id} onOpen={() => onOpen(app.id)} />)}
+    </section>
+  );
+}
