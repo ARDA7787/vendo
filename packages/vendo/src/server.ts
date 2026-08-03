@@ -420,10 +420,10 @@ export interface CreateVendoConfig {
       default. */
   development?: boolean;
   /** Unified try surface — the project root the `.vendo/` profile is read
-      under: the actions files (tools.json/overrides.json via the actions
-      block's `dir`), theme.json, brief.md, catalog.json, the
-      per-generation design-rules.md read, and the remixable pin baselines
-      all resolve against it. Unset keeps today's
+      under: the actions files (tools.json/overrides.json, read by the actions
+      registry this composition builds with `dir`), theme.json, brief.md,
+      catalog.json, the per-generation design-rules.md read, and the remixable
+      pin baselines all resolve against it. Unset keeps today's
       behavior (the process cwd), so `npx vendo try` can mount a real
       composition over a profile living in a temp directory without chdir. */
   profileDir?: string;
@@ -1052,6 +1052,11 @@ function hostedSessionOps(store: HostedStore, touchDebounceMs: number): SessionO
     },
   };
 }
+
+/** Per-process latch for the hosted-store automations notice below — a dev
+    server recomposes on nearly every request, and the paragraph is a boot
+    fact, not a per-request one (self-serve audit F7). */
+let hostedStoreNoticePrinted = false;
 
 /** A host may also pass hostedStore({...}) explicitly via createVendo({ store });
     the session doors it carries are then used as-is instead of the local SQL
@@ -2785,9 +2790,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // store, Cloud is the firing authority for those two kinds; host-event automations
   // (vendo.emit) are untouched — they're invoked directly by this host process, not
   // scheduled or delivered, so there's nothing for Cloud to duplicate. One warn per
-  // composition (not per tick), same posture as hostedSessionOps' door warn above.
+  // PROCESS (self-serve audit F7: a dev server recomposes on nearly every request,
+  // so "once per composition" printed this paragraph 29 times in one short
+  // session), same latch posture as hostedSessionOps' door warn above.
   const hostedStoreComposed = isHostedStore(store);
-  if (hostedStoreComposed) {
+  if (hostedStoreComposed && !hostedStoreNoticePrinted) {
+    hostedStoreNoticePrinted = true;
     console.warn(
       "[vendo] Vendo Cloud is the hosted store for this deployment: schedule and external-trigger "
       + "automations are Cloud's job (its scheduler and Composio delivery already fire them for this "
