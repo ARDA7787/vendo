@@ -30,10 +30,23 @@ export interface GrantSetPermission {
   /** The pending guard approval this row settles. */
   approvalId: string;
   tool: string;
-  /** The tool descriptor's one-line description. */
-  description?: string;
   risk: RiskLabel;
 }
+
+/** What a permission LETS the automation do, in our words. spec §16 law 3 —
+ *  a grant row used to print the tool descriptor's `description`, and that
+ *  sentence is authored for the MODEL: demo-bank's own catalog put "Amounts are
+ *  integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once before
+ *  displaying" on a bank customer's consent card (live, `standing-01-pending`).
+ *  The row now says the verb and the thing — the cadence is the card's own
+ *  plain-words line — and the only sentence allowed under it is one the HOST
+ *  wrote for people (`ToolMeta.description`). Shared with the adoption card so
+ *  both consent surfaces speak one vocabulary. */
+export const RISK_WORD: Record<RiskLabel, string> = {
+  read: "Reads",
+  write: "Changes",
+  destructive: "Changes",
+};
 
 export interface GrantSetCardProps {
   /** The automation's display name. */
@@ -93,12 +106,15 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
         <CardList className="fl-grants">
           {permissions.map(permission => {
             const presentation = toolPresentation(permission.tool, undefined, tools[permission.tool]);
-            const description = (presentation.description ?? permission.description ?? "").trim();
+            // Host-authored only: `toolPresentation` carries `ToolMeta.description`
+            // (the host's own sentence) or one we compose ourselves — never the
+            // descriptor's model-facing line.
+            const description = (presentation.description ?? "").trim();
             return (
               <li className="fl-grant" key={permission.approvalId}>
                 <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
-                  <b>{presentation.title}</b>
+                  <b>{RISK_WORD[permission.risk]}: {presentation.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
                 </span>
                 {state === "approved" ? (

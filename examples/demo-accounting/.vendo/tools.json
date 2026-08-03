@@ -26,7 +26,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_getClient",
@@ -129,7 +129,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_getDashboard",
@@ -191,7 +191,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_listActivity",
@@ -248,7 +248,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_listClientDocuments",
@@ -323,7 +323,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_listClientMessages",
@@ -384,7 +384,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_listClients",
@@ -494,7 +494,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_listDeadlines",
@@ -608,7 +608,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_listDemoChips",
@@ -655,7 +655,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_resetDemo",
@@ -717,7 +717,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_sendClientMessage",
@@ -792,7 +792,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_setDocumentStatus",
@@ -895,11 +895,11 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     },
     {
       "name": "host_simulateClientUpload",
-      "description": "Demo control: simulate a client uploading a file for a missing document. variant 'correct' lands the document in status received; variant 'wrong' (e.g. a personal bank statement instead of the business one) lands it in needs_review with an explanatory note. Also records a client-to-firm message and activity.",
+      "description": "Demo control: simulate a client uploading a file for a missing document. Also records a client-to-firm message and activity.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1027,7 +1027,7 @@
           }
         }
       },
-      "srcHash": "sha256:41d8566da3857a4ce17ad6fc404d7510b7b1409af0f1740beb041d32aa7de98c"
+      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
     }
   ]
 }
