@@ -248,7 +248,11 @@ test("the center carries its two doors and a needs-you section that clears", asy
   await expect(needs.getByRole("button")).toHaveCount(1);
 
   // Deciding the ask in the strip above the conversation settles the rail too:
-  // one poller, one count, so the two surfaces cannot disagree.
+  // the two surfaces cannot end up disagreeing about the count.
+  //
+  // This is EVENTUAL CONSISTENCY, which independent pollers would also give —
+  // it is NOT the H15 one-shared-poller gate, and this test never was. That
+  // claim needs a request COUNT and lives in approvals-poller-proof.spec.ts.
   await page.locator(".fl-waiting-strip > summary").click();
   await page.getByRole("button", { name: "Approve" }).first().click();
   await expect(needs).toHaveCount(0);
