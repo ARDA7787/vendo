@@ -69,6 +69,19 @@ export function allowLabel(count: number): string {
 const revokePronoun = (count: number): string =>
   count === 1 ? "it" : count === 2 ? "either" : "any of them";
 
+/** The consumer's half of a refusal (spec §16 law 3) — the same defect the
+ *  connect card carried: this card rendered whatever `onDecide` threw, and the
+ *  wire's sentences carry app and grant-set ids. `refusalCopy` in adoption-card
+ *  is the pattern; the developer sentence keeps its home in the server log. */
+function refusalCopy(reason: unknown): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  if (code === "not-found") return "This automation isn’t available any more.";
+  if (code === "forbidden") return "Only someone who can edit this app can allow these.";
+  if (code === "conflict") return "Someone else already decided this one.";
+  if (code === "cloud-required") return "Standing access isn’t turned on for this workspace yet.";
+  return "That didn’t go through — nothing was granted. Try again in a moment.";
+}
+
 export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCardProps) {
   const tools = useVendoTools();
   const [busy, setBusy] = useState(false);
@@ -81,7 +94,7 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
     try {
       await onDecide(approve);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalCopy(reason));
     } finally {
       setBusy(false);
     }

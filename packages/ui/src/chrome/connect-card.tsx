@@ -15,6 +15,7 @@ import {
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { completeConnection } from "./connect-dock.js";
+import { developmentMode } from "./dev-mode.js";
 import { toolkitDisplayName } from "./humanize.js";
 
 export interface ConnectCardProps {
@@ -35,6 +36,32 @@ export interface ConnectCardProps {
 }
 
 type Phase = "idle" | "connecting" | "connected" | "failed";
+
+/**
+ * The consumer's half of a failed connect (spec §16 law 3, the consumer-voice
+ * law). The keyless (default OSS) deployment refuses with a sentence written for
+ * the HOST DEVELOPER — "pass a Composio connector (composioConnector) to
+ * createVendo({ connectors }) or set VENDO_API_KEY" — and rendering
+ * `reason.message` put that TypeScript call and that environment variable in
+ * front of whoever was trying to connect their Slack. The developer sentence
+ * keeps its home (the server's own error, and the dev-mode console below); the
+ * person is told what it means for THEM. Same treatment as the adoption card
+ * (`refusalCopy`), the Share dialog and the slot.
+ */
+function refusalCopy(reason: unknown, displayName: string): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  // Nothing is configured behind this button, so there is no retry that helps.
+  if (code === "not-implemented" || code === "cloud-required") {
+    return `Connecting ${displayName} isn’t set up here yet — there’s nothing you can do from this screen.`;
+  }
+  // Guard/policy refusals: the person CAN act, but not from here as they are.
+  if (code === "blocked") return `Sign in first, then connect ${displayName}.`;
+  if (code === "forbidden") return `You don’t have access to connect ${displayName} here.`;
+  if (code === "not-found") return `${displayName} isn’t available to connect any more.`;
+  // The OAuth lifecycle failures (failed, expired, timed out) all mean one
+  // thing to the person: it did not connect, and trying again is fair.
+  return `We couldn’t finish connecting ${displayName} — nothing changed. You can try again.`;
+}
 
 /** 04-actions §3 / 08-ui §4 — the inline connect card: a connector call ended
  * `connect-required`, so offer the broker's OAuth redirect in place, poll the
@@ -109,7 +136,12 @@ export function ConnectCard({ connector, toolkit, message, onConnected, live = t
     } catch (reason) {
       if (cancelled.current) return;
       setPhase("failed");
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalCopy(reason, displayName));
+      // Where a developer reads it: the host who forgot the connector needs the
+      // sentence that names what to configure, and only they should see it.
+      if (developmentMode()) {
+        console.warn(`[vendo] ConnectCard "${toolkit}": ${reason instanceof Error ? reason.message : String(reason)}`);
+      }
     }
   };
 
