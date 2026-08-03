@@ -198,6 +198,19 @@ function audit(id: string): AuditEvent {
   };
 }
 
+/** RULING 21 — the fixture above still could not express CR-2's class: every
+ *  VALUE in it is a number or a plain word, so a ledger that humanized only the
+ *  LABELS still passed the law sweep. This is the real audit shape of the tool
+ *  a person's rail sees most — `vendo_apps_edit`, whose args are an APP ID and
+ *  the instruction the person typed. */
+export function appEditAudit(): AuditEvent {
+  return {
+    ...audit("aud_edit"),
+    tool: "vendo_apps_edit",
+    inputPreview: 'vendo_apps_edit {"appId":"app_9a3f2b1c","instruction":"add a chart"}',
+  };
+}
+
 function run(): RunRecord {
   return {
     id: "run_1",
@@ -276,7 +289,7 @@ export async function createWireServer(options: WireServerOptions = {}) {
     ],
     automations: [{ app: automationApp, enabled: false }] satisfies AutomationEntry[],
     runs: [run()],
-    events: [audit("aud_1"), audit("aud_2"), audit("aud_3")],
+    events: [audit("aud_1"), audit("aud_2"), audit("aud_3"), appEditAudit()],
     threads: new Map<string, Thread>([
       [
         "thr_1",

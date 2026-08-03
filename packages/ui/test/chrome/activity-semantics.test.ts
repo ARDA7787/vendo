@@ -8,6 +8,7 @@ import {
   kindGlyph,
   outcomeLabel,
 } from "../../src/chrome/activity-semantics.js";
+import { activityDetail } from "../../src/chrome/activity-ledger.js";
 
 describe("formatRelativeAuditTime", () => {
   const now = new Date("2026-07-18T10:00:00.000Z");
@@ -174,5 +175,35 @@ describe("describeActivity", () => {
       detail: { harness: "claude-code", subagent: { purpose: "build the app" } },
     }));
     expect(described.action).toBe("Specialist hired");
+  });
+});
+
+/** CR-2 — the ledger's detail line humanized the LABELS and let the VALUES
+ *  through verbatim, so a person's own activity rail read
+ *  "App id app_9a3f2b1c · Instruction add a chart". */
+describe("activityDetail — the values are consumer copy too", () => {
+  const preview = (tool: string, args: unknown) => activityDetail({ tool, inputPreview: `${tool} ${JSON.stringify(args)}` });
+
+  it("drops an id-shaped value and keeps the words a person wrote", () => {
+    expect(preview("vendo_apps_edit", { appId: "app_9a3f2b1c", instruction: "add a chart" }))
+      .toBe("Instruction add a chart");
+  });
+
+  it("says nothing at all when every value is an id", () => {
+    expect(preview("vendo_apps_open", { appId: "app_9a3f2b1c", threadId: "thr_18f0" })).toBeUndefined();
+  });
+
+  it("keeps ordinary values that merely contain an underscore", () => {
+    expect(preview("host_invoices_list", { status: "past_due" })).toBe("Status past_due");
+  });
+
+  it("stays a SCANNABLE line — three fields at the 400-char value cap is 1.2 kB", () => {
+    const detail = preview("host_invoices_list", {
+      note: "x".repeat(600),
+      other: "y".repeat(600),
+      third: "z".repeat(600),
+    });
+    expect(detail).toBeDefined();
+    expect(detail!.length).toBeLessThanOrEqual(121);
   });
 });

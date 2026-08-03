@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { developmentMode } from "./dev-mode.js";
 import { fieldRows } from "./field-rows.js";
 import type { ToolMetaMap } from "./humanize.js";
+import { truncateHead } from "./truncate.js";
 import {
   describeActivity,
   eventOutcomeLabel,
@@ -61,6 +62,29 @@ function KindGlyph({ kind, label }: { kind: AuditEvent["kind"]; label: string })
     scannable line. */
 const DETAIL_FIELDS = 3;
 
+/** …and how long the whole line may be. Three fields at `field-rows`' own
+    400-char value cap is ~1.2 kB on a line whose entire job is to be scanned;
+    a fat args object put all of it on one row. */
+const DETAIL_CAP = 120;
+
+/**
+ * CR-2 — a VALUE has to be consumer-safe too.
+ *
+ * THE DEFECT: `fieldRows` humanizes the LABELS and passes the values through
+ * verbatim, so the real audit shape of `vendo_apps_edit` rendered on a person's
+ * own activity rail as "App id app_9a3f2b1c · Instruction add a chart". An id is
+ * exactly what the humanization of this row exists to keep out; humanizing only
+ * half of each pair let it back in through the other half.
+ *
+ * Dropped, not masked: the row is a one-line summary, and the honest summary of
+ * an id is nothing at all. (The full args stay in the dev-mode preview.)
+ */
+const ID_VALUE = /^(?:[a-z]{2,6}_[A-Za-z0-9][A-Za-z0-9-]{3,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+function namesAnId(value: string): boolean {
+  return value.split("\n").some(line => ID_VALUE.test(line.trim()));
+}
+
 /**
  * What a row says about the INPUTS, in the user's language.
  *
@@ -90,9 +114,10 @@ export function activityDetail(event: Pick<AuditEvent, "tool" | "inputPreview">)
     // A truncated (500-char capped) or non-JSON preview: nothing honest to say.
     return undefined;
   }
-  const rows = fieldRows(args);
+  const rows = fieldRows(args).filter(row => !namesAnId(row.value));
   if (rows.length === 0) return undefined;
-  return rows.slice(0, DETAIL_FIELDS).map(row => `${row.label} ${row.value}`).join(" · ");
+  const detail = rows.slice(0, DETAIL_FIELDS).map(row => `${row.label} ${row.value}`).join(" · ");
+  return detail.length > DETAIL_CAP ? `${truncateHead(detail, DETAIL_CAP)}…` : detail;
 }
 
 /** The rows only — header, caption, footer and empty states stay with the
