@@ -1,31 +1,49 @@
 import { describe, expect, test } from "vitest";
-import { checkoutWorkspace, contentHash, pathAccess } from "./materialize.js";
+import { checkoutWorkspace, contentHash, inWritableMount } from "./materialize.js";
 import { testWorkspace } from "./test-doubles.test-util.js";
 
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 const file = (path: string, text: string) => ({ path, bytes: bytes(text) });
 
-describe("pathAccess — wave-1 can(), the ONE seam wave 3 repoints", () => {
-  test("/user/** belongs to its subject: read-write", () => {
-    expect(pathAccess("/user/apps/app_1/app.vendo")).toBe("rw");
-    expect(pathAccess("/user/memory/notes.md")).toBe("rw");
-    expect(pathAccess("/user")).toBe("rw");
+/**
+ * `pathAccess` — the wave-1 stand-in this block used to pin — is GONE, and with
+ * it the assertion that `/orgs/acme/apps/app_1/app.vendo` is `none`. That was
+ * true when written and became the bug: wave 3 shipped org mounts, and a
+ * hardcoded path table answered for them anyway, so every team file was
+ * invisible to `claudeCode()`. Permission is now the workspace's own
+ * `canCommit()` (§9.3, live rows, per file), asked at both checkout and
+ * sync-back — see the per-file blocks below. What is left of the path table is
+ * a mount SHAPE, for the one caller that has no store to ask: a disk walk.
+ */
+describe("inWritableMount — the mounts a machine's walk carries home", () => {
+  test("the two writable mounts come home; /host and non-mounts never do", () => {
+    expect(inWritableMount("/user/memory/notes.md")).toBe(true);
+    expect(inWritableMount("/orgs/acme/apps/app_1/app.vendo")).toBe(true);
+    expect(inWritableMount("/host/skills/refund/SKILL.md")).toBe(false);
+    expect(inWritableMount("/etc/passwd")).toBe(false);
   });
 
-  test("/host/** is read-only for everyone", () => {
-    expect(pathAccess("/host/skills/refund/SKILL.md")).toBe("ro");
-    expect(pathAccess("/host")).toBe("ro");
+  test("the walk's answer is about the RESOLVED path", () => {
+    // A real disk hands back path strings, so `/user/../etc/passwd` is a shape
+    // that can arrive; judging it unresolved would call it a `/user` path.
+    expect(inWritableMount("/user/../etc/passwd")).toBe(false);
+    expect(inWritableMount("/orgs/acme/../../etc/passwd")).toBe(false);
   });
 
-  test("nothing else is a mount", () => {
-    expect(pathAccess("/etc/passwd")).toBe("none");
-    expect(pathAccess("/orgs/acme/apps/app_1/app.vendo")).toBe("none");
-    expect(pathAccess("/user/../etc/passwd")).toBe("none");
+  test("a bare mount ROOT is not a file a walk carries home", () => {
+    // The retired `pathAccess` answered "rw" for a bare `/user` and "ro" for a
+    // bare `/host`, because it graded MOUNTS. This grades what a disk walk
+    // found, and a walk only ever yields files — a mount root is a directory.
+    // Checkout reaches the same answer from the other side: the root matches the
+    // mount shape, and `readFileBuffer` on a directory throws, so it is skipped.
+    expect(inWritableMount("/user")).toBe(false);
+    expect(inWritableMount("/host")).toBe(false);
+    expect(inWritableMount("/orgs/acme")).toBe(false);
   });
 });
 
 describe("checkout — the box is born filtered (design §8)", () => {
-  test("carries every visible file with its mount permission", async () => {
+  test("carries every visible file, read-only iff the caller cannot commit it", async () => {
     const workspace = testWorkspace({
       "/user/apps/app_1/app.vendo": "<App/>",
       "/host/skills/refund/SKILL.md": "# refund",
@@ -37,7 +55,28 @@ describe("checkout — the box is born filtered (design §8)", () => {
     ]);
   });
 
-  test("a path outside the two mounts is never materialized", async () => {
+  test("a team file the caller may edit is materialized, writable", async () => {
+    const workspace = testWorkspace({ "/orgs/acme/apps/app_1/app.vendo": "team app" });
+    const checkout = await checkoutWorkspace(workspace);
+    expect(checkout.files.map((entry) => [entry.path, entry.readOnly])).toEqual([
+      ["/orgs/acme/apps/app_1/app.vendo", false],
+    ]);
+  });
+
+  test("readOnly is PER FILE, not per mount — viewer level lands beside editor", async () => {
+    const workspace = testWorkspace({
+      "/orgs/acme/apps/app_mine/app.vendo": "editable",
+      "/orgs/acme/apps/app_theirs/app.vendo": "viewer only",
+    });
+    workspace.readOnlyPaths = ["/orgs/acme/apps/app_theirs/app.vendo"];
+    const checkout = await checkoutWorkspace(workspace);
+    expect([...checkout.files].map((entry) => [entry.path, entry.readOnly]).sort()).toEqual([
+      ["/orgs/acme/apps/app_mine/app.vendo", false],
+      ["/orgs/acme/apps/app_theirs/app.vendo", true],
+    ]);
+  });
+
+  test("a path outside the mounts is never materialized", async () => {
     const workspace = testWorkspace({ "/tmp/secret": "nope", "/user/memory/a.md": "yes" });
     const checkout = await checkoutWorkspace(workspace);
     expect(checkout.files.map((entry) => entry.path)).toEqual(["/user/memory/a.md"]);
@@ -82,11 +121,76 @@ describe("syncAll — diff-based per file, never wholesale (§3.5)", () => {
     expect(await workspace.readFile("/host/skills/refund/SKILL.md")).toBe("# refund");
   });
 
-  test("a path outside the two mounts is refused", async () => {
+  test("a path outside the mounts is refused", async () => {
     const workspace = testWorkspace({});
     const checkout = await checkoutWorkspace(workspace);
     expect(await checkout.syncAll([file("/etc/passwd", "root")])).toEqual([]);
     expect(await workspace.exists("/etc/passwd")).toBe(false);
+  });
+
+  test("a team file the caller may edit lands", async () => {
+    const workspace = testWorkspace({ "/orgs/acme/files/plan.md": "base" });
+    const checkout = await checkoutWorkspace(workspace);
+    expect(await checkout.syncAll([file("/orgs/acme/files/plan.md", "revised")])).toEqual([
+      "/orgs/acme/files/plan.md",
+    ]);
+    expect(await workspace.readFile("/orgs/acme/files/plan.md")).toBe("revised");
+  });
+
+  test("a viewer-level team file the box wrote anyway never lands", async () => {
+    // The box materialized it read-only, and a process running as the file's
+    // owner can chmod that back — so sync-back re-asks, against live rows.
+    const workspace = testWorkspace({ "/orgs/acme/apps/app_1/app.vendo": "theirs" });
+    workspace.readOnlyPaths = ["/orgs/acme/apps/app_1/app.vendo"];
+    const checkout = await checkoutWorkspace(workspace);
+    expect(await checkout.syncAll([file("/orgs/acme/apps/app_1/app.vendo", "vandalised")])).toEqual([]);
+    expect(await workspace.readFile("/orgs/acme/apps/app_1/app.vendo")).toBe("theirs");
+  });
+
+  test("one refused org path never takes the caller's own work down with it", async () => {
+    const workspace = testWorkspace({
+      "/orgs/acme/apps/app_1/app.vendo": "theirs",
+      "/user/memory/mine.md": "before",
+    });
+    workspace.readOnlyPaths = ["/orgs/acme/apps/app_1/app.vendo"];
+    const checkout = await checkoutWorkspace(workspace);
+    expect(await checkout.syncAll([
+      file("/orgs/acme/apps/app_1/app.vendo", "vandalised"),
+      file("/user/memory/mine.md", "after"),
+    ])).toEqual(["/user/memory/mine.md"]);
+    expect(await workspace.readFile("/user/memory/mine.md")).toBe("after");
+  });
+
+  test("a grant revoked mid-session bites at sync-back, not at checkout", async () => {
+    const workspace = testWorkspace({ "/orgs/acme/files/plan.md": "base" });
+    const checkout = await checkoutWorkspace(workspace);
+    // Checked out writable; the revoke lands while the turn is still thinking.
+    expect(checkout.files.map((entry) => entry.readOnly)).toEqual([false]);
+    workspace.readOnlyPaths = ["/orgs/acme/files/plan.md"];
+    expect(await checkout.syncAll([file("/orgs/acme/files/plan.md", "revised")])).toEqual([]);
+    expect(await workspace.readFile("/orgs/acme/files/plan.md")).toBe("base");
+  });
+
+  test("a DELETION of a file whose grant was revoked mid-session is refused, not thrown", async () => {
+    // The façade refuses a forbidden removal by throwing, which would abandon
+    // the whole sync — including the caller's own work in the same turn.
+    const workspace = testWorkspace({
+      "/orgs/acme/files/theirs.md": "theirs",
+      "/user/memory/mine.md": "before",
+    });
+    const checkout = await checkoutWorkspace(workspace);
+    workspace.readOnlyPaths = ["/orgs/acme/files/theirs.md"];
+    expect(await checkout.syncAll([file("/user/memory/mine.md", "after")])).toEqual([
+      "/user/memory/mine.md",
+    ]);
+    expect(await workspace.exists("/orgs/acme/files/theirs.md")).toBe(true);
+  });
+
+  test("/orgs/<org>/scratch never syncs, exactly like /user/scratch", async () => {
+    const workspace = testWorkspace({});
+    const checkout = await checkoutWorkspace(workspace);
+    expect(await checkout.syncAll([file("/orgs/acme/scratch/junk.txt", "junk")])).toEqual([]);
+    expect(await workspace.exists("/orgs/acme/scratch/junk.txt")).toBe(false);
   });
 
   test("a file the box deleted is removed from the store", async () => {
@@ -126,6 +230,14 @@ describe("syncHot — the skeleton renders mid-turn (§3.5)", () => {
     await checkout.syncHot([file("/user/apps/app_1/app.vendo", "<App/>")]);
     expect(await checkout.syncHot([file("/user/apps/app_1/app.vendo", "<App>2</App>")])).toEqual([
       "/user/apps/app_1/app.vendo",
+    ]);
+  });
+
+  test("a TEAM app's hot path syncs mid-turn too — the skeleton paints either way", async () => {
+    const workspace = testWorkspace({});
+    const checkout = await checkoutWorkspace(workspace);
+    expect(await checkout.syncHot([file("/orgs/acme/apps/app_1/plan.vendo", "plan")])).toEqual([
+      "/orgs/acme/apps/app_1/plan.vendo",
     ]);
   });
 

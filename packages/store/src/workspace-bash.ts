@@ -71,6 +71,7 @@ function withTmpAlias(workspace: WorkspaceFs): WorkspaceFs {
       return [...new Set([...paths, ...aliases])].sort();
     },
     commit: (opts) => workspace.commit(opts),
+    canCommit: (path) => workspace.canCommit(aliased(path)),
   };
   if (workspace.readdirWithFileTypes !== undefined) {
     const readdirWithFileTypes = workspace.readdirWithFileTypes.bind(workspace);

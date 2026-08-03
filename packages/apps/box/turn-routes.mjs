@@ -73,6 +73,21 @@ const matchesPattern = (pattern, workspacePath) => {
   return wanted.every((segment, at) => segment === "*" || segment === actual[at]);
 };
 
+/**
+ * Which mounts a walk of this disk carries home: the caller's own `/user`, and
+ * one `/orgs/<orgId>` per membership the host asserted for the turn (§3.1/§9.7).
+ * `/host` never does — it is a per-turn projection of the deployment's own
+ * files, not the user's.
+ *
+ * A SHAPE, deliberately, and never a permission: the box holds no store and can
+ * ask nobody anything (design §8, "the box is born filtered"). WHETHER a carried
+ * path may land is decided host-side, per file, against live rows — the sync-back
+ * seam's `canCommit` in `packages/harnesses/src/materialize.ts`, whose
+ * `inWritableMount` is this same rule. Keeping this at `/user/` is what made a
+ * team file's edit vanish between the box and the store with no error anywhere.
+ */
+const carriedBack = (workspacePath) => /^\/(?:user|orgs\/[^/]+)\//.test(workspacePath);
+
 const walk = (directory, out) => {
   let entries;
   try {
@@ -304,8 +319,8 @@ export const createSessionRoutes = (options = {}) => {
             : walk(root, [])
               .map((diskPath) => toWorkspace(root, diskPath))
               // Same rule as the whole-tree branch below: a route that WALKS
-              // answers about the user's own space and nothing else.
-              .filter((workspacePath) => workspacePath.startsWith("/user/")
+              // answers about the mounts a machine may write, never `/host`.
+              .filter((workspacePath) => carriedBack(workspacePath)
                 && patterns.some((pattern) => matchesPattern(pattern, workspacePath)));
           for (const workspacePath of [...new Set([...literals, ...matched])]) {
             try {
@@ -320,7 +335,7 @@ export const createSessionRoutes = (options = {}) => {
         } else {
           for (const diskPath of walk(root, [])) {
             const workspacePath = toWorkspace(root, diskPath);
-            if (!workspacePath.startsWith("/user/")) continue;
+            if (!carriedBack(workspacePath)) continue;
             try {
               if (statSync(diskPath).size > WALK_SKIP_BYTES) continue;
               files.push({ path: workspacePath, base64: readFileSync(diskPath).toString("base64") });

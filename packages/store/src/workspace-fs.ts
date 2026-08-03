@@ -490,6 +490,23 @@ export class WorkspaceStoreFs implements WorkspaceFs {
   }
 
   /**
+   * Build contract §9.3, exposed — the same live-rows question `commit()` asks
+   * itself below, asked one path at a time.
+   *
+   * The sandbox path (§3.5) needs it out loud: it holds a workspace and never a
+   * store, and it has to know per FILE whether a checkout lands writable and
+   * whether a changed file may go home. Answering from the mount shape instead
+   * is what made every `/orgs/**` path invisible to `claudeCode()`.
+   */
+  async canCommit(path: string): Promise<boolean> {
+    const normalized = normalizePath(path);
+    if (this.readOnly(normalized) || !this.storeBacked(normalized)) return false;
+    // Absent ⇒ single-player façade, where the only reachable mount is the
+    // caller's own `/user` — exactly the answer `commit()` gives itself.
+    return this.mounts.canCommit === undefined || await this.mounts.canCommit(normalized);
+  }
+
+  /**
    * Build contract §3.2 — land the turn's writes. Commit policy is per mount:
    * `/user` is last-write-wins, `/orgs` is strict compare-and-swap against the
    * revision the turn opened with, and a lost swap returns `conflict`.

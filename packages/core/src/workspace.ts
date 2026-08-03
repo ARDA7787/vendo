@@ -18,6 +18,19 @@ import type { IFileSystem } from "./filesystem.js";
 export interface WorkspaceFs extends IFileSystem {
   /** Commit changed files. Per-mount rules: /orgs = CAS, /user = last write wins. */
   commit(opts?: { message?: string }): Promise<CommitResult>;
+  /**
+   * Build contract §9.3 — may this caller land a write at `path`, judged against
+   * LIVE rows? `/host` and anything outside the caller's mounts answer false;
+   * inside `/orgs/<org>/apps/<appId>/**` the app's own grants decide, so a
+   * viewer-level team file answers false while its neighbour answers true.
+   *
+   * It exists on the FILESYSTEM because a sandboxed harness holds a workspace
+   * and never a store (§3.5): the materialization seam asks it twice — at
+   * checkout, to decide whether a file lands on the box's disk read-only, and at
+   * sync-back, to decide whether a changed file may go home. Both are the same
+   * question `commit()` asks itself; one authority, asked out loud.
+   */
+  canCommit(path: string): Promise<boolean>;
 }
 
 /** Build contract §3.2. `conflict` is the /orgs compare-and-swap outcome
