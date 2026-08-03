@@ -72,7 +72,11 @@ export function AppTile({ app, onOpen, children }: {
       </div>
       {/* Nothing to open is nothing to offer: a viewless app's tile is a status
           card, not a dead end that answers a tap with a refusal. */}
-      {viewless ? null : <button type="button" className="fl-tile-hit" aria-label={`Open ${app.name}`} onClick={onOpen} />}
+      {viewless ? null : (
+        // data-vendo-tile: the Apps page returns focus to the tile an app was
+        // opened from when the app closes.
+        <button type="button" className="fl-tile-hit" data-vendo-tile={app.id} aria-label={`Open ${app.name}`} onClick={onOpen} />
+      )}
       <div className="fl-tile-cap">
         <span className="fl-tile-name">{app.name}</span>
         {children}

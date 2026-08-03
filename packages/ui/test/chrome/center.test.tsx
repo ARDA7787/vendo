@@ -282,6 +282,22 @@ describe("Needs you", () => {
     );
   });
 
+  it("when the last ask settles under the user's feet, focus lands on the reason (H17)", async () => {
+    let waiting = [ask("apr_1")];
+    mount(stubClient({ pending: () => waiting }));
+    const section = await screen.findByRole("region", { name: /Needs you/ });
+    const row = within(section).getByRole("button", { name: /Email send/i });
+    row.focus();
+    expect(document.activeElement).toBe(row);
+    // Decided somewhere else — the strip in the column, another tab, an
+    // automation finishing. The rows go, and focus used to go to <body>.
+    waiting = [];
+    await waitFor(
+      () => expect(document.activeElement?.textContent).toBe("Nothing is waiting on you now."),
+      { timeout: 12000 },
+    );
+  });
+
   it("is absent from the first paint when nothing is waiting", async () => {
     mount(stubClient());
     await screen.findByRole("tab", { name: "Apps" });
@@ -379,6 +395,18 @@ describe("mobile P1 (§12)", () => {
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
   });
 
+  it("choosing a conversation from the sheet lands focus in the column (H17)", async () => {
+    installMobile();
+    mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
+    const nav = await screen.findByRole("navigation", { name: "Assistant sections" });
+    fireEvent.click(within(nav).getByRole("button", { name: "Chats" }));
+    const sheet = await screen.findByRole("complementary", { name: "Conversations" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Where did July go?" }));
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
+    // The sheet the keyboard was standing in is gone; the column it chose has it.
+    expect(document.activeElement?.className).toContain("fl-center-main");
+  });
+
   it("the history sheet has a keyboard contract: focus in, trapped, Escape out, focus back (M34)", async () => {
     installMobile();
     mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
@@ -423,6 +451,19 @@ describe("the named doors", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open Invoices" }));
     const open = await screen.findByRole("region", { name: "Invoices" });
     expect(within(open).getByText("Invoices app surface")).toBeTruthy();
+  });
+
+  it("focus follows the navigation: into the opened app, back to its tile (H17)", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    const tile = await screen.findByRole("button", { name: "Open Invoices" });
+    fireEvent.click(tile);
+    const open = await screen.findByRole("region", { name: "Invoices" });
+    // The grid the keyboard was standing in is gone; focus went with the user.
+    expect(document.activeElement).toBe(open);
+    fireEvent.click(within(open).getByRole("button", { name: "← All apps" }));
+    // Coming back is a return: focus lands on the tile it came from.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open Invoices" })));
   });
 
   it("an opened app names its region from the FIRST paint, not after the fetch (M40)", async () => {

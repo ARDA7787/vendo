@@ -177,6 +177,17 @@ export function NeedsYou({ onOpen }: { onOpen(): void }) {
   const { tools } = useVendoContext();
   const { askCount, asks } = useAttention({ pollMs: NEEDS_POLL_MS });
   const spoken = useAskAnnouncement(askCount);
+  const settled = useRef<HTMLParagraphElement>(null);
+  // Whether the rows that are about to disappear are holding the keyboard: an
+  // ask decided ANYWHERE (the strip in the column, another tab, an automation
+  // finishing) retires this whole section, and focus was landing on <body>.
+  const held = useRef(false);
+  useEffect(() => {
+    if (askCount > 0 || !held.current) return;
+    held.current = false;
+    // The line that says why the rows went is the honest place to stand.
+    settled.current?.focus();
+  }, [askCount]);
   return (
     <>
       {/* The spoken half. An ask can arrive from anywhere — an automation run,
@@ -185,9 +196,14 @@ export function NeedsYou({ onOpen }: { onOpen(): void }) {
           BEFORE its words change to be announced reliably, so it lives out here
           (empty until something happens) rather than inside the section that
           comes and goes. */}
-      <p className="fl-sr-only" role="status">{spoken}</p>
+      <p className="fl-sr-only" role="status" tabIndex={-1} ref={settled}>{spoken}</p>
       {askCount === 0 ? null : (
-        <section className="fl-rail-group" aria-label={`Needs you — ${askCount} waiting`}>
+        <section
+          className="fl-rail-group"
+          aria-label={`Needs you — ${askCount} waiting`}
+          onFocus={() => { held.current = true; }}
+          onBlur={() => { held.current = false; }}
+        >
           <p className="fl-rail-label">
             Needs you
             <span className="fl-rail-badge">{askCount}</span>

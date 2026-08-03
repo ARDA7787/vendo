@@ -144,22 +144,33 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
     arrivedAt.current = station;
   }, [station, refreshApps]);
 
+  // Navigating from the mobile history sheet unmounts the sheet the user's focus
+  // was standing in. The column they just chose is where they land — the sheet
+  // itself only restores focus to its opener when it is DISMISSED. Synchronous
+  // (before the commit that removes the sheet) so nothing has to chase it.
+  const panel = useRef<HTMLDivElement>(null);
+  const landInColumn = useCallback(() => {
+    if (chatsOpen) panel.current?.focus();
+  }, [chatsOpen]);
   const goto = useCallback((next: CenterView) => {
+    landInColumn();
     setView(next);
     setChatsOpen(false);
     // "New chat" is both the door to the column and the act of starting over —
     // the ChatGPT gesture, and the one every host's users already know.
     if (next === "chat") conversation.choose(undefined);
-  }, [conversation]);
+  }, [conversation, landInColumn]);
   const select = useCallback((id: string) => {
+    landInColumn();
     conversation.choose(id);
     setView("chat");
     setChatsOpen(false);
-  }, [conversation]);
+  }, [conversation, landInColumn]);
   const openConversation = useCallback(() => {
+    landInColumn();
     setView("chat");
     setChatsOpen(false);
-  }, []);
+  }, [landInColumn]);
 
   // The shelf rides the composer's accessory seam, and ONLY while the column is
   // actually showing: every tile is a real mounted app, so a shelf sitting
@@ -208,6 +219,8 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
           )}
         <div
           className="fl-center-main"
+          ref={panel}
+          tabIndex={-1}
           {...(takeover.active
             ? {}
             : {

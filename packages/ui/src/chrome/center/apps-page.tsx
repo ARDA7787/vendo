@@ -6,7 +6,7 @@
  *  remove, and §9.4's consumer-voice fork offer when a viewer is refused a
  *  change) — this is a restyle of a capable surface, not a smaller one.
  */
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useVendoContext } from "../../context.js";
 import { useApp } from "../../hooks/use-app.js";
 import { useApps } from "../../hooks/use-apps.js";
@@ -43,6 +43,11 @@ function refusalSentence(reason: unknown): string {
  *  told anyone who had just been moved into it that they were in "Open app"). */
 export function OpenApp({ appId, name, onClose }: { appId: string; name?: string; onClose(): void }) {
   const { client, components } = useVendoContext();
+  // The grid this replaced was where the keyboard was standing. Land in the app
+  // that just opened — the region announces itself by name — instead of dropping
+  // focus on <body> and making the user Tab in from the top of the page.
+  const pane = useRef<HTMLElement>(null);
+  useEffect(() => pane.current?.focus(), []);
   const { app, surface, error, isLoading, refresh } = useApp(appId);
   // Wave 7 H2 — same keepalive as VendoSlot's MountedApp (see frames.tsx).
   const keepalive = useMemo(
@@ -73,7 +78,7 @@ export function OpenApp({ appId, name, onClose }: { appId: string; name?: string
       )
       : <div role="status">Opening app…</div>;
   return (
-    <section className="fl-center-open" aria-label={name ?? "Open app"}>
+    <section className="fl-center-open" aria-label={name ?? "Open app"} tabIndex={-1} ref={pane}>
       <div className="fl-center-open-top">
         <button type="button" className="fl-btn" onClick={onClose}>← All apps</button>
         <span className="fl-center-open-name">{name ?? app?.name}</span>
@@ -111,6 +116,25 @@ export function AppsPage({ api, opened, onOpened }: AppsPageProps) {
   const [instruction, setInstruction] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string>();
+  // Coming BACK from an open app is a return, so focus returns with it: to the
+  // tile that opened it when this page opened it, else to the page's own
+  // heading (the home shelf can open an app here without the grid ever having
+  // been on screen).
+  const heading = useRef<HTMLHeadingElement>(null);
+  const grid = useRef<HTMLDivElement>(null);
+  const cameFrom = useRef<string>(undefined);
+  const open = (appId: string) => {
+    cameFrom.current = appId;
+    onOpened(appId);
+  };
+  useEffect(() => {
+    if (opened !== undefined) return;
+    const from = cameFrom.current;
+    cameFrom.current = undefined;
+    if (from === undefined) return;
+    const tile = grid.current?.querySelector<HTMLElement>(`[data-vendo-tile="${from}"]`);
+    (tile ?? heading.current)?.focus();
+  }, [opened]);
   const during = async (action: () => Promise<void>, appId?: string, asked?: string) => {
     setError(undefined);
     setDenied(undefined);
@@ -152,13 +176,13 @@ export function AppsPage({ api, opened, onOpened }: AppsPageProps) {
 
   return (
     <div className="fl-center-page">
-      <h2 className="fl-center-title">Apps</h2>
+      <h2 className="fl-center-title" tabIndex={-1} ref={heading}>Apps</h2>
       <p className="fl-center-cap">Tap one to open it — or ask below to build a new one.</p>
       {error ? <div role="alert" className="fl-error">{error}</div> : null}
       {apps.length === 0 ? <p className="fl-center-empty">Nothing yet — anything you build lands here, live.</p> : null}
-      <div className="fl-shelf fl-shelf--grid">
+      <div className="fl-shelf fl-shelf--grid" ref={grid}>
         {apps.map(app => (
-          <AppTile app={app} key={app.id} onOpen={() => onOpened(app.id)}>
+          <AppTile app={app} key={app.id} onOpen={() => open(app.id)}>
             <span className="fl-tile-acts">
               {/* §9.4 — the EDIT path is the one `forbidden` was invented for: a
                   viewer who asks for a change gets the consumer-voice fork offer
