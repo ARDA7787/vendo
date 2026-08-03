@@ -339,41 +339,33 @@ export function VendoThread({
     .filter((part): part is Extract<typeof part, { state: "approval-requested" }> =>
       part.state === "approval-requested" && !grantSets.has(part.toolCallId));
 
-  // Lane pick C1 — the live status ribbon: while the turn works through tool
-  // calls, the ACTIVE call narrates above the composer — label · elapsed ·
-  // step N of M. The transcript stays beat-free (parts.tsx renders only
-  // errored calls). A RUNNING call always narrates, even after prose has
-  // streamed (the agent often narrates a plan, then works the tools — hiding
-  // the ribbon behind any visible text left minutes of dead air, the observed
-  // demo class). Only while text is actively streaming (all tool parts
-  // settled) does the caret choreography own the floor.
+  // Spec §1 — the ribbon no longer narrates tool calls: the TRANSCRIPT owns the
+  // work now (one beat per call, at its position in the conversation), so a
+  // second live narration above the composer would say the same thing twice.
+  // What survives above the composer is the HOLD: a turn parked on an approval
+  // is not "busy" (the stream yielded), and that pause still needs a voice
+  // while the card sits in the transcript.
   const activeToolParts = (activeAssistant?.parts ?? []).filter(isToolUIPart);
   const liveToolPart = [...activeToolParts].reverse()
     .find(part => part.state !== "output-available" && part.state !== "output-error");
-  // A turn parked on an approval is not "busy" (the stream yielded), but the
-  // pause still narrates: the ribbon holds "— waiting for your approval" while
-  // the card sits in the transcript.
-  const awaitingApprovalPart = activeToolParts.find(part => part.state === "approval-requested");
-  const activeToolPart = busy
-    ? liveToolPart
-      ?? (!assistantHasVisibleText && activeToolParts.length > 0 && !caretShowing ? activeToolParts.at(-1) : undefined)
-    : awaitingApprovalPart;
+  const awaitingApprovalPart = busy ? undefined : activeToolParts.find(part => part.state === "approval-requested");
   // 2026-07 loading-state audit — the between-steps gap: a busy turn whose
   // prose has already streamed and whose tool parts have all settled had NO
-  // indicator anywhere (the ribbon needs a live part, the caret needs
-  // streaming text, FluidThinking stands down once text exists). Only while
-  // text deltas are actively flowing does the caret own the floor; every
-  // other busy moment narrates through the quiet Working ribbon.
+  // indicator anywhere (no live beat, the caret needs streaming text,
+  // FluidThinking stands down once text exists). Only while text deltas are
+  // actively flowing does the caret own the floor; every other busy moment
+  // narrates through the quiet Working ribbon — a RUNNING call excepted, since
+  // its beat is already ticking in the transcript.
   const textActivelyStreaming = lastPart?.type === "text" && lastPart.state === "streaming"
     && lastPart.text.trim().length > 0;
-  const quietBusy = busy && activeToolPart === undefined
+  const quietBusy = busy && liveToolPart === undefined
     && !textActivelyStreaming && !caretShowing && !working;
-  const ribbon = activeToolPart ? (
+  const ribbon = awaitingApprovalPart ? (
     <StatusRibbon
-      part={activeToolPart}
-      stepIndex={activeToolParts.indexOf(activeToolPart) + 1}
+      part={awaitingApprovalPart}
+      stepIndex={activeToolParts.indexOf(awaitingApprovalPart) + 1}
       stepTotal={activeToolParts.length}
-      risk={risks.get(activeToolPart.toolCallId) ?? "read"}
+      risk={risks.get(awaitingApprovalPart.toolCallId) ?? "read"}
     />
   ) : quietBusy ? <WorkingRibbon /> : null;
 

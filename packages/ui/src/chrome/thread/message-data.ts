@@ -1,4 +1,4 @@
-import type { ApprovalRequest, RiskLabel, VendoCitationsPart, VendoKnowledgeCitation } from "@vendoai/core";
+import { VENDO_APPS_TOOL_PREFIX, type ApprovalRequest, type RiskLabel, type VendoCitationsPart, type VendoKnowledgeCitation } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { previewArgs } from "../humanize.js";
 import { LONG_TEXT_CAP, truncateHead } from "../truncate.js";
@@ -183,6 +183,33 @@ export function collapseToolRuns(
     items.push({ part, index, count: 1 });
   });
   return items;
+}
+
+/** A tool call the turn is still working, or waiting on: the transcript's beats
+    stay open until every call in the turn has reached a terminal state (a
+    settled output, an error, or a refused ask). */
+export function toolCallPending(part: UIMessage["parts"][number]): boolean {
+  return isToolUIPart(part)
+    && part.state !== "output-available"
+    && part.state !== "output-error"
+    && part.state !== "output-denied";
+}
+
+/** Spec §8 D1 — the app-building call whose result BECAME this turn's app card.
+    The card bar narrates that step ("Building your view…" → the app's name), so
+    a beat beside it would narrate the same work twice; the settled summary
+    still counts it. Recognized exactly the way the server decides to emit the
+    view part (06-apps §1: the apps tool namespace + a tree surface), never by
+    duck-typing an arbitrary tool's output. */
+export function producedAppCard(
+  part: UIMessage["parts"][number],
+  siblingParts: UIMessage["parts"],
+): boolean {
+  if (!isToolUIPart(part) || part.state !== "output-available") return false;
+  if (!toolName(part).startsWith(VENDO_APPS_TOOL_PREFIX)) return false;
+  const output = part.output as { kind?: unknown } | null | undefined;
+  if (typeof output !== "object" || output === null || output.kind !== "tree") return false;
+  return siblingParts.some(sibling => sibling.type === "data-vendo-view");
 }
 
 /** The plain text a user turn carried, joined across its text parts — the seed

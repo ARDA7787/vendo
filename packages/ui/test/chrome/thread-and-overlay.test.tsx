@@ -39,17 +39,18 @@ describe("VendoThread and VendoOverlay exports", () => {
     // it can queue a follow-up and never dumps focus to <body>).
     expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).disabled).toBe(false);
     await act(async () => release());
-    // The thread speaks in the product's voice: the active tool call narrates
-    // on the STATUS RIBBON (lane pick C1) with the ENG-216 humanized label
-    // ("Email send", never the raw slug). The raw name stays discoverable via
-    // data-vendo-tool; risk rides the data attr — same machine affordance the
-    // old in-transcript beat carried.
+    // The thread speaks in the product's voice: spec §1 (2026-08-03) put the
+    // work back IN the transcript, so the call narrates as a BEAT at its
+    // position in the conversation (this assertion read `.fl-ribbon` while lane
+    // pick C1 stood). The ENG-216 humanized label still rules ("Email send",
+    // never the raw slug), the raw name stays discoverable via data-vendo-tool,
+    // and risk rides the data attr.
     await screen.findAllByText(/Email send/);
-    const ribbon = document.querySelector("[data-vendo-tool='host_email_send']");
-    expect(ribbon).toBeTruthy();
-    expect(ribbon?.classList.contains("fl-ribbon")).toBe(true);
-    expect(ribbon?.textContent).toContain("Email send");
-    expect(ribbon?.getAttribute("data-vendo-approval")).toBe("write");
+    const beat = document.querySelector("[data-vendo-tool='host_email_send']");
+    expect(beat).toBeTruthy();
+    expect(beat?.classList.contains("fl-beat")).toBe(true);
+    expect(beat?.textContent).toContain("Email send");
+    expect(beat?.getAttribute("data-vendo-approval")).toBe("write");
     const card = await screen.findByLabelText("Approval for Email send");
     expect(card.textContent).toContain("a@example.com");
     expect(card.textContent).toContain(
@@ -67,10 +68,11 @@ describe("VendoThread and VendoOverlay exports", () => {
 
   // Demo-latency lane — the observed dead-air class: the agent streams a
   // couple of prose paragraphs, THEN works through host tools. The old gate
-  // (`busy && !assistantHasVisibleText`) hid the ribbon the moment any text
-  // existed, so the thread showed nothing while tools ran. A running call must
-  // keep a live activity row (humanized name + clock) whatever text precedes it.
-  it("keeps the status ribbon narrating a running tool call after text has streamed", { timeout: 20_000 }, async () => {
+  // (`busy && !assistantHasVisibleText`) hid the activity row the moment any
+  // text existed, so the thread showed nothing while tools ran. A running call
+  // must keep a live row whatever text precedes it — since spec §1 that row is
+  // the transcript's own beat, not the ribbon.
+  it("keeps a live beat on a running tool call after text has streamed", { timeout: 20_000 }, async () => {
     let release = () => undefined;
     wire.state.threadReplyGate = new Promise<void>(resolve => { release = resolve; });
     render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
@@ -82,18 +84,20 @@ describe("VendoThread and VendoOverlay exports", () => {
 
     // The prose landed…
     expect(await screen.findByText(/Here is the plan/)).toBeTruthy();
-    // …and the RUNNING tool call still narrates on the ribbon (not dead air).
+    // …and the RUNNING tool call still narrates in-transcript (not dead air).
     await waitFor(() => {
-      const ribbon = document.querySelector("[data-vendo-tool='host_list_transactions']");
-      expect(ribbon).toBeTruthy();
-      expect(ribbon?.classList.contains("fl-ribbon")).toBe(true);
-      expect(ribbon?.textContent).toContain("List transactions");
+      const beat = document.querySelector("[data-vendo-tool='host_list_transactions']");
+      expect(beat).toBeTruthy();
+      expect(beat?.classList.contains("fl-beat")).toBe(true);
+      expect(beat?.textContent).toContain("List transactions");
     });
 
     await act(async () => release());
     expect(await screen.findByText("All done.")).toBeTruthy();
-    // The settled turn drops the ribbon (no stale "running" affordance).
+    // The settled turn drops the ribbon (no stale "running" affordance) and
+    // folds its beats into the one summary row.
     await waitFor(() => expect(document.querySelector(".fl-ribbon")).toBeNull());
+    expect(document.querySelector(".fl-beatsummary")).toBeTruthy();
   });
 
   // 2026-07 loading-state audit — the remaining dead-air class: prose has
@@ -119,8 +123,11 @@ describe("VendoThread and VendoOverlay exports", () => {
       expect(working).toBeTruthy();
       expect(working?.textContent).toContain("Working");
     });
-    // No stale tool ribbon poses as running (the call already settled).
-    expect(document.querySelector("[data-vendo-tool='host_list_transactions']")).toBeNull();
+    // No stale tool ribbon poses as running (the call already settled — its
+    // beat sits ticked in the transcript, which is the record, not a promise).
+    expect(document.querySelector(".fl-ribbon[data-vendo-tool]")).toBeNull();
+    expect(document.querySelector("[data-vendo-tool='host_list_transactions']")?.className)
+      .toBe("fl-beat fl-beat-done");
 
     await act(async () => release());
     expect(await screen.findByText("All done.")).toBeTruthy();
