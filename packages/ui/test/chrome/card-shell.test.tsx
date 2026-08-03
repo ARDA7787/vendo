@@ -128,6 +128,17 @@ describe("one card shell, three laws", () => {
     }
   });
 
+  it("M31 — announces a raised ask through a region that was mounted before it", async () => {
+    const view = render(provider(<WaitingQueue pollMs={0} />));
+    // The live region exists independent of the strip, so its text CHANGES
+    // (which is what a screen reader announces) rather than appearing with its
+    // content, which is announced by nothing.
+    const region = view.container.querySelector('[role="status"]')!;
+    expect(region).not.toBeNull();
+    await waitFor(() => expect(region.textContent).toBe("1 thing needs you."));
+    expect(region.className).toContain("fl-sr-only");
+  });
+
   it("expands the count-first waiting strip in place and clears when the queue empties", async () => {
     const view = render(provider(<WaitingQueue pollMs={0} />));
     const strip = await waitFor(() => {

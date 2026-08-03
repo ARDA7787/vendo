@@ -86,9 +86,19 @@ export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
   // spec §4 (N1) — the strip counts from Lane D's ONE attention source, the
   // same hook the launcher badge reads, so the two can never disagree.
   const { askCount, asks, decide } = useAttention(pollMs > 0 ? { pollMs } : {});
-  if (askCount === 0) return null;
   return (
     <ChromeRoot>
+      {/* M31 — the announcement lives OUTSIDE the section, so it is mounted
+          before the first ask exists. The strip itself appears and disappears,
+          and a live region that mounts with its content is announced by nothing:
+          a person who cannot see the strip appear was never told an approval had
+          arrived. Count-first, in the strip's own words. */}
+      <p className="fl-sr-only" role="status">
+        {askCount === 0 ? "Nothing is waiting on you now."
+          : askCount === 1 ? "1 thing needs you."
+          : `${askCount} things need you.`}
+      </p>
+      {askCount === 0 ? null : (
       <section className="fl-waiting" aria-label="Waiting on you">
         <details className="fl-waiting-strip">
           <summary>{CARD_EYEBROWS.waiting} · {askCount}</summary>
@@ -103,6 +113,7 @@ export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
           </div>
         </details>
       </section>
+      )}
     </ChromeRoot>
   );
 }

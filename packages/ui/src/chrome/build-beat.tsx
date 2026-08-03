@@ -467,7 +467,13 @@ export function BuildBeat({
           : `${label}…`}
       </span>
       {result ? <span className="fl-beat-result">· {result}</span> : null}
-      {count > 1 ? <span className="fl-beat-count" aria-label={`repeated ${count} times`}>×{count}</span> : null}
+      {/* M30 — `aria-label` on a plain <span> is ignored by screen readers, so a
+          collapsed run announced only "×3". A role makes the label the element's
+          accessible name: `img` (a graphic conveying one fact) rather than
+          `group`, so the raw "×3" text is not read out after it. */}
+      {count > 1 ? (
+        <span className="fl-beat-count" role="img" aria-label={`repeated ${count} times`}>×{count}</span>
+      ) : null}
     </div>
   );
 }
