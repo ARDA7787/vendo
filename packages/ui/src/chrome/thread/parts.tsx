@@ -1,4 +1,4 @@
-import type { ApprovalRequest, Json, RiskLabel, UIPayload, VendoAutomationPart, VendoBuildFailedPart, VendoGrantSetPart, VendoTurnErrorPart, VendoViewPart } from "@vendoai/core";
+import type { RiskLabel, UIPayload, VendoAutomationPart, VendoBuildFailedPart, VendoGrantSetPart, VendoTurnErrorPart, VendoViewPart } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoContext } from "../../context.js";
@@ -17,15 +17,15 @@ import type { MorphToastProps } from "../morph-toast.js";
 import { usePinAction } from "../pin-ceremony.js";
 import { LONG_TEXT_CAP, truncateHead } from "../truncate.js";
 import { SentAttachment } from "./attachments.js";
+import { buildApprovalRequest } from "./approval-wire.js";
 import {
   appTitle,
   partData,
-  preview,
   producedAppCard,
-  SYNTHESIZED_CREATED_AT,
   toolCallIsContent,
   toolName,
   VENDO_ERROR_PREFIX,
+  type ApprovalWireMeta,
 } from "./message-data.js";
 
 /** ENG-218 — a plain user turn (rendered verbatim, not markdown) collapses when
@@ -535,14 +535,14 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
 
 type ToolPart = Extract<UIMessage["parts"][number], { toolCallId: string }>;
 
-/** The parked in-thread approval cards: each synthesizes an ApprovalRequest
-    from the wire parts (ENG-216), morphs into the top-right toast on approve
-    (ENG-205), and decides the guard's record over the wire before resuming
+/** The parked in-thread approval cards: each builds its ApprovalRequest with
+    the shared §16 wire builder (ENG-216), morphs into the top-right toast on
+    approve (ENG-205), and decides the guard's record over the wire before resuming
     the model loop (05 §1). */
 export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, respond, onMorph }: {
   approvals: (ToolPart & { state: "approval-requested"; approval: { id: string } })[];
   risks: Map<string, RiskLabel>;
-  guardApprovals: Map<string, { approvalId?: string; invalidatedGrant?: ApprovalRequest["invalidatedGrant"] }>;
+  guardApprovals: Map<string, ApprovalWireMeta>;
   cardRefs: React.MutableRefObject<Map<string, HTMLDivElement | null>>;
   respond: (response: { id: string; approved: boolean }) => void;
   onMorph: (morph: Omit<MorphToastProps, "onDone">) => void;
@@ -562,26 +562,22 @@ export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, re
         const input = "input" in part ? part.input : undefined;
         const guardApproval = guardApprovals.get(part.toolCallId);
         const name = toolName(part);
-        const approval: ApprovalRequest = {
-          id: part.approval.id,
-          call: { id: part.toolCallId, tool: name, args: input as Json },
-          // The wire approval part carries no descriptor (01-core), so the
-          // name is the raw tool id (ApprovalCard humanizes it) and the
-          // description is left to host metadata — never a fabricated
-          // "Approve <tool>" sentence.
-          descriptor: { name, description: tools[name]?.description ?? "", inputSchema: {}, risk },
-          inputPreview: preview(input),
+        // spec §16 law 2 — the descriptor travels with the approval: one
+        // builder shared with the queue, so a declared schema (when the wire
+        // carries one) formats $47.50 as money IN-THREAD too, instead of the
+        // old `inputSchema: {}` synthesis that read "4750 (unit not
+        // specified)". No descriptor on the wire still yields a usable ask.
+        const approval = buildApprovalRequest({
+          approvalId: part.approval.id,
+          toolCallId: part.toolCallId,
+          tool: name,
+          args: input,
+          risk,
           ...(guardApproval?.invalidatedGrant === undefined
-            ? {}
-            : { invalidatedGrant: guardApproval.invalidatedGrant }),
-          // ENG-216 — the in-thread card renders inside the live conversation,
-          // which IS its context, and the wire carries no ctx: rather than
-          // invent a principal/venue/presence and stamp a per-render `new
-          // Date()`, we hide the context byline in-thread (showContext=false)
-          // and only structurally-true, stable values ride here (never shown).
-          ctx: { principal: { kind: "user", subject: "" }, venue: "chat", presence: "present" },
-          createdAt: SYNTHESIZED_CREATED_AT,
-        };
+            ? {} : { invalidatedGrant: guardApproval.invalidatedGrant }),
+          ...(guardApproval?.descriptor === undefined
+            ? {} : { descriptor: guardApproval.descriptor }),
+        }, tools);
         const guardApprovalId = guardApproval?.approvalId;
         const asSheet = mobile && index === approvals.length - 1;
         const card = (

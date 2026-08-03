@@ -1,4 +1,4 @@
-import { VENDO_APPS_TOOL_PREFIX, type ApprovalRequest, type RiskLabel, type VendoCitationsPart, type VendoKnowledgeCitation } from "@vendoai/core";
+import { VENDO_APPS_TOOL_PREFIX, type ApprovalRequest, type JsonSchema, type RiskLabel, type VendoCitationsPart, type VendoKnowledgeCitation } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { previewArgs } from "../humanize.js";
 import { LONG_TEXT_CAP, truncateHead } from "../truncate.js";
@@ -36,15 +36,14 @@ export function riskByCall(messages: UIMessage[]): Map<string, RiskLabel> {
 }
 
 /** Guard approval metadata by tool call — carried in the data-vendo-approval
-    part beside the native ai-SDK approval (whose own id is transport-local). */
-export function approvalByCall(messages: UIMessage[]): Map<string, {
-  approvalId?: string;
-  invalidatedGrant?: ApprovalRequest["invalidatedGrant"];
-}> {
-  const approvals = new Map<string, {
-    approvalId?: string;
-    invalidatedGrant?: ApprovalRequest["invalidatedGrant"];
-  }>();
+    part beside the native ai-SDK approval (whose own id is transport-local).
+
+    spec §16 law 2 — `descriptor` rides here too when the server has one: the
+    §16 parts are `.passthrough()`, so a newer server can send the declared
+    schema/title/description with the ask and an older one simply omits it
+    (buildApprovalRequest degrades to host ToolMeta). */
+export function approvalByCall(messages: UIMessage[]): Map<string, ApprovalWireMeta> {
+  const approvals = new Map<string, ApprovalWireMeta>();
   for (const message of messages) {
     for (const part of message.parts) {
       if (part.type !== "data-vendo-approval") continue;
@@ -52,18 +51,30 @@ export function approvalByCall(messages: UIMessage[]): Map<string, {
         toolCallId?: unknown;
         approvalId?: unknown;
         invalidatedGrant?: { id?: unknown; grantedAt?: unknown };
+        descriptor?: unknown;
       };
       if (typeof data.toolCallId !== "string") continue;
+      const descriptor = data.descriptor;
       approvals.set(data.toolCallId, {
         ...(typeof data.approvalId === "string" ? { approvalId: data.approvalId } : {}),
         ...(typeof data.invalidatedGrant?.id === "string"
           && typeof data.invalidatedGrant.grantedAt === "string"
           ? { invalidatedGrant: data.invalidatedGrant as NonNullable<ApprovalRequest["invalidatedGrant"]> }
           : {}),
+        ...(typeof descriptor === "object" && descriptor !== null && !Array.isArray(descriptor)
+          ? { descriptor: descriptor as ApprovalWireMeta["descriptor"] }
+          : {}),
       });
     }
   }
   return approvals;
+}
+
+export interface ApprovalWireMeta {
+  approvalId?: string;
+  invalidatedGrant?: ApprovalRequest["invalidatedGrant"];
+  /** The passthrough descriptor fields buildApprovalRequest consumes. */
+  descriptor?: { title?: string; description?: string; inputSchema?: JsonSchema };
 }
 
 /** Grant-set membership by tool call — carried in the data-vendo-grant-set
