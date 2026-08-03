@@ -51,8 +51,11 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     // enumerated, exactly one Approve and one Deny.
     const card = await screen.findByLabelText("Standing access — Invoice watcher");
     expect(card.textContent).toContain("Invoice watcher needs 2 permissions");
-    expect(card.textContent).toContain("Send email digests as you.");
-    expect(card.textContent).toContain("Read invoices across your account.");
+    // Each permission in OUR words, not the descriptor's model-facing sentence
+    // (spec §16 law 3, LEAK 1).
+    expect(card.textContent).toContain("Reads: Email send");
+    expect(card.textContent).toContain("Reads: Invoices list");
+    expect(card.textContent).not.toContain("Read invoices across your account.");
     expect(card.querySelectorAll("button")).toHaveLength(2);
     await waitFor(() => expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(screen.getByRole("button", { name: "Allow both & enable" }));
