@@ -47,6 +47,26 @@ function TilePreview({ appId }: { appId: string }) {
   return <span ref={ref} className="fl-tile-scale"><AppFrame surface={surface} components={components} /></span>;
 }
 
+/**
+ * H-4 — `inert`, on BOTH React majors.
+ *
+ * THE DEFECT: the tile used the bare JSX `inert` attribute. React 19 knows that
+ * prop; React 18 — still in this package's peer range (`package.json`
+ * peerDependencies: `^18.0.0 || ^19.0.0`) — does not, and drops it with a
+ * console warning. On a React 18 host the scaled preview was therefore neither
+ * inert nor aria-hidden: a generated view's own buttons and inputs were fully
+ * focusable and fully announced, which is the exact axe finding the attribute
+ * was introduced to close.
+ *
+ * A ref callback runs at commit on both majors, so the node carries the real
+ * attribute either way. (The one thing it does not do is ride the SSR string —
+ * server markup is not interactive, and it is set before the first paint after
+ * hydration.)
+ */
+const inertNode = (node: HTMLElement | null): void => {
+  node?.setAttribute("inert", "");
+};
+
 /** A live app tile. The preview is `inert` — which both takes it out of the
  *  accessibility tree AND makes everything inside it unfocusable, in one
  *  attribute. `aria-hidden` alone was a lie the keyboard could walk into: a
@@ -67,7 +87,7 @@ export function AppTile({ app, onOpen, children }: {
   const viewless = app.ui === undefined;
   return (
     <article className="fl-tile">
-      <div className="fl-tile-view" inert>
+      <div className="fl-tile-view" ref={inertNode}>
         {viewless
           ? (
             <span className="fl-tile-none">

@@ -16,6 +16,7 @@
  *    tab, a labelled panel) — §13 strangers means nothing here reaches for the
  *    overlay.
  */
+import { readFileSync } from "node:fs";
 import type { ApprovalRequest, AppDocument } from "@vendoai/core";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -494,6 +495,31 @@ describe("mobile P1 (§12)", () => {
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
     expect(document.activeElement).toBe(chats);
+  });
+});
+
+/** H-4 — the tile's preview must be inert on BOTH supported React majors. The
+ *  suite runs on React 19, which knows the JSX `inert` prop; React 18 (in the
+ *  peer range) drops it with a warning, so the attribute has to be set on the
+ *  node rather than declared as a prop. Both halves are asserted: the attribute
+ *  really lands, and the component does not go back to the prop that only one
+ *  major honours. */
+describe("the tile preview is inert on every supported React (H-4)", () => {
+  it("carries the real attribute on the rendered node", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    const view = await waitFor(() => {
+      const node = document.querySelector(".fl-tile-view");
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    expect(view.hasAttribute("inert")).toBe(true);
+  });
+
+  it("does not rely on the JSX prop React 18 throws away", () => {
+    const source = readFileSync("src/chrome/center/home.tsx", "utf8");
+    // `<div className="fl-tile-view" inert>` — the shape that renders nothing at
+    // all on a React 18 host.
+    expect(source).not.toMatch(/\binert\b(?!\w)\s*(?:=\s*\{?(?:true|""|''|\{\})\}?)?\s*>/);
   });
 });
 
