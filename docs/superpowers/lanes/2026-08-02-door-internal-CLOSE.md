@@ -2,10 +2,12 @@
 
 **Worktree:** `/Users/yousefh/orca/workspaces/flowlet/doorint` · branch `rebuild/door-internal` · base `31ddb2afd`
 **Date:** 2026-08-02 · **Never pushed, no PR, no merge.** Landing is the orchestrator's job.
-**Fix round 1 applied** after an independent check returned FAIL. Three defects,
-each pinned red first: `internal: true` was not authoritative (§2), a live
-misconfiguration went silent (§2), and the dev learned origin was
-Host-poisonable (§3). All three are marked **round 1** where they appear.
+**Fix round 1** (independent check, FAIL): `internal: true` was not
+authoritative (§2), a live misconfiguration went silent (§2), and the tool
+door's dev learned origin was Host-poisonable (§3).
+**Fix round 2** (§9): a round-1 claim about route binding was REFUTED — its own
+learned base was leaking the caller's session cookie and bearer to a spoofed
+Host. Fenced with the same predicate. Each defect was pinned red first.
 
 ---
 
@@ -113,9 +115,13 @@ wrong, and Yousef ruled it a defect rather than a posture choice. A request
 origin IS the Host header: in `NODE_ENV=development` with no `VENDO_BASE_URL`,
 one request carrying `Host: attacker.evil` fixed the origin **process-wide**,
 after which the harness sent `Authorization: Bearer vtk_…` and every tool call
-to the attacker. Route binding can tolerate a wrong base there — it costs a
-failed fetch. The tool door cannot: what rides to that origin is a live turn
-credential.
+to the attacker.
+
+Round 1 then argued route binding itself did not need the same fence. **That
+argument was false and is retracted in §9** — route binding's learned base was
+carrying the caller's own session cookie and bearer to the attacker, which is a
+worse leak than the one being fixed here. Round 2 fenced it with this same
+predicate.
 
 The fix is the smallest one that keeps zero-config dev working: the tool door
 keeps **its own** learned origin, separate from route binding's, and it is
@@ -140,28 +146,31 @@ the local case with no signal at all.
 | production file | before | after | delta |
 |---|---|---|---|
 | `mcp/src/door.ts` | 1,309 | 1,399 | **+90** |
-| `vendo/src/server.ts` | 2,938 | 3,020 | **+82** |
+| `vendo/src/server.ts` | 2,938 | 3,027 | **+89** |
 | `harnesses/src/claude-code/index.ts` | 487 | 501 | +14 |
 | `core/src/harness.ts` | 157 | 165 | +8 |
 | `harnesses/src/claude-code/machine.ts` | 110 | 112 | +2 |
-| **total** | **5,001** | **5,197** | **+196** |
+| **total** | **5,001** | **5,204** | **+203** |
 
-Split by kind: **+66 code**, **+125 comment**, +5 blank.
+Split by kind: **+66 code**, **+132 comment**, +5 blank.
 
 **This misses the contract's "net-negative or ~zero" prediction, and it grew
-again in fix round 1** (+118 → +196: the authority fix, the restored operator
-diagnostic, and the loopback fence). Reporting the measurement, not the
-prediction. "Mostly NOT constructing the outside half" is true of the runtime
+across both fix rounds** (+118 → +196 → +203: the authority fix, the restored
+operator diagnostic, and two loopback fences). Round 2 added **zero** net code —
+its fix is one predicate on an existing line; the +7 is the corrected comment.
+
+Reporting the measurement, not the prediction. "Mostly NOT constructing the outside half" is true of the runtime
 path and false of the source: nothing was removed to get there, a second entry
 leg was added beside the first (`#internalOnly`, `outsideSpacePath`, `locked()`,
 `isLoopbackOrigin`, the constructor guard), plus a second door composition and a
 three-way URL rule in the umbrella. The only deletion the contract named is 12
 lines.
 
-Tests: **+537** — `mcp-door-internal.e2e.test.ts` (373 new lines),
+Tests: **+630** — `mcp-door-internal.e2e.test.ts` (373 new lines),
 `claude-code-local.test.ts` (135 new, the local leg's first offline coverage),
-+11 in `claude-code.test.ts`, +65 in `door.test.ts`, and +68/−12 in the composed
-live suite.
++107/−3 in `server.test.ts` (the two poisoning pins, the shared `requestFrom`
+helper, and the origin move in the wave-1.1 test), +65 in `door.test.ts`, +11 in `claude-code.test.ts`, and +68/−12 in the
+composed live suite.
 
 ---
 
@@ -343,16 +352,16 @@ From THIS worktree root.
 - `pnpm test --force --concurrency=1` from THIS worktree root, **TWICE**, never
   concurrently with each other or with a build:
   run A **55/55 successful, 0 cached**; run B **55/55 successful, 0 cached**.
-  (Tally read, never a piped exit code.)
+  (Tally read, never a piped exit code.) Re-run in full for round 2.
 
-Per-package on run A: vendo **1906** · core 889 · ui 720 · apps 695 ·
+Per-package on run A: vendo **1908** · core 889 · ui 720 · apps 695 ·
 actions 572 · bench 525 · corpus-harness 390 · store 381 · harnesses **248** ·
 guard 226 · agent 158 · demo-accounting 152 · genui-bench 122 · telemetry 119 ·
 knowledge 114 · demo-bank 102 · mcp **90** · automations 87 · demo-template 82 ·
 integration 52 · engine 49 · automations-e2e 36 · redteam 21 · mcp-e2e 19 ·
 chat-e2e 13 · video-studio 10 · existing-agents 10 · express-host 6 ·
-mastra-agent 5 · vendoai 3. **7,805 passing** (round 0: 7,797 — the eight new
-pins).
+mastra-agent 5 · vendoai 3. **7,807 passing** after round 2 (round 1: 7,805;
+round 0: 7,797 — ten new pins across the two fix rounds).
 
 No load-flakes to classify in either round: both runs were clean first time, and
 the classes the contract names as not-mine (`harness-system-prompt.test.ts`,
@@ -381,9 +390,106 @@ door, end to end, unchanged).
 - A file that GROWS past `WALK_SKIP_BYTES` (8 MiB) inside the box is deleted from
   the store at turn end. Flagged by cc-native and door-ctx, still true, still out
   of scope.
-- **Route binding's own learned base is still Host-derived and still trusted in
-  development** (`actionsConfig.baseUrl` / `baseUrlTrusted`, 04 §4). Round 1
-  fenced the TOOL DOOR off it, and deliberately did not touch route binding: a
-  poisoned base there costs a failed fetch rather than a leaked credential, and
-  changing it is a separate call with its own blast radius. Naming it because
-  the two rules now differ, and the next reader will wonder why.
+- ~~Route binding's learned base is safe to leave poisonable because a poisoned
+  base costs a failed fetch rather than a leaked credential.~~ **That round-1
+  claim was FALSE and is retracted** — see §9. It cost a real credential
+  exfiltration, and round 2 fenced it.
+
+---
+
+## 9. Fix round 2 — the retracted claim, and the exfiltration behind it
+
+### What I claimed, and what was actually true
+
+Round 1 fenced the tool door's learned origin to loopback and then argued route
+binding did not need the same fence:
+
+> a poisoned base there costs a failed fetch rather than a leaked credential
+
+**That is false.** The independent checker measured the opposite, and I
+reproduced it before fixing anything. With `NODE_ENV=development`, no
+`VENDO_BASE_URL`, and one wire request carrying `Host: attacker.evil`:
+
+```
+url:           https://attacker.evil/api/vendo/doctor/present/echo
+cookie:        session=the-callers-real-session
+authorization: Bearer the-callers-real-token
+```
+
+The caller's real session cookie and bearer, to an attacker-named origin, on
+every present-mode host tool call after the poisoning request. Same class as the
+hole I had just fenced, one subsystem over, with a **worse payload**: the tool
+door leaks a turn credential scoped to one conversation; this leaks the end
+user's own session.
+
+The mechanism, traced: `onRequestOrigin` learned any origin and set
+`baseUrlTrusted = isDevelopmentEnv`; `mayForwardPresentHeaders`
+(`packages/actions/src/runtime/registry.ts`) returns that flag directly for a
+non-openapi binding, and a `true` there is what puts `cookie` and
+`authorization` on the outbound request.
+
+### SCOPE — established as fact, not inference
+
+**`baseUrlTrusted` can pair with a LEARNED origin only when
+`process.env.NODE_ENV === "development"` exactly.** Enumerated, not assumed —
+every site in the repo:
+
+| site | what it does |
+|---|---|
+| `server.ts:1791` | `baseUrlTrusted: true` for the **operator-set** `VENDO_BASE_URL`. Never a learned origin, and when it is set the learn branch never runs (`if (actionsConfig.baseUrl === undefined)`). |
+| `server.ts:2925` | the learn branch — **the only** place a learned origin can be trusted. |
+| `registry.ts:725` | `config.baseUrlTrusted ?? true` — the default for a host calling `createActions` directly with its own base. Not a learned origin. |
+
+`isDevelopmentEnv` is `environment("NODE_ENV") === "development"`, and
+`environment()` reads `process.env` only (`wire/shared.ts:267`). Nothing else
+sets it; `CreateVendoConfig` has no passthrough.
+
+**So: NOT reachable in a normal production deployment.** NODE_ENV unset (the
+common bare-node case) yields `false`, as does `production` and `test`. The
+severity is **dev-machine, not live-user** — with one caveat worth stating
+plainly: nothing *enforces* that, so a deployment that ships with
+`NODE_ENV=development` set (wrong, but a real thing people do) was exposed to
+live-user credential theft. That is now closed regardless of NODE_ENV, because
+the fence is on the origin, not the environment.
+
+### The fix — one line, one authority
+
+```ts
+actionsConfig.baseUrlTrusted = isDevelopmentEnv && isLoopbackOrigin(origin);
+```
+
+Reusing the door's own `isLoopbackOrigin` rather than writing a second
+predicate. First-wins was already there (`if (actionsConfig.baseUrl ===
+undefined)`) and is pinned.
+
+**Only the TRUST is fenced, never the base itself.** Resolving route bindings
+same-origin with zero config is what the learner is for, and an untrusted
+learned base still resolves — exactly as it already does in production. Fencing
+resolution too would have broken zero-config routing for every production
+deployment without `VENDO_BASE_URL`, which is a far larger change than the
+security fix needs. The residual that leaves is recorded in `PARKED.md`.
+
+### One pre-existing test changed, stated out loud
+
+`09-vendo §2 install-dx wave 1.1: NODE_ENV=development trusts its own learned
+origin` taught `https://host.test` and asserted the credentials forwarded — it
+was passing *because* of the defect. Its origin moved to `http://localhost:3000`
+and its title gained "LOOPBACK". The promise it exists for is unchanged and
+still pinned: in development, with zero `VENDO_BASE_URL`, the wire trusts the
+origin it was actually reached at — and `next dev` serves localhost. No
+assertion was weakened or deleted.
+
+### Red-green
+
+Red, before the fence (the probe output above is from this run):
+
+```
+× SECURITY: a spoofed non-loopback Host never becomes the learned base …
+  → expected false to be true
+```
+
+Green after: `server.test.ts` **123/123**. Re-verified by reverting the single
+predicate to `isDevelopmentEnv` — the pin fails again; restoring it passes. The
+companion latch pin ("a loopback origin already learned cannot be REPLACED")
+passed red, which is what proves first-wins was already sound and that the fix
+is the loopback restriction alone.

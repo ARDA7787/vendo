@@ -2437,17 +2437,19 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const internalDoorOnly = mcpOptions === undefined && harness.requires?.toolDoor === true;
   /**
    * The one origin a machine-less thinker may dial when the operator named
-   * none — learned from the wire, and deliberately NOT the same learned value
-   * route bindings use.
+   * none — learned from the wire, and kept separate from the base route
+   * bindings resolve against because the two answer different questions.
    *
-   * A request origin is the Host header, which the caller controls. Route
-   * binding tolerates that in development because a wrong base there costs a
-   * failed fetch; the tool door cannot, because what rides to that origin is a
-   * live turn credential and every tool call the agent makes. So this one is
-   * LOOPBACK-ONLY and fixed by the first request that qualifies: a spoofed
-   * `Host: attacker.evil` is never a candidate, and a second loopback Host
-   * cannot displace the first. Loopback is exactly where a machine-less
-   * thinker's subprocess lives, so zero-config development loses nothing.
+   * A request origin is the Host header, which the caller controls. Both
+   * learners are therefore fenced to LOOPBACK, and each is fixed by the first
+   * request that qualifies: a spoofed `Host: attacker.evil` is never a
+   * candidate, and a second loopback Host cannot displace the first. Loopback
+   * is exactly where a machine-less thinker's subprocess lives, so zero-config
+   * development loses nothing.
+   *
+   * This one gates whether a turn credential may be MINTED against an origin;
+   * `baseUrlTrusted` below gates whether the CALLER's cookie and bearer may
+   * ride one. Both were poisonable before they were fenced.
    */
   let learnedLoopbackOrigin: string | undefined;
   /**
@@ -2917,17 +2919,22 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       if (actionsConfig.baseUrl === undefined) {
         actionsConfig.baseUrl = origin;
         // 09-vendo §2 install-dx wave 1.1: NODE_ENV=development trusts its own
-        // learned origin — credentials forward to the wire's own route
-        // bindings with zero config. Every other environment (including
-        // NODE_ENV=test) keeps the learned origin UNTRUSTED exactly as
-        // before, so a spoofed Host on any early request can never turn it
-        // into a credential-exfiltration target (04 §4).
-        actionsConfig.baseUrlTrusted = isDevelopmentEnv;
+        // learned origin, so present-mode calls forward the caller's `cookie`
+        // and `authorization` to it. That trust is fenced to LOOPBACK, because
+        // a request origin IS the Host header: without the fence, one request
+        // carrying `Host: attacker.evil` fixed the base process-wide and sent
+        // the caller's real session cookie and bearer to the attacker on every
+        // present-mode call after it (measured, `server.test.ts` SECURITY pins).
+        // Same rule and same predicate as the tool door below — one authority.
+        //
+        // Only the TRUST is fenced, never the base itself: resolving route
+        // bindings same-origin with zero config is what the learner is for, and
+        // an untrusted base still resolves, exactly as it does in production.
+        actionsConfig.baseUrlTrusted = isDevelopmentEnv && isLoopbackOrigin(origin);
       }
-      // The TOOL DOOR's own learned origin, on a much tighter rule than the one
-      // above: loopback only, first one wins, development only. See
-      // `learnedLoopbackOrigin` — a live turn credential rides to this origin,
-      // so a Host header must never be able to name it or move it.
+      // The TOOL DOOR's own learned origin, kept separate because it answers a
+      // different question — not "may credentials ride this?" but "may a turn
+      // credential be MINTED against this?". Same loopback rule, first one wins.
       if (learnedLoopbackOrigin === undefined && isDevelopmentEnv && isLoopbackOrigin(origin)) {
         learnedLoopbackOrigin = origin;
       }

@@ -90,6 +90,60 @@ first qualifying request**, never route binding's. Step 2 above now reads
 "loopback origin" rather than "learned origin"; steps 1 and 3 are unchanged.
 Pinned as three attack cases in `mcp-door-internal.e2e.test.ts`.
 
-Route binding's own learned base is still Host-derived and still dev-trusted —
-deliberately untouched, and named in the close note's §8, because a poisoned
-base there costs a failed fetch rather than a leaked credential.
+~~Route binding's own learned base is still Host-derived and still dev-trusted —
+deliberately untouched, because a poisoned base there costs a failed fetch
+rather than a leaked credential.~~ **RETRACTED in round 2 — that was false.** It
+was leaking the caller's real `cookie` and `authorization` to the spoofed
+origin. Fenced with the same `isLoopbackOrigin` predicate; see close note §9.
+
+---
+
+## P2 · An arbitrary PORT on loopback is accepted (residual in the fence)
+
+**Found by the independent checker**, in the fence built in round 1 and extended
+to route binding in round 2.
+
+`isLoopbackOrigin` accepts any port on `localhost` / `127.0.0.1` / `::1`. So on a
+developer's machine, in `NODE_ENV=development`, with no `VENDO_BASE_URL`, a local
+process that can (a) listen on some port and (b) win the FIRST qualifying wire
+request can become the learned origin — capturing the turn credential (tool
+door) or the caller's forwarded credentials (route binding).
+
+**Scope: same-machine, development-only, and it must win a race against the
+host's own first request.** An attacker already running arbitrary local code on
+a developer's laptop has cheaper paths to the same secrets (read the process
+env, read `~/.claude`, attach a debugger).
+
+**Not fixed, deliberately.** Every cheap fence I could see breaks the thing the
+loopback rule exists for:
+
+- pinning the port would need the host to tell us its port, which is exactly the
+  configuration zero-config removes;
+- comparing against the listening socket is not reachable from a fetch-style
+  `handler(request)` with no server object;
+- requiring `VENDO_BASE_URL` in development is the status quo ante — it deletes
+  zero-config rather than securing it.
+
+The honest framing: loopback-only turns a **remote** attack (any client sending a
+Host header) into a **local** one (code already on the machine). That is the
+whole of what it buys, and it is worth having.
+
+Revisit if a cheap port fence appears, or if the checker's threat model puts
+hostile local processes in scope for dev machines.
+
+## P3 · An UNTRUSTED learned base still RESOLVES route bindings
+
+Round 2 fenced the **trust** flag, not the learner. A spoofed Host learned first
+still becomes `actionsConfig.baseUrl`, so route-binding calls resolve against it
+— they just carry no `cookie` and no `authorization`, and the withholding is
+audited as `untrusted-host-origin`.
+
+**Deliberate, and pre-existing.** This is already how production behaves for any
+deployment without `VENDO_BASE_URL`: the learned base resolves, untrusted.
+Fencing resolution too would break zero-config same-origin routing for every
+such deployment, which is a far larger blast radius than the credential fix
+needed — and the credential leak was the measured harm.
+
+Residual harm: tool ARGUMENTS (not the caller's identity) can reach a
+spoofed origin in that window. Worth a separate look with its own scope; not
+something to bundle into a security fix under review.
