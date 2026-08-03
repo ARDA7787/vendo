@@ -3,8 +3,19 @@ import { useState } from "react";
 import { useVendoContext, useVendoTools } from "../context.js";
 import type { AdoptionVenue } from "../wire-types.js";
 import { toolPresentation } from "./build-beat.js";
+import {
+  CardActions,
+  CardHead,
+  CardLine,
+  CardList,
+  CardShell,
+  CARD_EYEBROWS,
+  SHIELD_GLYPH,
+  TICK_GLYPH,
+  ToolkitLogo,
+} from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
-import { ConsentShieldIcon, GrantRowIcon, GrantSetCard } from "./grant-set-card.js";
+import { GrantSetCard } from "./grant-set-card.js";
 
 /** Build contract §9.9 / design §13 — the adoption card.
  *
@@ -88,28 +99,24 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
   };
 
   return (
-    <ChromeRoot>
-      <article
+    <ChromeRoot automaticPolicyNotice={false}>
+      <CardShell
+        label={`Take on — ${card.automation}`}
         className="fl-approval fl-grantset fl-item-in"
         data-vendo-adoption-card=""
         data-state={state}
-        aria-label={`Take on — ${card.automation}`}
       >
-        <div className="fl-approval-head">
-          <ConsentShieldIcon />
-          <div className="fl-approval-heading">
-            <div className="fl-approval-eyebrow">Paused automation</div>
-            <div className="fl-approval-title">
-              {card.sponsor === undefined
-                ? `${card.automation} is paused`
-                : `${card.automation} ran with ${card.sponsor}'s access`}
-            </div>
-            <div className="fl-approval-desc" style={{ marginTop: 3 }}>
-              {STOPPED_BECAUSE[card.reason](card.sponsor)} Take it on and it runs with yours instead.
-            </div>
-          </div>
-        </div>
-        <ul className="fl-grants">
+        <CardHead
+          icon={<ToolkitLogo fallback={SHIELD_GLYPH} />}
+          eyebrow={CARD_EYEBROWS.pausedAdoption}
+          title={card.sponsor === undefined
+            ? `${card.automation} is paused`
+            : `${card.automation} ran with ${card.sponsor}'s access`}
+        />
+        <CardLine>
+          {STOPPED_BECAUSE[card.reason](card.sponsor)} Take it on and it runs with yours instead.
+        </CardLine>
+        <CardList className="fl-grants">
           {card.needs.map((need, index) => {
             const presentation = toolPresentation(need.tool, undefined, tools[need.tool]);
             const description = (presentation.description ?? need.description ?? "").trim();
@@ -118,7 +125,7 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
               // One line per read and write, in the order they happen: two calls
               // to the same tool are two lines, so the key is positional.
               <li className="fl-grant" key={`${need.tool}-${index}`}>
-                <GrantRowIcon {...(presentation.logoUrl === undefined ? {} : { logoUrl: presentation.logoUrl })} />
+                <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
                   <b>{RISK_WORD[need.risk]}: {presentation.title || need.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
@@ -127,25 +134,21 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
               </li>
             );
           })}
-        </ul>
+        </CardList>
         {error ? <div role="alert" className="fl-error">{error}</div> : null}
         {state === "waiting" ? (
-          <div className="fl-approval-actions">
+          <CardActions>
             <button className="fl-btn fl-btn-primary" type="button" disabled={busy} onClick={() => void adopt()}>
               Take it on
             </button>
-          </div>
+          </CardActions>
         ) : (
           <div className="fl-grantset-outcome" role="status">
-            <span className="fl-connect-done-ic" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
-            </span>
+            <span className="fl-connect-done-ic" aria-hidden="true">{TICK_GLYPH}</span>
             Running again with your access
           </div>
         )}
-      </article>
+      </CardShell>
     </ChromeRoot>
   );
 }

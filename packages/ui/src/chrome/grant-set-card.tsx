@@ -2,6 +2,17 @@ import type { RiskLabel } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { toolPresentation } from "./build-beat.js";
+import {
+  CardActions,
+  CardHead,
+  CardLine,
+  CardList,
+  CardShell,
+  CARD_EYEBROWS,
+  SHIELD_GLYPH,
+  TICK_GLYPH,
+  ToolkitLogo,
+} from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
 
 /** demo-live-readiness 2026-07 — the grant-SET consent card (approved mockup,
@@ -11,36 +22,9 @@ import { ChromeRoot } from "./chrome-root.js";
  * transcript as the settled record ("Enabled · N permissions granted" /
  * "Denied — the automation stays paused."). Presentational: the caller owns
  * deciding the guard approvals and resuming the parked turn.
+ *
+ * spec §16 — contents only: the geometry is the one card shell.
  */
-
-/** The shield head both consent cards wear. ONE copy, because the grant-set ask
-    and the adoption ask have to read as the same kind of thing — they are. */
-export function ConsentShieldIcon() {
-  return (
-    <span className="fl-approval-ic" aria-hidden="true">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
-      </svg>
-    </span>
-  );
-}
-
-/** One grant row's icon: the tool's own logo when the registry has one, the
-    generic wrench when it does not. Shared for the same reason. */
-export function GrantRowIcon({ logoUrl }: { logoUrl?: string }) {
-  return (
-    <span className="fl-grant-ic" aria-hidden="true">
-      {logoUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element -- chrome surface, plain img by design
-        <img src={logoUrl} alt="" width={14} height={14} style={{ display: "block", objectFit: "contain" }} />
-      ) : (
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="m21 2-9.6 9.6" /><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-1 1" /><path d="m15.5 7.5 3 3L22 7l-3-3" />
-        </svg>
-      )}
-    </span>
-  );
-}
 
 export interface GrantSetPermission {
   /** The pending guard approval this row settles. */
@@ -91,62 +75,52 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
   };
 
   return (
-    <ChromeRoot>
-      <article
+    <ChromeRoot automaticPolicyNotice={false}>
+      <CardShell
+        label={`Standing access — ${name}`}
         className="fl-approval fl-grantset fl-item-in"
         data-vendo-grant-set-card=""
         data-state={state}
-        aria-label={`Standing access — ${name}`}
       >
-        <div className="fl-approval-head">
-          <ConsentShieldIcon />
-          <div className="fl-approval-heading">
-            <div className="fl-approval-eyebrow">Standing access</div>
-            <div className="fl-approval-title">{name} needs {permissionCount(permissions.length)}</div>
-            <div className="fl-approval-desc" style={{ marginTop: 3 }}>
-              Granted once, used every run. You can revoke {revokePronoun(permissions.length)} any time in Settings.
-            </div>
-          </div>
-        </div>
-        <ul className="fl-grants">
+        <CardHead
+          icon={<ToolkitLogo fallback={SHIELD_GLYPH} />}
+          eyebrow={CARD_EYEBROWS.standingAccess}
+          title={`${name} needs ${permissionCount(permissions.length)}`}
+        />
+        <CardLine>
+          Granted once, used every run. You can revoke {revokePronoun(permissions.length)} any time in Settings.
+        </CardLine>
+        <CardList className="fl-grants">
           {permissions.map(permission => {
             const presentation = toolPresentation(permission.tool, undefined, tools[permission.tool]);
             const description = (presentation.description ?? permission.description ?? "").trim();
             return (
               <li className="fl-grant" key={permission.approvalId}>
-                <GrantRowIcon {...(presentation.logoUrl === undefined ? {} : { logoUrl: presentation.logoUrl })} />
+                <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
                   <b>{presentation.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
                 </span>
                 {state === "approved" ? (
-                  <span className="fl-grant-check" aria-hidden="true">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M20 6 9 17l-5-5" />
-                    </svg>
-                  </span>
+                  <span className="fl-grant-check" aria-hidden="true">{TICK_GLYPH}</span>
                 ) : null}
               </li>
             );
           })}
-        </ul>
+        </CardList>
         {error ? <div role="alert" className="fl-error">{error}</div> : null}
         {state === "parked" ? (
-          <div className="fl-approval-actions">
+          <CardActions>
             <button className="fl-btn fl-btn-primary" type="button" disabled={busy} onClick={() => void decide(true)}>
               {allowLabel(permissions.length)}
             </button>
             <button className="fl-btn" type="button" disabled={busy} onClick={() => void decide(false)}>Deny</button>
-          </div>
+          </CardActions>
         ) : (
           <div className="fl-grantset-outcome" role="status">
             {state === "approved" ? (
               <>
-                <span className="fl-connect-done-ic" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20 6 9 17l-5-5" />
-                  </svg>
-                </span>
+                <span className="fl-connect-done-ic" aria-hidden="true">{TICK_GLYPH}</span>
                 Enabled · {permissionCount(permissions.length)} granted
               </>
             ) : (
@@ -154,7 +128,7 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
             )}
           </div>
         )}
-      </article>
+      </CardShell>
     </ChromeRoot>
   );
 }

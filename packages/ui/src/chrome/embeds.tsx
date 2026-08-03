@@ -17,8 +17,18 @@ import { useResource } from "../hooks/use-resource.js";
 import { AppFrame } from "../tree/frames.js";
 import type { ApprovalResolution, OpenSurface } from "../wire-types.js";
 import { ApprovalCard } from "./approval-card.js";
+import {
+  CardActions,
+  CardFields,
+  CardHead,
+  CardLine,
+  CardShell,
+  CARD_EYEBROWS,
+  SHIELD_GLYPH,
+  ToolkitLogo,
+} from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
-import { LONG_TEXT_CAP, truncateHead } from "./truncate.js";
+import { fieldRows } from "./field-rows.js";
 
 /**
  * Existing-agents Lane B — the three embeds a BYO chat surface renders from
@@ -91,8 +101,9 @@ function BeatLine({ state, children }: { state: "working" | "done" | "error"; ch
   );
 }
 
-/** The resolved approval card: same `fl-approval` boundary as the consent
- *  card, collapsed to its terminal line (and the executed result, if any). */
+/** The resolved approval card: the same card shell as the consent card (spec
+ *  §16 — one shell everywhere), settled, collapsed to its terminal line and the
+ *  executed result, if any. */
 function ResolvedApprovalCard({ summary, ok, line, detail }: {
   summary: string;
   ok: boolean;
@@ -100,29 +111,26 @@ function ResolvedApprovalCard({ summary, ok, line, detail }: {
   detail?: ReactNode;
 }) {
   return (
-    <article className={`fl-approval${ok ? " fl-approval-approved" : ""}`} aria-label={`Approval — ${line}`}>
-      <div className="fl-approval-head">
-        <div className="fl-approval-heading">
-          <div className="fl-approval-eyebrow">Approval</div>
-          <div className="fl-approval-title">{summary}</div>
-        </div>
-      </div>
+    <CardShell label={`Approval — ${line}`} className={`fl-approval${ok ? " fl-approval-approved" : ""}`} settled>
+      <CardHead
+        icon={<ToolkitLogo fallback={SHIELD_GLYPH} />}
+        eyebrow={CARD_EYEBROWS.resolved}
+        title={summary}
+      />
       <BeatLine state={ok ? "done" : "error"}>{line}</BeatLine>
       {detail}
-    </article>
+    </CardShell>
   );
 }
 
 function executedCard(summary: string, outcome: ToolOutcome): ReactNode {
   if (outcome.status === "ok") {
-    const preview = JSON.stringify(outcome.output);
-    const detail = preview !== undefined && preview !== "{}" && preview !== "null"
-      ? (
-          <pre className="fl-approval-fields" aria-label="Result" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-            {truncateHead(preview, Math.min(500, LONG_TEXT_CAP))}
-          </pre>
-        )
-      : undefined;
+    // The result reads as the shell's ONE body — field rows, never the raw JSON
+    // dump this used to print at an end user (spec §16.2).
+    const rows = outcome.output !== null && typeof outcome.output === "object"
+      ? fieldRows(outcome.output)
+      : [];
+    const detail = rows.length > 0 ? <CardFields rows={rows} label="Result" /> : undefined;
     return <ResolvedApprovalCard summary={summary} ok line="Approved — ran" detail={detail} />;
   }
   // The resumed call itself failed (error/blocked/…): the honest record, in
@@ -137,7 +145,7 @@ function executedCard(summary: string, outcome: ToolOutcome): ReactNode {
       summary={summary}
       ok={false}
       line="Approved — couldn't finish"
-      detail={<div className="fl-approval-more">{reason}</div>}
+      detail={<div className="fl-card-byline">{reason}</div>}
     />
   );
 }
@@ -188,10 +196,18 @@ export function VendoApprovalEmbed({ refValue }: VendoApprovalEmbedProps) {
   if (data === null) {
     body = error !== undefined
       ? (
-          <article className="fl-approval" aria-label={`Approval — ${summary}`}>
-            <div className="fl-approval-title">{summary}</div>
+          // Same shell, so a failed lookup is not its own bespoke article. The
+          // wire's own sentence stays: this embed is the BYO-agent surface whose
+          // contract (embeds.test) is that the failure is legible, not silent.
+          <CardShell label={`Approval — ${summary}`} className="fl-approval">
+            <CardHead
+              icon={<ToolkitLogo fallback={SHIELD_GLYPH} />}
+              eyebrow={CARD_EYEBROWS.resolved}
+              title={summary}
+            />
+            <CardLine>Vendo couldn’t reach this approval just now.</CardLine>
             <div role="alert" className="fl-error">{error.message}</div>
-          </article>
+          </CardShell>
         )
       : <BeatLine state="working">{summary}</BeatLine>;
   } else if (data.state === "pending") {
@@ -348,13 +364,13 @@ export function VendoAppEmbed({ refValue }: VendoAppEmbedProps) {
           ) : failed !== undefined ? (
             <>
               <BeatLine state="error">{title} — couldn't finish</BeatLine>
-              <div className="fl-approval-more">{failed.reason}</div>
+              <div className="fl-card-byline">{failed.reason}</div>
               {failed.retryable === true && (
-                <div className="fl-approval-actions">
+                <CardActions>
                   <button className="fl-btn fl-btn-primary" type="button" onClick={() => void retry()}>
                     Try again
                   </button>
-                </div>
+                </CardActions>
               )}
             </>
           ) : (
