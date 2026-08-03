@@ -30,18 +30,7 @@ of the model's way.
   expected (`WRITING_TOOLS` names `MultiEdit`/`NotebookEdit`).
 - The `PostToolUse` file-sync hook is not a permission mechanism and stays.
 
-### D2 — `machine: "local"` is development-only
-
-`packages/harnesses/src/claude-code/index.ts` (or `local.ts`)
-
-- `machine: "local"` refuses to boot outside development (`NODE_ENV`), with an
-  error naming the sandbox requirement. Production is sandbox-only by
-  construction, not by warning.
-- Local stays because dev needs it structurally: an E2B box cannot dial a
-  loopback door origin, so the laptop quickstart has no sandbox path.
-- Future (out of scope): a Cloud door relay would let local be deleted for good.
-
-### D3 — Tool delivery: everything on the door, no loadout
+### D2 — Tool delivery: everything on the door, no loadout
 
 - The claude-code door listing drops the loadout filter (`activeToolNames`):
   the door lists **everything the context projects**. The safety projection
@@ -52,7 +41,7 @@ of the model's way.
   the 20k-tool Composio catalog is never ON the list.
 - `vendo()`'s loadout is unchanged (other-harness round).
 
-### D4 — Discovery collapses to two Composio-scoped tools
+### D3 — Discovery collapses to two Composio-scoped tools
 
 With the loadout gone, search-over-listed-tools has no job on this path. What
 remains is reaching the unexpanded connector catalog:
@@ -73,7 +62,7 @@ remains is reaching the unexpanded connector catalog:
   `vendo()` path; `COMPOSIO_MULTI_EXECUTE_TOOL` is explicitly rejected (would
   bypass guard/audit).
 
-### D5 — App generation: files-first; the engine leaves this surface
+### D4 — App generation: files-first; the engine leaves this surface
 
 - `vendo_apps_create` and `vendo_apps_edit` are **not projected** to the
   claude-code surface. The model builds and edits apps by writing `plan.vendo` /
@@ -86,11 +75,11 @@ remains is reaching the unexpanded connector catalog:
 - The engine and both tools remain untouched for `vendo()` and BYO loops.
 - The `validate` verb (`packages/agent/src/vendo-verbs.ts`, wired at
   `server.ts:2323`) already rides the door and is the review floor:
-  **validate-must-pass before the builder reports done** (skill law, D8).
+  **validate-must-pass before the builder reports done** (skill law, D7).
   A live E2E proof of the loop (write bad file → validate findings → fix →
   screen updates) is a required verification, since nothing tests it today.
 
-### D6 — Project `outputSchema` through to the model
+### D5 — Project `outputSchema` through to the model
 
 Extraction already captures per-operation output schemas
 (`packages/actions/src/sync/openapi.ts`) and drops them at the descriptor
@@ -100,7 +89,7 @@ query's field names from the listing itself. "Call the query and look at real
 rows first" demotes to a skill fallback for tools without declared output
 schemas, or when sample values matter.
 
-### D7 — Feed the model files (its native strength)
+### D6 — Feed the model files (its native strength)
 
 - **`/host/components/<Name>.md`** — one file per catalog entry: full
   description, props schema, examples. Extends the existing `/host` mount
@@ -111,7 +100,7 @@ schemas, or when sample values matter.
   one worked full-app example. Native skill companion files; the skill body
   stays one screen per section.
 
-### D8 — `building-apps` skill rewrite
+### D7 — `building-apps` skill rewrite
 
 Same bones, corrected details, all claude-code-native:
 
@@ -130,7 +119,7 @@ Same bones, corrected details, all claude-code-native:
   once for real rows only when the schema is missing or sample values matter.
 - Points at `references/format.md` and `/host/components/` for depth.
 
-### D9 — Prompt: harness-aware sections, app-default line, brief at ~6 lines
+### D8 — Prompt: harness-aware sections, app-default line, brief at ~6 lines
 
 `packages/agent/src/prompt.ts` + `embeddingBrief` in
 `packages/harnesses/src/claude-code/index.ts`. One assembler, small
@@ -162,11 +151,13 @@ harness-swap law depends on shared policy text).
 
 ## Verification
 
+**Nothing is "done" until the live E2E proofs below pass — gates and unit tests
+alone do not count (Yousef, 2026-08-03).**
+
 - `pnpm build && pnpm test && pnpm typecheck && pnpm lint` green.
 - Live E2E on the sandbox path, real browser: (1) build an app via files —
   skeleton renders mid-turn, sections grow, validate loop demonstrated on an
   induced error; (2) `search_connectors` → expansion → call → connect-required
-  card; (3) an SDK tool formerly denied (`MultiEdit` or `Skill`) now works;
-  (4) `machine: "local"` refuses under production env.
+  card; (3) an SDK tool formerly denied (`MultiEdit` or `Skill`) now works.
 - Door audit rows for every host-tool call (the cc-native parity gate stands).
 - UI-affecting proofs carry screenshots in the PR.
