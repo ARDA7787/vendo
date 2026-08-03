@@ -113,3 +113,6 @@ docs/superpowers/evidence/
 docs/superpowers/plans/
 docs/superpowers/lanes/
 docs/eval/runs/
+
+# Red gate runs (scripts/serial-gate.sh) — logs kept for inspection, never evidence.
+.gate-failures/

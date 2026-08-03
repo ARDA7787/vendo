@@ -175,6 +175,37 @@ jobs:
       # page.route and assert text, so nothing in them depends on the
       # :focus-visible / light-dark() resolution that keeps the legacy specs
       # local.
+      #
+      # Post-check round 2 additions, and why each one is here:
+      #   accessibility     the paragraph above lumped "axe" in with the
+      #                     :focus-visible specs. That was never true of it —
+      #                     it is eleven pure axe sweeps over the chrome and
+      #                     asserts no outline and no light-dark() anywhere.
+      #   center-a11y       the durable half of postcheck-b's one-shot proof
+      #                     script, which lived under docs/ outside `testDir`
+      #                     and so could never catch a regression. It is also
+      #                     the only CI home of four BROWSER-ONLY mechanisms
+      #                     the wave otherwise pinned in jsdom alone: `inert`
+      #                     (H11/H12), real focus order (H10/H18/M34),
+      #                     IntersectionObserver (H16) and contrast (M33).
+      #   approvals-poller  H15's ~20s request COUNT. Eventual consistency —
+      #                     what the smoke pack checks — is also what three
+      #                     independent pollers give you; only counting tells
+      #                     them apart, and nothing in CI counted.
+      #   jail-and-tree     containment: the opaque-origin CSP jail, the
+      #                     bridge, iframe height, and a node failure staying
+      #                     inside its boundary in the consumer's words.
+      #
+      # DELIBERATELY STILL OUT, with reasons rather than silence:
+      #   keyboard.spec.ts     `workspace tabs rove with arrows and open an app
+      #                        by keyboard` is RED on this branch — the
+      #                        Automations tab's aria-selected stays "false"
+      #                        after Enter. That is a product defect owned by
+      #                        the defects worker, not a CI-environment issue.
+      #                        The focus-order coverage CI actually needed is in
+      #                        center-a11y (H10/H18/M34), which is green.
+      #   screenshots.spec.ts  writes PNGs; it is a capture job, not a gate.
+      #   live-voice.spec.ts   needs OPENAI_API_KEY and a real model.
       - name: UI solidity + stress suite
         run: >-
           pnpm --filter @vendoai/ui test:browser
@@ -190,6 +221,10 @@ jobs:
           e2e/wave3-consumer-voice.spec.ts
           e2e/run-history-voice.spec.ts
           e2e/build-failed-banner.spec.ts
+          e2e/accessibility.spec.ts
+          e2e/center-a11y.spec.ts
+          e2e/approvals-poller-proof.spec.ts
+          e2e/jail-and-tree.spec.ts
       - if: failure()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
         with:

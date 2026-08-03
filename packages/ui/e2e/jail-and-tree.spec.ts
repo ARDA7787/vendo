@@ -112,7 +112,12 @@ test("tree node failures and dangling children remain contained", async ({ page 
   await expect(page.getByText("Instant-path invoice")).toBeVisible();
   await expect(page.getByText("Ada Lovelace")).toBeVisible();
   await expect(page.getByText("Bound total: 4200")).toBeVisible();
-  await expect(page.getByRole("note", { name: "Node render error" })).toContainText("bad");
+  // M36 / §16 law 3 — the notice says the one honest sentence; the exception's
+  // own message and our node id are the developer's half (dev mode only). This
+  // used to pin the thrown message, which is the copy §16 keeps off a screen.
+  const nodeError = page.getByRole("note", { name: "Node render error" });
+  await expect(nodeError).toContainText("Part of this view didn’t load.");
+  await expect(nodeError).not.toContainText("exploded");
   await expect(page.getByText("Sibling survived")).toBeVisible();
   await expect(page.locator('[data-dangling-node="not-yet-streamed"] [data-primitive="Skeleton"]')).toBeVisible();
   await expect(page.locator("#root")).not.toBeEmpty();

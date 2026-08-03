@@ -57,16 +57,63 @@ const WAITING_ASK = {
 /**
  * Every element inside `scope` that is running a LOOPING animation, itself or
  * through a pseudo-element. §8's "the build animates ONE thing" is a claim about
- * exactly this set, and nothing else can measure it.
+ * exactly this set, and nothing else can measure it. Names carry the pseudo
+ * (`P::after`) so a failure says WHICH loop came back.
  */
 async function looping(scope: Locator): Promise<string[]> {
-  return scope.locator("*").evaluateAll(nodes => nodes
-    .filter(node => ["", "::before", "::after"].some(pseudo => {
-      const style = getComputedStyle(node, pseudo === "" ? undefined : pseudo);
-      return style.animationName !== "none"
-        && style.animationIterationCount.split(",").some(count => count.trim() === "infinite");
-    }))
-    .map(node => node.className.toString().split(" ").at(-1) ?? node.tagName));
+  return scope.locator("*").evaluateAll(nodes => nodes.flatMap((node) => {
+    const name = node.className.toString().trim().split(/\s+/).at(-1) || node.tagName.toLowerCase();
+    return (["", "::before", "::after"] as const)
+      .filter((pseudo) => {
+        const style = getComputedStyle(node, pseudo === "" ? undefined : pseudo);
+        return style.animationName !== "none"
+          && style.animationIterationCount.split(",").some(count => count.trim() === "infinite");
+      })
+      .map(pseudo => `${name}${pseudo}`);
+  }));
+}
+
+/**
+ * Sample `looping()` continuously for as long as a card in `scope` is building,
+ * and report the UNION of everything that ever moved plus what the fixture was
+ * actually showing while we looked.
+ *
+ * One instant is not enough (ruling 21): the suppressed set changes shape
+ * through the build — an empty streamed turn shows the lone `.fl-caret`, flowing
+ * prose shows the trailing pseudo-caret, and a half-written table shows the
+ * forming row's shimmer. Sampling the whole window catches all three without
+ * racing any of them.
+ */
+async function loopingThroughBuild(scope: Locator): Promise<{
+  moved: string[]; sawCaret: boolean; sawFlowingProse: boolean; sawFormingTable: boolean; samples: number;
+}> {
+  const moved = new Set<string>();
+  const seen = { caret: false, prose: false, table: false };
+  let samples = 0;
+  const deadline = Date.now() + 25_000;
+  while (Date.now() < deadline) {
+    const frame = await scope.evaluate(root => ({
+      building: root.querySelector('.fl-appcard-bar[data-state="building"]') !== null,
+      caret: root.querySelector(".fl-caret") !== null,
+      prose: root.querySelector(".fl-md--streaming") !== null,
+      table: root.querySelector(".fl-skeleton-bar") !== null,
+    }));
+    if (!frame.building && samples > 0) break;
+    if (frame.building) {
+      samples += 1;
+      seen.caret ||= frame.caret;
+      seen.prose ||= frame.prose;
+      seen.table ||= frame.table;
+      for (const name of await looping(scope)) moved.add(name);
+    }
+  }
+  return {
+    moved: [...moved].sort(),
+    sawCaret: seen.caret,
+    sawFlowingProse: seen.prose,
+    sawFormingTable: seen.table,
+    samples,
+  };
 }
 
 test("landing renders its greeting, suggestions and composer", async ({ page }) => {
@@ -134,9 +181,21 @@ test("a build animates exactly one thing, and the bar flips to the app's name", 
 
   const list = page.locator(".fl-msglist");
   await expect(page.getByText("Building your view…")).toBeVisible({ timeout: 20_000 });
-  // §8 — the hairline gliding across the card bar is the ONLY moving element:
-  // no pulsing beat orb, no pulsing card dot, no shimmering skeleton.
-  expect(await looping(list)).toEqual(["fl-boot-hairline"]);
+  const window_ = await loopingThroughBuild(list);
+
+  // The fixture must have SHOWN the competing loops, or the §8 claim below is
+  // about an empty set and cannot fail (ruling 21). These three are the exact
+  // elements chrome-css suppresses while a card builds.
+  expect(window_.samples, "the build window must have been sampled").toBeGreaterThan(3);
+  expect(
+    { caret: window_.sawCaret, prose: window_.sawFlowingProse, table: window_.sawFormingTable },
+    "the fixture must stream prose beside the building card",
+  ).toEqual({ caret: true, prose: true, table: true });
+
+  // §8 — the hairline gliding across the card bar is the ONLY moving element
+  // for the WHOLE build: no blinking caret, no pulsing beat orb, no shimmering
+  // forming row. Reverting the suppression puts the caret and shimmer back here.
+  expect(window_.moved).toEqual(["fl-boot-hairline"]);
 
   await expect(page.getByText("Spending board").first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("button", { name: /Did 3 things/ })).toBeVisible({ timeout: 20_000 });
@@ -189,7 +248,11 @@ test("the center carries its two doors and a needs-you section that clears", asy
   await expect(needs.getByRole("button")).toHaveCount(1);
 
   // Deciding the ask in the strip above the conversation settles the rail too:
-  // one poller, one count, so the two surfaces cannot disagree.
+  // the two surfaces cannot end up disagreeing about the count.
+  //
+  // This is EVENTUAL CONSISTENCY, which independent pollers would also give —
+  // it is NOT the H15 one-shared-poller gate, and this test never was. That
+  // claim needs a request COUNT and lives in approvals-poller-proof.spec.ts.
   await page.locator(".fl-waiting-strip > summary").click();
   await page.getByRole("button", { name: "Approve" }).first().click();
   await expect(needs).toHaveCount(0);
@@ -215,4 +278,75 @@ test("a failed build ends the turn in ✕ and prose, and offers no component to 
   await expect(failure.getByRole("button")).toHaveCount(0);
   // …and the developer's sentence never reaches the reader (§16 law 3).
   await expect(failure).not.toContainText("DataTable");
+});
+
+/* ------------------------------------------------------------------ */
+/* Round-2 additions: the cheap high-value axes the 11-test pack missed */
+/* ------------------------------------------------------------------ */
+
+const POLICY_BANNER = "Vendo is running without a policy";
+
+test("C1 — a conversation grows no policy banner of its own", async ({ page }) => {
+  // Two-sided on purpose: "no banner" alone would also pass if the banner were
+  // deleted outright, or if the status probe never resolved. One per branch.
+  await openScenario(page, "composer");
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+  await expect(page.getByRole("region", { name: POLICY_BANNER })).toHaveCount(0);
+
+  // …and it is still a real, reachable surface where the HOST mounts it
+  // (`/notice`, an unconfigured client): §6's banner is the host's call, never
+  // furniture the conversation adds for itself.
+  await page.goto("/notice");
+  await expect(page.getByRole("region", { name: POLICY_BANNER })).toBeVisible();
+});
+
+test("H9 — collapsing the workspace is final; the stage does not re-open it", async ({ page }) => {
+  await openScenario(page, "overlay-manual");
+  await page.getByRole("button", { name: "AI agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Vendo assistant" });
+  await send(dialog, BUILD_TURN);
+
+  await expect(page.getByRole("button", { name: /Did 3 things/ })).toBeVisible({ timeout: 20_000 });
+
+  // Opening the built view expands the split workspace…
+  const panel = page.locator(".fl-overlay-panel");
+  await page.getByRole("button", { name: "Expand this view" }).click();
+  await expect(panel).toHaveAttribute("data-vendo-expanded", "", { timeout: 10_000 });
+
+  // …and Collapse workspace means it. The one-shot hint ledger lives in the
+  // split, so collapsing cannot re-arm the thing that opened it (H9): back to
+  // chat is FINAL, not a state the stage may quietly undo a beat later.
+  await page.getByRole("button", { name: "Collapse workspace" }).click();
+  await expect(panel).not.toHaveAttribute("data-vendo-expanded", /.*/);
+  await page.waitForTimeout(1_500);
+  await expect(panel).not.toHaveAttribute("data-vendo-expanded", /.*/);
+});
+
+test("H18 — arrows move focus in the rail, they never activate", async ({ page }) => {
+  await openScenario(page, "page-chat");
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("a draft the arrow keys must not eat");
+  const newChat = page.getByRole("tab", { name: "New chat" });
+  await expect(newChat).toHaveAttribute("aria-selected", "true");
+
+  await newChat.focus();
+  for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "End", "Home"]) {
+    await page.keyboard.press(key);
+  }
+  // Nothing was activated by moving: the selected door and the draft survive.
+  await expect(newChat).toHaveAttribute("aria-selected", "true");
+  await expect(composer).toHaveValue("a draft the arrow keys must not eat");
+});
+
+test("mobile 390px — the thread renders, sends, and answers", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openScenario(page, "composer");
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await expect(composer).toBeVisible();
+  // Nothing overflows the phone: the composer sits inside the viewport.
+  const box = (await composer.boundingBox())!;
+  expect(box.x, "the composer starts inside the viewport").toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width, "the composer ends inside the viewport").toBeLessThanOrEqual(391);
+  await send(page, "Say something back");
+  await expect(page.getByText("Turn complete")).toBeVisible({ timeout: 20_000 });
 });
