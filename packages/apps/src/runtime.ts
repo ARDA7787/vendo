@@ -21,6 +21,7 @@ import {
   type IsoDateTime,
   type Json,
   type NormalizedCatalog,
+  type PlanDisplay,
   type RunContext,
   type ApprovalId,
   type ApprovalRequest,
@@ -949,7 +950,7 @@ export const assembleTree = (source: {
    *  It is assembled HERE rather than at either emitter so the in-process
    *  generation and the harness render seam cannot disagree about the field.
    *  Absent stays absent — the client reads that as inline. */
-  display?: "inline" | "stage";
+  display?: PlanDisplay;
 }): Tree => ({
   ...structuredClone(source.tree),
   ...(source.components === undefined ? {} : { components: structuredClone(source.components) }),
