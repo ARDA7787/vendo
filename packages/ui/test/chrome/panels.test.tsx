@@ -78,7 +78,10 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     expect(card.textContent).toContain("Invoice watcher needs 2 permissions");
     // Each permission in OUR words, not the descriptor's model-facing sentence
     // (spec §16 law 3, LEAK 1).
-    expect(card.textContent).toContain("Reads: Email send");
+    // ⚠️ TEST EDIT (ruling 15): the same false row as grant-set-thread's —
+    // "Reads: Email send" for a send tool, straight off the ask's risk grade.
+    expect(card.textContent).toContain("Sends: Email send");
+    expect(card.textContent).not.toContain("Reads: Email send");
     expect(card.textContent).toContain("Reads: Invoices list");
     expect(card.textContent).not.toContain("Read invoices across your account.");
     expect(card.querySelectorAll("button")).toHaveLength(2);

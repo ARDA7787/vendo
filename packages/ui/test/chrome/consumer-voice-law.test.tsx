@@ -104,7 +104,10 @@ describe("LEAK 1 — the standing-access card rendered model instructions", () =
       </VendoProvider>,
     );
     const rows = [...document.querySelectorAll(".fl-grant")].map(row => row.textContent);
-    expect(rows).toEqual(["Reads: Get spending insights", "Changes: Transfer money"]);
+    // ⚠️ TEST EDIT (ruling 15): the second row used to read "Changes: Transfer
+    // money" — a DESTRUCTIVE permission described with the word an ordinary
+    // write gets. An irreversible grant now says so.
+    expect(rows).toEqual(["Reads: Get spending insights", "Irreversible: Transfer money"]);
     // The cadence stays on the card's own plain-words line, said once.
     expect(document.querySelector(".fl-card-line")?.textContent)
       .toContain("Granted once, used every run");

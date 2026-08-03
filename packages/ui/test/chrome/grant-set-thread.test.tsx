@@ -40,10 +40,13 @@ describe("grant-set consent in the thread", () => {
   it("enumerates every permission with exactly one Approve and one Deny (criterion 18)", async () => {
     const card = await parkOnGrantSet();
     expect(card.textContent).toContain("Invoice watcher needs 2 permissions");
-    // Each permission in OUR words — the verb and the thing. These two rows
-    // used to assert the DESCRIPTOR's description reached the row; that
-    // sentence is authored for the model (spec §16 law 3, LEAK 1).
-    expect(card.textContent).toContain("Reads: Email send");
+    // Each permission in OUR words — the verb and the thing.
+    // ⚠️ TEST EDIT (ruling 15): this asserted "Reads: Email send" for a SEND
+    // tool. The row's word used to come from the ask's risk GRADE alone, and the
+    // fixture grades this ask `read`, so the card told the user an email-sending
+    // permission only READS. The word now comes from the ask itself.
+    expect(card.textContent).toContain("Sends: Email send");
+    expect(card.textContent).not.toContain("Reads: Email send");
     expect(card.textContent).toContain("Reads: Invoices list");
     expect(card.textContent).not.toContain("Send email digests as you.");
     expect(card.querySelectorAll(".fl-grant")).toHaveLength(2);

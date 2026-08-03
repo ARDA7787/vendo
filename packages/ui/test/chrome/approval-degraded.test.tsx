@@ -352,7 +352,9 @@ describe("the in-thread approval carries the real descriptor", () => {
       tools,
     );
     expect(approval.descriptor.inputSchema).toEqual({});
-    expect(approval.descriptor.risk).toBe("read");
+    // ⚠️ TEST EDIT (ruling 15): this pinned "read" for an ask the wire never
+    // graded — the chip then said "Read-only" about a call we know nothing about.
+    expect(approval.descriptor.risk).toBe("write");
     // Never the server's `tool slug + canonical JSON`.
     expect(approval.inputPreview).toBe("To: a@example.com");
     const container = show(approval, tools);
