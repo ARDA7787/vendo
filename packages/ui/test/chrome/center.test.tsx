@@ -178,6 +178,19 @@ describe("the center rail", () => {
     expect(await screen.findByRole("heading", { name: "Apps" })).toBeTruthy();
   });
 
+  it("every tab's aria-controls resolves — there is ONE panel, not one per tab (M39)", async () => {
+    mount(stubClient());
+    const more = await screen.findByRole("button", { name: "More sections" });
+    fireEvent.click(more);
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.length).toBe(5);
+    const panel = screen.getByRole("tabpanel");
+    for (const tab of tabs) {
+      const controls = tab.getAttribute("aria-controls")!;
+      expect(document.getElementById(controls), `${tab.textContent} controls a real element`).toBe(panel);
+    }
+  });
+
   it("closing ··· on an open Activity keeps a tab stop and a named panel (H10)", async () => {
     mount(stubClient());
     await screen.findByRole("tablist", { name: "Workspace sections" });

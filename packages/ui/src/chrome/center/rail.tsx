@@ -23,6 +23,11 @@ const PRIMARY: CenterView[] = ["chat", "apps", "automations"];
  *  under the quiet ··· row, opening the same panels unchanged. */
 const SECONDARY: CenterView[] = ["activity", "accounts"];
 
+/** The ONE panel every tab controls: the column swaps its contents, it is never
+ *  a panel per tab. (Each tab used to point `aria-controls` at `vendo-panel-<its
+ *  own view>`, so four of the five references pointed at nothing.) */
+export const CENTER_PANEL_ID = "vendo-center-panel";
+
 /** The rows the tablist actually renders. Exported because the column's panel
  *  has to know whether the view it is showing still HAS a tab: closing the ···
  *  row while Activity is open removes the tab that labelled it. */
@@ -132,7 +137,7 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
             type="button"
             role="tab"
             aria-selected={view === row}
-            aria-controls={`vendo-panel-${row}`}
+            aria-controls={CENTER_PANEL_ID}
             tabIndex={index === stop ? 0 : -1}
             key={row}
             onClick={() => { setFocused(row); onView(row); }}

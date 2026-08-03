@@ -6,7 +6,7 @@ import { ActivityPanel } from "./activity-panel.js";
 import { AutomationsPanel } from "./automations-panel.js";
 import { AppsPage } from "./center/apps-page.js";
 import { AppShelf } from "./center/home.js";
-import { CenterChats, CenterHeader, CenterSheet, NeedsYou, RailNav, centerViewLabel, railRows, type CenterView } from "./center/rail.js";
+import { CENTER_PANEL_ID, CenterChats, CenterHeader, CenterSheet, NeedsYou, RailNav, centerViewLabel, railRows, type CenterView } from "./center/rail.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { ConnectedAccountsPanel } from "./connected-accounts-panel.js";
 import { ACTIVITY_BUMP_EVENT } from "./morph-toast.js";
@@ -208,7 +208,7 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
             ? {}
             : {
               role: "tabpanel",
-              id: `vendo-panel-${view}`,
+              id: CENTER_PANEL_ID,
               // The tab that labels the panel has to still BE there: closing the
               // ··· row while Activity is open takes its tab away, and an
               // aria-labelledby pointing at a removed id leaves the panel
