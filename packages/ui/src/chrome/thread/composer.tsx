@@ -4,7 +4,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ConnectDockButton, ConnectTray } from "../connect-dock.js";
 import { PrefillScopeContext, registerPrefillConsumer } from "../overlay-registry.js";
 import { fileExt, fileToPart, formatBytes } from "./attachments.js";
-import { AGENT_CONTEXT_METADATA } from "./message-data.js";
+import { agentContextPart } from "./message-data.js";
 
 /** The message shape the composer commits — mirrors useVendoThread.sendMessage.
     The explicit `parts` form is only for a turn carrying agent grounding, which
@@ -168,14 +168,16 @@ export function useComposer({ busy, sendMessage }: {
         void sendMessage(parts.length > 0 ? { text, files: parts } : { text });
         return;
       }
-      // The grounding travels as its own text part, marked so no surface renders
-      // it (AGENT_CONTEXT_METADATA). Spelling the parts out is the price of the
-      // marker — the `{ text, files }` shorthand cannot carry one.
+      // The grounding travels as its own text part, marked so no surface
+      // renders it (`agentContextPart` — in the metadata AND in the text, so a
+      // store that persists only `{ type, text }` cannot un-hide it). Spelling
+      // the parts out is the price of the marker — the `{ text, files }`
+      // shorthand cannot carry one.
       void sendMessage({
         parts: [
           { type: "text", text },
           ...parts,
-          { type: "text", text: context, providerMetadata: AGENT_CONTEXT_METADATA },
+          agentContextPart(context),
         ],
       });
     })();

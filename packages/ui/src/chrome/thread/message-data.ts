@@ -365,10 +365,38 @@ export function narratedByAppCard(
  */
 export const AGENT_CONTEXT_METADATA = { vendo: { agentContext: true } } as const;
 
+/**
+ * The SAME mark, in the text itself.
+ *
+ * THE HOLE the post-check found: `providerMetadata` is the only thing saying
+ * "never show this", and a store that persists a text part as `{ type, text }`
+ * — which the wire contract permits and several stores do — drops it. The
+ * marked part then comes back as an ORDINARY text part, so a reloaded
+ * transcript prints the app id, and "edit last message" seeds the composer
+ * with it. That is the exact leak the carrier was invented to avoid, one
+ * reload later.
+ *
+ * The mark therefore rides the channel that always survives. It fails CLOSED:
+ * a part that carries it is hidden even with no metadata at all, and the id is
+ * never what a person sees. The model reads the mark too, which costs a few
+ * tokens and tells it (truthfully) that the line is context rather than
+ * something the person typed.
+ */
+export const AGENT_CONTEXT_MARK = "[vendo:context]";
+
+/** The text part that carries grounding to the model and to nobody else. */
+export function agentContextPart(context: string): { type: "text"; text: string; providerMetadata: typeof AGENT_CONTEXT_METADATA } {
+  return {
+    type: "text",
+    text: context.startsWith(AGENT_CONTEXT_MARK) ? context : `${AGENT_CONTEXT_MARK} ${context}`,
+    providerMetadata: AGENT_CONTEXT_METADATA,
+  };
+}
+
 export function isAgentContext(part: UIMessage["parts"][number]): boolean {
   if (part.type !== "text") return false;
   const vendo = (part.providerMetadata as { vendo?: { agentContext?: unknown } } | undefined)?.vendo;
-  return vendo?.agentContext === true;
+  return vendo?.agentContext === true || part.text.startsWith(AGENT_CONTEXT_MARK);
 }
 
 /** The plain text a user turn carried, joined across its text parts — the seed
