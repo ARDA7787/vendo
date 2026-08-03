@@ -1849,6 +1849,25 @@ describe("createMcpDoor tool menu, titles, and annotations", () => {
     await connected.client.close();
   });
 
+  it("says nothing about a tool NOBODY graded — an ungraded listing carries neither hint", async () => {
+    const { connected } = await open({
+      extraDescriptors: [
+        { name: "host_maybe", description: "Nobody graded this", inputSchema: { type: "object" }, risk: "ungraded" as const, title: "Maybe" },
+        { name: "host_unknown", description: "Nobody graded this either", inputSchema: { type: "object" }, risk: "ungraded" as const },
+      ],
+    });
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+
+    // MCP's default for `destructiveHint` is TRUE, so emitting `false` was an
+    // active claim of safety about a tool nobody judged — and `true` would be
+    // the opposite guess. Omitted, the client keeps its own conservative
+    // default. `readOnlyHint: false` is the same unfounded claim, so it goes too.
+    expect(byName.get("host_maybe")?.annotations).toEqual({ title: "Maybe" });
+    expect(byName.get("host_unknown")?.annotations).toEqual({});
+    await connected.client.close();
+  });
+
   it("treats an empty title as no title (generated files can carry one; the wire must not)", async () => {
     const { connected } = await open({
       extraDescriptors: [
@@ -2886,6 +2905,39 @@ describe("createMcpDoor turn-credential results", () => {
     // The listing is not consulted by the call path at all — which is the fix:
     // it ran AFTER the write, unguarded.
     expect(lists.length).toBe(1);
+    await connected.client.close();
+  });
+
+  it("grades the LIVE-TURN listing by the same rule — ungraded says nothing there either", async () => {
+    // The turn surface is a second place that builds MCP `Tool` objects, so a
+    // claim deleted from the OAuth listing has to be deleted here too or the two
+    // drift and a claudeCode() box reads the guess the outside agent no longer does.
+    const harness = makeHarness({
+      turnCredentials: {
+        async resolve(token) {
+          if (token !== TOKEN) return null;
+          const turn = liveTurn("x", () => {});
+          return {
+            ...turn,
+            tools: {
+              ...turn.tools,
+              list: async () => [
+                { name: "host_lookup", description: "Look something up", risk: "read" as const, inputSchema: { type: "object", properties: {} } },
+                { name: "host_wipe", description: "Delete everything", risk: "destructive" as const, inputSchema: { type: "object", properties: {} } },
+                { name: "host_maybe", description: "Nobody graded this", risk: "ungraded" as const, inputSchema: { type: "object", properties: {} } },
+              ],
+            },
+          };
+        },
+      },
+    });
+    const connected = await connect(harness.door, TOKEN);
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+
+    expect(byName.get("host_lookup")?.annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
+    expect(byName.get("host_wipe")?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(byName.get("host_maybe")?.annotations).toEqual({});
     await connected.client.close();
   });
 
