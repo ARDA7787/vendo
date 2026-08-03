@@ -3,7 +3,8 @@ import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoContext } from "../context.js";
 import { developmentMode } from "./dev-mode.js";
-import { argProperties, argValue, humanizeToolName, toolTitle, type ArgProperties, type ToolMeta } from "./humanize.js";
+import { memberSchema } from "./field-rows.js";
+import { argValue, humanizeToolName, toolTitle, type ToolMeta } from "./humanize.js";
 
 /**
  * The thread's in-progress presentation speaks in the product's voice: each
@@ -247,15 +248,51 @@ export function consentWords(
  * ask is about, so the card says no sentence and keeps every row in sight.
  * The host's formatter still supplies the DISPLAY for that one field.
  */
-function moneyValue(args: Record<string, unknown>, meta?: ToolMeta, properties?: ArgProperties): string | undefined {
-  const declared = Object.entries(args).filter(([key, value]) =>
-    typeof value === "number" && Number.isFinite(value)
-    && declaredMoneyUnit(key, properties?.[key]) !== undefined);
+function moneyValue(args: Record<string, unknown>, meta?: ToolMeta, inputSchema?: JsonSchema): string | undefined {
+  const declared: { key: string; value: number; schema: JsonSchema | undefined }[] = [];
+  collectMoney(args, inputSchema, declared);
   if (declared.length !== 1) return undefined;
-  const [key, value] = declared[0]!;
-  const shown = meta?.formatField?.(key, value as Json) ?? argValue(key, value, properties);
+  const { key, value, schema } = declared[0]!;
+  const shown = meta?.formatField?.(key, value as Json)
+    ?? argValue(key, value, schema === undefined ? undefined : { [key]: schema });
   // An undeclared unit says so out loud; that is not a sentence.
   return shown.includes("unit not specified") ? undefined : shown;
+}
+
+/**
+ * H-7 — every DECLARED money value in the args, AT ANY DEPTH.
+ *
+ * THE DEFECT: this counted top-level fields only, while `field-rows`' `display`
+ * formats money at any depth. So `{ amount_cents: 4750, extras: { tip_cents:
+ * 2500 } }` looked like exactly one amount, synthesized "Sends $47.50 to Acme
+ * Utilities — now, as you.", and then FOLDED the rows behind Details — putting
+ * the $25.00 tip the person was also approving one disclosure away, under a
+ * sentence that did not mention it. The fold is only earned when the sentence
+ * accounts for every amount in the ask; anything else and the card says no
+ * sentence and keeps every row in sight.
+ *
+ * The descent is `display`'s own (`memberSchema`), so the sentence and the rows
+ * can never disagree about what counts as money.
+ */
+function collectMoney(
+  value: unknown,
+  schema: JsonSchema | undefined,
+  found: { key: string; value: number; schema: JsonSchema | undefined }[],
+  key = "",
+): void {
+  if (value !== null && typeof value === "object") {
+    if (Array.isArray(value)) {
+      for (const item of value) collectMoney(item, memberSchema(schema, key), found, key);
+      return;
+    }
+    for (const [child, item] of Object.entries(value)) {
+      collectMoney(item, memberSchema(schema, child), found, child);
+    }
+    return;
+  }
+  if (typeof value === "number" && Number.isFinite(value) && declaredMoneyUnit(key, schema) !== undefined) {
+    found.push({ key, value, schema });
+  }
 }
 
 export function toolPresentation(
@@ -309,7 +346,7 @@ export function toolPresentation(
     // that actually gate money: a DECLARED amount plus a named counterparty is
     // enough for one truthful sentence ("Sends $47.50 to Acme Utilities"),
     // which is what the robotic `Vendo will run Send money as you.` replaced.
-    const amount = moneyValue(flat, meta, argProperties(inputSchema));
+    const amount = moneyValue(flat, meta, inputSchema);
     const target = TARGET_FIELDS
       .map(field => flat[field])
       .find((value): value is string => typeof value === "string" && value.trim().length > 0);

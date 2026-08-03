@@ -285,6 +285,43 @@ describe("the plain-words line says what happens, not which tool", () => {
     expect(rowsOf(container)).toEqual([["Rate", "5%"], ["Recipient name", "Acme Utilities"]]);
   });
 
+  it("H-7 — money NESTED in the args blocks the sentence and the fold", () => {
+    // `moneyValue` counted top-level fields only, while `field-rows`' `display`
+    // formats money at any depth. So this read "Sends $47.50 to Acme
+    // Utilities — now, as you." and then folded the rows behind Details,
+    // putting the $25.00 tip the person was also approving one disclosure away
+    // under a sentence that never mentioned it.
+    const container = show(ask({
+      call: {
+        id: "call_send",
+        tool: "host_transferMoney",
+        args: { amount_cents: 4750, recipient_name: "Acme Utilities", extras: { tip_cents: 2500 } },
+      },
+      descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
+    } as Partial<ApprovalRequest>));
+    expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
+    expect(line(container)).toBe("This moves money, as you.");
+    // Both amounts stay in plain sight, formatted, with nothing folded.
+    expect(container.querySelector(".fl-approval-details")).toBeNull();
+    expect(rowsOf(container)).toEqual([
+      ["Amount cents", "$47.50"],
+      ["Recipient name", "Acme Utilities"],
+      ["Extras", "Tip cents: $25.00"],
+    ]);
+  });
+
+  it("H-7 — one amount, however deep, still earns its sentence", () => {
+    const container = show(ask({
+      call: {
+        id: "call_send",
+        tool: "host_transferMoney",
+        args: { charge: { amount_cents: 1850 }, recipient_name: "Acme Utilities" },
+      },
+      descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
+    } as Partial<ApprovalRequest>));
+    expect(line(container)).toBe("Sends $18.50 to Acme Utilities — now, as you.");
+  });
+
   it("keeps folding the fields behind Details on an ORDINARY consequence ask", () => {
     const container = show(money({ critical: false }));
     expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");

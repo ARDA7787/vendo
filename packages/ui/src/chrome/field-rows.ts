@@ -50,8 +50,12 @@ function leaf(value: unknown): string {
 
 /** The declared schema for one member of a container: an object's property, an
     array's `items`. Undefined where the host declared nothing there — the same
-    "undeclared" state the top level already answers for honestly. */
-function memberSchema(schema: JsonSchema | undefined, key: string): JsonSchema | undefined {
+    "undeclared" state the top level already answers for honestly.
+
+    Exported for H-7: the consequence sentence has to count money with the SAME
+    descent these rows format it with, or the two disagree about what is on the
+    card. */
+export function memberSchema(schema: JsonSchema | undefined, key: string): JsonSchema | undefined {
   const properties = argProperties(schema);
   if (properties !== undefined) return properties[key];
   const items = schema?.items;
