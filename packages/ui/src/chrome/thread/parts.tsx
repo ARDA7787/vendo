@@ -153,8 +153,11 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     //   · D1 — an app-building call renders no beat, from the moment the build
     //     starts, because its card IS that step (the summary still counts it).
     const risk = risks.get(part.toolCallId) ?? "read";
+    // The narration check runs FIRST: a failed build is content (its ✕ stays in
+    // the record), but its record is the build-failed block, not a second ✕.
+    if (narratedByAppCard(part, siblingParts ?? [])) return null;
     if (toolCallIsContent(part)) return <BuildBeat part={part} risk={risk} count={count} />;
-    if (hideBeats || narratedByAppCard(part, siblingParts ?? [])) return null;
+    if (hideBeats) return null;
     return <BuildBeat part={part} risk={risk} count={count} />;
   }
   if (part.type === "data-vendo-build-failed") {

@@ -302,6 +302,15 @@ export function narratedByAppCard(
   siblingParts: UIMessage["parts"],
 ): boolean {
   if (!isToolUIPart(part)) return false;
+  // M20 — a build that FAILED terminally narrates through its own block (the
+  // `data-vendo-build-failed` part: a ✕ beat reading "Couldn't build the app"
+  // plus what it means for the reader). The failed call's own ✕ beat sat right
+  // above it, so one failure printed two ✕ lines. The part names the call it
+  // is about, so the suppression is exact rather than a guess by tool identity.
+  const failed = siblingParts.some(sibling => sibling.type === "data-vendo-build-failed"
+    && (partData(sibling) as { toolCallId?: unknown; reason?: unknown }).toolCallId === part.toolCallId
+    && typeof (partData(sibling) as { reason?: unknown }).reason === "string");
+  if (failed) return true;
   const name = toolName(part);
   if (!name.startsWith(VENDO_APPS_TOOL_PREFIX)) return false;
   const building = part.state === "input-streaming" || part.state === "input-available";

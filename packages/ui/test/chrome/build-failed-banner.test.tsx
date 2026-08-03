@@ -151,3 +151,76 @@ describe("the build-failure sentence is the user's, not the developer's", () => 
       .toContain("I couldn't finish building that view");
   });
 });
+
+/** M20 — one failure, one ✕. The failed create's own beat sat directly above the
+ *  build-failed block, so the transcript said the same thing twice in the same
+ *  vocabulary. */
+describe("a failed build narrates ONCE (M20)", () => {
+  let wire: Awaited<ReturnType<typeof createWireServer>>;
+  let client: VendoClient;
+
+  beforeEach(async () => {
+    wire = await createWireServer();
+    client = createVendoClient({ baseUrl: wire.url });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    await wire.close();
+  });
+
+  it("shows the build-failed block and NO second ✕ beat for the failed call", async () => {
+    const failedTurn: UIMessage = {
+      id: "msg_build_failed_twice",
+      role: "assistant",
+      parts: [
+        { type: "text", text: "Building your invoice tracker now." },
+        {
+          type: "tool-vendo_apps_create",
+          toolCallId: "call_1",
+          state: "output-error",
+          input: { intent: "invoice tracker" },
+          errorText: "generation failed",
+        } as unknown as UIMessage["parts"][number],
+        {
+          type: "data-vendo-build-failed",
+          id: "vendo-build-failed:call_1",
+          data: { toolCallId: "call_1", reason: "app build failed: generation failed" },
+        } as UIMessage["parts"][number],
+      ],
+    };
+    const existing = wire.state.threads.get("thr_1")!;
+    wire.state.threads.set("thr_1", { ...existing, messages: [...existing.messages, failedTurn] });
+
+    render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
+
+    await screen.findByText("Couldn't build the app");
+    // ONE error beat in the turn — the block's own.
+    const failures = [...document.querySelectorAll(".fl-beat-error")];
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.closest("[data-vendo-build-failed]")).toBeTruthy();
+    // And not the beat vocabulary for the call itself.
+    expect(document.body.textContent).not.toContain("— couldn't finish");
+  });
+
+  it("still beats a failed call that has NO build-failed block (§15 keeps the ✕)", async () => {
+    const failedTurn: UIMessage = {
+      id: "msg_tool_failed",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-host_invoices_list",
+          toolCallId: "call_2",
+          state: "output-error",
+          input: {},
+          errorText: "boom",
+        } as unknown as UIMessage["parts"][number],
+      ],
+    };
+    const existing = wire.state.threads.get("thr_1")!;
+    wire.state.threads.set("thr_1", { ...existing, messages: [...existing.messages, failedTurn] });
+
+    render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
+    expect(await screen.findByText(/couldn’t finish|couldn't finish/)).toBeTruthy();
+  });
+});
