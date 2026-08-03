@@ -68,6 +68,17 @@ describe("toolResultSummary (the beat's short result)", () => {
     expect(toolResultSummary({ count: 7 })).toBe("7 results");
   });
 
+  it("M24 — never counts an ENVELOPE key: the noun has to be a thing", () => {
+    // These read "· 6 data" and "· 1 row" on a settled beat — the developer's
+    // word for the payload's shape, counted like a noun.
+    expect(toolResultSummary({ data: new Array(6).fill(0) })).toBeUndefined();
+    expect(toolResultSummary({ rows: [0] })).toBeUndefined();
+    expect(toolResultSummary({ items: new Array(4).fill(0) })).toBeUndefined();
+    // A real noun beside an envelope key still gets said.
+    expect(toolResultSummary({ data: new Array(6).fill(0), invoices: new Array(3).fill(0) }))
+      .toBe("3 invoices");
+  });
+
   it("stays silent when the output offers no honest count", () => {
     expect(toolResultSummary({ ok: true })).toBeUndefined();
     expect(toolResultSummary({ rows: [] })).toBeUndefined();

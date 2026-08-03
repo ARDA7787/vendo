@@ -387,13 +387,27 @@ export function toolResultSummary(output: unknown): string | undefined {
     // Identifier-shaped keys only: a key we can't humanize into words would
     // put a slug on the line.
     if (!Array.isArray(value) || !/^[A-Za-z][A-Za-z0-9]*$/.test(key)) continue;
-    return countLabel(value.length, humanizeToolName(key).toLowerCase());
+    const noun = humanizeToolName(key).toLowerCase();
+    // M24 — the noun has to be a THING. A container key is the shape of the
+    // payload, not what is in it, so `{ data: [6] }` read "· 6 data" and
+    // `{ rows: [1] }` read "· 1 row" — the developer's word for the envelope,
+    // counted like a noun. Keep looking; if no key names anything, the beat
+    // says nothing (a settled tick is already the reassurance).
+    if (CONTAINER_KEYS.has(noun)) continue;
+    return countLabel(value.length, noun);
   }
   const count = (output as { count?: unknown }).count;
   return typeof count === "number" && Number.isFinite(count)
     ? countLabel(count, "results")
     : undefined;
 }
+
+/** Keys that name the ENVELOPE, never its contents (M24). */
+const CONTAINER_KEYS = new Set([
+  "data", "rows", "row", "items", "item", "results", "result", "records", "record",
+  "values", "value", "list", "entries", "entry", "output", "outputs", "response",
+  "payload", "body", "content", "contents", "nodes", "elements", "objects",
+]);
 
 /** "142 transactions" / "1 transaction"; nothing at all for an empty result —
     "0 rows" is noise on a line whose job is reassurance. */
