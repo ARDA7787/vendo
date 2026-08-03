@@ -97,20 +97,14 @@ const requireSafeName = (slot: string, name: string, pack: string): void => {
 };
 
 /**
- * The `/host` projection's OWN grammars, run at boot.
- *
- * {@link SAFE_SLOT_NAME} is deliberately loose — it is the shape of a name a model
- * asks for — but two slots are narrower than that where the path is actually
- * built: a component name is also an element in an app's markup
- * (`SAFE_COMPONENT_NAME` — no hyphens, starts with a letter) and a skill's
- * companion path must stay inside the skill's directory. Those checks live in core,
- * per TURN, which is the right place for the guard and the wrong time to learn:
- * a pack component named "Data-Table" passes the slot name here, boots green, and
- * throws on every single turn afterwards.
- *
- * So the projection's own builders run over the pack's entries here, and a bad one
- * is a boot error that names it. Calling them — rather than restating their
- * patterns — is what keeps the two ends from disagreeing again.
+ * The `/host` projection's own grammars, run at boot. {@link SAFE_SLOT_NAME} is
+ * deliberately loose (it is the shape of a name a model asks for), but two slots
+ * are narrower where the path is built: a component name is also an element in an
+ * app's markup, and a skill's companion path must stay inside the skill's
+ * directory. Those checks live in core, per TURN — a pack component named
+ * "Data-Table" passes the slot name here, boots green, and throws on every turn
+ * afterwards. Calling core's builders rather than restating their patterns is what
+ * keeps the two ends from disagreeing again.
  */
 const requireProjectable = (subject: string, pack: string, project: () => unknown): void => {
   try {

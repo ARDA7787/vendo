@@ -539,16 +539,13 @@ class GuardImplementation implements VendoGuard {
       // refused becomes something it retries and works around. Callers that pass
       // no context get the full set, exactly as before.
       // The context is forwarded INWARD as well as read here: the registry
-      // narrows a lazily expanded connector toolkit to the listing that
-      // searched it (ToolListingContext), and a wrapper that answered from the
-      // unscoped set would hand every reader another conversation's expansion.
+      // narrows a lazily expanded connector toolkit to the listing that searched
+      // it, so answering from the unscoped set would hand every reader another
+      // conversation's expansion.
       descriptors: async (ctx?: ToolListingContext) => {
         const all = await tools.descriptors(ctx);
         return ctx === undefined ? all : projectableForRun(all, ctx);
       },
-      // Forwarded for the same reason the context is: the registry keeps
-      // per-scope state and a wrapper that swallowed the end of a scope would
-      // leave it shedding by capacity alone.
       releaseListingScope: (scope: string) => tools.releaseListingScope?.(scope),
       execute: async (call, ctx) => {
         const descriptors = await tools.descriptors();

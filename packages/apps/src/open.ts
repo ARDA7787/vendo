@@ -98,21 +98,16 @@ export interface ProgressiveQueryResolver {
   update(tree: Tree): void;
   complete(): Promise<Record<string, Json>>;
   /**
-   * Whether a query that HAS settled contributed no data because it failed —
-   * threw, answered "error", or was refused by the guard ("blocked",
-   * "connect-required", "pending-approval").
+   * Whether a settled query contributed no data because it FAILED — threw,
+   * answered "error", or was refused by the guard ("blocked", "connect-required",
+   * "pending-approval"). The caller turns this into the tree's `dataUnavailable`
+   * marker (renderer.tsx).
    *
-   * The caller turns this into the tree's `dataUnavailable` marker, which the
-   * renderer shows as "Data didn't load — that isn't your data being empty".
    * The refusals count deliberately: in every one of them the person's data did
-   * not arrive and every binding renders "—", so the notice's sentence is TRUE,
-   * and the alternative is the empty-state lie the marker exists to kill. A
-   * refusal the person can ACT on (connect the account, approve the call) also
-   * deserves its own affordance in the surface — that is renderer work
-   * (packages/ui) on top of this marker, not instead of it.
-   *
-   * A query that answered "ok" with an empty result is NOT a failure: empty is
-   * an answer, and claiming otherwise would be the same lie in reverse.
+   * not arrive and every binding renders "—". An actionable refusal deserves its
+   * own affordance too, but that is renderer work on top of this marker, not
+   * instead of it. An "ok" answer with an empty result is NOT a failure: empty is
+   * an answer, and claiming otherwise is the same lie in reverse.
    */
   dataUnavailable(): boolean;
 }
@@ -223,9 +218,9 @@ export const createProgressiveQueryResolver = (
  * persist time too (the runtime shares this helper), streamed or at rest.
  *
  * `dataUnavailable` joins them: only the code that ran the queries and watched
- * them fail may tell the user their data did not load (render-seam.ts writes it
- * on a failed app half). Document-carried, it is a claim about a load that never
- * happened — and a transient failure must never be persisted as one.
+ * them fail may tell the user their data did not load. Document-carried it would
+ * be a claim about a load that never happened, and a transient failure must never
+ * be persisted as one.
  */
 export const stripServerAuthoritativeFields = <T extends object>(payload: T): T => {
   delete (payload as { inClient?: unknown }).inClient;
@@ -379,10 +374,8 @@ export const createAppOpener = (
     // caller the card, never the app — an app that will not open is a far worse
     // failure than one that opens without an ask on it.
     for (const [key, value] of Object.entries(await additionalVenueState(venueState, app, ctx))) {
-      // `dataUnavailable` is reserved for the same reason as the other three:
-      // it is a claim about queries THIS open ran, and a venue hook has not run
-      // them — it would be telling the person their data did not load over data
-      // that is right there on the screen.
+      // `dataUnavailable` is reserved for the same reason as the other three: it is
+      // a claim about queries THIS open ran, which a venue hook has not.
       if (key === "inClient" || key === "data" || key === "pinDrift" || key === "dataUnavailable") continue;
       (tree as Tree & Record<string, unknown>)[key] = value;
     }
@@ -402,10 +395,9 @@ export const createAppOpener = (
     const queries = createProgressiveQueryResolver(caller, app, ctx);
     queries.update(tree);
     tree.data = await queries.complete();
-    // The honest-refusal law, on the path a stored app actually opens through: a
-    // query that failed contributes no data, so every binding under it renders
-    // "—" and reads as "you have no spending". Say which it is (the marker is
-    // server-written here, after the strip above, so no document can forge it).
+    // A query that failed contributes no data, so every binding under it renders
+    // "—" and reads as "you have no spending". Written here, after the strip above,
+    // so no document can forge it.
     if (queries.dataUnavailable()) {
       (tree as Tree & { dataUnavailable: true }).dataUnavailable = true;
     }

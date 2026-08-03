@@ -14,11 +14,10 @@ import { VENDO_TOOL_TITLES, vendoAuthored, type Json, type RunContext, type Tool
  */
 export const CONNECTOR_DISCOVERY_TOOLS = ["search_connectors", "list_connections"] as const;
 
-/** A search intent is a phrase ("post a message to slack"), never a document. The
- *  bound is declared in the schema AND enforced in `execute`, for the same reason
- *  the blank-query check is: a schema is advice to the model, and the port behind
- *  this ranks the query against the broker's whole toolkit index. Same order of
- *  magnitude as `find_tools`' own cap. */
+/** A search intent is a phrase ("post a message to slack"), never a document.
+ *  Declared in the schema AND enforced in `execute`, for the same reason the
+ *  blank-query check is: a schema is advice to the model, and the port behind this
+ *  ranks the query against the broker's whole toolkit index. */
 const MAX_QUERY_LENGTH = 512;
 
 export interface ConnectorDiscoveryPorts {

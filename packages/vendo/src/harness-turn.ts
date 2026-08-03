@@ -105,11 +105,10 @@ export interface HarnessTurnsConfig {
   /** The shipped capability-miss rail. Load-bearing for evaluation E1's fifth ask:
    *  an impossible request must produce an honest refusal, not an invention. */
   capabilityMiss?: CapabilityMissConfig;
-  /** Are D3's `search_connectors` / `list_connections` projected at all? They
-   *  exist only when the deployment has connectors configured (server.ts adds the
-   *  registry on that condition), and an uncurated surface has no `find_tools`
-   *  either — so without this a connector-less `claudeCode()` deployment would be
-   *  taught two tools that are not on its listing. */
+  /** Are D3's `search_connectors` / `list_connections` projected at all? Only when
+   *  the deployment has connectors configured (server.ts gates the registry add on
+   *  that) — otherwise an uncurated surface, which has no `find_tools` either, would
+   *  be taught two tools that are not on its listing. */
   connectorDiscovery?: boolean;
   /** The render seam's halves composition owns, per turn — like `bridge` below,
    *  and for the same reason: the app half (`authoredApp`) stores the app row and
@@ -420,13 +419,11 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
       });
 
       const discovery = await discoveryFor(input.ctx, thread.id, thread.messages);
-      // Assembled once, per turn, for WHOEVER thinks. The venue gate and the
-      // guard's directions live in here, which is why it is composition's job and
-      // not the harness's.
-      // WHICH discovery section this turn may promise, decided by what is
-      // actually on the listing: a curated surface has `find_tools`; an uncurated
-      // one has the connector pair, and only when connectors are configured —
-      // otherwise it has no discovery machinery at all and gets no section.
+      // Assembled once, per turn, for WHOEVER thinks. The venue gate and the guard's
+      // directions live in here, which is why it is composition's job and not the
+      // harness's. Which discovery section it may promise is decided by what is
+      // actually on the listing: a curated surface has `find_tools`, an uncurated one
+      // has the connector pair (and only with connectors configured), or neither.
       const rail = config.harness.toolSurface?.curated !== false
         ? "find-tools" as const
         : config.connectorDiscovery === true ? "connectors" as const : false;

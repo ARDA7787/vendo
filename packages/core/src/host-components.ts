@@ -1,11 +1,8 @@
 /**
  * The component reference: the other half of the read-only `/host` mount.
- *
- * `search_components` answers "what could show this?" in a few lines. This
- * answers "exactly how do I write it?" — one file per catalog entry, carrying the
- * whole description, the props schema, and the entry's own examples. A model with
- * hands greps a directory faster than it searches a tool, and a props schema it
- * can read in full is the difference between using a component and guessing at it.
+ * `search_components` answers "what could show this?" in a few lines; this answers
+ * "exactly how do I write it?" — one file per catalog entry with the whole
+ * description, the props schema and the entry's own examples.
  *
  * Same shape as `./skills.ts`: a PURE function of the normalized catalog,
  * recomputed per turn, so a component the host stopped registering is simply gone

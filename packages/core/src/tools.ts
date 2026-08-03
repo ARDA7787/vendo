@@ -299,25 +299,11 @@ export const toolOutcomeSchema = z.discriminatedUnion("status", [
  *  withholds destructive and external tools from an unattended run.
  *
  *  The run also has to be IDENTIFIABLE, because a registry may narrow a listing
- *  by it: `@vendoai/actions` scopes lazily expanded connector toolkits to the
- *  run that expanded them (fix 2026-08-03 — expansion was process-wide and
- *  permanent, so one conversation's `search_connectors` answered an unrelated
- *  conversation's first `tools/list` with 301 tools instead of 35). Two ways to
- *  say which run this is, and a caller picks exactly one:
- *
- *  - {@link listingScope} — an opaque string the caller already has (an MCP
- *    session id). Preferred whenever the caller cannot keep ONE context object:
- *    the MCP door mints a fresh context per authenticated request, because
- *    consent and memberships are per-request facts, so identity there made every
- *    request a new run — and an expanded tool vanished from the re-list the
- *    door's own `list_changed` had just asked a client for (fix 2026-08-03,
- *    round 5).
- *  - the OBJECT ITSELF, when no scope is given. One run, one context object:
- *    the agent threads the same object through descriptors, seed, search and
- *    execute, and the door projects a live turn's context verbatim.
- *
- *  Either way, an UNIDENTIFIED run fails toward "search again", never toward
- *  another run's set: a rebuilt object with no scope reads as a fresh listing. */
+ *  by it: `@vendoai/actions` scopes lazily expanded connector toolkits to the run
+ *  that expanded them. A caller says which run this is either with
+ *  {@link listingScope} or — absent one — with the context OBJECT's own identity.
+ *  An unidentified run fails toward "search again", never toward another run's
+ *  set: a rebuilt object with no scope reads as a fresh listing. */
 export type ToolListingContext = Pick<RunContext, "venue" | "presence"> & {
   /** Opaque run/session key. Same string ⇒ same listing, whatever the object;
    *  absent ⇒ the object's identity is the key. Never parsed, never a
@@ -337,14 +323,10 @@ export interface ToolRegistry {
   descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]>;
   execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome>;
   /** This {@link ToolListingContext.listingScope} is finished — forget whatever
-   *  the registry remembers for it.
-   *
-   *  A registry that narrows a listing by scope has to keep that state keyed by a
-   *  STRING, so nothing collects it: the MCP door's scope is a session id, and
-   *  without this the sets could only ever shed by capacity, which makes a
-   *  process-global cap into a cross-tenant interference channel (round 6
-   *  2026-08-03). Optional, because a registry that remembers nothing per scope
-   *  has nothing to release; calling it is never required for correctness — a
-   *  released scope simply reads as a fresh listing. */
+   *  the registry remembers for it. Scope-keyed state is keyed by a STRING, so
+   *  nothing collects it: without this the sets could only shed by capacity,
+   *  which makes a process-global cap into a cross-tenant interference channel.
+   *  Optional, and never required for correctness — a released scope simply reads
+   *  as a fresh listing. */
   releaseListingScope?(scope: string): void;
 }

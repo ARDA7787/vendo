@@ -27,19 +27,17 @@ interface HistorySnapshot {
 }
 
 /**
- * What a pin-intent row IS, which is what decides whether `pins.rebase` may use
- * it:
+ * What a pin-intent row IS, which is what decides whether `pins.rebase` may use it:
  *
- * - `"fork"` — the write that created the pin. The only kind that can vouch for
- *   the pinned component having started as the captured baseline, which is what
- *   the mechanical re-fork reproduces.
- * - `"edit"` — a later modification stated in the user's own words, so the
- *   recorded intent IS a replayable instruction for the brain.
- * - `"touch"` — a write that changed the pinned component while saying nothing
- *   about what it changed: a files-first `app.vendo` save, whose receipt reads
- *   "Saved app.vendo". Nothing can replay it, and the change it carried lives
- *   only in the document it wrote — so a rebase that skipped past it would
- *   silently reset that work to the pristine host component.
+ * - `"fork"` — the write that created the pin. The only kind that can vouch for the
+ *   pinned component having started as the captured baseline, which is what the
+ *   mechanical re-fork reproduces.
+ * - `"edit"` — a later modification in the user's own words, so the recorded intent
+ *   IS a replayable instruction for the brain.
+ * - `"touch"` — a write that changed the pinned component while recording only that
+ *   it did ("Saved app.vendo" from a files-first save). Nothing can replay it and
+ *   the change lives only in the document it wrote, so a rebase that skipped past
+ *   it would silently reset that work to the pristine host component.
  */
 export type PinIntentKind = "fork" | "edit" | "touch";
 

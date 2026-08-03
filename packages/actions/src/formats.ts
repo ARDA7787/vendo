@@ -259,10 +259,9 @@ export const VENDO_OVERRIDES_FORMAT = "vendo/overrides@3" as const;
 
 /** 04-actions §2: a descriptor plus its execution binding — one entry of `.vendo/tools.json`.
  *
- *  `outputSchema` — the host's DECLARED response body, recorded here by sync — is
- *  a plain `ToolDescriptor` field since the 2026-08-03 harness round (D5): the
- *  registry carries it and every surface lists it, so it stopped being
- *  extraction-only provenance. Generation's `toolShapes` still come from runtime
+ *  `outputSchema` (the host's DECLARED response body, recorded by sync) is a plain
+ *  `ToolDescriptor` field, not extraction-only provenance: the registry carries it
+ *  and every surface lists it. Generation's `toolShapes` still come from runtime
  *  sampling, which is ground truth. */
 export type ExtractedTool = ToolDescriptor & {
   binding: PrimitiveToolBinding;

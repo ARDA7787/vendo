@@ -108,20 +108,15 @@ export interface RenderSeamOptions {
    * file-authored app a real app instead of a picture of one.
    *
    * Composition injects `AppsRuntime.authored`, which UPSERTS the app's store row
-   * (so a D4 files-first app lists, opens and shares like an engine-built one) and
+   * (so a files-first app lists, opens and shares like an engine-built one) and
    * resolves the tree's queries through the guard-bound registry with this turn's
-   * ctx — the same call path, the same risk and consent rules, as any tool call.
-   * Its answer is this app's `data` — plus `dataUnavailable` when one of those
-   * queries FAILED to resolve (errored, or was refused by the guard), which is
-   * the same honest marker a thrown app half sets below. Without it a failed
-   * query is indistinguishable from real empty data on screen.
+   * ctx — the same call path, the same risk and consent rules, as any tool call. Its
+   * answer is this app's `data`, plus `dataUnavailable` when one of those queries
+   * FAILED, which is the same honest marker a thrown app half sets below.
    *
    * ASYNC on purpose: it runs real host queries, which is also why the skeleton is
    * emitted BEFORE it is awaited (below) — §1.6 is a promise about seconds.
-   *
-   * Unwired, the view still renders: the skeleton, with no data at all and no row
-   * anywhere. That was the shipped state until 2026-08-03, and it is exactly what
-   * an app full of "—" looks like.
+   * Unwired, the view still renders: the skeleton, with no data and no row.
    */
   authoredApp?: (input: { appId: AppId; compiled: WireCompileResult }) => Promise<{
     data: Record<string, Json>;
@@ -134,12 +129,10 @@ export interface RenderSeamOptions {
  *  app is worse than the last good one.
  *
  *  `streaming` is the mid-build flag the shipped emitter stamps on its partial
- *  trees (packages/apps runtime.ts), and it has to FLIP OFF for the last paint,
- *  exactly as that emitter's final view does. While it is on, the renderer holds
- *  the forming skeleton instead of ever reaching a verdict, the card's bar stays
- *  on "Building your view…" and its settle-scroll, stage registration and pin
- *  affordance never arm. Stamped on a finished app it is not caution, it is an
- *  app that never finishes. */
+ *  trees (packages/apps runtime.ts), and it has to FLIP OFF for the last paint.
+ *  While it is on, the renderer holds the forming skeleton instead of reaching a
+ *  verdict, the card's bar stays on "Building your view…", and its settle-scroll,
+ *  stage registration and pin affordance never arm. */
 const viewPart = (
   appId: AppId,
   payload: UIPayload,
@@ -211,32 +204,25 @@ export async function viewForWrite(
   }
   let data: Record<string, Json> | undefined;
   /**
-   * The app half FAILED, as opposed to answering with nothing.
-   *
-   * Settling alone is honest about the spinner and dishonest about the data: every
-   * unresolved binding renders "—" (packages/ui branded.tsx), so a failed load is
-   * indistinguishable from "you have no spending". The operator gets the log
-   * below; without this marker the user gets a plausible lie. So the failure rides
-   * the payload as a server-written extra — the same channel `inClient`,
-   * `pinDrift` and `streaming` ride — and the renderer says, in the surface, that
-   * this view could not load its data.
+   * The app half FAILED, as opposed to answering with nothing. Settling alone is
+   * honest about the spinner and dishonest about the data: every unresolved binding
+   * renders "—" (packages/ui branded.tsx), so a failed load is indistinguishable
+   * from "you have no spending". The operator gets the log below; without this
+   * marker the user gets a plausible lie. So the failure rides the payload as a
+   * server-written extra, the same channel `inClient` and `pinDrift` ride.
    */
   let dataUnavailable = false;
   try {
     const authored = await options.authoredApp?.({ appId, compiled: compiledApp });
     data = authored?.data;
-    // The app half RAN and one of its queries failed — the common case, where a
-    // throw is the rare one: same marker, because on screen they are the same
-    // failure (a view that cannot show the person their data).
+    // A query that failed is the common case and a throw is the rare one: same
+    // marker, because on screen they are the same failure.
     if (authored?.dataUnavailable === true) dataUnavailable = true;
   } catch (error) {
-    // The streaming skeleton is ALREADY on screen. Rethrowing here would leave it
-    // there forever — the card stuck on "Building your view…", which is the exact
-    // symptom the settle flag exists to prevent. `authored` can genuinely throw
-    // (its own store reads and hold checks run before its internal try), so this
-    // path is reachable. So the view settles AND says it could not load its data,
-    // and the brokenness reaches the operator here and the harness through
-    // `validate`.
+    // The streaming skeleton is ALREADY on screen, so rethrowing would leave the
+    // card stuck on "Building your view…" forever — the exact symptom the settle
+    // flag exists to prevent. `authored` can genuinely throw: its own store reads
+    // and hold checks run before its internal try.
     dataUnavailable = true;
     console.error(
       `[vendo] the app half of ${appId} failed; the view settles without its data — ${safeErrorMessage(error)}`,
@@ -257,7 +243,6 @@ export async function viewForWrite(
 export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSeamOptions): WorkspaceFs {
   /** True iff this path put a view on screen — what the plan's yield is keyed on. */
   const emitFor = async (path: string): Promise<boolean> => {
-    if (hotPathAppId(path) === undefined) return false;
     try {
       // Read back what the store now holds rather than trusting a remembered
       // argument: append, encoding and any store-side normalization land here.
@@ -293,32 +278,22 @@ export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSe
         // and the last good view stays on screen until something actually does.
         if (result.status !== "ok") return result;
         // Both hot-path files of one app write the SAME stream id, so a commit
-        // carrying both would have the plan's data-less skeleton land as one of
-        // the two views — and since `changed` is sorted, `app.vendo` sorts first
-        // and the plan would overwrite the finished app with a picture of it.
-        // The app document is the better view by definition, so the plan yields
-        // to it — but only to an app that ACTUALLY PAINTED. An `app.vendo` that
-        // does not parse or does not render emits nothing, and a plan that yielded
-        // to it would leave the pane blank for the whole turn: the one thing the
-        // skeleton exists to prevent. So the app half runs first, and each plan
-        // then paints unless its own app already did.
-        const authored = new Set(
-          result.changed
-            .filter((path) => hotPathFile(path) === "app.vendo")
-            .map((path) => hotPathAppId(path)),
-        );
-        const deferred: Array<{ path: string; appId: AppId }> = [];
+        // carrying both would have the plan's data-less skeleton land as one of the
+        // two views — and `changed` is sorted, so `app.vendo` goes first and the
+        // plan would overwrite the finished app with a picture of it. The app
+        // document is the better view by definition, so plans go LAST — but they
+        // still paint unless their own app actually did, because an `app.vendo` that
+        // does not parse or does not render emits nothing, and yielding to it would
+        // leave the pane blank for the whole turn.
+        const plans: Array<{ path: string; appId: AppId }> = [];
         const painted = new Set<AppId>();
         for (const path of result.changed) {
           const appId = hotPathAppId(path);
           if (appId === undefined) continue;
-          if (hotPathFile(path) === "plan.vendo" && authored.has(appId)) {
-            deferred.push({ path, appId });
-            continue;
-          }
-          if (await emitFor(path)) painted.add(appId);
+          if (hotPathFile(path) === "plan.vendo") plans.push({ path, appId });
+          else if (await emitFor(path)) painted.add(appId);
         }
-        for (const { path, appId } of deferred) {
+        for (const { path, appId } of plans) {
           if (!painted.has(appId)) await emitFor(path);
         }
         return result;

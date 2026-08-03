@@ -166,12 +166,11 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     return <BuildBeat part={part} risk={risk} count={count} />;
   }
   if (part.type === "data-vendo-connect") {
-    // The connect ask's OTHER shape, and the ONLY one a harness turn produces:
-    // the runtime maps `connect-required` to a `denied` ToolResult and the wire
-    // mirror writes a bare `tool-output-denied` (harnesses/src/wire.ts), so the
-    // native part above carries no outcome to read. Without a consumer here,
-    // every unconnected service on a vendo()/claudeCode() turn ended in a
-    // silent denial and the promised card never appeared.
+    // The connect ask's OTHER shape, and the ONLY one a harness turn produces: the
+    // runtime maps `connect-required` to a `denied` ToolResult and the wire mirror
+    // writes a bare `tool-output-denied` (harnesses/src/wire.ts), so the native part
+    // above carries no outcome to read — without this branch every unconnected
+    // service on a harness turn is a silent denial with no card.
     const data = partData(part) as Partial<VendoConnectPart>;
     const ask = connectAsk(data);
     if (ask === undefined) return null;

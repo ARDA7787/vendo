@@ -38,12 +38,9 @@
  * things that decide are elsewhere: the BOX is the permission for the box's own
  * hands (copies only, no credentials, domain-filtered egress at the provider's
  * network layer, reality happens at commit), and the DOOR is the permission for
- * host tools — the guard decides there, with the turn's own context, and a
- * refusal arrives as the tool's own in-band error text, which the model narrates
- * and never a throw. An allow-list here could only ever subtract capability from
- * a box that is already contained; it was doing exactly that, denying SDK tools
- * (`MultiEdit`, `NotebookEdit`, `Skill`) the file-sync hook below already
- * expected. {@link DISALLOWED_TOOLS} is the only local tool law that survives.
+ * host tools — the guard decides there, with the turn's own context, and a refusal
+ * arrives as the tool's own in-band error text, which the model narrates and never
+ * a throw. {@link DISALLOWED_TOOLS} is the only local tool law that survives.
  *
  * Two limits on how far the box's containment reaches.
  *
@@ -65,24 +62,19 @@ export const VENDO_MCP_SERVER = "vendo";
 
 /** The whole of the local tool law, in three groups.
  *
- *  A headless box turn has no user to ask and no egress to spend, so `WebSearch`,
- *  `WebFetch` and `AskUserQuestion` can never be available.
+ *  The PROVIDER-SIDE tools act on the vendor's own surfaces over the inference
+ *  channel rather than through this host, which puts them outside the box and the
+ *  door both — no guard, no audit row, no egress filter. (`Projects`' own
+ *  `project_write` uploads a workspace file provider-side and its schema says the
+ *  contents "never enter your context", so not even the transcript records what
+ *  left; `ClaudeDesign` writes to a design server behind its own login.)
  *
- *  The SDK's PROVIDER-SIDE tools act on the vendor's own surfaces over the
- *  inference channel rather than through this host, which puts them outside the
- *  box and the door both — no guard, no audit row, no egress filter (`Projects`'
- *  own `project_write` uploads a workspace file's contents provider-side, and the
- *  tool's schema says the contents "never enter your context", so not even the
- *  transcript records what left; `ClaudeDesign` drives write operations against a
- *  design server behind its own separate login).
- *
- *  And the SCHEDULING family leaves execution BEHIND. A cron job, a remote trigger
- *  or a wakeup outlives the turn that created it and fires later with no turn to be
- *  accountable to — so whatever it then does passes no guard, lands no audit row
- *  and meets no egress filter, and the box keeps working after the user closed the
- *  tab. `CronDelete` and `CronList` are here for the other direction too: under
- *  `machine: "local"` the schedules on that disk are the OPERATOR's, and a tenant's
- *  turn may neither enumerate them nor destroy them.
+ *  The SCHEDULING family leaves execution BEHIND: a cron job, remote trigger or
+ *  wakeup outlives the turn that created it and fires with no turn to be
+ *  accountable to, so whatever it then does passes no guard, lands no audit row and
+ *  meets no egress filter. `CronDelete`/`CronList` are here for the other direction
+ *  too — under `machine: "local"` the schedules on that disk are the OPERATOR's,
+ *  and a tenant's turn may neither enumerate nor destroy them.
  *
  *  `disallowedTools` removes them from the model's view entirely, so it never plans
  *  around them. Everything else the SDK ships runs — and `claude-turn.test.ts`
@@ -343,15 +335,12 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       // This disables FILESYSTEM settings discovery only — `plugins` below is an
       // explicit programmatic list, so native skills survive tenant isolation.
       settingSources: [],
-      // The other half of that rule, for MCP. `settingSources` closes SETTINGS
-      // discovery; the SDK names a project `.mcp.json` as something only this flag
-      // ignores. The box's cwd is a disk the model writes itself (Write and Bash
-      // under bypassPermissions), and `reopen` relaunches a fresh CLI over that
-      // same cwd — a server mounted that way would arrive as `mcp__*` tools:
-      // outside DISALLOWED_TOOLS, outside the guard, outside the audit log,
-      // outside egress filtering. Whether the CLI would ever mount one unapproved
-      // is unproven, and this closes the question at zero cost: the door above is
-      // the only MCP server this box wants.
+      // The other half of that rule, for MCP: `settingSources` closes SETTINGS
+      // discovery, and the SDK names a project `.mcp.json` as something only this
+      // flag ignores. The box's cwd is a disk the model writes itself, and `reopen`
+      // relaunches a fresh CLI over it — a server mounted that way would arrive as
+      // `mcp__*` tools, outside DISALLOWED_TOOLS, the guard, the audit log and the
+      // egress filter. The door above is the only MCP server this box wants.
       strictMcpConfig: true,
       // Without this the SDK hands us whole assistant blocks and the user watches
       // a still screen for the length of a paragraph.

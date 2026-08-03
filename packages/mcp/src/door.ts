@@ -62,16 +62,13 @@ interface HostIdentity {
  * opaque `listingScope`.
  *
  * The scope is load-bearing on THIS surface: the door mints a brand-new context
- * object per authenticated request (the consent projection and the asserted
- * memberships are per-request facts), and the registry scopes a lazily expanded
- * connector toolkit to the run that expanded it. Keyed on object identity, every
- * request was a different run — so an external/OAuth client that took the
- * `list_changed` and re-listed got a listing WITHOUT the tool `search_connectors`
- * had just materialized, permanently (round 5, 2026-08-03, over the real door and
- * the real SDK client). The session id is what stays the same across those
- * objects, so the session id is the scope. A TURN session carries the live turn's
- * own context verbatim, with no scope: one turn is one object, and identity is
- * right there.
+ * object per authenticated request (consent and asserted memberships are
+ * per-request facts), so keyed on object identity every request was a different
+ * run and a client that took the `list_changed` and re-listed got a listing
+ * WITHOUT the tool `search_connectors` had just materialized. The session id is
+ * what stays the same across those objects, so the session id is the scope. A
+ * TURN session carries the live turn's own context verbatim, with no scope: one
+ * turn is one object.
  */
 type DoorRunContext = RunContext & Pick<ToolListingContext, "listingScope">;
 
@@ -658,32 +655,33 @@ class Door {
       const reader = response.body.getReader();
       standalone = reader;
       const relayed = new ReadableStream<Uint8Array>({
-        // EOF and read errors pass straight through and leave the slot alone: the
-        // transport ends this stream only from its `cleanup` (its own `close()`
-        // and `closeStandaloneSSEStream`, which the door never calls), and the
-        // door's `close` releases the slot before closing the transport — so
-        // every reachable end here is a cancel the door already performed, on a
-        // slot it has already given up.
+        // EOF and read errors pass straight through and leave the slot alone.
+        // The transport DOES end this stream on a slot the door still holds: the
+        // client's own DELETE routes into `handleDeleteRequest`, which closes the
+        // transport and with it the controller. Harmless, because `onsessionclosed`
+        // drops the session from `#state` first, so the closure holding this stale
+        // reader is unreachable and that session id answers `unknownSession()`.
+        // Every other end is genuinely unreachable: the transport never calls
+        // `controller.error` (`writeSSEEvent` swallows a throwing enqueue), there
+        // is no timeout, abort or backpressure close, `closeStandaloneSSEStream`
+        // is only wired when an event store is configured (the door configures
+        // none), and POST stream ids are random UUIDs so `closeSSEStream` can
+        // never resolve to the standalone slot.
         async pull(controller) {
           const frame = await reader.read();
           if (frame.done) controller.close();
           else controller.enqueue(frame.value);
         },
         // The client hung up — a LIVE one, so the transport's registration and
-        // this reader are dead weight until something else clears them, and the
-        // idle sweep only runs on another request, never on a timer. Cancelling
-        // is what releases the registration, so the door does exactly that.
+        // this reader are dead weight until something clears them, and the idle
+        // sweep only runs on another request, never on a timer. Cancelling is what
+        // releases the registration.
         //
-        // Guarded on still HOLDING the slot, and it is the slot — not the cancel —
-        // that this protects: forwarding the cancel of a replaced stream is
-        // already a no-op (the transport deletes the registration inside this
-        // stream's own `cancel`, and a stream cancels once), but CLEARING the slot
-        // would drop the door's only handle on the stream it is now serving, and
-        // `releaseStandalone` is the one thing that can free a 409. The next
-        // silent death would then be unrecoverable — 409 on every reconnect for
-        // the rest of the session, the live symptom of 2026-08-03. A dead body is
-        // discarded by the runtime whenever it gets round to it, which is exactly
-        // how that cancel arrives after a reconnect has moved the slot on.
+        // Guarded on still HOLDING the slot, and it is the SLOT this protects, not
+        // the cancel: a dead body is discarded whenever the runtime gets round to
+        // it, so this can fire after a reconnect moved the slot on, and clearing it
+        // there would drop the door's only handle on the stream it is now serving —
+        // leaving `releaseStandalone` unable to free the next 409.
         cancel() {
           if (standalone !== reader) return;
           standalone = undefined;
@@ -704,17 +702,12 @@ class Door {
         if (req.method !== "GET") return transport.handleRequest(req);
         let response = await transport.handleRequest(req);
         // 409 is the transport guarding a standalone registration, and it is the
-        // LAST gate it applies: a wrong `Accept` (406), a bad protocol version
-        // and DNS-rebinding validation all answer before it. So a 409 — and
-        // ONLY a 409 — means this GET is a healthy client asking to be reachable
-        // and the sole obstacle is a registration nobody is reading.
-        //
-        // Measured live 2026-08-03: the box client's stream died at ~138s, both
-        // reconnect attempts came back 409 "Only one SSE stream is allowed per
-        // session", the client exhausted its retries — and that session had no
-        // notification channel for the rest of its life. Releasing before every
-        // GET instead destroyed a healthy stream whenever the transport went on
-        // to reject the request (round 6), which is why this waits for the 409.
+        // LAST gate it applies: a wrong `Accept` (406), a bad protocol version and
+        // DNS-rebinding validation all answer before it. So a 409 — and ONLY a
+        // 409 — means this GET is a healthy client asking to be reachable and the
+        // sole obstacle is a registration nobody is reading. Releasing before
+        // every GET instead destroys a healthy stream whenever the transport goes
+        // on to reject the request, which is why this waits for the 409.
         if (response.status === 409) {
           await releaseStandalone();
           response = await transport.handleRequest(req);
@@ -845,27 +838,24 @@ class Door {
     // what is callable, and an unknown name comes back as its own error.
     if (state.turn !== undefined) {
       const turn = state.turn;
-      const offered = await this.#offeredNames(state, name);
-      const result = await turn.tools.call(name, args as Json);
-      await this.#announceExpansion(state, name, offered);
-      return turnResult(result);
+      return turnResult(await this.#announcingExpansion(state, name, () => turn.tools.call(name, args as Json)));
     }
     const descriptors = await this.#config.tools.descriptors(state.context);
-    const called = descriptors.find((descriptor) => descriptor.name === name);
     // An off-menu name answers exactly like a name that does not exist: the
     // menu decides what this door OFFERS, and offering nothing is the whole
     // refusal (the guard, not the menu, is what stops a call that IS offered).
-    if (!offeredAtDoor(await this.#menu(), name) || called === undefined) {
+    if (!offeredAtDoor(await this.#menu(), name) || !descriptors.some((descriptor) => descriptor.name === name)) {
       if (this.#config.apps !== undefined && APP_TOOL_NAMES.has(name)) {
         return this.#callAppsTool(name, args, state, identity);
       }
       return inBandError(`not-found: Tool ${name} was not found`);
     }
-    const offered = await this.#offeredNames(state, name);
-    const id = await this.#replayId(state, name, args);
-    const outcome = await this.#config.tools.execute({ id, tool: name, args }, state.context);
-    await this.#recordReplay(state, name, args, id, outcome.status);
-    await this.#announceExpansion(state, name, offered);
+    const outcome = await this.#announcingExpansion(state, name, async () => {
+      const id = await this.#replayId(state, name, args);
+      const result = await this.#config.tools.execute({ id, tool: name, args }, state.context);
+      await this.#recordReplay(state, name, args, id, result.status);
+      return result;
+    });
     // FIX E: a bound registry that owns an app-viewer name (vendo_apps_open via
     // apps.agentTools()) returns an OpenSurface envelope ({kind,payload}); the
     // MCP Apps shim renders a bare format-tagged UIPayload (core §8), so unwrap
@@ -877,16 +867,10 @@ class Door {
     return mapOutcome(outcome, identity.name);
   }
 
-  /**
-   * The names this session's `tools/list` would OFFER right now — the before/after
-   * pair `#announceExpansion` compares.
-   *
-   * `undefined` when the answer is not needed (this call is not the one that can
-   * expand) or cannot be read: the surface is read AROUND an already-executed
-   * write, so a listing that throws must never become the model's answer.
-   */
-  async #offeredNames(state: SessionState, name: string): Promise<Set<string> | undefined> {
-    if (name !== CONNECTOR_SEARCH_TOOL) return undefined;
+  /** The names this session's `tools/list` would OFFER right now, or `undefined`
+   *  if that cannot be read: the surface is read AROUND an already-executed write,
+   *  so a listing that throws must never become the model's answer. */
+  async #offeredNames(state: SessionState): Promise<Set<string> | undefined> {
     try {
       if (state.turn !== undefined) {
         return new Set((await state.turn.tools.list()).map((listing) => listing.name));
@@ -900,31 +884,29 @@ class Door {
   }
 
   /**
-   * `search_connectors` is the one tool that can grow the callable surface: it
-   * expands a matching connector toolkit, so the tools it just reported exist
-   * only from the NEXT listing onward. An SDK client lists once and caches, so
-   * without this notification the found tool is named to the model and then
-   * refuses to run for the rest of the session.
+   * Run one tool call, telling the client if it GREW the callable surface.
+   * `search_connectors` is the only tool that can: it expands a matching connector
+   * toolkit, so the tools it just reported exist from the NEXT listing onward. An
+   * SDK client lists once and caches, so without the notification the found tool
+   * is named to the model and then refuses to run for the rest of the session.
    *
-   * Keyed off the EXPANSION, not off the call's status, which is the same
-   * distinction twice over: a search that expanded nothing announces nothing
-   * (bare noise a client answers with a re-list), and a search that expanded a
-   * toolkit and THEN failed downstream — the registry has already grown by then
-   * — announces anyway, because the tools are callable and would otherwise be
-   * invisible for the rest of the session.
+   * Keyed off the EXPANSION, not the call's status: a search that expanded nothing
+   * announces nothing (bare noise a client answers with a re-list), and a search
+   * that expanded and THEN failed downstream announces anyway, because those tools
+   * are callable either way.
    */
-  async #announceExpansion(
-    state: SessionState,
-    name: string,
-    before: Set<string> | undefined,
-  ): Promise<void> {
-    if (name !== CONNECTOR_SEARCH_TOOL) return;
-    const after = await this.#offeredNames(state, name);
+  async #announcingExpansion<T>(state: SessionState, name: string, run: () => Promise<T>): Promise<T> {
+    if (name !== CONNECTOR_SEARCH_TOOL) return run();
+    const before = await this.#offeredNames(state);
+    const result = await run();
+    const after = await this.#offeredNames(state);
     // An unreadable surface on either side says nothing about growth. Announce:
     // a spurious re-list costs one request, a missed one costs the session.
-    if (before !== undefined && after !== undefined && sameNames(before, after)) return;
-    state.toolsChanged = true;
-    await this.#flushToolsChanged(state);
+    if (before === undefined || after === undefined || !sameNames(before, after)) {
+      state.toolsChanged = true;
+      await this.#flushToolsChanged(state);
+    }
+    return result;
   }
 
   /** Send the pending `list_changed`, if this session has one. Never clears the
@@ -1089,13 +1071,10 @@ class Door {
   }
 
   /** This session's listing scope is spent. The registry keys expansions by that
-   *  opaque string (a session id), so nothing collects them on its own: without
-   *  this they would shed only when the registry hit its capacity cap, which
-   *  makes a process-global map into a cross-tenant interference channel — one
-   *  principal opening enough sessions evicts another's expansions and their
-   *  expanded tools vanish from their next listing (round 6 2026-08-03). Called
-   *  from every way a session ends: DELETE, sweep, revocation, and an
-   *  initialize that never bound a session id. */
+   *  opaque string, so nothing collects them on its own — without this they shed
+   *  only at the registry's capacity cap, which makes a process-global map into a
+   *  cross-tenant interference channel. Called from every way a session ends:
+   *  DELETE, sweep, revocation, and an initialize that never bound a session id. */
   #releaseListing(state: SessionState): void {
     // A turn-credential session carries the TURN's context verbatim, which names
     // no scope: the turn owns that listing and outlives this session.
@@ -1330,13 +1309,10 @@ const CONNECTOR_SEARCH_TOOL = "search_connectors";
  * Vendo's reserved namespace for keys the RUNTIME adds to a tool result — the
  * `toolOutputCap` truncation envelope (`vendo_truncated`/`vendo_chars`/
  * `vendo_preview`, minted in `packages/agent/src/tools.ts`) and
- * {@link VENDO_RESULT_VALUE} here.
- *
- * Reserved because the official client validates every result against the
- * advertised schema: a host that happens to declare a field of the same name and
- * a different type would make its own tool throw on a truncated answer. The
- * prefix is what makes that collision impossible to hit by accident, and it is
- * why the sanitizer drops declared `vendo_*` result properties.
+ * {@link VENDO_RESULT_VALUE} here. Reserved because the official client validates
+ * every result against the advertised schema: a host declaring a field of the
+ * same name and a different type would make its own tool throw on a truncated
+ * answer. Which is also why the sanitizer drops declared `vendo_*` properties.
  */
 const VENDO_RESULT_PREFIX = "vendo_";
 
@@ -1379,33 +1355,25 @@ const OUTPUT_SCHEMA_CAP = 32 * 1024;
 const utf8 = new TextEncoder();
 
 /**
- * Keywords dropped from the TOP level of a sanitized output schema: every one of
- * them can reject an object over keys the schema never mentions, which is
- * exactly what the door substitutes when it cannot return what the host
- * declared (the `toolOutputCap` truncation envelope, the `vendo_value` wrapper).
- * Measured against the official client's own validator: `allOf: [{required}]`,
- * `maxProperties`, and `not` each turned a served result into a client throw.
+ * Keywords dropped from the TOP level of a sanitized output schema: each one can
+ * reject an object over keys the schema never mentions, which is exactly what the
+ * door substitutes when it cannot return what the host declared (the
+ * `toolOutputCap` truncation envelope, the `vendo_value` wrapper). Every entry was
+ * proven against the official client's own Ajv validator; a swept run over the
+ * rest of the family found nothing else to add.
  *
- * Top level ONLY. A nested constraint applies to the value of a field the host
- * declared, so it can only ever reject the host's own result — never a
- * reserved-key envelope, whose keys no host schema mentions.
+ * Top level ONLY: a nested constraint applies to the value of a field the host
+ * declared, so it can only reject the host's own result, never a reserved-key
+ * envelope whose keys no host schema mentions.
  *
- * Two of these reject WITHOUT naming a key, which is why a "does it mention a
- * reserved name?" check would never have found them (both proven against the
- * SDK's own validator, round 5 2026-08-03):
- * - `patternProperties`, which types keys by REGEX: `{"^vendo": {type:"string"}}`
- *   made `vendo_truncated: true` a client throw, and `"^.*$"` types every key
- *   there is, including `vendo_value`.
- * - `$ref`/`$dynamicRef`, which reach around this whole strip: a top-level
- *   `$ref` into `$defs` re-imposes the `required` and closed
- *   `additionalProperties` deleted here, from a place the delete never looks.
- *   (`$defs` itself stays — an unreferenced definition constrains nothing.)
- * - `const`/`enum`, which pin the WHOLE object to a listed value, so the strip
- *   above them was beside the point: `{"type":"object","const":{...}}` rejected
- *   both envelopes with "must be equal to constant" (round 6 2026-08-03). A
- *   swept Ajv run over the rest of the family found nothing else — a bare
- *   `$defs`/`definitions`, `$recursiveRef` and a nested `required` all accept
- *   both envelopes.
+ * Four reject WITHOUT ever naming a key, which is why a "does it mention a
+ * reserved name?" check could never have found them:
+ * - `patternProperties` types keys by REGEX, and `"^.*$"` types every key there is.
+ * - `$ref`/`$dynamicRef` reach around this whole strip — a top-level `$ref` into
+ *   `$defs` re-imposes the `required` and closed `additionalProperties` deleted
+ *   here. (`$defs` itself stays: an unreferenced definition constrains nothing.)
+ * - `const`/`enum` pin the WHOLE object to a listed value, so the strip above them
+ *   is beside the point.
  */
 const UNKEEPABLE_KEYWORDS = [
   "required",
@@ -1439,27 +1407,22 @@ const UNKEEPABLE_KEYWORDS = [
  * 1. `tools/list` is parsed with the SDK's `ToolSchema`, whose `outputSchema` is
  *    `{ type: "object", properties?: Record<string, object>, required?: string[] }`.
  *    A top-level `{"type":"array"}` (ordinary in an OpenAPI spec) or a boolean
- *    property subschema (`{"x": true}` — LEGAL JSON Schema 2020-12) fails that
+ *    property subschema (`{"x": true}` — legal JSON Schema 2020-12) fails that
  *    parse and takes the WHOLE listing down, every other tool with it. So the
  *    shape is checked here, and a schema that cannot be stated is omitted.
  * 2. `cacheToolMetadata` (run on every successful `listTools()`) COMPILES every
  *    advertised schema with Ajv, and a compile throw likewise kills the entire
- *    listing. A shape check cannot see that: a dangling `$ref` (extraction
- *    deliberately leaves one for recursive response models — see
- *    `packages/actions/src/sync/openapi.ts`), `{"type":"bogus"}` and Swagger
- *    2.0's boolean `exclusiveMinimum` are all well-shaped and all throw. So the
- *    door asks the client's own validator, and omits what will not compile.
- * 3. `tools/call` THROWS on any non-`isError` result whose `structuredContent`
- *    is missing or does not validate against the advertised schema. The door
- *    cannot promise the host's declaration describes every result it must
- *    return: `toolOutputCap` replaces a large output with a `vendo_*` truncation
- *    envelope and a non-record output rides under `vendo_value`, neither of
- *    which any host schema mentions. So `additionalProperties` is forced open,
- *    every top-level keyword that can reject an unmentioned key is dropped
- *    ({@link UNKEEPABLE_KEYWORDS}), and a declared property in Vendo's own
- *    reserved `vendo_` namespace — the one way a host could type-reject a
- *    reserved key — is dropped with them. Field names and types survive, which
- *    is the whole of D5's value to the model; what dies is the schema's power to
+ *    listing. A shape check cannot see that: a dangling `$ref` (extraction leaves
+ *    one for recursive response models — `actions/src/sync/openapi.ts`),
+ *    `{"type":"bogus"}` and Swagger 2.0's boolean `exclusiveMinimum` are all
+ *    well-shaped and all throw, so the door asks the client's own validator.
+ * 3. `tools/call` THROWS on any non-`isError` result whose `structuredContent` is
+ *    missing or fails the advertised schema — and the door cannot promise the
+ *    host's declaration describes every result it must return (`toolOutputCap`'s
+ *    truncation envelope, the `vendo_value` wrapper). So `additionalProperties` is
+ *    forced open, {@link UNKEEPABLE_KEYWORDS} is dropped, and so is any declared
+ *    property in the reserved `vendo_` namespace. Field names and types survive —
+ *    the whole of D5's value to the model; what dies is the schema's power to
  *    REJECT a result the door has no choice about.
  *
  * The descriptor still carries the original for the in-process surfaces, which
@@ -1493,28 +1456,22 @@ function wireOutputSchema(
 
 /**
  * "Would the official client compile this?", asked with the client's own
- * validator — `Client` defaults to `AjvJsonSchemaValidator`, and the door already
- * carries it: `@modelcontextprotocol/sdk/server` imports the same module and the
- * `Server` the door runs constructs one per session.
- *
- * It earns its keep beyond the hand-listable throwers: a `pattern` carrying a
- * Python-style named group — ordinary in a generated OpenAPI spec — is a compile
- * throw no shape check would ever catch.
+ * validator — `Client` defaults to `AjvJsonSchemaValidator`, which the door
+ * already carries. It earns its keep beyond the hand-listable throwers: a
+ * `pattern` carrying a Python-style named group, ordinary in a generated OpenAPI
+ * spec, is a compile throw no shape check would catch.
  *
  * ONE Ajv instance per listing pass, then discarded: Ajv memoizes every compiled
- * schema in a Map keyed by the schema OBJECT, and the door builds a fresh wire
- * object per listing, so a door-lifetime instance would grow without bound. The
- * VERDICT is what carries across listings instead ({@link compileVerdicts}) —
- * keyed on the serialized schema, which this pass has already computed for the
- * size cap. Compiling is the expensive half and it is pure: 244ms for 35
- * schemas, 1370ms for 301 (measured 2026-08-03), on EVERY `tools/list`, and this
- * redesign's own uncurated listing re-lists on every `list_changed`.
+ * schema keyed by the schema OBJECT, and the door builds a fresh wire object per
+ * listing, so a door-lifetime instance would grow without bound. The VERDICT
+ * carries across listings instead ({@link compileVerdicts}), keyed on the
+ * serialized schema this pass already computed for the size cap — compiling is the
+ * expensive half and it is pure (1370ms for 301 schemas, on EVERY `tools/list`).
  *
- * On a runtime that forbids code generation (Workers et al) Ajv cannot compile
- * ANYTHING, so no schema is advertised there and the door says so once. That is
- * the same rule as the size cap — say nothing rather than everything — and it is
- * the safe direction: an unaskable schema is exactly the one that took a client's
- * whole listing down.
+ * On a runtime that forbids code generation (Workers et al) Ajv compiles nothing,
+ * so no schema is advertised there and the door says so once. Same rule as the
+ * size cap, and the safe direction: an unaskable schema is exactly the one that
+ * took a client's whole listing down.
  */
 function wireSchemaCompiler(): (wire: Record<string, unknown>, serialized: string) => boolean {
   let validator: AjvJsonSchemaValidator | undefined;
@@ -1544,16 +1501,14 @@ function wireSchemaCompiler(): (wire: Record<string, unknown>, serialized: strin
 let codegenWarned = false;
 
 /**
- * "Does this exact schema compile?", remembered across listings and sessions —
- * a pure function of the serialized schema, so the answer never goes stale
- * (a schema that changes is a different key).
+ * "Does this exact schema compile?", remembered across listings and sessions. A
+ * pure function of the serialized schema, so the answer never goes stale — a
+ * schema that changes is a different key.
  *
  * Bounded by the BYTES it holds, not by entry count: the key IS the schema text,
- * and one schema may be up to {@link OUTPUT_SCHEMA_CAP} of it. 4 MiB fits any
- * realistic advertised surface whole (301 tools measured at a few hundred KB)
- * and is the ceiling for a pathological one, which then just recompiles — the
- * behaviour before this cache existed. Oldest entry evicted first; there is no
- * recency to protect, because a listing re-reads the whole set every time.
+ * up to {@link OUTPUT_SCHEMA_CAP} of it each. Over the cap a pathological surface
+ * just recompiles, the behaviour before this cache existed. Oldest evicted first;
+ * there is no recency to protect, because a listing re-reads the whole set.
  */
 const compileVerdicts = new Map<string, boolean>();
 const VERDICT_CACHE_BYTES = 4 * 1024 * 1024;
@@ -1740,14 +1695,12 @@ function mapOutcome(outcome: ToolOutcome, productName: string): CallToolResult {
  *
  * UNCONDITIONALLY, without asking whether this tool advertised a schema. The
  * official client reads an advertised `outputSchema` as a guarantee (an ok result
- * with no conforming `structuredContent` makes `callTool` THROW, so the model
- * sees a broken server instead of its answer) and permits `structuredContent`
- * with no schema advertised at all — it compiles no validator, so it never looks.
- * Asking cost a `tools/list` AFTER the write had already executed, where a throw
- * turned a committed call into an error the model reads as failure, and it could
- * only ever answer for the listing as it is NOW rather than the one the client
- * cached. Always wrapping is the same wire for a declaring tool, one key more for
- * the rest, and no second question to get wrong.
+ * with no conforming `structuredContent` makes `callTool` THROW) and permits
+ * `structuredContent` with no schema advertised at all — it compiles no validator,
+ * so it never looks. Asking cost a `tools/list` AFTER the write had executed,
+ * where a throw turns a committed call into a failure the model believes, and it
+ * could only answer for the listing as it is NOW rather than the one the client
+ * cached.
  */
 function textResult(output: unknown): CallToolResult {
   const text = isOpenInProductPayload(output)

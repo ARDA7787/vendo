@@ -604,12 +604,10 @@ export interface PinForkResult {
 /**
  * What a files-first save answers with: the resolved query data for the tree it
  * stored, and — when a query FAILED to resolve — the honest marker that says so.
- *
- * Without the second half the render seam could only tell the truth about a
- * whole app half that threw: a query that answered "error", "blocked" or
- * "connect-required" resolved to nothing, every binding under it rendered "—",
- * and the view claimed the person has no data. That is the exact lie
- * `dataUnavailable` exists to kill (see ProgressiveQueryResolver.dataUnavailable).
+ * Without the second half the seam could only tell the truth about a whole app
+ * half that THREW, and a query that answered "error", "blocked" or
+ * "connect-required" would render "—" everywhere and read as "you have no data"
+ * (see `ProgressiveQueryResolver.dataUnavailable`).
  */
 export interface AuthoredAppResult {
   data: Record<string, Json>;
@@ -636,23 +634,21 @@ export interface AppsRuntime {
    * {@link AppsRuntime.create}: the app a HARNESS wrote with its own hands, as
    * `app.vendo` in the workspace.
    *
-   * Nothing else makes such an app an APP. There is no row, so it never lists,
-   * never opens (`vendo_apps_open` masks it as `not-found`), and has no document
-   * to resolve queries against — which is why a file-authored app rendered every
-   * value as "—" while real host data sat on the wire (live E2E, 2026-08-03).
-   * This door closes both halves at once: it upserts the row through the same
-   * writer generation persists with, and resolves the tree's queries through the
-   * same guard-bound caller `open()` uses — one guard decision per query, the
-   * person's own authority, the app venue.
+   * Nothing else makes such an app an APP: with no row it never lists and never
+   * opens (`vendo_apps_open` masks it as `not-found`), and with no document its
+   * queries resolve to nothing, so every value renders "—" while the real host
+   * data sits one call away. This closes both halves — it upserts the row through
+   * the writer generation persists with, and resolves the tree's queries through
+   * the guard-bound caller `open()` uses (one guard decision per query, the
+   * person's own authority, the app venue).
    *
    * Deliberately NOT generation: no model, no conductor, no checking floor. The
    * `validate` verb is this loop's review floor (D7's skill law), and a mid-turn
-   * save is partial by design — refusing to store what the person can already
-   * see would be the worse failure.
+   * save is partial by design — refusing to store what the person can already see
+   * would be the worse failure.
    *
    * The render seam (`@vendoai/harnesses`) is the only caller; it hands over the
-   * compile it already did, so the stored tree is byte-identical to the painted
-   * one.
+   * compile it already did, so the stored tree is byte-identical to the painted one.
    */
   authored(
     input: { appId: AppId; compiled: WireCompileResult },
@@ -1025,14 +1021,12 @@ const authoredDocument = (
     ui: "tree",
     tree: asPayload(structuredClone(compiled.tree)),
   };
-  // documentFromEdit's pinned/model split, same file: a PINNED component's source
-  // is host source captured on the furnishing trust path, backing a `pins` row
-  // that is the app's own history — not the model's to author, and not a file
-  // save's to drop. The compile still wins for a name it does carry (a pinned
-  // island IS editable through the wire, exactly as an engine edit may edit it);
-  // a save whose text omits it keeps the stored source, because `pins` carries
-  // on naming it and a pin whose source is gone is not a pin — the next
-  // classifying read demotes it to a bare placement (pins.ts).
+  // documentFromEdit's pinned/model split: a PINNED component's source is host
+  // source captured on the furnishing trust path, backing a `pins` row that is the
+  // app's own history — not a file save's to drop. The compile still wins for a
+  // name it does carry (a pinned island IS editable through the wire); a save whose
+  // text omits it keeps the stored source, because `pins` carries on naming it and
+  // a pin whose source is gone is not a pin (pins.ts demotes it).
   const pinned = new Set((previous?.pins ?? []).map((pin) => pinComponentName(pin.slot)));
   const carried = Object.entries(previous?.components ?? {})
     .filter(([name]) => pinned.has(name) && compiled.components[name] === undefined);
@@ -1702,10 +1696,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
   /**
    * The undo point an append already spent, deleted because the write it was
    * appended FOR never landed. `undo()` restores the latest snapshot
-   * unconditionally, so an orphan version is a loaded gun: the snapshot
-   * predates the concurrent change a refusal just preserved, and one undo
-   * would write it straight over that change. Cleanup failure is logged, never
-   * thrown — the refusal itself is what the caller must hear about.
+   * unconditionally, so an orphan version is a loaded gun: its snapshot predates
+   * the concurrent change a refusal just preserved. Cleanup failure is logged,
+   * never thrown — the refusal is what the caller must hear about.
    */
   const discardVersion = async (appId: AppId, versionId: string): Promise<void> => {
     try {
@@ -1715,14 +1708,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     }
   };
 
-  /**
-   * The 50-version cap, applied once the write the newest version records has
-   * LANDED. Every append is speculative until then (see discardVersion), so a
-   * prune inside it charged the app's oldest real undo point for a write that
-   * never happened — fifty refused saves erased fifty genuine undo points while
-   * the app itself never changed. Failure is logged, never thrown: the save is
-   * real, and one entry over the cap is not worth turning it into an error.
-   */
+  /** The 50-version cap, applied once the write its newest version records has
+   *  LANDED — see `AppHistoryAccess.prune` (history.ts) for why it cannot live
+   *  inside the append. Failure is logged, never thrown: the save is real, and one
+   *  entry over the cap is not worth turning it into an error. */
   const pruneHistory = async (appId: AppId): Promise<void> => {
     try {
       await history.prune(appId);
@@ -2547,21 +2536,17 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // A row that already exists belongs to whoever holds it. `/user/**` is its
       // subject's at EVERY level (core `accessForPath`), so a harness can write
       // `/user/apps/<someone-else's-id>/app.vendo` in its own mount and the
-      // workspace will happily land the file — this is the only place that can
-      // refuse to let that rewrite the other person's app.
-      //
-      // A row that does NOT exist can only have come from this caller's own
-      // `/user` mount: a fresh `/orgs/<org>/apps/<id>/` path has no app row to
-      // grant on, so `canCommit` refuses it and the file never lands at all.
+      // workspace lands the file — this is the only place that can refuse to let
+      // that rewrite the other person's app. A row that does NOT exist can only
+      // have come from this caller's own `/user` mount: a fresh
+      // `/orgs/<org>/apps/<id>/` path has no app row to grant on, so `canCommit`
+      // refuses it and the file never lands at all.
       const mayWrite = row === null || await holds(input.appId, ctx, "editor", record);
-      // …and refusing the WRITE is not the whole refusal. The document below is
-      // what this file's queries resolve against, so a foreign app's own history
-      // inside it is reach the caller does not have: `fn:` routes on `app.machine`
-      // ALONE (fn.ts) and the wake takes no ctx, so an inherited machine ref sends
-      // this file's `fn:` queries onto SOMEONE ELSE'S sandbox — their snapshot,
-      // their env, their code — and hands the answer back. A file the caller may
-      // not write is therefore painted from the compile alone: their own tree,
-      // their own authority, none of the other app's anything.
+      // And refusing the WRITE is not the whole refusal: `previous` is what these
+      // queries resolve against, and `fn:` routes on `app.machine` ALONE (fn.ts)
+      // with no ctx — so an inherited machine ref would send this file's `fn:`
+      // queries onto SOMEONE ELSE'S sandbox and hand back the answer. A file the
+      // caller may not write is painted from the compile alone.
       const previous = row === null || !mayWrite
         ? undefined
         : classifyLegacyPlacements(row.doc, config.pinBaselines);
@@ -2580,11 +2565,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             // forward (trigger, pins, storage, machine, description), so a put
             // computed over a row that changed in the window would silently REVERT
             // an `edit()` that landed there rather than merely ordering after it.
-            // Best-effort for the same reason persistEdit's is (no revision on the
-            // store seam), and it cannot conflict with a run of same-turn saves:
-            // every save re-reads its own baseline. Re-reads only a row this
-            // caller was already authorized to read — a fresh id is never
-            // re-fetched, so the cross-tenant rule above stands.
+            // Best-effort for persistEdit's reason (no revision on the store seam),
+            // and it cannot conflict with a run of same-turn saves: every save
+            // re-reads its own baseline. Only ever re-reads a row this caller was
+            // already authorized to read.
             const assertCurrent = async (): Promise<boolean> => {
               const current = await apps.get(input.appId);
               const stored = current === null ? null : rowFromRecord(current);
@@ -2601,8 +2585,8 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             await assertCurrent();
             // The undo point this path had none of: the state the save replaces,
             // appended before the write lands, exactly as persistEdit does it. A
-            // re-save that changed nothing is not a version — it would spend one
-            // of the 50 capped slots to undo to the state it is already in.
+            // re-save that changed nothing is not a version — it would spend one of
+            // the 50 capped slots to undo to the state it is already in.
             changed = JSON.stringify(previous) !== JSON.stringify(document);
             if (changed) {
               appended = await history.append(input.appId, previous, {
@@ -2612,16 +2596,15 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
               }, touchedPinSlots(previous, document),
               // A "touch", never an "edit": this receipt records THAT the save
               // changed a pinned component, and nothing about what it changed.
-              // Handing "Saved app.vendo" to a rebase as a replay instruction is
-              // how a file-authored remix gets overwritten by the pristine host
+              // Handing "Saved app.vendo" to a rebase as a replay instruction is how
+              // a file-authored remix gets overwritten by the pristine host
               // component under a "rebased" verdict (see pins.rebase).
               "touch");
             }
-            // Asserted a SECOND time, after the append, for persistEdit's reason:
-            // the append is itself a store round trip, so the first check alone
-            // leaves the whole of it inside the TOCTOU window. Its answer is also
-            // the arm bit this write must keep — read after the window, never from
-            // the stale baseline row.
+            // Asserted a SECOND time, because the append is itself a store round
+            // trip and the first check alone leaves it inside the TOCTOU window.
+            // Its answer is also the arm bit this write must keep — read after the
+            // window, never from the stale baseline row.
             enabled = enabledAfterDocumentEdit(previous, document, await assertCurrent());
           }
           const appRow = appRecordInput(
@@ -2642,19 +2625,15 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             await reportLifecycle("create", document.id, ctx);
           } else if (changed) {
             // §9.9 — the ONE announcement every change to what an app IS passes
-            // through (see reportDocumentEdit). A files-first rewrite changes what
-            // the app is while leaving `trigger` verbatim, so the intent hash a
-            // sponsorship was minted over is unchanged: without this, a third
-            // party's rewrite leaves sponsorship ACTIVE and the automation keeps
-            // firing on the sponsor's authority against code the sponsor never
-            // saw — and a sponsor's own rename changes the hash with no re-bind,
-            // killing their own automation at the next fire. Announced on every
-            // save that CHANGES the app, partial ones included: what the store
-            // holds is what fires, and both halves of the hook converge
-            // (invalidation is terminal; a re-bind binds the currently stored
-            // intent). An identical re-save is announced on neither half — the
-            // app is not different, and invalidation is terminal, so announcing
-            // it would kill a live sponsorship for nothing.
+            // through (see reportDocumentEdit). A files-first rewrite changes the
+            // app while leaving `trigger` verbatim, so the intent hash a sponsorship
+            // was minted over is unchanged: without this, a third party's rewrite
+            // leaves sponsorship ACTIVE and the automation keeps firing on the
+            // sponsor's authority against code the sponsor never saw, and a
+            // sponsor's own rename changes the hash with no re-bind. Partial saves
+            // included — what the store holds is what fires. An identical re-save is
+            // announced on neither half: invalidation is terminal, so announcing it
+            // would kill a live sponsorship for nothing.
             await reportDocumentEdit(previous, appRow.data.doc, ctx.principal.subject);
           }
         } catch (error) {
@@ -2669,16 +2648,12 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         }
       }
       // The queries, through the SAME guard-bound caller `open()` resolves with:
-      // one guard decision per query, this person's authority, `venue: "app"`.
-      // A query that does not settle "ok" contributes no data and says so in the
-      // logs (see createProgressiveQueryResolver) — which is what turns a silent
-      // "No spending in this period" back into a diagnosable fact.
+      // one guard decision per query, this person's authority, `venue: "app"`. When
+      // one FAILED, the seam is told, so the painted view says "Data didn't load"
+      // instead of an empty app that looks like real, empty data.
       const queries = createProgressiveQueryResolver(caller, document, ctx);
       queries.update(asTree(document.tree));
       const data = await queries.complete();
-      // …and when one of them FAILED, the seam is told, so the painted view says
-      // "Data didn't load" instead of showing the person an empty app that looks
-      // like their real, empty data.
       return { data, ...(queries.dataUnavailable() ? { dataUnavailable: true as const } : {}) };
     },
 
@@ -3450,26 +3425,23 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           throw new VendoError("conflict", `pin ${input.slot} cannot rebase on a served (http) app`);
         }
         const intents = await history.pinIntents(app.id, input.slot);
-        // A rebase is a re-fork of the NEW baseline with the trail replayed on
-        // top, so it is only ever as honest as the trail. Two things must hold,
-        // and each one is a way a user's remix gets silently destroyed:
+        // A rebase is a re-fork of the NEW baseline with the trail replayed on top,
+        // so it is only ever as honest as the trail. Two things must hold, and each
+        // one is a way a user's remix gets silently destroyed:
         //
-        // 1. The trail STARTS with the recorded fork — the only row whose
-        //    content the re-fork reproduces (the fork copied the captured
-        //    baseline verbatim). An empty trail, or one that begins with
-        //    anything else, cannot vouch for what the pinned component holds.
-        // 2. Every row AFTER it is a replayable "edit" — the user's own words,
-        //    which is what re-saying it to the brain means. A "touch" is a write
-        //    that changed the pinned component while recording only that it did
-        //    ("Saved app.vendo" from a files-first save, the DEFAULT way an app
-        //    is written): the change itself exists nowhere but the document this
-        //    rebase is about to overwrite, so skipping past it resets that work
-        //    to the pristine host component and reports "rebased".
+        // 1. The trail STARTS with the recorded fork — the only row whose content
+        //    the re-fork reproduces, since the fork copied the captured baseline
+        //    verbatim. An empty trail, or one beginning with anything else, cannot
+        //    vouch for what the pinned component holds.
+        // 2. Every row AFTER it is a replayable "edit". A "touch" changed the pinned
+        //    component while recording only that it did, so the change exists nowhere
+        //    but the document this rebase is about to overwrite: skipping past it
+        //    resets that work to the pristine host component and reports "rebased".
         //
-        // `kind` is absent on rows written before the discriminator existed;
-        // those vouch for nothing and replay as nothing, so they fail closed on
-        // whichever check they land in. The cost of refusing is one manual
-        // remix; the cost of accepting is the remix itself.
+        // `kind` is absent on rows written before the discriminator existed; those
+        // vouch for nothing and replay as nothing, so they fail closed on whichever
+        // check they land in. Refusing costs one manual remix; accepting costs the
+        // remix itself.
         const unreplayable = intents.slice(1).filter(({ kind }) => kind !== "edit");
         if (intents[0]?.kind !== "fork" || unreplayable.length > 0) {
           throw new VendoError(

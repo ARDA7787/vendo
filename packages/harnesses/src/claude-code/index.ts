@@ -335,14 +335,13 @@ export function claudeCode(
     // remote MCP whether it runs in a box or as a subprocess here, so this is
     // what makes composition mount a door with no `mcp` option in sight.
     requires: { toolDoor: true, ...(options.machine === "local" ? {} : { sandbox: true }) },
-    // Design §D2/§D4. UNCURATED: this model reads a large listing natively, and a
+    // Design §D2/§D4. UNCURATED: this model reads a large listing natively, so a
     // loadout that hides tools behind a search is friction it does not need — the
     // ctx safety projection still decides what may be projected at all. And app
     // generation leaves this surface: the model builds and edits apps by writing
-    // `plan.vendo` / `app.vendo` with its own hands (the render seam repaints the
-    // screen on every parsing save), so the two engine tools are withheld rather
-    // than left as a second, coin-flip path to the same outcome. Lifecycle tools
-    // (`vendo_apps_open`, the pin and data verbs) stay.
+    // `plan.vendo` / `app.vendo` with its own hands, so the two engine tools are
+    // withheld rather than left as a second, coin-flip path to the same outcome.
+    // Lifecycle tools (`vendo_apps_open`, the pin and data verbs) stay.
     toolSurface: { curated: false, withhold: [VENDO_APPS_CREATE_TOOL, VENDO_APPS_EDIT_TOOL] },
 
     async *run(turn: Turn<ClaudeCodeOptions>): AsyncGenerator<HarnessEvent, void, void> {

@@ -72,38 +72,21 @@ function parseIssue(error: unknown): string {
 }
 
 /**
- * The `/host` projection's OWN component-name grammar, run where the catalog is
- * BUILT instead of only where it is projected.
+ * Core's `/host` component-name grammar, run at BOOT rather than only per turn
+ * where the path is built: a name with a hyphen in it ("Data-Table") normalizes
+ * fine, boots green, and then throws on every turn for the life of the
+ * deployment. Calling core's own builder — never restating its pattern — is what
+ * keeps the two ends from disagreeing again.
  *
- * A component name is a file under `/host/components` and an element in an app's
- * markup, and core validates it where that path is built (`componentPath`) — per
- * TURN. That is the right place for the guard and the wrong time to learn: a name
- * with a hyphen in it ("Data-Table") normalizes fine, boots green, and then throws
- * on every single turn for the life of the deployment.
- *
- * So core's own builder runs over every entry at boot, and a failure names the
- * source it came from. CALLING it, rather than restating its pattern here, is what
- * stops the two ends from disagreeing again — the same posture `packs/merge.ts`
- * takes for a pack's components, where the error can name the pack.
- *
- * What a failure DOES depends on who wrote the name, and the two answers are not
- * a compromise:
- *
- *   - a name in `createVendo({ catalog })` was typed by the host developer at that
- *     call site, so it THROWS — loud, immediate, and pointing at the line to fix;
- *   - a name in a catalog@1 document was written by `vendo sync` off the host's own
- *     source, and `catalogEntrySchema` is looser than core's grammar in two ways
- *     (`$` is legal in it, and it has no length cap). Throwing there lands inside
- *     `runtimeCatalogFromJson`'s catch, which logs, returns `[]`, and boots the
- *     host with ZERO components while advising a `vendo sync` that regenerates the
- *     same file. So the ENTRY is dropped with a named warning and the rest of the
- *     catalog loads.
- *
- * The residue, stated because it is a real cost: a host that never mounts `/host`
- * could use `Card$Legacy` end to end, and now loses that one component. Keeping it
- * would mean knowing at catalog-build time whether a harness will project the
- * mount, which this module cannot see. One component versus the whole catalog is
- * the trade, and the warning names exactly which one and why.
+ * Callers decide what a refusal DOES, and the two answers differ on purpose. A
+ * name from `createVendo({ catalog })` throws, pointing at the line to fix. A
+ * name from a catalog@1 document was written by `vendo sync` and
+ * `catalogEntrySchema` is looser than core's grammar (`$` is legal, no length
+ * cap), so throwing lands in `runtimeCatalogFromJson`'s catch and boots the host
+ * with ZERO components while advising a sync that regenerates the same file —
+ * that entry is dropped with a named warning instead. The residue is real: a host
+ * that never mounts `/host` loses its one `Card$Legacy` component, because
+ * nothing here can know whether a harness will project the mount.
  */
 const projectionRefusal = (name: string, source: string): VendoError | undefined => {
   try {
@@ -116,11 +99,6 @@ const projectionRefusal = (name: string, source: string): VendoError | undefined
       { cause },
     );
   }
-};
-
-const requireProjectableName = (name: string, source: string): void => {
-  const refusal = projectionRefusal(name, source);
-  if (refusal !== undefined) throw refusal;
 };
 
 /** Task 15a: the parsed-catalog leg of runtimeCatalogFromJson, exported so an
@@ -194,7 +172,8 @@ function derivedJsonSchema(schema: StandardSchema | undefined, name: string): Js
 }
 
 function normalizeEntry(entry: RegisteredComponent, source: string): NormalizedCatalogEntry {
-  requireProjectableName(entry.name, source);
+  const refusal = projectionRefusal(entry.name, source);
+  if (refusal !== undefined) throw refusal;
   const derived = derivedJsonSchema(entry.propsSchema, entry.name);
   return {
     name: entry.name,

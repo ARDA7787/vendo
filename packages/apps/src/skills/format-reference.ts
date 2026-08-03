@@ -1,21 +1,17 @@
 /**
- * `references/format.md` — the `building-apps` skill's companion file.
+ * `references/format.md` — the `building-apps` skill's companion file: the complete
+ * `.vendo` authoring reference, so the skill body can stay one screen per section.
+ * A FILE on the `/host` mount, read with the harness's own hands, never listed.
  *
- * The complete `.vendo` authoring reference, so the skill body can stay one
- * screen per section. It is a FILE on the `/host` mount, read with the harness's
- * own hands when it needs a detail, never loaded into a listing.
- *
- * Every element, attribute, and function below is taken from the parsers and the
+ * Every element, attribute and function below is taken from the parsers and the
  * validator, not from another prompt: `core/genui/plan/compile.ts` (plan.vendo),
  * `core/genui/wire/{compile,attributes,expression}.ts` (app.vendo),
- * `core/genui/expr.ts` (computed expressions), `core/reshape.ts` (the pipe ops),
+ * `core/genui/expr.ts`, `core/reshape.ts` (the pipe ops),
  * `core/genui/wire/text-edit.ts` (edits) and
- * `apps/generation/validation/validate.ts` (what `validate` reports). Anything a
- * prompt claims and no parser implements is deliberately absent — a documented
- * attribute that does nothing is worse than a missing one.
- *
- * The component half is INTERPOLATED from the same generated schemas the engine's
- * workers read (`componentsPromptSection`), so it cannot drift from the code.
+ * `apps/generation/validation/validate.ts`. Anything a prompt claims and no parser
+ * implements is deliberately absent — a documented attribute that does nothing is
+ * worse than a missing one. The component half is INTERPOLATED from the same
+ * generated schemas the engine's workers read, so it cannot drift from the code.
  */
 import { componentsPromptSection } from "../generation/contracts/sections.js";
 

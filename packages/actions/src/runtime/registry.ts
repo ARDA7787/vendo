@@ -1104,73 +1104,46 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
    * ToolSearchOptions.maxExpansions. */
   const MAX_SEARCH_EXPANSIONS = 3;
 
-  /** How many `listingScope`-identified runs keep their expansion set at once
-   * ({@link expandedByScope}).
-   *
-   * A backstop for scopes whose owner never says they are finished, NOT the
-   * normal release path: a caller that can end a scope calls
-   * `releaseListingScope` (the MCP door does, on every close, sweep and
-   * revocation). It has to be a backstop and not the only mechanism, because
-   * this map is process-global across tenants: with capacity as the sole way out,
-   * one principal opening 1025 scopes evicts another principal's expansions and
-   * makes their expanded tools vanish from their next listing (round 6
-   * 2026-08-03 — the comment here used to claim sweeping released these, and
-   * nothing did). 1024 comfortably exceeds any one host's concurrent sessions
-   * while keeping the map to a few thousand short strings. */
+  /** Backstop cap on {@link expandedByScope}, NOT the release path — owners call
+   * `releaseListingScope`. It cannot be the only mechanism: the map is
+   * process-global across tenants, so with capacity as the sole way out one
+   * principal opening 1025 scopes evicts another's expansions and their expanded
+   * tools vanish from their next listing. */
   const MAX_LISTING_SCOPES = 1024;
   let indexPromise: Promise<Array<{ toolkit: string; label?: string; description?: string }>> | undefined;
   /** Discovery discipline (spec 2026-07-25): identical queries answer from a memo — repeat
    * discovery costs zero index reads, zero expansions, zero schema fetches.
-   * add() invalidates it (the searchable surface changed). What it memoizes is
-   * the EXPANSION DECISION — which toolkits a query pulls in — which is
-   * scope-free, because the fetch behind it is process-wide. Ranking is NOT
-   * memoized: what a run may rank depends on what that run may see. */
+   * add() invalidates it (the searchable surface changed). It memoizes the
+   * EXPANSION DECISION — which toolkits a query pulls in — which is scope-free
+   * because the fetch behind it is process-wide. Ranking is NOT memoized: what a
+   * run may rank depends on what that run may see. */
   const expansionMemo = new Map<string, Promise<string[]>>();
 
-  /** Which lazily-expanded toolkits ONE RUN may see, keyed by that run's own
-   * context object.
+  /**
+   * Which lazily-expanded toolkits ONE RUN may see. Expansion used to be
+   * process-wide and permanent, so the first conversation to search "slack" put
+   * all ~266 slack tools on every later listing in the process, for every user
+   * (measured live 2026-08-03: an unrelated conversation's first `tools/list`
+   * answered 301 tools instead of 35). The FETCH stays process-wide and cached,
+   * and so does dispatch — what a run can SEE never decides what may RUN.
    *
-   * Lazy expansion used to be process-wide and permanent: the first
-   * conversation to search "slack" put all ~266 slack tools on every later
-   * listing in the process, for every user, until restart (measured live
-   * 2026-08-03 — an unrelated conversation's very first `tools/list` answered
-   * 301 tools instead of 35). The FETCH stays process-wide and cached — one
-   * network walk per toolkit, never one per listing — and only who may SEE the
-   * result is scoped. Dispatch stays global too: what a run can see never
-   * decides what may RUN (the guard and the per-user connect check do).
-   *
-   * Identity is the DEFAULT key, because for an in-process run it is the only
-   * thing that identifies one: `RunContext` carries no conversation id, and
-   * `sessionId` is the wire's process-wide fallback for host-resolved
-   * principals, so keying on fields would leave every conversation of one user
-   * sharing one listing — the leak that was measured. One run, one context
-   * object: the door projects a live turn's ctx verbatim, the wire mints one per
-   * request, and the agent threads the same object through descriptors, seed,
-   * search and execute. A caller that rebuilds an equivalent object simply gets
-   * a fresh listing — it fails toward "search again", never toward another run's
-   * set. A WeakMap, so a finished run's set goes with its context.
-   *
-   * A caller that CANNOT keep one object says so with `ctx.listingScope`
-   * ({@link expandedByScope}). */
+   * Identity is the default key because nothing else identifies an in-process
+   * run: `RunContext` carries no conversation id, and `sessionId` is the wire's
+   * process-wide fallback for host-resolved principals, so keying on fields would
+   * put every conversation of one user on one listing — the leak that was
+   * measured. A caller that cannot keep one object says which run it is with
+   * `ctx.listingScope` ({@link expandedByScope}); either way an unidentified run
+   * fails toward "search again", never toward another run's set.
+   */
   const expandedByRun = new WeakMap<object, Set<string>>();
 
-  /** The same sets, for runs identified by an opaque `listingScope` string
-   * instead of an object.
-   *
-   * The MCP door is the caller that needs it: it mints a BRAND-NEW context per
-   * authenticated request (consent and memberships are per-request facts), so
-   * keyed on identity its own `list_changed` promise was a guaranteed lie to
-   * every client that acts on one — search_connectors expanded, the door
-   * announced, the client re-listed on a new context object, and the expanded
-   * tool was gone (measured over the real door and the real SDK client, round 5
-   * 2026-08-03).
-   *
-   * A Map, not a WeakMap, so its lifetime is stated rather than left to the GC:
-   * the owner releases a finished scope ({@link ToolRegistry.releaseListingScope}),
-   * and {@link MAX_LISTING_SCOPES} is the backstop for owners that never do,
-   * least-recently-used evicted first. An evicted scope loses its expansions and
-   * has to search again — the same failure direction as an unidentified run,
-   * never another run's set. */
+  /** The same sets for runs identified by an opaque `listingScope` string. The MCP
+   * door needs it: it mints a brand-new context per authenticated request (consent
+   * and memberships are per-request facts), so keyed on identity its own
+   * `list_changed` was a guaranteed lie — the client re-listed on a new object and
+   * the expanded tool was gone. A Map, not a WeakMap, so the lifetime is stated:
+   * the owner calls {@link ToolRegistry.releaseListingScope}, with
+   * {@link MAX_LISTING_SCOPES} as the LRU backstop for owners that never do. */
   const expandedByScope = new Map<string, Set<string>>();
 
   function expansionsOf(ctx: ToolListingContext): Set<string> | undefined {
@@ -1322,24 +1295,19 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
     }
     const scope = ctx?.listingScope;
     // CLAIM the scope before the await, because remembering CREATES the entry it
-    // records into: a scope released while this search was in flight would
-    // otherwise be resurrected below with no owner left to release it — the same
-    // uncollectable entry `releaseListingScope` exists to prevent, reopened for
-    // the in-flight case. Claimed empty, which is what an unexpanded scope is.
+    // records into: a scope released mid-search would otherwise be resurrected
+    // below with no owner left to release it. Claimed empty, which is what an
+    // unexpanded scope is.
     if (scope !== undefined) rememberExpansion(ctx, []);
     const expanded = await expanding;
-    // The asking run may see whatever this query expanded — including on a memo
-    // hit, where another run paid for the fetch. Without this the rows would
-    // name tools this caller's own next listing does not contain, which is
-    // exactly the trap the model fell into (measured 2026-08-03).
-    //
-    // Unless the claim is gone: released by its owner, or evicted by the cap.
-    // Both mean this listing is over, and a scope that comes back reads as a
-    // fresh listing — "search again", never another run's set.
+    // The asking run may see whatever this query expanded, including on a memo
+    // hit where another run paid for the fetch — otherwise the rows name tools
+    // this caller's own next listing does not contain. Unless the claim is gone
+    // (released or evicted): that listing is over, and a scope that comes back
+    // reads as a fresh one.
     if (scope === undefined || expandedByScope.has(scope)) rememberExpansion(ctx, expanded);
-    // The asking run's own surface — post-override and enabled-only, so a
-    // disabled tool can never come back as loadable, and scoped, so a hit is
-    // never a name this caller cannot then call.
+    // Post-override and enabled-only, so a disabled tool can never come back as
+    // loadable; scoped, so a hit is never a name this caller cannot then call.
     const matches = searchToolDescriptors(await scopedDescriptors(ctx), query, options);
     if (expanded.length === 0) return matches;
     return matches.map((match) => {

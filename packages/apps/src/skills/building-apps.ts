@@ -7,29 +7,24 @@
  * groups, edit-like-a-file, never invent data, the honest cannot — restated for
  * a reader with hands and a workspace instead of a single scripted call.
  *
- * Three things it must carry and does:
+ * Four things it must carry and does:
  *
  * - **Delegation advice is a sentence in the body**, never a pack property and
  *   never our machinery (architecture §6). A harness maps it to its native
  *   subagents, or ignores it; the checks floor holds either way. Which is why the
- *   body names `Task` CONDITIONALLY: the same text is read by `claudeCode()`,
- *   which has it, and by `vendo()`'s hired specialist, which has no hiring tool at
- *   all (depth is bounded at one) — an unconditional order would be a lie to one
- *   of them.
- *
- * - **Every path is workspace-RELATIVE.** The `/host` mount is a WORKSPACE path;
- *   on disk it lands under the machine's root (`/workspace/host/...` in a box, a
- *   temp dir on `machine: "local"`), and the session's cwd is that root. So
- *   `host/components/` resolves on both legs and `/host/components/` resolves on
- *   neither.
- * - **Write early, write per group.** The screen re-renders on every parsing
- *   save of a hot-path file (build contract §1.6), so writing the plan file
- *   first and the app file per group is what gives the person a growing app.
- *   One big write at the end is legal and worse.
+ *   body names `Task` CONDITIONALLY: the same text is read by `claudeCode()`, which
+ *   has it, and by `vendo()`'s hired specialist, which has no hiring tool at all
+ *   (depth is bounded at one).
+ * - **Every path is workspace-RELATIVE.** The `/host` mount is a WORKSPACE path; on
+ *   disk it lands under the machine's root (`/workspace/host/...` in a box, a temp
+ *   dir on `machine: "local"`) and the session's cwd IS that root, so
+ *   `host/components/` resolves on both legs and `/host/components/` on neither.
+ * - **Write early, write per group.** The screen re-renders on every parsing save of
+ *   a hot-path file (build contract §1.6), so writing the plan file first and the
+ *   app file per group is what gives the person a growing app.
  * - **Validate is the floor, not a nicety** (harness-redesign D4/D7): with the
  *   engine off this surface, the builder's own `validate` call is the only check
- *   between a guess and a shipped app — so "not done until it comes back clean"
- *   is stated as law, in the body, where the builder reads it.
+ *   between a guess and a shipped app.
  *
  * Syntax depth lives in the companion `references/format.md`
  * (`./format-reference.ts`), so this body stays the job description.

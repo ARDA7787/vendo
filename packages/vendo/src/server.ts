@@ -2341,16 +2341,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     schedule: async ({ appId, cron }, ctx) =>
       await apps.schedule(appId as AppId, cron, ctx) as unknown as Json,
   }));
-  // Harness-redesign D3's connector-discovery pair, on the SAME registry, and
-  // ONLY when connectors are configured — the same "no adapter, no tool" rule
-  // knowledge follows below. A connector-less host's agent has zero discovery
-  // machinery: no catalog to search, no services to list, so nothing is
-  // projected and neither name is ever offered.
-  //
-  // Both ports read seams declared BELOW this line (`toolSearch`, `connections`,
-  // `connectedToolkitsFor`). That is the established pattern here — a port body
-  // only runs on a real tool call, long after createVendo has returned — and
-  // keeps the registry adds together at one seam.
+  // Harness-redesign D3's connector-discovery pair, on the SAME registry, and ONLY
+  // when connectors are configured — the same "no adapter, no tool" rule knowledge
+  // follows below. Both ports read seams declared BELOW this line (`toolSearch`,
+  // `connections`, `connectedToolkitsFor`), the established pattern here: a port
+  // body only runs on a real tool call, long after createVendo has returned.
   if (resolvedConnectors.length > 0) {
     actions.add(connectorDiscoveryRegistry({
       // The SAME search `find_tools` rides: it ranks the connectors' toolkit
@@ -2640,8 +2635,8 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       // Both rails now reach the harness path (`createDiscoveryRails`), so the
       // prompt may promise them — and must, or the model is handed the miss
       // reporter and a discovery rail with no instructions about either. WHICH
-      // discovery section rides is the turn's to say: an uncurated surface has
-      // no `find_tools`, so teaching it would name a tool that is not there.
+      // discovery section rides is the turn's to say: an uncurated surface has no
+      // `find_tools`, so teaching it would name a tool that is not there.
       true,
       opts?.discovery ?? "find-tools",
     ),
@@ -2658,11 +2653,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     connectorDiscovery: resolvedConnectors.length > 0,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
-    // §1.6's app half. Without it a files-first app (D4) is a PICTURE of an app:
-    // no store row, so it never lists and `vendo_apps_open` masks it as
-    // not-found, and no query data, so every value on screen renders "—" while
-    // the real host data sits one call away (live E2E, 2026-08-03). The seam
-    // declared this slot and nothing ever filled it.
+    // §1.6's app half. Without it a files-first app (D4) is a PICTURE of an app: no
+    // store row, so it never lists and `vendo_apps_open` masks it as not-found, and
+    // no query data, so every value renders "—" with the real host data one call away.
     render: (ctx) => ({ authoredApp: (input) => apps.authored(input, ctx) }),
     // Build contract §9.1/§9.7 — the same host org query the wire resolves per
     // request, so a harness turn's façade mounts the team's files too.

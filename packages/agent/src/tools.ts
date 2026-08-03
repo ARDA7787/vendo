@@ -134,12 +134,11 @@ function knowledgeCitationsPart(toolCallId: string, output: unknown): VendoCitat
 
 /**
  * The truncation envelope's keys live in Vendo's reserved `vendo_` namespace, and
- * have to: this envelope replaces an output the host DECLARED a schema for, and
- * the MCP door advertises that declaration to clients that validate every result
- * against it. A host field named `preview` of a different type made its own tool
- * throw on a truncated answer — measured against the official client's validator.
- * The door's other substituted key (`vendo_value`) shares the namespace, and its
- * schema sanitizer drops declared `vendo_*` properties so neither can collide.
+ * have to: this envelope replaces an output the host DECLARED a schema for, and the
+ * MCP door advertises that declaration to clients that validate every result
+ * against it — a host field named `preview` of a different type made its own tool
+ * throw on a truncated answer. The door's schema sanitizer drops declared `vendo_*`
+ * properties so the namespace cannot collide.
  */
 function capOutcome(outcome: ToolOutcome, cap: number | undefined): ToolOutcome {
   if (outcome.status !== "ok" || cap === undefined) return outcome;
