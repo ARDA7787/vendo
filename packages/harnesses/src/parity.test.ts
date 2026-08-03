@@ -377,3 +377,134 @@ describe("H4 — the seam wrapper survives a real façade", () => {
     expect(emitted).toEqual([vendoViewStreamId("app_5")]);
   });
 });
+
+describe("C5 — the two consent surfaces a harness turn must still render", () => {
+  // Both are wire parity with `createAgent` (§1.6: "a harness turn produces the
+  // identical wire a createAgent turn does"). The shipped thread renders each
+  // card off the NATIVE ai-SDK tool part — `data-vendo-*` only carries the
+  // guard metadata beside it — so a harness that mirrors only its own narrowed
+  // `ToolResult` silently drops the card and the user is told nothing.
+
+  it("mirrors a connect-required call as the typed native output the ConnectCard reads", async () => {
+    const guard = testGuard();
+    const connect = {
+      connector: "composio",
+      toolkit: "gmail",
+      message: "Connect your gmail account to run gmail_send.",
+    };
+    const registry: ToolRegistry = {
+      async descriptors() {
+        return [readTool("gmail_send")];
+      },
+      async execute() {
+        return { status: "connect-required", connect };
+      },
+    };
+    const { run } = runtimeFor({ registry, guard });
+    const chunks = await run(
+      defineHarness({
+        name: "mailer",
+        async *run(turn) {
+          const result = await turn.tools.call("gmail_send", { to: "ada@example.test" });
+          // The MODEL still reads a denial with the reason — §1.1's three-status
+          // narrowing is deliberate and stays.
+          expect(result).toMatchObject({ status: "denied", reason: connect.message });
+        },
+      }),
+    );
+    // …but the SCREEN reads the typed outcome off the native part, exactly as it
+    // does on the ai-SDK path, or no connect card exists to click.
+    const output = chunks.find((chunk) => chunk.type === "tool-output-available");
+    expect(output).toMatchObject({ output: { status: "connect-required", connect } });
+    expect(chunks.some((chunk) => chunk.type === "tool-output-denied")).toBe(false);
+  });
+
+  it("raises the native approval request an interactive parked call needs", async () => {
+    const guard = testGuard({ pay: "ask" });
+    const registry = boundRegistry(
+      { pay: { descriptor: readTool("pay", "destructive"), execute: () => ({ sent: true }) } },
+      guard,
+    );
+    // Nobody taps: the wait lapses. The REQUEST still has to have been raised —
+    // that is the card the user never got a chance to see.
+    const { run } = runtimeFor({ registry, guard, approvalWaitMs: 30 });
+    const chunks = await run(
+      defineHarness({
+        name: "payer",
+        async *run(turn) {
+          await turn.tools.call("pay", { amount: 10 });
+        },
+      }),
+    );
+    const request = chunks.find((chunk) => chunk.type === "tool-approval-request");
+    expect(request).toBeDefined();
+    // The id is the GUARD's approval id — the one `approvals.decide` answers and
+    // the one the sibling data-vendo-approval part carries.
+    const parked = chunks.find((chunk) => chunk.type === "data-vendo-approval");
+    expect((parked?.data as { approvalId?: string } | undefined)?.approvalId).toBe(
+      (request as { approvalId?: string }).approvalId,
+    );
+    expect((request as { toolCallId?: string }).toolCallId)
+      .toBe((parked?.data as { toolCallId?: string } | undefined)?.toolCallId);
+  });
+});
+
+describe("C6 — a parked turn keeps its record", () => {
+  it("persists the assistant message carrying the parked call, so a reload still shows the card", async () => {
+    const guard = testGuard({ pay: "ask" });
+    const registry = boundRegistry(
+      { pay: { descriptor: readTool("pay", "destructive"), execute: () => ({ sent: true }) } },
+      guard,
+    );
+    // Nobody taps. The turn ends on the wait lapsing — and the transcript must
+    // still carry what was asked. A harness turn stays OPEN while it parks, so
+    // this is the only save that ever happens for a user who reloads: without it
+    // the thread loses the request entirely and the card cannot come back.
+    const { run, transcript } = runtimeFor({ registry, guard, approvalWaitMs: 30 });
+    await run(
+      defineHarness({
+        name: "payer",
+        async *run(turn) {
+          await turn.tools.call("pay", { amount: 10 });
+        },
+      }),
+    );
+    const saved = await transcript.list({ kind: "user", subject: "u1" } as never, THREAD);
+    const assistant = saved.find((message) => message.role === "assistant");
+    expect(assistant).toBeDefined();
+    const toolPart = assistant?.parts.find((part) => part.type.startsWith("tool-") || part.type === "dynamic-tool");
+    expect(toolPart).toBeDefined();
+    expect(assistant?.parts.some((part) => part.type === "data-vendo-approval")).toBe(true);
+  });
+
+  it("checkpoints that message WHILE the turn is still parked, not only at turn end", async () => {
+    const guard = testGuard({ pay: "ask" });
+    const registry = boundRegistry(
+      { pay: { descriptor: readTool("pay", "destructive"), execute: () => ({ sent: true }) } },
+      guard,
+    );
+    // The park holds the turn open. A user who reloads during it must still find
+    // the card, so the save cannot wait for the turn to end.
+    const { run, transcript } = runtimeFor({ registry, guard, approvalWaitMs: 5_000 });
+    const finished = run(
+      defineHarness({
+        name: "payer",
+        async *run(turn) {
+          await turn.tools.call("pay", { amount: 10 });
+        },
+      }),
+    );
+    await vi.waitFor(
+      async () => {
+        const saved = await transcript.list({ kind: "user", subject: "u1" } as never, THREAD);
+        const assistant = saved.find((message) => message.role === "assistant");
+        expect(assistant?.parts.some((part) => part.type === "data-vendo-approval")).toBe(true);
+      },
+      { timeout: 3_000 },
+    );
+    await finished;
+    // …and the finished turn UPDATES that row rather than adding a second copy.
+    const saved = await transcript.list({ kind: "user", subject: "u1" } as never, THREAD);
+    expect(saved.filter((message) => message.role === "assistant")).toHaveLength(1);
+  });
+});

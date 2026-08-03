@@ -19,6 +19,7 @@
 import {
   toVendoWirePart,
   vendoViewStreamId,
+  type ToolOutcome,
   type ToolResult,
   type VendoViewPart,
 } from "@vendoai/core";
@@ -113,10 +114,22 @@ export function writeMirror(writer: Writer, event: MirrorEvent): void {
     });
     return;
   }
-  writeToolResult(writer, event.toolCallId, event.result);
+  if (event.kind === "approval") {
+    writer.write({ type: "tool-approval-request", approvalId: event.approvalId, toolCallId: event.toolCallId });
+    return;
+  }
+  writeToolResult(writer, event.toolCallId, event.result, event.outcome);
 }
 
-function writeToolResult(writer: Writer, toolCallId: string, result: ToolResult): void {
+function writeToolResult(writer: Writer, toolCallId: string, result: ToolResult, outcome?: ToolOutcome): void {
+  // `connect-required` is a typed outcome the SCREEN acts on, not a failure: the
+  // shipped ConnectCard reads it off the native part (the ai-SDK path puts it
+  // there too). Collapsing it into the model-facing `denied` leaves the user a
+  // silent dead end with nothing to click.
+  if (outcome?.status === "connect-required") {
+    writer.write({ type: "tool-output-available", toolCallId, output: outcome, dynamic: true });
+    return;
+  }
   if (result.status === "ok") {
     writer.write({ type: "tool-output-available", toolCallId, output: result.output as unknown, dynamic: true });
     return;

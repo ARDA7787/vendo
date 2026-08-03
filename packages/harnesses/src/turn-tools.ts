@@ -30,7 +30,14 @@ export const APPROVAL_WAIT_MS = 90_000;
  */
 export type MirrorEvent =
   | { kind: "call"; toolCallId: string; name: string; args: Json }
-  | { kind: "result"; toolCallId: string; name: string; result: ToolResult };
+  /** An interactive parked call. The shipped thread renders its consent card off
+   *  the NATIVE approval state, so without this the card never appears and the
+   *  wait below can only ever time out. */
+  | { kind: "approval"; toolCallId: string; approvalId: ApprovalId }
+  /** `result` is what the MODEL reads (§1.1's three statuses). `outcome` is what
+   *  the SCREEN reads: the ai-SDK path puts the whole typed outcome on the native
+   *  tool part, and the connect card is rendered from it. */
+  | { kind: "result"; toolCallId: string; name: string; result: ToolResult; outcome?: ToolOutcome };
 
 export interface TurnToolsOptions {
   /** The GUARD-BOUND registry (`VendoGuard.bind(tools)`) — the one choke point.
@@ -222,8 +229,8 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
     async call(name, args): Promise<ToolResult> {
       const toolCallId = mintToolCallId();
       options.mirror({ kind: "call", toolCallId, name, args });
-      const finish = (result: ToolResult): ToolResult => {
-        options.mirror({ kind: "result", toolCallId, name, result });
+      const finish = (result: ToolResult, outcome?: ToolOutcome): ToolResult => {
+        options.mirror({ kind: "result", toolCallId, name, result, ...(outcome === undefined ? {} : { outcome }) });
         return result;
       };
 
@@ -283,6 +290,9 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
               reason: "This needs approval, and the check could not run.",
             });
           }
+          // Raise the card BEFORE blocking: the tap that resolves this wait can
+          // only come from a surface that knows the call is parked.
+          options.mirror({ kind: "approval", toolCallId, approvalId });
           const approved = await waiter.wait(approvalId, approvalWaitMs);
           if (approved === undefined) {
             return finish({
@@ -311,7 +321,7 @@ export function createTurnTools(options: TurnToolsOptions): RuntimeTurnTools {
             needs: { kind: "approval", approvalId: outcome.approvalId },
           });
         }
-        return finish(toToolResult(outcome));
+        return finish(toToolResult(outcome), outcome);
       } catch {
         // §1.1: call() never throws. A bug anywhere above becomes a result.
         return finish(executionError());

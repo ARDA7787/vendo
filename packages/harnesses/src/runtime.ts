@@ -33,7 +33,13 @@ import {
   validateUpsert,
   type ToolBridgeOptions,
 } from "@vendoai/agent/internal";
-import { createUIMessageStream, createUIMessageStreamResponse, type LanguageModel, type UIMessage } from "ai";
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  readUIMessageStream,
+  type LanguageModel,
+  type UIMessage,
+} from "ai";
 import {
   classifyHistory,
   createTurnState,
@@ -268,8 +274,22 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
       // Hoisted beside them: onFinish audits what execute collected.
       const hires: HireRecord[] = [];
 
+      // A harness turn stays OPEN while a call is parked, so `onFinish` is much
+      // too late to be this turn's only save: until the tap comes there is
+      // nothing in the transcript saying the agent ever asked. Reload in that
+      // window — the ai-SDK path's normal shape, since IT ends the turn at the
+      // park — and the card is gone with no way to get it back.
+      //
+      // So the parked message is checkpointed the moment it parks. The id is
+      // pinned rather than generated, so `onFinish` upserts OVER this row
+      // instead of leaving a second copy of the same reply. (`generateId` is
+      // called exactly once by the SDK, for the response message id.)
+      const assistantMessageId = globalThis.crypto.randomUUID();
+      let checkpointed = false;
+
       const stream = createUIMessageStream<UIMessage>({
         originalMessages: messages,
+        generateId: () => assistantMessageId,
         execute: async ({ writer }) => {
           const text = new TextChannel(writer);
           const mirror = (event: MirrorEvent): void => {
@@ -447,7 +467,27 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
         },
       });
 
-      return createUIMessageStreamResponse({ stream });
+      // Read a COPY of the outgoing chunks back through the SDK's own reducer,
+      // so the checkpoint stores the real message — same parts, same id — rather
+      // than a hand-rolled imitation that would drift from it.
+      const [toClient, toCheckpoint] = stream.tee();
+      void (async () => {
+        try {
+          for await (const message of readUIMessageStream<UIMessage>({
+            message: { id: assistantMessageId, role: "assistant", parts: [] },
+            stream: toCheckpoint,
+          })) {
+            if (checkpointed || !message.parts.some(isParkedApproval)) continue;
+            checkpointed = true;
+            await persistTurn(deps.transcript, input, [...messages, message], pristine);
+          }
+        } catch {
+          // A safety net, never the turn itself: onFinish still saves, and
+          // persistTurn already names a real store failure loudly.
+        }
+      })();
+
+      return createUIMessageStreamResponse({ stream: toClient });
     },
   };
 }
@@ -472,6 +512,10 @@ const DANGLING_TOOL_STATES = new Set(["input-streaming", "input-available"]);
 
 const isToolPart = (part: { type: string }): boolean =>
   part.type === "dynamic-tool" || part.type.startsWith("tool-");
+
+/** A call the turn is holding open on a human. */
+const isParkedApproval = (part: { type: string }): boolean =>
+  isToolPart(part) && (part as { state?: string }).state === "approval-requested";
 
 /**
  * Enforce the result-pairing invariant instead of racing for it. The shipped loop
