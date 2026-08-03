@@ -6,7 +6,7 @@
 // close second), and the subtle expand suggestion when an embed lands.
 import type { Thread } from "@vendoai/core";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
 import { VendoOverlay, VendoThread, type VendoThreadProps } from "../../src/chrome/index.js";
@@ -75,6 +75,37 @@ describe("splitViewReducer (state machine)", () => {
     expect(featuredEmbed(state)?.appId).toBe("app_b");
     state = splitViewReducer(state, { type: "remove-embed", appId: "app_b" });
     expect(featuredEmbed(state)).toBeUndefined();
+  });
+
+  it("a failed staged build takes its stage with it; a workspace the USER opened stays", () => {
+    // The build's own stage: opened by the hint, so when the embed withdraws
+    // (M21 — a failed build) the panel collapses instead of sitting expanded
+    // over an empty stage.
+    let auto = splitViewReducer(initialSplitViewState, embed("app_a"));
+    auto = splitViewReducer(auto, { type: "expand", auto: true });
+    expect(auto.expanded).toBe(true);
+    auto = splitViewReducer(auto, { type: "remove-embed", appId: "app_a" });
+    expect(auto.embeds).toEqual([]);
+    expect(auto.expanded).toBe(false);
+
+    // Two staged views: losing one is not losing the stage.
+    let two = splitViewReducer(initialSplitViewState, embed("app_a"));
+    two = splitViewReducer(two, embed("app_b"));
+    two = splitViewReducer(two, { type: "expand", auto: true });
+    two = splitViewReducer(two, { type: "remove-embed", appId: "app_a" });
+    expect(two.expanded).toBe(true);
+
+    // The user's own workspace is theirs to close — even empty.
+    let mine = splitViewReducer(initialSplitViewState, embed("app_a"));
+    mine = splitViewReducer(mine, { type: "expand" });
+    mine = splitViewReducer(mine, { type: "remove-embed", appId: "app_a" });
+    expect(mine.expanded).toBe(true);
+    // …and a user Expand over an auto-opened stage upgrades it to theirs.
+    let upgraded = splitViewReducer(initialSplitViewState, embed("app_a"));
+    upgraded = splitViewReducer(upgraded, { type: "expand", auto: true });
+    upgraded = splitViewReducer(upgraded, { type: "expand" });
+    upgraded = splitViewReducer(upgraded, { type: "remove-embed", appId: "app_a" });
+    expect(upgraded.expanded).toBe(true);
   });
 
   it("expandedStageRect mirrors the chrome-css split-view constants (the FLIP ghost's target)", async () => {
@@ -324,46 +355,45 @@ describe("VendoOverlay split view", () => {
     expect(dialogQuery()).toBeNull();
   });
 
-  /** What a staged app card does to the workspace, as parts.tsx will call it:
-   *  the hint fires from an effect that re-runs whenever the split context
-   *  changes identity — which is exactly what a collapse does. */
+  /** What staged app cards do to the workspace, as parts.tsx will call it: the
+   *  hint fires from an effect that re-runs whenever the split context changes
+   *  identity — which is exactly what a collapse does. The second app arrives a
+   *  commit LATER (as a second card in the turn does), while the workspace the
+   *  first one opened is already up. */
   function StageHint({ appIds }: { appIds: string[] }) {
     const split = useSplitView();
+    const [arrived, setArrived] = useState(1);
+    useEffect(() => {
+      const timer = setTimeout(() => setArrived(appIds.length), 0);
+      return () => clearTimeout(timer);
+    }, [appIds]);
     useEffect(() => {
       if (split === null) return;
-      for (const appId of appIds) split.autoStage(appId);
-    }, [split, appIds]);
+      for (const appId of appIds.slice(0, arrived)) split.autoStage(appId);
+    }, [split, appIds, arrived]);
     return null;
   }
 
   it("autoStage: the stage hint opens the workspace ONCE and Back-to-chat is final (§2 G1)", async () => {
     const { thread, ThreadWithEmbeds } = embedsFixture();
-    const first = ["app_first"];
-    const both = ["app_first", "app_second"];
-    const ThreadWithHint = (appIds: string[]) => (props: VendoThreadProps) => (
+    const staged = ["app_first", "app_second"];
+    const ThreadWithHint = (props: VendoThreadProps) => (
       <>
         <ThreadWithEmbeds {...props} />
-        <StageHint appIds={appIds} />
+        <StageHint appIds={staged} />
       </>
     );
-    const { rerender } = render(
+    render(
       <VendoProvider client={threadClient(thread)}>
-        <VendoOverlay defaultOpen thread={ThreadWithHint(first)} />
+        <VendoOverlay defaultOpen thread={ThreadWithHint} />
       </VendoProvider>,
     );
     const dialog = dialogQuery()!;
-    // The hint staged the view on arrival (V4: the stage opens at build start).
+    // The hint staged the view on arrival (V4: the stage opens at build start),
+    // and the SECOND staged view spends its shot a commit later against the
+    // already-open workspace — the record H9 skipped.
     await waitFor(() => expect(dialog.hasAttribute("data-vendo-expanded")).toBe(true));
-
-    // A SECOND staged view arrives later in the turn, while the workspace is
-    // already open. Its shot is spent here — nothing to open — and that is the
-    // record H9 skipped.
-    rerender(
-      <VendoProvider client={threadClient(thread)}>
-        <VendoOverlay defaultOpen thread={ThreadWithHint(both)} />
-      </VendoProvider>,
-    );
-    await waitFor(() => expect(dialog.hasAttribute("data-vendo-expanded")).toBe(true));
+    await screen.findAllByText("Spending radar body");
 
     // Back-to-chat. Both hints' effects re-run on the collapse (the split
     // context changed identity) and neither may re-open the panel.

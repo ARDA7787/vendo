@@ -261,7 +261,7 @@ export function VendoOverlay({
   // The compact card's Expand affordance: expand the workspace with THAT app
   // featured. Rides a ref to setWorkspace (defined below — it closes over
   // per-render state for the ghost flight) so the identity stays stable.
-  const setWorkspaceRef = useRef<(next: boolean, featureAppId?: string) => void>(() => undefined);
+  const setWorkspaceRef = useRef<(next: boolean, featureAppId?: string, auto?: boolean) => void>(() => undefined);
   const expandTo = useCallback((appId: string) => setWorkspaceRef.current(true, appId), []);
   // The plan hint's ONE shot per app (§2 G1). The ledger lives in the split
   // state, not in the calling card, so the shot is spent even when the hint
@@ -273,7 +273,7 @@ export function VendoOverlay({
     if (state.autoStaged.includes(appId)) return;
     dispatchSplit({ type: "auto-stage", appId });
     if (state.expanded) return;
-    setWorkspaceRef.current(true, appId);
+    setWorkspaceRef.current(true, appId, true);
   }, []);
   const registerEmbed = useCallback((appId: string, payload: unknown) => {
     const state = splitStateRef.current;
@@ -313,7 +313,7 @@ export function VendoOverlay({
     clone: HTMLElement;
   } | null>(null);
   const ghostSeq = useRef(0);
-  const setWorkspace = (next: boolean, featureAppId?: string) => {
+  const setWorkspace = (next: boolean, featureAppId?: string, auto = false) => {
     if (next === splitState.expanded) {
       return;
     }
@@ -371,7 +371,7 @@ export function VendoOverlay({
       }
     }
     if (featureAppId !== undefined) dispatchSplit({ type: "feature", appId: featureAppId });
-    dispatchSplit({ type: next ? "expand" : "collapse" });
+    dispatchSplit(next ? { type: "expand", ...(auto ? { auto: true } : {}) } : { type: "collapse" });
   };
   setWorkspaceRef.current = setWorkspace;
   const providerDial = useVendoDiscoverability();
