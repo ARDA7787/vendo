@@ -10,8 +10,9 @@ test("thread sends a real streamed turn and renders the assistant delta", async 
   // ENG-216 — the humanized label, asserted where it actually renders. The old
   // `.fl-tool-label` progress chip was deleted with the tool-chip strip; the
   // approval card is now the only surface carrying this tool's name, and the
-  // raw slug must never reach the page.
-  await expect(page.getByLabel("Approval for Email send")).toBeVisible();
+  // raw slug must never reach the page. (Two cards by the end of the turn: the
+  // thread's pre-parked ask plus the one this turn raised.)
+  await expect(page.getByLabel("Approval for Email send").first()).toBeVisible();
   await expect(page.getByText("host_email_send")).toHaveCount(0);
 });
 

@@ -44,10 +44,12 @@ const CARDS_OUT_DIR = resolve(
 const VIEWPORT = { width: 1200, height: 720 };
 const MOBILE = { width: 390, height: 844 };
 const LOGO_CDN = "https://logos.composio.dev/**";
-/** A 1×1 transparent PNG — stands in for every toolkit mark so the card
-    reference never depends on the network. */
+/** A 16×16 solid-blue PNG — stands in for every toolkit mark so the card
+    reference never depends on the network, and stays VISIBLY a mark so the
+    blocked-logo pass reads as a real difference (a card with no `onError`
+    fallback loses the well entirely; ConnectCard's falls back to its glyph). */
 const STUB_LOGO = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR4nGPQzvn2nxLMMGrAqAGjBgwXAwAulYwffXWsWgAAAABJRU5ErkJggg==",
   "base64",
 );
 

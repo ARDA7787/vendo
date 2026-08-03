@@ -15,7 +15,14 @@ import { expect, test } from "@playwright/test";
 import { openScenario } from "./helpers.js";
 
 test("landing renders its greeting, suggestions and composer", async ({ page }) => {
-  await openScenario(page, "thread-landing");
+  // The landing scenario is full-bleed (a host FRAME, not the harness card), so
+  // it mounts a div rather than the `main[data-scenario]` openScenario expects.
+  await page.goto("/thread-landing");
+  // A first-ever visit shows the one-time greeting-as-tutorial instead of the
+  // host greeting (discoverability §6) — mark it seen, as eng-222 does.
+  await page.evaluate(() => localStorage.setItem("vendo:discoverability:greeting", "1"));
+  await page.reload();
+  await expect(page.locator('[data-scenario="thread-landing"]')).toBeVisible();
   await expect(page.getByText("What do you want to build?")).toBeVisible();
   await expect(page.getByRole("button", { name: /What was that \$87 DoorDash charge\?/ })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
@@ -32,6 +39,7 @@ test("the approval card approves and reports the decision", async ({ page }) => 
   await openScenario(page, "approval");
   // Humanized, never the raw slug — the consent surface's standing law.
   await expect(page.getByLabel("Approval for Delete invoice")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
   await expect(page.getByText("host_delete_invoice")).toHaveCount(0);
   await page.getByRole("button", { name: "Approve" }).click();
   await expect(page.getByTestId("approval-recorder")).toHaveText('resolved: {"approve":true}');
