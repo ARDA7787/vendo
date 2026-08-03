@@ -130,9 +130,16 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   // the raw slug) layered with the consent presentation: toolkit mark,
   // automation eyebrow, and a plain-language description synthesized from the
   // REAL inputs when the host supplies none.
-  const meta = useVendoTools()[approval.descriptor.name];
+  // H-1 — ONE field, on both surfaces. The card read `descriptor.name` and the
+  // queue row read `call.tool`, so a server-served ask whose descriptor is
+  // named differently from the call printed two different sentences for one
+  // ask — and the card additionally missed the host's `ToolMeta`, which is
+  // keyed by the WIRE tool id. `call.tool` is what will actually run, so it is
+  // the field; waiting-queue.tsx reads the same one.
+  const tool = approval.call.tool;
+  const meta = useVendoTools()[tool];
   const presentation = toolPresentation(
-    approval.descriptor.name,
+    tool,
     approval.call.args,
     meta,
     approval.descriptor.title,
@@ -144,7 +151,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   // in build-beat.tsx): host sentence → consequence from the real inputs → our
   // own synthesized sentence → the consequence class. The descriptor's own
   // description is never on it.
-  const words = consentWords(approval.descriptor.name, approval.descriptor.risk, presentation, meta);
+  const words = consentWords(tool, approval.descriptor.risk, presentation, meta);
   const consequence = words.consequence;
   // The FOLD is the separate call: the raw fields tuck behind a "Details"
   // disclosure only on an ordinary ask. Critical/destructive keeps every input
@@ -189,8 +196,8 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             <span
               className="fl-chip"
               data-risk={approval.descriptor.risk}
-              data-vendo-tool={approval.descriptor.name}
-              {...(developmentMode() ? { title: approval.descriptor.name } : {})}
+              data-vendo-tool={tool}
+              {...(developmentMode() ? { title: tool } : {})}
               style={{ marginLeft: "auto", padding: "2px 7px", fontSize: "10px", cursor: "default" }}
             >
               {RISK_LABEL[approval.descriptor.risk] ?? approval.descriptor.risk}

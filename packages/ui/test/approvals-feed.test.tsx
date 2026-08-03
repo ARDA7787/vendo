@@ -151,3 +151,41 @@ describe("the shared approvals feed", () => {
     view.unmount();
   });
 });
+
+/**
+ * H-6 — the feed's change detector compared IDS only, so an ask that CHANGED
+ * without changing its id never reached the surfaces reading it. Both cases
+ * below happen to a real ask: `risk` is resolved per call (dynamic
+ * `resolveRisk`) and `invalidatedGrant` is attached after the fact.
+ */
+describe("a re-graded ask reaches the surfaces (H-6)", () => {
+  let wire: Awaited<ReturnType<typeof createWireServer>>;
+  let client: VendoClient;
+
+  beforeEach(async () => {
+    wire = await createWireServer();
+    client = createVendoClient({ baseUrl: wire.url });
+  });
+  afterEach(async () => { await wire.close(); });
+
+  function Chip() {
+    const { asks } = useAttention({ pollMs: CADENCE_MS });
+    return (
+      <>
+        <span data-testid="risk">{asks[0]?.descriptor.risk ?? "none"}</span>
+        <span data-testid="invalidated">{asks[0]?.invalidatedGrant === undefined ? "no" : "yes"}</span>
+      </>
+    );
+  }
+
+  it("re-grades read → destructive under the same id, and shows a late invalidatedGrant", async () => {
+    wire.state.approvals[0]!.descriptor.risk = "read";
+    const view = render(<VendoProvider client={client}><Chip /></VendoProvider>);
+    await waitFor(() => expect(view.getByTestId("risk").textContent).toBe("read"));
+
+    wire.state.approvals[0]!.descriptor.risk = "destructive";
+    wire.state.approvals[0]!.invalidatedGrant = { id: "grt_1", grantedAt: "2026-07-11T12:00:00.000Z" };
+    await waitFor(() => expect(view.getByTestId("risk").textContent).toBe("destructive"));
+    expect(view.getByTestId("invalidated").textContent).toBe("yes");
+  });
+});

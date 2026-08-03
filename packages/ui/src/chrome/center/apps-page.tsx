@@ -123,16 +123,26 @@ export function AppsPage({ api, opened, onOpened }: AppsPageProps) {
   const heading = useRef<HTMLHeadingElement>(null);
   const grid = useRef<HTMLDivElement>(null);
   const cameFrom = useRef<string>(undefined);
+  // H-3 — CLOSING an app is the event, not "opened is undefined". `cameFrom`
+  // is written by this page's own tile, so the two other ways in — a tap on the
+  // home shelf and this page's own create field — left it unset and the effect
+  // returned early: focus stayed on <body> and the keyboard had to Tab in from
+  // the top of the host page. The heading fallback the comment above promises
+  // was unreachable from either.
+  const wasOpen = useRef(opened !== undefined);
   const open = (appId: string) => {
     cameFrom.current = appId;
     onOpened(appId);
   };
   useEffect(() => {
-    if (opened !== undefined) return;
+    const closed = wasOpen.current && opened === undefined;
+    wasOpen.current = opened !== undefined;
+    if (!closed) return;
     const from = cameFrom.current;
     cameFrom.current = undefined;
-    if (from === undefined) return;
-    const tile = grid.current?.querySelector<HTMLElement>(`[data-vendo-tile="${from}"]`);
+    const tile = from === undefined
+      ? null
+      : grid.current?.querySelector<HTMLElement>(`[data-vendo-tile="${from}"]`);
     (tile ?? heading.current)?.focus();
   }, [opened]);
   const during = async (action: () => Promise<void>, appId?: string, asked?: string) => {

@@ -1,4 +1,4 @@
-import { VENDO_APPS_CREATE_TOOL, VENDO_APPS_TOOL_PREFIX, vendoErrorCodeSchema, type ApprovalRequest, type JsonSchema, type RiskLabel, type VendoCitationsPart, type VendoKnowledgeCitation } from "@vendoai/core";
+import { VENDO_APPS_CREATE_TOOL, VENDO_APPS_TOOL_PREFIX, vendoErrorCodeSchema, type ApprovalRequest, type JsonSchema, type RiskLabel, type VendoCitationsPart, type VendoErrorCode, type VendoKnowledgeCitation } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { previewArgs } from "../humanize.js";
 import { LONG_TEXT_CAP, truncateHead } from "../truncate.js";
@@ -15,34 +15,64 @@ export function partData(part: UIMessage["parts"][number]): unknown {
 export const VENDO_ERROR_PREFIX = "Vendo: ";
 
 /**
- * ENG-214 — the ONE reader of a turn's error string: what a PERSON is told
- * about a turn that broke, or nothing.
+ * CR-3 — what a PERSON is told about a broken turn, BY CODE.
  *
- * THE DEFECT this closes: two call sites (the thread's banner and the
- * in-thread turn-error part) each gated on `startsWith("Vendo: ")` and then
- * printed the remainder. But that prefix marks a DEVELOPER sentence as
- * SAFE-to-show, not as consumer copy, and `wireErrorMessage` appends the
- * VendoError code — so the reader got `… (validation)` on the end of it, and
- * the turn-error part additionally fell through to the RAW `data.message` when
- * the prefix was absent, which is exactly the provider/transport string the
- * prefix exists to keep out. One function now: the marker and the trailing code
- * token are plumbing and come off, an unprefixed string yields nothing at all,
- * and the two surfaces cannot drift.
+ * The `"Vendo: "` marker says a sentence is safe to put on the WIRE (it is
+ * ours, not the provider's). It has never said the sentence was written for a
+ * reader, and mostly it was not: `packages/vendo/src/sandbox.ts` raises
+ * `Vendo Cloud sandbox sbx_… is gone (destroyed by the provider): <raw provider
+ * message>` — an id AND a nested exception, inside a conversation — and
+ * demo/dev refusals name shell commands ("Run `vendo login` for a free dev
+ * key"). Prefix-only was therefore a hole exactly as wide as the set of
+ * sentences our own code raises.
  *
- * The code stays where a developer can act on it — the server log and the
- * browser console line `wireErrorMessage` already writes.
+ * So the reader gets copy chosen by the VendoError CODE, exactly the
+ * `refusalCopy` pattern the consent cards use, and the operator's sentence is
+ * never printed. Ruling 14 rules out re-using `consumerVoiceViolation` as a
+ * runtime gate: a regex set cannot decide what a person may read.
+ *
+ * One exception, named and narrow: 01-core's `formatMeterExhausted` composes a
+ * sentence that IS consumer copy (Pricing v3 §5 — the meter, the figures, the
+ * reset date and the two exits, all from structured fields). It survives
+ * verbatim, recognized by the head that function always writes.
+ *
+ * The code and the operator's own sentence keep the home they already have:
+ * the server log and the browser console line `wireErrorMessage` writes.
  */
+const TURN_ERROR_COPY: Record<VendoErrorCode, string> = {
+  validation: "I couldn’t make that request work — nothing was changed. Ask again and I’ll try a different approach.",
+  blocked: "That isn’t something I’m allowed to do here, so I stopped — nothing was changed.",
+  "not-implemented": "That isn’t something this workspace can do yet — nothing was changed.",
+  "sandbox-unavailable": "I couldn’t reach the place I run things just now — nothing was changed. Ask again in a moment.",
+  "cloud-required": "That isn’t turned on for this workspace yet — nothing was changed.",
+  "not-found": "What that was about isn’t there any more — nothing was changed.",
+  conflict: "Something else changed this while I was working — nothing was changed. Ask again and I’ll pick up where things stand now.",
+  forbidden: "That isn’t yours to change — nothing was changed.",
+};
+
+/** The head `formatMeterExhausted` always writes (01-core meter-exhausted.ts). */
+const METER_SENTENCE = /^Vendo Cloud paused /;
+
 export function turnErrorSentence(message: string | undefined): string | undefined {
   if (message === undefined || !message.startsWith(VENDO_ERROR_PREFIX)) return undefined;
   let body = message.slice(VENDO_ERROR_PREFIX.length).trim();
-  // The closed 01-core code enum, so stripping the token can never eat a
-  // sentence's own parenthetical ("(1,204,000 of 1,000,000 used; …)").
-  for (const code of vendoErrorCodeSchema.options) {
-    if (!body.endsWith(`(${code})`)) continue;
-    body = body.slice(0, -`(${code})`.length).trimEnd();
-    break;
+  let code: VendoErrorCode | undefined;
+  // The closed 01-core code enum, so stripping a token can never eat a
+  // sentence's own parenthetical ("(1,204,000 of 1,000,000 used; …)"). EVERY
+  // trailing token comes off, not just the first: a message that crossed the
+  // gate twice ("… (validation) (cloud-required)") left one of them on screen.
+  // The outermost is the one `wireErrorMessage` added last, so it is the code.
+  for (;;) {
+    const trailing = vendoErrorCodeSchema.options.find(option => body.endsWith(`(${option})`));
+    if (trailing === undefined) break;
+    code ??= trailing;
+    body = body.slice(0, -`(${trailing})`.length).trimEnd();
   }
-  return body.length > 0 ? body : undefined;
+  if (METER_SENTENCE.test(body)) return body;
+  // No code, or one this build does not know: the surfaces' own headline
+  // ("Something went wrong and the response didn't finish.") is the honest
+  // answer, and printing the wire instead of it is the whole defect.
+  return code === undefined ? undefined : TURN_ERROR_COPY[code];
 }
 
 /**
@@ -335,10 +365,38 @@ export function narratedByAppCard(
  */
 export const AGENT_CONTEXT_METADATA = { vendo: { agentContext: true } } as const;
 
+/**
+ * The SAME mark, in the text itself.
+ *
+ * THE HOLE the post-check found: `providerMetadata` is the only thing saying
+ * "never show this", and a store that persists a text part as `{ type, text }`
+ * — which the wire contract permits and several stores do — drops it. The
+ * marked part then comes back as an ORDINARY text part, so a reloaded
+ * transcript prints the app id, and "edit last message" seeds the composer
+ * with it. That is the exact leak the carrier was invented to avoid, one
+ * reload later.
+ *
+ * The mark therefore rides the channel that always survives. It fails CLOSED:
+ * a part that carries it is hidden even with no metadata at all, and the id is
+ * never what a person sees. The model reads the mark too, which costs a few
+ * tokens and tells it (truthfully) that the line is context rather than
+ * something the person typed.
+ */
+export const AGENT_CONTEXT_MARK = "[vendo:context]";
+
+/** The text part that carries grounding to the model and to nobody else. */
+export function agentContextPart(context: string): { type: "text"; text: string; providerMetadata: typeof AGENT_CONTEXT_METADATA } {
+  return {
+    type: "text",
+    text: context.startsWith(AGENT_CONTEXT_MARK) ? context : `${AGENT_CONTEXT_MARK} ${context}`,
+    providerMetadata: AGENT_CONTEXT_METADATA,
+  };
+}
+
 export function isAgentContext(part: UIMessage["parts"][number]): boolean {
   if (part.type !== "text") return false;
   const vendo = (part.providerMetadata as { vendo?: { agentContext?: unknown } } | undefined)?.vendo;
-  return vendo?.agentContext === true;
+  return vendo?.agentContext === true || part.text.startsWith(AGENT_CONTEXT_MARK);
 }
 
 /** The plain text a user turn carried, joined across its text parts — the seed

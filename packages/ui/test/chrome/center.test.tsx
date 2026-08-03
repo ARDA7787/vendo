@@ -16,6 +16,7 @@
  *    tab, a labelled panel) — §13 strangers means nothing here reaches for the
  *    overlay.
  */
+import { readFileSync } from "node:fs";
 import type { ApprovalRequest, AppDocument } from "@vendoai/core";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -66,6 +67,8 @@ function stubClient(over: {
   pending?: () => ApprovalRequest[];
   /** Every app read this client is asked for, in order (H16 boot accounting). */
   log?: string[];
+  /** Every `apps.open` fails, the way a dead app machine fails. */
+  openFails?: boolean;
 } = {}): VendoClient {
   const apps = over.apps ?? [];
   const pending = over.pending ?? (() => []);
@@ -87,6 +90,7 @@ function stubClient(over: {
       },
       async open(id: string) {
         log.push(`open:${id}`);
+        if (over.openFails === true) throw Object.assign(new Error(`app ${id} has no machine: VENDO_API_KEY unset`), { code: "cloud-required" });
         const app = apps.find(item => item.id === id) ?? apps[0]!;
         return { kind: "tree", payload: (app as { tree: unknown }).tree };
       },
@@ -497,6 +501,56 @@ describe("mobile P1 (§12)", () => {
   });
 });
 
+/** MEDIUM (post-check) — a tile preview had ONE visual state for three
+ *  situations: never scrolled to, booting, and booted-and-FAILED. A failed boot
+ *  sat under a pulsing skeleton forever, promising a view that was never
+ *  coming. */
+describe("a tile preview says which of its states it is in", () => {
+  it("shows an honest line when the app's boot failed, and no developer text", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")], openFails: true }));
+    const failed = await waitFor(
+      () => {
+        const node = document.querySelector('[data-vendo-preview="failed"]');
+        expect(node).toBeTruthy();
+        return node!;
+      },
+      { timeout: 12_000 },
+    );
+    expect(failed.textContent).toBe("This didn’t load.");
+    expect(failed.textContent).not.toContain("VENDO_API_KEY");
+    expect(document.querySelector(".fl-tile-skel")).toBeNull();
+    // The tile still offers the one thing that can help: opening the app,
+    // where OpenApp carries the Try again (ruling 18).
+    expect(screen.getByRole("button", { name: "Open Invoices" })).toBeTruthy();
+  }, 20_000);
+
+});
+
+/** H-4 — the tile's preview must be inert on BOTH supported React majors. The
+ *  suite runs on React 19, which knows the JSX `inert` prop; React 18 (in the
+ *  peer range) drops it with a warning, so the attribute has to be set on the
+ *  node rather than declared as a prop. Both halves are asserted: the attribute
+ *  really lands, and the component does not go back to the prop that only one
+ *  major honours. */
+describe("the tile preview is inert on every supported React (H-4)", () => {
+  it("carries the real attribute on the rendered node", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    const view = await waitFor(() => {
+      const node = document.querySelector(".fl-tile-view");
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    expect(view.hasAttribute("inert")).toBe(true);
+  });
+
+  it("does not rely on the JSX prop React 18 throws away", () => {
+    const source = readFileSync("src/chrome/center/home.tsx", "utf8");
+    // `<div className="fl-tile-view" inert>` — the shape that renders nothing at
+    // all on a React 18 host.
+    expect(source).not.toMatch(/\binert\b(?!\w)\s*(?:=\s*\{?(?:true|""|''|\{\})\}?)?\s*>/);
+  });
+});
+
 // H16 (round C's mechanism, adopted here): TilePreview is the ONE place both the
 // home shelf and the Apps grid boot an app, so the gate belongs there — the grid
 // maps the FULL list, and every tile is a real `apps.get` + `apps.open` (often an
@@ -551,6 +605,23 @@ describe("the app boot gate on the Apps grid (H16)", () => {
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(log).toEqual(["get:app_1", "open:app_1"]);
   });
+
+  it("says WHICH nothing a tile is showing: never-scrolled-to is not booting", async () => {
+    // The MEDIUM finding's other half: a tile that never intersects rendered
+    // the same pulsing skeleton as one whose boot is in flight, so the surface
+    // claimed to be loading something it had not asked for.
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices"), appDoc("app_2", "Payroll")] }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    await screen.findByRole("heading", { name: "Apps", exact: true });
+    await waitFor(() => expect(watched().size).toBe(2));
+    const state = () => [...document.querySelectorAll("[data-vendo-preview]")]
+      .map(node => node.getAttribute("data-vendo-preview"));
+    expect(state()).toEqual(["idle", "idle"]);
+
+    scrollTo(document.querySelectorAll(".fl-tile")[0]!.querySelector(".fl-tile-skel")!);
+    await waitFor(() => expect(state()[1]).toBe("idle"));
+    expect(await screen.findByText("Invoices app surface")).toBeTruthy();
+  });
 });
 
 describe("the named doors", () => {
@@ -581,6 +652,18 @@ describe("the named doors", () => {
     fireEvent.click(within(open).getByRole("button", { name: "← All apps" }));
     // Coming back is a return: focus lands on the tile it came from.
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open Invoices" })));
+  });
+
+  it("H-3 — opening from the HOME SHELF still lands focus on the way back", async () => {
+    // `cameFrom` is written only by the Apps grid's own tile, so the two other
+    // ways into an open app (the home shelf, and this page's create field) hit
+    // the early return and dropped focus on <body>. The heading is the promised
+    // fallback: the grid the user is returning to was never on screen.
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Invoices" }));
+    const open = await screen.findByRole("region", { name: "Invoices" });
+    fireEvent.click(within(open).getByRole("button", { name: "← All apps" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Apps" })));
   });
 
   it("an opened app names its region from the FIRST paint, not after the fetch (M40)", async () => {

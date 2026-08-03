@@ -163,6 +163,46 @@ describe("toasts (ENG-225)", () => {
     await wire.close();
   });
 
+  /** M35 — WCAG 2.2.1. A timed toast carrying an ACTION is a time limit on an
+   *  interactive control, and there was no way to stop it: a reader still
+   *  parsing the sentence, or a switch user still travelling to the button,
+   *  lost both. */
+  it("pauses its countdown while a pointer is over it, and resumes on the way out", async () => {
+    const wire = await createWireServer();
+    const client = createVendoClient({ baseUrl: wire.url });
+    render(<VendoProvider client={client}><VendoToasts /></VendoProvider>);
+    act(() => {
+      vendoToast({ text: "Invoice watcher finished", actions: [{ label: "View", onAction: () => undefined }], durationMs: 80 });
+    });
+    const region = await screen.findByRole("region", { name: "Notifications" });
+
+    fireEvent.mouseEnter(region);
+    // Well past the countdown: it is held, and so is the action.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect(screen.queryByText("Invoice watcher finished")).not.toBeNull();
+    expect(within(region).getByRole("button", { name: "View" })).toBeTruthy();
+
+    fireEvent.mouseLeave(region);
+    await waitFor(() => expect(screen.queryByText("Invoice watcher finished")).toBeNull());
+    dismissAllVendoToasts();
+    await wire.close();
+  });
+
+  it("pauses for the keyboard too — focus inside the stack holds the countdown", async () => {
+    const wire = await createWireServer();
+    const client = createVendoClient({ baseUrl: wire.url });
+    render(<VendoProvider client={client}><VendoToasts /></VendoProvider>);
+    act(() => {
+      vendoToast({ text: "Payroll run finished", actions: [{ label: "View", onAction: () => undefined }], durationMs: 80 });
+    });
+    const region = await screen.findByRole("region", { name: "Notifications" });
+    fireEvent.focus(within(region).getByRole("button", { name: "View" }));
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect(screen.queryByText("Payroll run finished")).not.toBeNull();
+    dismissAllVendoToasts();
+    await wire.close();
+  });
+
   it("raises a toast for an approval that parks AFTER mount, not the backlog", async () => {
     const wire = await createWireServer();
     const client = createVendoClient({ baseUrl: wire.url });

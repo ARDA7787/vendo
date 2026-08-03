@@ -80,6 +80,14 @@ export function buildApprovalRequest(part: ApprovalWirePart, tools: ToolDescript
       // irreversibility that `destructive` would claim (with its ceremony edge)
       // on an ask that may well be harmless.
       risk: part.risk ?? "write",
+      // …and UNGRADED is carried, not just approximated. Defaulting the display
+      // grade to `write` still let the card treat the ask as ordinary: `critical`
+      // was false, so the consequence sentence FOLDED the real inputs behind
+      // Details and the ceremony edge was dropped — scrutiny reduced on the
+      // strength of a grade nobody supplied. `critical` is the existing
+      // maximum-scrutiny flag (never fold, keep the ceremony), and unlike
+      // `risk: "destructive"` it claims no irreversibility on the chip.
+      ...(part.risk === undefined ? { critical: true } : {}),
       ...(title === undefined || title.length === 0 ? {} : { title }),
     },
     // Client-side humanized, never the server's `tool slug + canonical JSON`.

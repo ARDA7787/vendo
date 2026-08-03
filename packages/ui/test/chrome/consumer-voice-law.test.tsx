@@ -16,6 +16,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
 import {
+  ActivityLedger,
   ActivityPanel,
   AdoptionCard,
   ApprovalCard,
@@ -29,7 +30,7 @@ import {
   type GrantSetPermission,
 } from "../../src/chrome/index.js";
 import { consumerVoiceViolation } from "../../src/consumer-voice.js";
-import { createWireServer } from "../wire-server.js";
+import { appEditAudit, createWireServer } from "../wire-server.js";
 
 let wire: Awaited<ReturnType<typeof createWireServer>>;
 let client: VendoClient;
@@ -343,6 +344,12 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
   /** H6 + ruling 14 — ONE ladder, so the card and the row are the same sentence
    *  on the same fixture, at every rung. */
   describe("the card and its queue row read from one ladder", () => {
+    /** RULING 21 — this fixture had `descriptor.name === call.tool` at every
+     *  tier, so it could not see H-1: the card classified off
+     *  `descriptor.name` while its queue row classified off `call.tool`, and a
+     *  server-served ask where those differ printed two different sentences
+     *  for ONE ask. They differ here now, the way a server that names its
+     *  descriptors independently of the wire tool id serves them. */
     const money = (): ApprovalRequest => ({
       id: "apr_money",
       call: {
@@ -351,7 +358,7 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
         args: { amount_cents: 4750, recipient_name: "Acme Utilities" },
       },
       descriptor: {
-        name: "host_transferMoney",
+        name: "payments.transfer.v2",
         title: "Send money",
         // The wire's own sentence rides along and must reach neither surface.
         description: MODEL_INSTRUCTION,
@@ -476,6 +483,18 @@ describe("the widened audit — no chrome surface renders a developer string", (
    *  wire fixture is deliberately full of our plumbing (app_auto, apr_set_1,
    *  gset_1, grt_1, tool slugs, canonical previews), so a surface that prints
    *  any of it fails here. */
+  /** RULING 17a, again — the sweep waited for "any text at all", which every
+   *  wire-backed panel satisfies with its own HEADER before a single row has
+   *  loaded. It was therefore auditing "Loading activity…" and calling the
+   *  activity rail clean: CR-2's id-shaped VALUES ("App id app_9a3f2b1c") were
+   *  invisible to it. A surface whose content arrives over the wire now names
+   *  the content the sweep has to see first. */
+  const SETTLED: Record<string, RegExp> = {
+    activity: /Invoices list/,
+    "automations panel": /Invoice watcher/,
+    "connected accounts": /Gmail/,
+  };
+
   const SURFACES: Array<[string, React.ReactNode]> = [
     ["standing access", <GrantSetCard name="Invoice watcher" permissions={wirePermissions(MODEL_INSTRUCTION)} state="parked" />],
     ["standing access, settled", <GrantSetCard name="Invoice watcher" permissions={wirePermissions(MODEL_INSTRUCTION)} state="approved" />],
@@ -518,6 +537,12 @@ describe("the widened audit — no chrome surface renders a developer string", (
     />],
     ["waiting strip", <WaitingQueue pollMs={0} />],
     ["activity", <ActivityPanel />],
+    // RULING 21 — the panel above only ever paints the wire's FIRST page, so
+    // the audit shape that carries an id (`vendo_apps_edit`: an app id and the
+    // person's instruction) could not reach the sweep through it. The ledger is
+    // the shared component both activity surfaces render, so the class is
+    // audited on the component, from the same fixture the wire serves.
+    ["activity ledger, the vendo_apps_edit shape", <ActivityLedger events={[appEditAudit()]} />],
     ["automations panel", <AutomationsPanel />],
     ["connected accounts", <ConnectedAccountsPanel />],
   ];
@@ -527,6 +552,10 @@ describe("the widened audit — no chrome surface renders a developer string", (
       const view = render(<VendoProvider client={client}>{node}</VendoProvider>);
       // Let the wire-backed surfaces paint their real content before auditing.
       await waitFor(() => expect(view.container.textContent?.length ?? 0).toBeGreaterThan(0));
+      const settled = SETTLED[surface];
+      if (settled !== undefined) {
+        await waitFor(() => expect(view.container.textContent ?? "").toMatch(settled));
+      }
       auditReadable(view.container, surface);
       cleanup();
     }

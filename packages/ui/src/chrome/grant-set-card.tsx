@@ -66,7 +66,9 @@ const RISK_WORD: Record<RiskLabel, string> = {
  */
 export function grantRowWord(tool: string, risk: RiskLabel): string {
   if (risk === "destructive") return RISK_WORD.destructive;
-  return verbWord(tool) ?? RISK_WORD[risk];
+  // CR-1 — the grade rides along so a READ verb can never lead the row of a
+  // graded write ("Reads: …" for something that changes the account).
+  return verbWord(tool, risk) ?? RISK_WORD[risk];
 }
 
 export interface GrantSetCardProps {

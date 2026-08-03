@@ -282,7 +282,7 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
       pinDrift: _serverOnly,
       ...payload
     } = data.payload as typeof data.payload & { inClient?: unknown; pinDrift?: unknown };
-    return <ThreadAppCard key={`${partKey}-${data.appId}`} appId={data.appId} payload={payload} restored={restored} />;
+    return <ThreadAppCard key={`${partKey}-${data.appId}`} buildKey={`${partKey}-${data.appId}`} appId={data.appId} payload={payload} restored={restored} />;
   }
   return null;
 }
@@ -370,7 +370,7 @@ const PREVIEW_MAX_HEIGHT = 300;
     registers its FINAL payload with the enclosing overlay's workspace (when
     one exists) and, while the workspace is expanded, clicking the card
     features this app on the big stage. */
-function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: UIPayload; restored: boolean }) {
+function ThreadAppCard({ appId, payload, restored, buildKey }: { appId: string; payload: UIPayload; restored: boolean; buildKey: string }) {
   const { client, components } = useVendoContext();
   const pin = usePinAction();
   const split = useSplitView();
@@ -436,31 +436,44 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
   // dispatch a fresh state object every render.
   const registerEmbed = split?.registerEmbed;
   const removeEmbed = split?.removeEmbed;
+  // M28 — a STAGED build has to keep up. The effect keyed on the streaming FLIP
+  // alone, so the stage the hint opened froze on the first snapshot (usually the
+  // bare skeleton) and stayed there for the whole build, while the small rail
+  // card streamed live beside it — the big surface, the stale one. The dep is
+  // the partial view's own PROGRESS rather than the payload object: the payload
+  // is a fresh object every render, so keying on it would dispatch per render.
+  // Known limit: progress is counted in NODES, so a stretch of the build that
+  // only fills props in already-emitted nodes does not move the stage.
+  const nodes = (payload as { nodes?: unknown }).nodes;
+  const progress = Array.isArray(nodes) ? nodes.length : 0;
   useEffect(() => {
     if (!registerEmbed || (streaming && !staged)) return;
     registerEmbed(appId, payload);
-    // payload is a fresh object every render (destructured from the part);
-    // keying the effect on it would re-register per render. appId + the
-    // streaming flip are the real identity edges.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registerEmbed, appId, streaming, staged]);
+  }, [registerEmbed, appId, streaming, staged, progress]);
   useEffect(() => {
     if (!removeEmbed) return;
     return () => removeEmbed(appId);
   }, [removeEmbed, appId]);
   // Live turns only — restored history never reopens a stage. The one-shot
-  // ledger lives in the split, not here: `autoStage` is idempotent per app, so
+  // ledger lives in the split, not here: `autoStage` is idempotent per BUILD, so
   // the hint's shot is spent even when it arrives against an ALREADY-OPEN
   // workspace. A card-local ref could not record that — it returned early on
   // `split.expanded`, left the shot unspent, and the first Back-to-chat re-ran
   // this effect and re-opened the panel on the user's behalf (H9, §2 G1).
   // `autoStage` is identity-stable, so keying on it (not on `split`) also stops
   // every expand/collapse from re-running the effect.
+  //
+  // RULING 23 — the ledger key is this BUILD (message id + part index), not the
+  // app. Keyed by app it was per-app for the life of the surface, so once the
+  // user had collapsed a stage, an EXPLICIT new build request for the same app
+  // never staged again. G1 forbids the UI opening ITSELF; honouring a fresh
+  // request is not that.
   const autoStage = split?.autoStage;
   useEffect(() => {
     if (!staged || restored || !autoStage) return;
-    autoStage(appId);
-  }, [staged, restored, autoStage, appId]);
+    autoStage(appId, buildKey);
+  }, [staged, restored, autoStage, appId, buildKey]);
   const featured = split?.expanded === true && split.featuredAppId === appId;
   // The compact card's activation: expanded → feature on the stage;
   // collapsed → expand the workspace WITH this app staged. Clicking the card
