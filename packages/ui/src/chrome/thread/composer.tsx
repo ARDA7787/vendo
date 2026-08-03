@@ -1,7 +1,6 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ConnectDockButton, ConnectTray } from "../connect-dock.js";
-import { developmentMode } from "../dev-mode.js";
 import { PrefillScopeContext, registerPrefillConsumer } from "../overlay-registry.js";
 import { fileExt, fileToPart, formatBytes } from "./attachments.js";
 
@@ -136,13 +135,15 @@ export function useComposer({ busy, sendMessage }: {
           const cached = readsRef.current.get(file);
           return cached?.status === "ready" && cached.part ? Promise.resolve(cached.part) : fileToPart(file);
         }));
-      } catch (reason) {
+      } catch {
         // A file read failed. The message is restored so it never vanishes
         // silently — and the person is told what happened in their own terms
         // (spec §15: what happened · nothing changed · what happens next).
         // The browser's own sentence ("NotReadableError: …") is a developer
-        // string and keeps its home in the dev-mode console (§16 law 3).
-        if (developmentMode()) console.warn("[vendo] attachment read failed:", reason);
+        // string and is dropped here rather than rendered (§16 law 3). It gets
+        // no dev-mode rail because this file is an EJECT TEMPLATE: it may only
+        // import from the public chrome surface, and `developmentMode` is not
+        // on it (scripts/eject-templates-lib.mjs enforces that).
         setAttachError(
           "Couldn’t read that attachment — nothing was sent."
           + " Your message is still here: remove the file, or attach it again.",
