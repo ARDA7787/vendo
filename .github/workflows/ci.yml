@@ -201,13 +201,17 @@ jobs:
       #                     inside its boundary in the consumer's words.
       #
       # DELIBERATELY STILL OUT, with reasons rather than silence:
-      #   keyboard.spec.ts     `workspace tabs rove with arrows and open an app
-      #                        by keyboard` is RED on this branch — the
-      #                        Automations tab's aria-selected stays "false"
-      #                        after Enter. That is a product defect owned by
-      #                        the defects worker, not a CI-environment issue.
-      #                        The focus-order coverage CI actually needed is in
-      #                        center-a11y (H10/H18/M34), which is green.
+      #   keyboard.spec.ts     the whole file asserts :focus-visible outlines
+      #                        (`expectFocusIndicator` on every tab stop),
+      #                        which headless CI mis-resolves — the same reason
+      #                        the legacy specs above stay local. It is GREEN
+      #                        locally: the product defect this comment used to
+      #                        cite (`workspace tabs rove…`, the Automations
+      #                        tab's aria-selected stuck at "false") was real
+      #                        and is fixed — an ACT was sitting in the tablist
+      #                        with role="tab", forcing manual activation. The
+      #                        focus-order coverage CI actually needs is in
+      #                        center-a11y (H10/H18/M34), which is green here.
       #   screenshots.spec.ts  writes PNGs; it is a capture job, not a gate.
       #   live-voice.spec.ts   needs OPENAI_API_KEY and a real model.
       - name: UI solidity + stress suite
