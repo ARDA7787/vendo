@@ -233,6 +233,324 @@ describe("compilePlan", () => {
     }
   });
 
+  it("reads a valid five-field cron schedule without complaint", () => {
+    const result = compilePlan(
+      `<Plan name="Valid cron"><Group><Leaf component="StatTile" purpose="Total outstanding"/></Group>
+         <Server kind="steps" schedule="0 9 * * 5" why="Nobody has the app open on a Friday morning."/></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([]);
+    expect(result.plan?.server?.schedule).toBe("0 9 * * 5");
+  });
+
+  it("ignores a <Query> written with content instead of self-closing", () => {
+    const result = compilePlan(
+      `<Plan name="Query with content"><Query id="invoices" tool="host_listInvoices">oops</Query>
+         <Group><Leaf component="DataTable" query="invoices" purpose="Every invoice"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      "<Query> holds nothing — write it as one self-closing element; its content was ignored.",
+    );
+    expect(result.plan?.queries).toStrictEqual([{ id: "invoices", tool: "host_listInvoices", input: {} }]);
+  });
+
+  it("drops a query with no id, naming the required shape", () => {
+    const result = compilePlan(
+      `<Plan name="No id"><Query tool="host_listInvoices"/><Group><Leaf component="StatTile" purpose="Total"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      'a <Query> needs an id that is a plain identifier (and never "state") — <Query id="invoices" tool="..."/> — so leaves can point at it. This query was dropped.',
+    ]);
+    expect(result.plan?.queries).toEqual([]);
+  });
+
+  it("refuses \"state\" as a query id", () => {
+    const result = compilePlan(
+      `<Plan name="Reserved id"><Query id="state" tool="host_listInvoices"/><Group><Leaf component="StatTile" purpose="Total"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues[0]).toContain('needs an id that is a plain identifier (and never "state")');
+  });
+
+  it("drops the second query sharing an id", () => {
+    const result = compilePlan(
+      `<Plan name="Dup query"><Query id="invoices" tool="host_listInvoices"/><Query id="invoices" tool="host_listClients"/>
+         <Group><Leaf component="DataTable" query="invoices" purpose="Every invoice"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      'two queries are called "invoices" — give each one its own id. The second was dropped.',
+    );
+    expect(result.plan?.queries).toStrictEqual([{ id: "invoices", tool: "host_listInvoices", input: {} }]);
+  });
+
+  it("drops a query with no tool attribute", () => {
+    const result = compilePlan(
+      `<Plan name="No tool"><Query id="invoices"/><Group><Leaf component="StatTile" purpose="Total"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      'query "invoices" needs a tool attribute naming the host tool it reads. The query was dropped.',
+    );
+    expect(result.plan?.queries).toEqual([]);
+  });
+
+  it("drops a query's input when it is not an object", () => {
+    const result = compilePlan(
+      `<Plan name="Bad input"><Query id="invoices" tool="host_listInvoices" input="everything"/>
+         <Group><Leaf component="DataTable" query="invoices" purpose="Every invoice"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      'query "invoices" input must be an object — input={{ limit: 20 }}. The input was dropped.',
+    );
+    expect(result.plan?.queries[0]).toStrictEqual({ id: "invoices", tool: "host_listInvoices", input: {} });
+  });
+
+  it("ignores a <Leaf> written with content instead of self-closing", () => {
+    const result = compilePlan(
+      `<Plan name="Leaf with content"><Group><Leaf component="StatTile" purpose="Total outstanding">oops</Leaf></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      "<Leaf> holds nothing — write it as one self-closing element; its content was ignored.",
+    );
+    expect(result.plan?.groups[0]?.leaves).toStrictEqual([{ component: "StatTile", purpose: "Total outstanding" }]);
+  });
+
+  it("drops a leaf's arrangement hint when its value is a list, not a primitive", () => {
+    const result = compilePlan(
+      `<Plan name="List hint"><Group><Leaf component="StatTile" purpose="Total outstanding" tags={[1,2]}/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      'the StatTile leaf\'s "tags" is an arrangement hint like col="2", and a list cannot be one. It was dropped.',
+    ]);
+    expect(result.plan?.groups[0]?.leaves[0]?.attrs).toBeUndefined();
+  });
+
+  it("drops a leaf's arrangement hint when its value is null, not a primitive", () => {
+    const result = compilePlan(
+      `<Plan name="Null hint"><Group><Leaf component="StatTile" purpose="Total outstanding" tags={null}/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      'the StatTile leaf\'s "tags" is an arrangement hint like col="2", and null cannot be one. It was dropped.',
+    ]);
+    expect(result.plan?.groups[0]?.leaves[0]?.attrs).toBeUndefined();
+  });
+
+  it("reports loose text sitting inside a group", () => {
+    const result = compilePlan(
+      `<Plan name="Loose text"><Group tab="Overview">
+           stray words that do not belong here
+           <Leaf component="StatTile" purpose="Total outstanding"/>
+         </Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      '"stray words that do not belong here" sits loose inside the group "Overview", which holds <Leaf> elements only; it was ignored.',
+    ]);
+  });
+
+  it("closes an unclosed group for you and says so", () => {
+    const result = compilePlan(
+      `<Plan name="Unclosed group"><Group tab="Overview"><Leaf component="StatTile" purpose="Total outstanding"/></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      'the group "Overview" was never closed — its </Group> is missing. It was closed for you.',
+    ]);
+    expect(result.plan?.groups[0]?.leaves).toStrictEqual([{ component: "StatTile", purpose: "Total outstanding" }]);
+  });
+
+  it("stops cleanly on a lone trailing '<' inside a group", () => {
+    const result = compilePlan(
+      `<Plan name="Trailing"><Group tab="Overview"><Leaf component="StatTile" purpose="Total outstanding"/><`,
+      FACTS,
+    );
+    expect(result.plan?.groups[0]?.leaves).toStrictEqual([{ component: "StatTile", purpose: "Total outstanding" }]);
+    expect(result.issues).toEqual([
+      "the plan ended before </Plan>, so it was read only as far as it got. Write it again whole.",
+    ]);
+  });
+
+  it("drops an unrecognized tag inside a group", () => {
+    const result = compilePlan(
+      `<Plan name="Odd tag inside group"><Group tab="Overview"><Foo/><Leaf component="StatTile" purpose="Total outstanding"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      "<Foo> means nothing inside a group, which holds <Leaf> elements only. It was dropped.",
+    ]);
+    expect(result.plan?.groups[0]?.leaves).toStrictEqual([{ component: "StatTile", purpose: "Total outstanding" }]);
+  });
+
+  it("teaches the bare-flag form when waitsForServer carries a value", () => {
+    const result = compilePlan(
+      `<Plan name="Waits value"><Group tab="Overview" waitsForServer="yes"><Leaf component="StatTile" purpose="Total outstanding"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.plan?.groups[0]?.waitsForServer).toBeUndefined();
+    expect(result.issues).toContain(
+      "waitsForServer is a bare flag — write <Group waitsForServer> when a group fills only after the server reports its interface. It was ignored.",
+    );
+  });
+
+  it("ignores a <Server> written with content instead of self-closing", () => {
+    const result = compilePlan(
+      `<Plan name="Server with content"><Group><Leaf component="StatTile" purpose="Total"/></Group>
+         <Server kind="steps" why="Nobody has the app open at night.">oops</Server></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      "<Server> holds nothing — write it as one self-closing element; its content was ignored.",
+    );
+    expect(result.plan?.server?.kind).toBe("steps");
+  });
+
+  it("drops a second <Server> — a plan declares server work once", () => {
+    const result = compilePlan(
+      `<Plan name="Two servers"><Group><Leaf component="StatTile" purpose="Total"/></Group>
+         <Server kind="steps" why="Chasing overdue invoices."/>
+         <Server kind="agentic" why="Judgment calls every run."/></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual(["a plan declares server work once — the second <Server> was dropped."]);
+    expect(result.plan?.server?.kind).toBe("steps");
+  });
+
+  it("drops server work with no why explaining the escape", () => {
+    const result = compilePlan(
+      `<Plan name="No why"><Group><Leaf component="StatTile" purpose="Total"/></Group>
+         <Server kind="steps"/></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      "<Server> needs a why saying in one sentence why this cannot happen in the browser — the escape has to be earned. The server work was dropped.",
+    ]);
+    expect(result.plan?.server).toBeUndefined();
+  });
+
+  it("ignores an <Island> written with content instead of self-closing", () => {
+    const result = compilePlan(
+      `<Plan name="Island with content"><Group><Leaf component="StatTile" purpose="Total"/></Group>
+         <Island name="RunwayDial" purpose="A cash dial">oops</Island></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      "<Island> holds nothing here — the plan only names it; its content was ignored.",
+    );
+    expect(result.plan?.island).toStrictEqual({ name: "RunwayDial", purpose: "A cash dial" });
+  });
+
+  it("drops a second <Island> — a plan asks for one at most", () => {
+    const result = compilePlan(
+      `<Plan name="Two islands"><Group><Leaf component="StatTile" purpose="Total"/></Group>
+         <Island name="RunwayDial" purpose="A cash dial"/>
+         <Island name="BurnGauge" purpose="A burn gauge"/></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual(["a plan asks for one island at most — the second <Island> was dropped."]);
+    expect(result.plan?.island?.name).toBe("RunwayDial");
+  });
+
+  it("drops an island missing a name or a purpose", () => {
+    const result = compilePlan(
+      `<Plan name="Bad island"><Group><Leaf component="StatTile" purpose="Total"/></Group>
+         <Island purpose="A cash dial no chart component can express"/></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual([
+      'an <Island> needs a name and a purpose — <Island name="RunwayDial" purpose="..."/> — so it can be built and screened. It was dropped.',
+    ]);
+    expect(result.plan?.island).toBeUndefined();
+  });
+
+  it("truncates a <Cannot> with no closing tag", () => {
+    const result = compilePlan(
+      `<Plan name="Unclosed cannot"><Group><Leaf component="StatTile" purpose="Total"/></Group>
+         <Cannot>Your host has no way to send email`,
+      FACTS,
+    );
+    expect(result.plan?.cannot).toEqual([]);
+    expect(result.issues).toEqual([
+      "the plan ended before </Plan>, so it was read only as far as it got. Write it again whole.",
+    ]);
+  });
+
+  it("reports loose text sitting directly inside <Plan>", () => {
+    const result = compilePlan(
+      `<Plan name="Loose top level">
+           some stray narration here
+           <Group tab="Overview"><Leaf component="StatTile" purpose="Total outstanding"/></Group>
+         </Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      '"some stray narration here" sits loose inside <Plan>, where only elements mean anything; it was ignored. An explanation belongs in a <Cannot> line or a leaf\'s purpose.',
+    );
+  });
+
+  it("ignores a stray close tag that matches nothing open", () => {
+    const result = compilePlan(
+      `<Plan name="Stray close"></Foo><Group tab="Overview"><Leaf component="StatTile" purpose="Total outstanding"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toEqual(["</Foo> closes nothing that is open here; it was ignored."]);
+  });
+
+  it("stops cleanly on a lone trailing '<' directly inside <Plan>", () => {
+    const result = compilePlan(
+      `<Plan name="Trailing top level"><Group tab="Overview"><Leaf component="StatTile" purpose="Total outstanding"/></Group><`,
+      FACTS,
+    );
+    expect(result.plan?.groups[0]?.leaves).toStrictEqual([{ component: "StatTile", purpose: "Total outstanding" }]);
+    expect(result.issues).toEqual([
+      "the plan ended before </Plan>, so it was read only as far as it got. Write it again whole.",
+    ]);
+  });
+
+  it("drops a <Leaf> written straight inside the plan, not inside a group", () => {
+    const result = compilePlan(
+      `<Plan name="Stray leaf"><Leaf component="StatTile" purpose="Total outstanding"/>
+         <Group tab="Overview"><Leaf component="BarChart" purpose="Invoiced amount"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      "a <Leaf> belongs inside a <Group>, never straight in the plan — the group is what one worker writes. It was dropped.",
+    );
+  });
+
+  it("drops a tag that is not part of the plan grammar", () => {
+    const result = compilePlan(
+      `<Plan name="Odd tag"><Foo>some content</Foo>
+         <Group tab="Overview"><Leaf component="StatTile" purpose="Total outstanding"/></Group></Plan>`,
+      FACTS,
+    );
+    expect(result.issues).toContain(
+      "<Foo> is not part of a plan, which holds <Query>, <Group> (of <Leaf> elements), <Server>, <Island> and <Cannot>. It was dropped.",
+    );
+    expect(result.plan?.groups[0]?.leaves).toStrictEqual([{ component: "StatTile", purpose: "Total outstanding" }]);
+  });
+
+  it("reports a <Plan> tag truncated before it closed", () => {
+    const result = compilePlan('<Plan name="Cut off', FACTS);
+    expect(result).toStrictEqual({
+      issues: ["the <Plan ...> tag was cut off before it closed, so there was no plan to read."],
+    });
+  });
+
+  it("says a plan with no groups and no <Cannot> lines says nothing", () => {
+    const result = compilePlan('<Plan name="Empty"></Plan>', FACTS);
+    expect(result.issues).toEqual([
+      "this plan says nothing: it needs at least one <Group> of leaves, or a <Cannot> line explaining honestly why the ask cannot be built here.",
+    ]);
+    expect(result.plan).toStrictEqual({ name: "Empty", queries: [], groups: [], cannot: [] });
+  });
+
   /**
    * Layer 3 — the machine serves the whole app surface. Declared in the PLAN
    * because flipping deletes the app's tree: a box that decides on its own that

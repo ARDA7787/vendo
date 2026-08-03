@@ -592,6 +592,9 @@ describe("amended public export surface — root utilities and /conformance inve
       "appAccessConformance",
       "guardConformance",
       "knowledgeAdapterConformance",
+      // The reference each kit ships with, so core can mount its own kit and
+      // prove it executable before a host wires a real store to it.
+      "memoryAppAccess",
       "memoryKnowledgeAdapter",
       "memoryStoreAdapter",
       "runConformance",
