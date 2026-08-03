@@ -14,7 +14,8 @@ import {
   ToolkitLogo,
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
-import { completeConnection } from "./connect-dock.js";
+import { completeConnection, connectRefusalCopy } from "./connect-dock.js";
+import { developmentMode } from "./dev-mode.js";
 import { toolkitDisplayName } from "./humanize.js";
 
 export interface ConnectCardProps {
@@ -109,7 +110,12 @@ export function ConnectCard({ connector, toolkit, message, onConnected, live = t
     } catch (reason) {
       if (cancelled.current) return;
       setPhase("failed");
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(connectRefusalCopy(reason, displayName));
+      // Where a developer reads it: the host who forgot the connector needs the
+      // sentence that names what to configure, and only they should see it.
+      if (developmentMode()) {
+        console.warn(`[vendo] ConnectCard "${toolkit}": ${reason instanceof Error ? reason.message : String(reason)}`);
+      }
     }
   };
 

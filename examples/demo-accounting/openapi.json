@@ -537,7 +537,7 @@
     "/api/demo/simulate/upload": {
       "post": {
         "operationId": "simulateClientUpload",
-        "summary": "Demo control: simulate a client uploading a file for a missing document. variant 'correct' lands the document in status received; variant 'wrong' (e.g. a personal bank statement instead of the business one) lands it in needs_review with an explanatory note. Also records a client-to-firm message and activity.",
+        "summary": "Demo control: simulate a client uploading a file for a missing document. Also records a client-to-firm message and activity.",
         "requestBody": {
           "required": true,
           "content": {

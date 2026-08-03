@@ -123,7 +123,6 @@ export function VendoActivities({ pollMs = 5000, maxItems = 8 }: VendoActivities
                       permissions={current.asks.map(ask => ({
                         approvalId: ask.id,
                         tool: ask.call.tool,
-                        ...(ask.descriptor.description.length > 0 ? { description: ask.descriptor.description } : {}),
                         risk: ask.descriptor.risk,
                       }))}
                       state="parked"

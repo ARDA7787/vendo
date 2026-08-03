@@ -294,17 +294,19 @@ describe("Remixable — the wrapper fork gesture + in-place jailed mount", () =>
     mount();
     fireEvent.click(forkPill());
     await waitFor(() => expect(forkIframe()).toBeTruthy());
-    // The prefill carries the fork's app id: the agent's app tools are
-    // appId-keyed (no list tool), so a bare "my X remix" prompt dead-ends in
-    // "which app?" (W1e E2E finding). The prompt text is the honest carrier.
+    // The prefill NAMES THE THING and carries no id: this used to read
+    // "…remix (app app_…): ", and an app id is our plumbing, not something a
+    // person types (spec §16 law 3, LEAK 4).
     const appId = wire.state.apps.find(app => app.pins?.some(pin => pin.slot === SLOT))!.id;
     fireEvent.click(managePill());
     fireEvent.click(screen.getByRole("button", { name: "Open in panel" }));
     const panel = await screen.findByRole("dialog", { name: "Vendo assistant" });
     await waitFor(() => {
       const composer = within(panel).getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
-      expect(composer.value).toBe(`Update my ${SLOT} remix (app ${appId}): `);
+      expect(composer.value).toBe(`Update my ${SLOT} remix: `);
     });
+    expect(within(panel).getByRole("textbox", { name: "Message" }).textContent).not.toContain(appId);
+    expect(panel.textContent).not.toMatch(/app_[A-Za-z0-9]{4,}/);
     expect(wire.requests.filter(r => r.method === "POST" && r.path === "/threads")).toHaveLength(0);
   });
 

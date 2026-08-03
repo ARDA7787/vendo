@@ -30,10 +30,23 @@ export interface GrantSetPermission {
   /** The pending guard approval this row settles. */
   approvalId: string;
   tool: string;
-  /** The tool descriptor's one-line description. */
-  description?: string;
   risk: RiskLabel;
 }
+
+/** What a permission LETS the automation do, in our words. spec §16 law 3 —
+ *  a grant row used to print the tool descriptor's `description`, and that
+ *  sentence is authored for the MODEL: demo-bank's own catalog put "Amounts are
+ *  integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once before
+ *  displaying" on a bank customer's consent card (live, `standing-01-pending`).
+ *  The row now says the verb and the thing — the cadence is the card's own
+ *  plain-words line — and the only sentence allowed under it is one the HOST
+ *  wrote for people (`ToolMeta.description`). Shared with the adoption card so
+ *  both consent surfaces speak one vocabulary. */
+export const RISK_WORD: Record<RiskLabel, string> = {
+  read: "Reads",
+  write: "Changes",
+  destructive: "Changes",
+};
 
 export interface GrantSetCardProps {
   /** The automation's display name. */
@@ -56,6 +69,19 @@ export function allowLabel(count: number): string {
 const revokePronoun = (count: number): string =>
   count === 1 ? "it" : count === 2 ? "either" : "any of them";
 
+/** The consumer's half of a refusal (spec §16 law 3) — the same defect the
+ *  connect card carried: this card rendered whatever `onDecide` threw, and the
+ *  wire's sentences carry app and grant-set ids. `refusalCopy` in adoption-card
+ *  is the pattern; the developer sentence keeps its home in the server log. */
+function refusalCopy(reason: unknown): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  if (code === "not-found") return "This automation isn’t available any more.";
+  if (code === "forbidden") return "Only someone who can edit this app can allow these.";
+  if (code === "conflict") return "Someone else already decided this one.";
+  if (code === "cloud-required") return "Standing access isn’t turned on for this workspace yet.";
+  return "That didn’t go through — nothing was granted. Try again in a moment.";
+}
+
 export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCardProps) {
   const tools = useVendoTools();
   const [busy, setBusy] = useState(false);
@@ -68,7 +94,7 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
     try {
       await onDecide(approve);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalCopy(reason));
     } finally {
       setBusy(false);
     }
@@ -93,12 +119,15 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
         <CardList className="fl-grants">
           {permissions.map(permission => {
             const presentation = toolPresentation(permission.tool, undefined, tools[permission.tool]);
-            const description = (presentation.description ?? permission.description ?? "").trim();
+            // Host-authored only: `toolPresentation` carries `ToolMeta.description`
+            // (the host's own sentence) or one we compose ourselves — never the
+            // descriptor's model-facing line.
+            const description = (presentation.description ?? "").trim();
             return (
               <li className="fl-grant" key={permission.approvalId}>
                 <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
-                  <b>{presentation.title}</b>
+                  <b>{RISK_WORD[permission.risk]}: {presentation.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
                 </span>
                 {state === "approved" ? (

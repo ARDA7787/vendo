@@ -15,7 +15,7 @@ import {
   ToolkitLogo,
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
-import { GrantSetCard } from "./grant-set-card.js";
+import { GrantSetCard, RISK_WORD } from "./grant-set-card.js";
 
 /** Build contract §9.9 / design §13 — the adoption card.
  *
@@ -47,8 +47,6 @@ const STOPPED_BECAUSE: Record<AdoptionVenue["reason"], (sponsor: string | undefi
   grants: (sponsor) =>
     `${sponsor ?? "The person who set it up"}'s permissions for this app were removed, so it is paused.`,
 };
-
-const RISK_WORD = { read: "Reads", write: "Changes", destructive: "Changes" } as const;
 
 /**
  * The consumer's half of a refusal (design §3, the consumer-voice law). Every
@@ -119,7 +117,9 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
         <CardList className="fl-grants">
           {card.needs.map((need, index) => {
             const presentation = toolPresentation(need.tool, undefined, tools[need.tool]);
-            const description = (presentation.description ?? need.description ?? "").trim();
+            // Host-authored only — `need.description` is the tool descriptor's
+            // model-facing line (see RISK_WORD).
+            const description = (presentation.description ?? "").trim();
             const args = argsLine(need.args);
             return (
               // One line per read and write, in the order they happen: two calls
@@ -190,7 +190,6 @@ export function AdoptionVenueCard({ card }: { card: AdoptionVenue }) {
         permissions={set.asks.map((ask) => ({
           approvalId: ask.id,
           tool: ask.call.tool,
-          ...(ask.descriptor.description.length > 0 ? { description: ask.descriptor.description } : {}),
           risk: ask.descriptor.risk,
         }))}
         state={set.state}

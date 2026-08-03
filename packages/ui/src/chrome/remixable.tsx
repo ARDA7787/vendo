@@ -266,12 +266,15 @@ function RemixedFork({ appId, slot, review, liveProps, menuOpen, onMenuToggle, o
                 type="button"
                 onClick={() => {
                   onMenuToggle(false);
-                  // The app id rides IN the prefill text: the agent's app tools
-                  // are appId-keyed and no list tool exists, so a bare "my X
-                  // remix" prompt dead-ends in "which app?" (W1e E2E finding).
-                  // The grounding-chip channel died with the final shape; the
-                  // visible, user-editable prompt is the honest carrier.
-                  const opened = openVendoConversation({ prompt: `Update my ${slot} remix (app ${appId}): `, send: false });
+                  // The prefill names the THING, never an id (spec §16 law 3):
+                  // it used to read "Update my <slot> remix (app app_…): " and
+                  // an app id is our plumbing, not something a person types.
+                  // The agent's app tools are appId-keyed with no list tool, so
+                  // the grounding still has to reach it — through a NON-VISIBLE
+                  // payload, which needs the composer's prefill consumer to
+                  // carry one (owned elsewhere in this wave; until then the
+                  // agent may ask which view is meant).
+                  const opened = openVendoConversation({ prompt: `Update my ${slot} remix: `, send: false });
                   if (!opened && developmentMode()) {
                     console.warn(`[vendo] Remixable "${slot}": "Open in panel" opens the conversation surface — mount a VendoOverlay for it to land in.`);
                   }

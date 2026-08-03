@@ -508,7 +508,6 @@ export function AutomationsPanel() {
                   permissions={pendingAsks.map(ask => ({
                     approvalId: ask.id,
                     tool: ask.call.tool,
-                    ...(ask.descriptor.description.length > 0 ? { description: ask.descriptor.description } : {}),
                     risk: ask.descriptor.risk,
                   }))}
                   state="parked"

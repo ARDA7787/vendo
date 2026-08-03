@@ -9,7 +9,7 @@
  *  list is simply a long list — never a fallback to raw JSON.
  */
 import type { Json, JsonSchema } from "@vendoai/core";
-import { argProperties, argValue, humanizeToolName, yesNo, type ToolMeta } from "./humanize.js";
+import { argProperties, argValue, humanizeToolName, type ToolMeta } from "./humanize.js";
 import { truncateHead } from "./truncate.js";
 
 export interface CardFieldRow {
@@ -33,12 +33,13 @@ const VALUE_CAP = 400;
 const bound = (text: string): string =>
   text.length > VALUE_CAP ? `${truncateHead(text, VALUE_CAP)}…` : text;
 
+/** The LITERAL, for `CardFieldRow.raw` only — the honesty contract keeps the
+    developer's real input one hover away, so `true` stays `true` here even
+    though the card reads it as "Yes". Everything a person reads goes through
+    `display` below, at every depth. */
 function leaf(value: unknown): string {
   if (typeof value === "string") return value;
-  // A nested boolean reads as an answer too, or the same `true` leaks one level
-  // down ("Options — Permanent: true").
-  if (typeof value === "boolean") return yesNo(value);
-  if (typeof value === "number") return String(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (value === null) return "null";
   try {
     return JSON.stringify(value) ?? String(value);
@@ -47,10 +48,40 @@ function leaf(value: unknown): string {
   }
 }
 
-/** A nested object/array as compact lines — one per entry, in order. */
-function nested(value: object): string {
-  if (Array.isArray(value)) return value.map(leaf).join("\n");
-  return Object.entries(value).map(([key, item]) => `${humanizeToolName(key)}: ${leaf(item)}`).join("\n");
+/** The declared schema for one member of a container: an object's property, an
+    array's `items`. Undefined where the host declared nothing there — the same
+    "undeclared" state the top level already answers for honestly. */
+function memberSchema(schema: JsonSchema | undefined, key: string): JsonSchema | undefined {
+  const properties = argProperties(schema);
+  if (properties !== undefined) return properties[key];
+  const items = schema?.items;
+  return typeof items === "object" && items !== null ? items as JsonSchema : undefined;
+}
+
+/** One value, at any depth: a primitive goes through the SAME money/format seam
+    the top-level rows use (`argValue` — which is also where `true` becomes
+    "Yes"), a container becomes compact `Key: value` lines whose members go
+    through it too.
+
+    Nested values used to flatten with a raw `leaf()`, so a declared-cents amount
+    inside an object printed as `Amount cents: 1850` — wave-1's live proof E2c
+    one level down (Maple's `host_createOrder` card). Formatting has to travel
+    with the value, not stop at the first indentation. */
+function display(key: string, value: unknown, schema: JsonSchema | undefined, meta?: ToolMeta): string {
+  if (value !== null && typeof value === "object") {
+    if (Array.isArray(value)) {
+      // An array's members share their parent's name and its `items` schema.
+      return value.map(item => display(key, item, memberSchema(schema, key), meta)).join("\n");
+    }
+    return Object.entries(value)
+      .map(([child, item]) =>
+        `${humanizeToolName(child)}: ${display(child, item, memberSchema(schema, child), meta)}`)
+      .join("\n");
+  }
+  // `argValue` reads the field's own declaration out of a properties map, and
+  // this node holds only its own schema.
+  return meta?.formatField?.(key, value as Json)
+    ?? argValue(key, value, schema === undefined ? undefined : { [key]: schema });
 }
 
 /** The one body, for any args a tool call can carry. */
@@ -58,13 +89,15 @@ export function fieldRows(args: unknown, inputSchema?: JsonSchema, meta?: ToolMe
   const row = (label: string, value: string, raw: string, numeric: boolean): CardFieldRow =>
     ({ label, value: bound(value), raw: bound(raw), numeric });
   if (args === undefined || args === null) return [];
-  if (typeof args !== "object") return [row("Input", leaf(args), leaf(args), typeof args === "number")];
-  if (Array.isArray(args)) return [row("Input", nested(args), leaf(args), false)];
+  if (typeof args !== "object") {
+    return [row("Input", display("Input", args, inputSchema, meta), leaf(args), typeof args === "number")];
+  }
+  if (Array.isArray(args)) return [row("Input", display("Input", args, inputSchema, meta), leaf(args), false)];
   const properties = argProperties(inputSchema);
-  return Object.entries(args as Record<string, unknown>).map(([key, value]) => {
-    const label = humanizeToolName(key);
-    if (value !== null && typeof value === "object") return row(label, nested(value), leaf(value), false);
-    const formatted = meta?.formatField?.(key, value as Json) ?? argValue(key, value, properties);
-    return row(label, formatted, String(value), typeof value === "number");
-  });
+  return Object.entries(args as Record<string, unknown>).map(([key, value]) => row(
+    humanizeToolName(key),
+    display(key, value, properties?.[key], meta),
+    leaf(value),
+    typeof value === "number",
+  ));
 }

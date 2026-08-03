@@ -37,10 +37,12 @@ const { chromium } = requireFromUi("@playwright/test");
 const PORT = Number(process.env.VENDO_GALLERY_PORT) || 4271;
 const BASE = `http://127.0.0.1:${PORT}`;
 const OUT_DIR = resolve(packageRoot, "../../docs/verification/eng-232");
-const CARDS_OUT_DIR = resolve(
-  packageRoot,
-  "../../docs/superpowers/evidence/2026-08-03-ui-redesign/lane-g/cards",
-);
+/** Lane G's card reference is the default home; a later lane re-shooting the
+ *  same board for its OWN proof points VENDO_CARDS_OUT_DIR at its own folder
+ *  rather than rewriting somebody else's evidence. */
+const CARDS_OUT_DIR = process.env.VENDO_CARDS_OUT_DIR
+  ? resolve(process.env.VENDO_CARDS_OUT_DIR)
+  : resolve(packageRoot, "../../docs/superpowers/evidence/2026-08-03-ui-redesign/lane-g/cards");
 const VIEWPORT = { width: 1200, height: 720 };
 const MOBILE = { width: 390, height: 844 };
 const LOGO_CDN = "https://logos.composio.dev/**";

@@ -51,8 +51,11 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     // enumerated, exactly one Approve and one Deny.
     const card = await screen.findByLabelText("Standing access — Invoice watcher");
     expect(card.textContent).toContain("Invoice watcher needs 2 permissions");
-    expect(card.textContent).toContain("Send email digests as you.");
-    expect(card.textContent).toContain("Read invoices across your account.");
+    // Each permission in OUR words, not the descriptor's model-facing sentence
+    // (spec §16 law 3, LEAK 1).
+    expect(card.textContent).toContain("Reads: Email send");
+    expect(card.textContent).toContain("Reads: Invoices list");
+    expect(card.textContent).not.toContain("Read invoices across your account.");
     expect(card.querySelectorAll("button")).toHaveLength(2);
     await waitFor(() => expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(screen.getByRole("button", { name: "Allow both & enable" }));
@@ -145,7 +148,10 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     // Visible failure: the card keeps its actions (retry is one click) and
     // NOTHING was decided — asks still pending, automation state untouched.
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Store briefly unavailable");
+    // The wire's sentence names our store; the card says what happened to the
+    // person and that nothing was granted (spec §16 law 3, LEAK 2).
+    expect(alert.textContent).toBe("That didn’t go through — nothing was granted. Try again in a moment.");
+    expect(alert.textContent).not.toContain("Store");
     const card = screen.getByLabelText("Standing access — Invoice watcher");
     expect(card.contains(alert)).toBe(true);
     expect((screen.getByRole("button", { name: "Deny" }) as HTMLButtonElement).disabled).toBe(false);
@@ -291,7 +297,11 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Activity unavailable");
+    // Contained and SHOWN, in the consumer's voice: "Activity unavailable" is
+    // our store's own words (spec §16 law 3, the widened audit).
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("We couldn’t load more just now — try again.");
+    expect(alert.textContent).not.toContain("Activity unavailable");
     await new Promise(resolve => globalThis.setTimeout(resolve, 0));
     expect(unhandled).not.toHaveBeenCalled();
     window.removeEventListener("unhandledrejection", unhandled);
