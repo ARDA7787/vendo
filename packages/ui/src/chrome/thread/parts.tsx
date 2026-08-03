@@ -649,7 +649,19 @@ export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, re
                 if (decision.approve) {
                   const card = cardRefs.current.get(part.approval.id)?.querySelector<HTMLElement>(".fl-approval");
                   if (card) {
-                    const presentation = toolPresentation(name, input, tools[name]);
+                    // L38 — the toast's title must be the CARD's title: without
+                    // the descriptor's authored title (and its schema) this
+                    // recomputed a bare humanization, so a card reading "Send
+                    // money" morphed into a toast reading "Host transfer money
+                    // — approved". Same arguments as the card's own
+                    // presentation, from the request it just built.
+                    const presentation = toolPresentation(
+                      name,
+                      input,
+                      tools[name],
+                      approval.descriptor.title,
+                      approval.descriptor.inputSchema,
+                    );
                     const rect = card.getBoundingClientRect();
                     card.style.transition = "opacity .22s ease";
                     card.style.opacity = "0";
