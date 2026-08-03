@@ -192,7 +192,10 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     // automation and points at the retry; the row honestly reads enabled.
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("It is still enabled");
-    expect(alert.textContent).toContain("Store briefly unavailable");
+    // Ruling 11 — the WIRE's sentence ("Store briefly unavailable") is written
+    // for whoever runs the deployment and no longer rides along; what the owner
+    // needs is what did not happen and what is still true, which is above.
+    expect(alert.textContent).not.toContain("Store briefly unavailable");
     expect(screen.getByRole("switch", { name: "Enable Invoice watcher" }).getAttribute("aria-checked")).toBe("true");
 
     // Retry IS the toggle: the next disable succeeds and the row disarms.
@@ -257,30 +260,47 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     expect(screen.queryByLabelText(/^Standing access/)).toBeNull();
   });
 
-  it("renders a scheduler-refused run as failed with its blocked reason in run history (pricing v3 §5)", async () => {
-    const blockedReason =
-      "blocked by allowance: Vendo Cloud paused automation runs — the allowance for this billing "
-      + "period is used up (resets 2026-08-01). Upgrade your plan (https://console.vendo.run/billing) "
-      + "or bring your own infrastructure (https://docs.vendo.run/byo).";
-    wire.state.runs.push({
-      id: "run_blocked",
-      appId: "app_auto",
-      trigger: { kind: "schedule" },
-      status: "error",
-      startedAt: "2026-07-11T12:00:00.000Z",
-      finishedAt: "2026-07-11T12:00:05.000Z",
-      steps: [],
-      error: { code: "meter-exhausted", message: blockedReason },
-    });
+  /** The scheduler's own refusal, written for whoever runs the deployment: it
+   *  names a billing allowance and links a console. */
+  const BLOCKED_REASON =
+    "blocked by allowance: Vendo Cloud paused automation runs — the allowance for this billing "
+    + "period is used up (resets 2026-08-01). Upgrade your plan (https://console.vendo.run/billing) "
+    + "or bring your own infrastructure (https://docs.vendo.run/byo).";
+
+  const seedRefusedRun = () => wire.state.runs.push({
+    id: "run_blocked",
+    appId: "app_auto",
+    trigger: { kind: "schedule" },
+    status: "error",
+    startedAt: "2026-07-11T12:00:00.000Z",
+    finishedAt: "2026-07-11T12:00:05.000Z",
+    steps: [],
+    error: { code: "meter-exhausted", message: BLOCKED_REASON },
+  });
+
+  it("tells the owner of a failed run what did not happen and that nothing changed (pricing v3 §5)", async () => {
+    seedRefusedRun();
     render(<VendoProvider client={client}><AutomationsPanel /></VendoProvider>);
     await screen.findByRole("switch", { name: "Enable Invoice watcher" });
 
     fireEvent.click(screen.getByRole("button", { name: "Run history" }));
-    // The refused run reads as a plain failed run: error status row + the
-    // refusal's own code and reason on the run's alert line.
-    const reason = await screen.findByText(`meter-exhausted: ${blockedReason}`);
-    expect(reason.getAttribute("role")).toBe("alert");
-    expect(reason.closest("article")?.textContent).toContain("error");
+    const failure = await screen.findByText(/didn’t finish/);
+    expect(failure.getAttribute("role")).toBe("alert");
+    expect(failure.textContent).toMatch(/nothing (?:in your account )?was changed/i);
+    expect(failure.closest("article")?.textContent).not.toContain("meter-exhausted");
+    expect(failure.closest("article")?.textContent).not.toContain(BLOCKED_REASON);
+  });
+
+  it("keeps the run's own code and reason for whoever runs the deployment — the dev-mode rail", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    seedRefusedRun();
+    render(<VendoProvider client={client}><AutomationsPanel /></VendoProvider>);
+    await screen.findByRole("switch", { name: "Enable Invoice watcher" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Run history" }));
+    const detail = await screen.findByText(new RegExp("meter-exhausted"));
+    expect(detail.textContent).toContain(BLOCKED_REASON);
+    vi.unstubAllEnvs();
   });
 
   it("contains activity wire errors in an alert without an unhandled rejection", async () => {

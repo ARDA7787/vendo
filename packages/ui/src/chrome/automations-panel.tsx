@@ -8,6 +8,7 @@ import type { RunPlan, RunRecord, RunStatus } from "../wire-types.js";
 import { formatAuditTime } from "./activity-semantics.js";
 import { automationFlow, sponsorLabel } from "./automation-card.js";
 import { ChromeRoot } from "./chrome-root.js";
+import { developmentMode } from "./dev-mode.js";
 import { GrantSetCard } from "./grant-set-card.js";
 
 const ENABLE_CELEBRATION_MS = 3_100;
@@ -271,9 +272,13 @@ export function AutomationsPanel() {
     try {
       await automations.disable(appId);
     } catch (reason) {
-      setError(`The permissions were denied, but switching the automation off failed (${
-        reason instanceof Error ? reason.message : String(reason)
-      }). It is still enabled — use its toggle to turn it off.`);
+      // Same rule as a failed run: what did not happen, and what is still true.
+      // The wire's sentence goes to the developer's own channel.
+      if (developmentMode()) console.warn("[vendo] switching the automation off after a denial failed:", reason);
+      setError(
+        "You said no to those permissions, but this automation could not be switched off."
+        + " It is still enabled — use its toggle to turn it off.",
+      );
     }
   };
 
@@ -564,7 +569,23 @@ export function AutomationsPanel() {
                         ) : null}
                       </div>
                       {run.summary ? <p className="fl-act-peek">{run.summary}</p> : null}
-                      {run.error ? <p role="alert" className="fl-error">{run.error.code}: {run.error.message}</p> : null}
+                      {/* Ruling 11 — a failed UNATTENDED run tells its owner what
+                          did not happen and that nothing changed. The run's own
+                          code and reason are written for whoever runs the
+                          deployment (the scheduler's refusals name billing
+                          allowances and console URLs), so they ride the dev-mode
+                          rail — the same seam the queue row's server preview
+                          uses. */}
+                      {run.error ? (
+                        <>
+                          <p role="alert" className="fl-error">
+                            {`This run didn’t finish — nothing in your account was changed.`}
+                          </p>
+                          {developmentMode()
+                            ? <p className="fl-act-sub">{`${run.error.code}: ${run.error.message}`}</p>
+                            : null}
+                        </>
+                      ) : null}
                     </article>
                   ))}
                 </div>

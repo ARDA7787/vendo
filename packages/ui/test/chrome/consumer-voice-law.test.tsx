@@ -417,7 +417,6 @@ describe("the widened audit — no chrome surface renders a developer string", (
    */
   const KNOWN_OPEN: Record<string, string> = {
     "embeds.tsx": "decided exception, documented at the render site: the BYO-agent embed's contract (embeds.test) is that the wire failure stays legible",
-    "automations-panel.tsx": "a run-history row prints the run's own error code + message (line 568), and the disable-repair sentence folds the wire message in (line 275) — both need a product decision about what a failed unattended run may say to its owner",
   };
 
   const chromeSources = (): string[] => {
