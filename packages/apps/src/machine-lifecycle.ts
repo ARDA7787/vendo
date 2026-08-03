@@ -51,8 +51,12 @@ export interface MachineEnvGrants {
  * "no policy for this app", and the seam read that as UNRESTRICTED internet
  * (`SandboxAdapter.create` treats an absent `allowedDomains` as
  * `allowInternetAccess: true`) — so the one value a policy function produces by
- * accident was the one that removed the boundary. An app with nothing to reach
- * gets `[]`, which denies everything.
+ * accident was the one that removed the filter. An app with nothing to reach
+ * gets `[]`, the strictest policy this seam can express.
+ *
+ * How strong that actually is: `docs/verification/box-egress/README.md`. Short
+ * version — the provider filters by DOMAIN, which holds against ordinary
+ * clients and not against one that omits SNI.
  */
 export type BuildMachineAllowlist = (
   app: AppDocument,
@@ -64,9 +68,9 @@ export interface MachineLifecycleConfig {
   buildEnv?: BuildMachineEnv;
   /**
    * Required, and never optional: an omitted policy used to mean UNRESTRICTED
-   * egress, so a caller who simply forgot handed a machine the whole internet
-   * and the call site read as complete. Unnamed must mean denied — the same law
-   * `boxPermission` states for tools and `BoxMachineOptions.allowedDomains`
+   * egress, so a caller who simply forgot handed a machine an unfiltered
+   * internet and the call site read as complete. Unnamed must mean denied — the
+   * same law `boxPermission` states for tools and `BoxMachineOptions.allowedDomains`
    * states for the conversational box. A deployment with nothing to allow says
    * so with a function returning `[]`.
    */
@@ -161,8 +165,9 @@ export const createMachineLifecycle = (config: MachineLifecycleConfig): MachineL
    * The `?? []` is the floor under the required type, not a second mechanism:
    * TypeScript stops a caller omitting the policy, and this stops an untyped
    * one (or a policy function that answers with nothing) from reaching the
-   * provider with no `allowedDomains` at all — which the seam reads as the
-   * whole internet. Deny-all is the only safe thing an absent answer can mean.
+   * provider with no `allowedDomains` at all — which the seam reads as an
+   * unfiltered internet. An empty list is the only safe thing an absent answer
+   * can mean.
    */
   const allowlistFor = async (app: AppDocument): Promise<string[]> =>
     (await config.allowedDomains?.(app)) ?? [];

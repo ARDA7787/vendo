@@ -19,14 +19,27 @@
  *
  * **What this mode does NOT have: a box.** The session's tools are auto-allowed
  * by `boxPermission` on the stated grounds that "the box IS the permission —
- * copies only, no credentials, reality happens at commit". Two thirds of that
- * are false here. `cwd` is a directory the shell is POINTED at, not a boundary
- * it is held inside — `Bash` runs as the host's own server process, over the
- * host's own filesystem and the host's own network, with no egress allowlist
- * because there is no provider network layer to hang one on. Everything driving
- * that shell is end-user chat. So this mode grants what a shell account on the
- * deployment grants, and the operator is told so, once, on the first turn
- * ({@link warnLocalRiskOnce}). The sandbox path is the safe one, and the default.
+ * copies only, no credentials, reality happens at commit". Here:
+ *
+ *   - "copies only" is FALSE. `cwd` is a directory the shell is POINTED at, not
+ *     a boundary it is held inside; `Bash` runs as the host's own server process
+ *     over the host's own filesystem and network, with no egress allowlist
+ *     because there is no provider network layer to hang one on.
+ *   - "no credentials" is TRUE OF THE ENVIRONMENT, and only that. Measured in
+ *     the Agent SDK's own spawn (0.3.215: `xt ? {...xt} : {...process.env}`,
+ *     with no merge-style `...process.env,` anywhere): passing `env` REPLACES
+ *     the host environment rather than merging into it, so the subprocess sees
+ *     our `inferenceEnv()` values and NOT the host server's other secrets.
+ *     That is a real containment and worth knowing.
+ *   - But it stops at the environment. Secrets AT REST are untouched by it: a
+ *     `.env` file, `~/.aws/credentials`, a service-account JSON, a kubeconfig —
+ *     anything the host OS user can read, `Bash` can read, because it IS that
+ *     user. A scoped env does not make the disk unreadable.
+ *
+ * Everything driving that shell is end-user chat. So this mode grants what a
+ * shell account on the deployment grants, and the operator is told so, once, on
+ * the first turn ({@link warnLocalRiskOnce}). The sandbox path is the safe one,
+ * and the default.
  */
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { chmodSync } from "node:fs";
@@ -90,7 +103,10 @@ function warnLocalRiskOnce(): void {
     + "Bash, Write and Edit are auto-allowed and are not confined to the workspace copy, so a user's "
     + "message — or text an app, document or tool result put in front of the model — can read and write "
     + "this server's files and reach anything this server can reach on the network. There is no egress "
-    + "allowlist on this path. Use the sandbox path (`claudeCode({ sandbox })`) for anything a customer talks to.",
+    + "allowlist on this path. The agent's ENVIRONMENT is scoped (the SDK replaces it rather than "
+    + "inheriting yours, so your other env secrets are not exposed), but secrets AT REST are not: it runs "
+    + "as this OS user, so .env files, cloud credential files and kubeconfigs are readable. "
+    + "Use the sandbox path (`claudeCode({ sandbox })`) for anything a customer talks to.",
   );
 }
 

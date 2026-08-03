@@ -595,8 +595,8 @@ describe("machine lifecycle: egress allowlist policy (Lane E)", () => {
   // callback creates unrestricted (pre-Lane-E behavior)". That is the fail-open
   // itself, pinned as intended behavior: the seam reads an absent
   // `allowedDomains` as the whole internet. A policy that resolves to nothing
-  // now denies everything, on every path into the provider.
-  it("provision with a policy that names nothing denies everything, never unrestricted", async () => {
+  // now sends an empty list on every path into the provider, never an absent one.
+  it("provision with a policy that names nothing sends an empty list, never unrestricted", async () => {
     const { sandbox, lifecycle, doc } = await setup();
     await lifecycle.provision(doc);
     expect(sandbox.machines[0]?.allowedDomains).toEqual([]);

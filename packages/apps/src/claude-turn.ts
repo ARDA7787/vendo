@@ -35,19 +35,26 @@
  *
  * One permission law still lives here (design §3, "claudeCode() specifics"): the
  * box is AUTO-ALLOW for its own file/bash work (the box IS the permission —
- * copies only, no credentials, deny-by-default egress at the provider's network
+ * copies only, no credentials, domain-filtered egress at the provider's network
  * layer, reality happens at commit), so those tools are pre-approved. Our
  * guard's asks are no longer delivered through the SDK's native permission hook,
  * because the guard now decides at the DOOR: a refusal arrives as the tool's own
  * in-band error text, which is still something the model narrates and never a
  * throw.
  *
- * That law is about a BOX, and this module's other home — `machine: "local"` —
- * does not have one: there the same auto-allow is a real shell on the host's own
- * server with no network boundary. The mode is an explicit deployment opt-in and
- * warns the operator on its first turn (`claude-code/local.ts`), but nothing in
- * THIS file makes it safe, and reading the paragraph above as if it did is the
- * mistake to avoid.
+ * Two limits on how far that law reaches.
+ *
+ * The egress half is weaker than it sounds: the provider filters by DOMAIN, so
+ * an ordinary client is held to the allowlist and a client that omits SNI is
+ * not (`docs/verification/box-egress/README.md`). The box is filtered, not
+ * jailed.
+ *
+ * And the law is about a BOX at all, which this module's other home —
+ * `machine: "local"` — does not have: there the same auto-allow is a real shell
+ * on the host's own server, with no network boundary of any kind. The mode is an
+ * explicit deployment opt-in and warns the operator on its first turn
+ * (`claude-code/local.ts`), but nothing in THIS file makes it safe, and reading
+ * the paragraph above as if it did is the mistake to avoid.
  */
 
 /** The MCP server name our projected tools live under (`mcp__vendo__<tool>`). */

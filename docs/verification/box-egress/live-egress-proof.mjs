@@ -221,7 +221,7 @@ try {
     `curl → ${net.door}`,
   );
   record(
-    `A · an UNLISTED domain (${UNLISTED}) is blocked at the provider network layer`,
+    `A · an ordinary client (curl) cannot reach an UNLISTED domain (${UNLISTED})`,
     !/^[1-5]\d\d$/.test(net.unlisted),
     `curl → ${JSON.stringify(net.unlisted)}`,
   );

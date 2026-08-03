@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 /**
- * Does an EMPTY allowlist actually deny, and does the box still work?
+ * Does an EMPTY allowlist actually filter, and does the box still work?
  *
  * The round-1 proof measured a two-entry allowlist. The served-app seam's
  * fail-closed default is `[]`, which is a different provider input — an empty
  * `allowOut` could plausibly be rejected, or read as "no rules" (i.e. allow
- * everything), which would make the deny-all default a fiction.
+ * everything), which would make the empty-list default a fiction.
+ *
+ * SCOPE, and read this before quoting the output: every check below uses an
+ * ORDINARY client (curl). It shows that `[]` is accepted and that ordinary
+ * clients are held. It does NOT show that the box cannot reach the network — a
+ * client that omits SNI walks straight past this policy, measured in
+ * `sni-bypass-probe.mjs`. See README.md in this folder for the honest claim.
  *
  *   node docs/verification/box-egress/deny-all-probe.mjs
  *
@@ -52,26 +58,26 @@ try {
 
   const anthropic = await curl("api.anthropic.com");
   record(
-    "with an EMPTY allowlist, even the inference host is blocked (deny-all is real, not 'no rules')",
+    "with an EMPTY allowlist an ordinary client cannot reach even the inference host (`[]` is a real policy, not 'no rules')",
     !/^[1-5]\d\d$/.test(anthropic),
     `curl api.anthropic.com → ${JSON.stringify(anthropic)}`,
   );
 
   const example = await curl("example.com");
   record(
-    "an arbitrary host is blocked too",
+    "an arbitrary host is blocked too (for this ordinary client)",
     !/^[1-5]\d\d$/.test(example),
     `curl example.com → ${JSON.stringify(example)}`,
   );
 
-  // The point of deny-all: the box must still FUNCTION. Adapter-private exec
+  // The point of the empty policy: the box must still FUNCTION. Adapter-private exec
   // and the provider ingress are control plane, not egress.
   const local = await box.exec(
     "node -e \"require('node:http').createServer((_,r)=>r.end('LOCAL-OK')).listen(8080,()=>console.log('up'))\" >/tmp/s.log 2>&1 & sleep 2; curl -sS -m 8 http://localhost:8080/",
     { timeoutMs: 40_000 },
   );
   record(
-    "the box still runs its own app and serves it locally under deny-all",
+    "the box still runs its own app and serves it locally under an empty allowlist",
     `${local.stdout}`.includes("LOCAL-OK"),
     JSON.stringify(`${local.stdout}${local.stderr}`.slice(0, 120)),
   );

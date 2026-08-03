@@ -41,9 +41,11 @@ export interface ClaudeCodeOptions {
    * Extra outbound domains the box may reach, ADDED to the minimum set
    * ({@link boxEgress}). Bare hostnames, as `vendo.json`'s `egress` writes them.
    *
-   * The box's network policy is deny-by-default, so a host whose agent legitimately
-   * needs a third party — their own API on another origin, an allowed vendor —
-   * names it here. There is no approval flow on this list, unlike an app
+   * The box's outbound traffic is filtered against this list at the provider's
+   * DOMAIN layer, so a host whose agent legitimately needs a third party — their
+   * own API on another origin, an allowed vendor — names it here. (What that
+   * filtering does and does not stop: `docs/verification/box-egress/README.md`.)
+   * There is no approval flow on this list, unlike an app
    * document's `egress` (`egress-approval.ts`): that one is an ASK from generated
    * code, this one is the host developer's own source at boot, the same authority
    * that sets `implicitDomains`.
@@ -100,9 +102,9 @@ export function inferenceEnv(): Record<string, string> {
   const key = source["ANTHROPIC_API_KEY"] ?? source["VENDO_INFERENCE_KEY"];
   const url = source["ANTHROPIC_BASE_URL"] ?? source["VENDO_INFERENCE_URL"];
   const env: Record<string, string> = {
-    // Nothing the CLI reaches for on the side: the box's egress is deny-by-default
-    // (`boxEgress` below is the list), so a telemetry or update call would not
-    // resolve anyway, and a stalled one is a hung turn.
+    // Nothing the CLI reaches for on the side: its telemetry and update hosts are
+    // not on the box's allowlist (`boxEgress` below), so those calls fail rather
+    // than answer — and a stalled one is a hung turn.
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     DISABLE_AUTOUPDATER: "1",
   };
@@ -131,12 +133,20 @@ const hostOf = (url: string | undefined): string | undefined => {
 
 /**
  * The conversational box's outbound allowlist — the ONE place its network
- * boundary is assembled, and the reason the deny-by-default claim above is true.
+ * boundary is assembled.
  *
  * Same shape as the served-app machine's (`boxAllowlist` in `@vendoai/apps`
  * `egress-approval.ts`): the box's OWN skin rides unconditionally, and
- * everything else is denied at the provider's network layer. Two skin entries,
- * because a session box needs exactly two things to function:
+ * everything else is filtered out at the provider's DOMAIN layer.
+ *
+ * Read `docs/verification/box-egress/README.md` before relying on that for
+ * anything: the filtering is real against ordinary clients and is BYPASSABLE by
+ * a client that omits SNI (`openssl s_client -noservername` reaches arbitrary
+ * IPs even under an empty list — measured). It is a provider-level gap this
+ * repo cannot close. So this list raises the cost of exfiltration and stops
+ * every ordinary client; it does not make the box unable to reach the network.
+ *
+ * Two skin entries, because a session box needs exactly two things to function:
  *
  *   1. the INFERENCE host — the SDK runs the model from inside the box, so a box
  *      that cannot reach it cannot think. Read off the env the box is actually

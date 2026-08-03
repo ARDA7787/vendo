@@ -1,15 +1,15 @@
 {
-  "at": "2026-08-02T23:25:42.828Z",
-  "publicUrl": "https://defines-september-combine-fax.trycloudflare.com",
+  "at": "2026-08-03T00:19:51.949Z",
+  "publicUrl": "https://connections-rod-infants-starting.trycloudflare.com",
   "template": "h5pf20fap7ows6io81kr",
   "allowlistHandedToProvider": [
     [
       "api.anthropic.com",
-      "defines-september-combine-fax.trycloudflare.com"
+      "connections-rod-infants-starting.trycloudflare.com"
     ],
     [
       "api.anthropic.com",
-      "defines-september-combine-fax.trycloudflare.com"
+      "connections-rod-infants-starting.trycloudflare.com"
     ]
   ],
   "results": [
@@ -31,7 +31,7 @@
     {
       "name": "B · the harness handed the provider the MINIMUM allowlist, never undefined",
       "pass": true,
-      "detail": "[\"api.anthropic.com\",\"defines-september-combine-fax.trycloudflare.com\"]"
+      "detail": "[\"api.anthropic.com\",\"connections-rod-infants-starting.trycloudflare.com\"]"
     },
     {
       "name": "1 · the model thought inside the box — it answered at all, with the allowlist on",
@@ -56,7 +56,7 @@
     {
       "name": "3 · the app the box built is readable through the host's workspace door",
       "pass": true,
-      "detail": "\"<App name=\\\"Egress\\\">\\n  <Heading text=\\\"EGRESS-OK\\\" />\\n</App>\\n\""
+      "detail": "\"<App name=\\\"Egress\\\">\\n  <Heading text=\\\"EGRESS-OK\\\" />\\n</App>\""
     }
   ]
 }

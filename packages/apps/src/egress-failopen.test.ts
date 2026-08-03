@@ -3,8 +3,12 @@
  *
  * Sibling of the conversational box's hole (`claude-code/box.ts`): the sandbox
  * seam reads `allowedDomains: undefined` as UNRESTRICTED internet, so any path
- * that can reach `adapter.create` without naming a policy is an open box. This
- * file pins every such path shut.
+ * that can reach `adapter.create` without naming a policy asks for an unfiltered
+ * box. This file pins every such path shut.
+ *
+ * Scope: these assert WHAT WE SEND the provider. How strongly the provider then
+ * enforces it is a separate question with a measured gap —
+ * `docs/verification/box-egress/README.md`.
  */
 import type { AppDocument } from "@vendoai/core";
 import { VENDO_APP_FORMAT } from "@vendoai/core";
@@ -62,7 +66,7 @@ describe("the served-app machine's egress policy fails CLOSED", () => {
     await runtime.machine.provision(doc().id, ada);
 
     expect(sandbox.specs).toHaveLength(1);
-    // `[]` denies all; `undefined` would be the whole internet.
+    // `[]` asks for everything to be filtered; `undefined` would ask for nothing to be.
     expect(sandbox.specs[0]?.allowedDomains).toEqual([]);
   });
 
@@ -79,7 +83,7 @@ describe("the served-app machine's egress policy fails CLOSED", () => {
     expect(sandbox.specs[0]?.allowedDomains).toBeDefined();
   });
 
-  it("a policy that resolves to nothing denies everything — it never degrades to unrestricted", async () => {
+  it("a policy that resolves to nothing sends an EMPTY list — it never degrades to unrestricted", async () => {
     const store = memoryStore();
     const sandbox = watched();
     await seedAppRow(store, doc(), ada.principal.subject);
