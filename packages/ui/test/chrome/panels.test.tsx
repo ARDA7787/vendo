@@ -73,7 +73,9 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run history" }));
     const stop = await screen.findByRole("button", { name: "Stop" });
     fireEvent.click(stop);
-    await waitFor(() => expect(screen.getByText("stopped")).toBeTruthy());
+    // ⚠️ The row label is the owner-facing label, never the status slug
+    // (spec §16 law 3): RUN_STATUS_LABEL.stopped === "Stopped".
+    await waitFor(() => expect(screen.getByText("Stopped")).toBeTruthy());
     expect(wire.requests).toContainEqual(expect.objectContaining({ method: "POST", path: "/runs/run_1/stop" }));
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable Invoice watcher" }));
@@ -286,6 +288,12 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run history" }));
     const failure = await screen.findByText(/didn’t finish/);
     expect(failure.getAttribute("role")).toBe("alert");
+    // The row heading and time are in the owner's words, not the wire's
+    // (spec §16 law 3): "Failed", not "error"; an absolute human timestamp,
+    // not the ISO instant (which stays in <time dateTime> for machines).
+    expect(failure.closest("article")?.textContent).toContain("Failed");
+    expect(failure.closest("article")?.textContent).toContain("Jul 11, 2026, 12:00 PM");
+    expect(failure.closest("article")?.textContent).not.toContain("2026-07-11T12:00:00.000Z");
     expect(failure.textContent).toMatch(/nothing (?:in your account )?was changed/i);
     expect(failure.closest("article")?.textContent).not.toContain("meter-exhausted");
     expect(failure.closest("article")?.textContent).not.toContain(BLOCKED_REASON);

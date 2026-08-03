@@ -26,7 +26,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_getClient",
@@ -129,7 +129,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_getDashboard",
@@ -191,7 +191,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_listActivity",
@@ -248,7 +248,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_listClientDocuments",
@@ -323,7 +323,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_listClientMessages",
@@ -384,7 +384,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_listClients",
@@ -494,7 +494,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_listDeadlines",
@@ -608,7 +608,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_listDemoChips",
@@ -655,7 +655,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_resetDemo",
@@ -717,7 +717,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_sendClientMessage",
@@ -792,11 +792,11 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_setDocumentStatus",
-      "description": "Advance a document through its lifecycle: 'receive' marks a missing document as uploaded (attaching a file name), 'verify' confirms an uploaded document is correct, 'reject' returns a wrong upload to missing with a reason the client sees. Verify and reject only apply to documents in status received or needs_review.",
+      "description": "Marks one of a client's requested documents as received, verified or rejected.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -821,7 +821,7 @@
                   "verify",
                   "reject"
                 ],
-                "description": "Lifecycle transition to apply"
+                "description": "Lifecycle transition to apply: 'receive' marks a missing document as uploaded (attaching a file name), 'verify' confirms an uploaded document is correct, 'reject' returns a wrong upload to missing with a reason the client sees. Verify and reject only apply to documents in status received or needs_review."
               },
               "fileName": {
                 "type": "string",
@@ -895,7 +895,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     },
     {
       "name": "host_simulateClientUpload",
@@ -1027,7 +1027,7 @@
           }
         }
       },
-      "srcHash": "sha256:502870778a92ecb89ec02d64ab2cbb09371f73729a6bcc180417ac43e1af47e8"
+      "srcHash": "sha256:63ecc790a4214f03897a15ecff6f98e64430d851a9f0d0897506f7d6c821c3a9"
     }
   ]
 }

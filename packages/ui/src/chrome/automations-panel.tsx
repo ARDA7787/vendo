@@ -556,8 +556,8 @@ export function AutomationsPanel() {
                         <span className={`fl-act-ic ${run.status === "error" ? "fl-act-x" : "fl-act-tick"}`} aria-hidden="true">
                           {run.status === "error" ? "✕" : "✓"}
                         </span>
-                        <strong className="fl-act-lbl">{run.status}</strong>
-                        <time className="fl-act-sub" dateTime={run.startedAt}>{run.startedAt}</time>
+                        <strong className="fl-act-lbl">{RUN_STATUS_LABEL[run.status]}</strong>
+                        <time className="fl-act-sub" dateTime={run.startedAt}>{formatAuditTime(run.startedAt)}</time>
                         {run.status === "running" ? (
                           <button className="fl-btn fl-btn-ceremony" type="button" onClick={() => void during(`stop-${run.id}`, async () => {
                             await automations.stopRun(run.id);
