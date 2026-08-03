@@ -25,9 +25,19 @@ test.beforeAll(async () => {
 
 type SpecPage = Parameters<Parameters<typeof test>[1]>[0]["page"];
 
-/** One named card, so a second app on the page can never be the one under test. */
+/** One named APP TILE, so nothing else on the page can be the one under test.
+ *
+ *  `article` alone was too wide, and it only bit when the whole suite ran. The
+ *  browser suite shares one wire server, so approvals minted by an earlier spec
+ *  are still pending when this one opens the page — and a pending approval
+ *  renders as `<article class="fl-cardshell">` ABOVE the app grid. One of the
+ *  fixture's own asks is for `host_invoices_list`, humanized to "Invoices
+ *  list", so `hasText: "Invoices"` matched that card first and `.first()`
+ *  handed back an approval card. It has Approve and Deny; it has no Share and
+ *  no Change, which is exactly how this read as "the app card lost its
+ *  actions". App tiles are `.fl-tile`. */
 const cardFor = (page: SpecPage, name: string) =>
-  page.locator("article").filter({ hasText: name }).first();
+  page.locator("article.fl-tile").filter({ hasText: name }).first();
 
 /**
  * The two doors the Share dialog reads, stubbed HERE rather than in the shared
