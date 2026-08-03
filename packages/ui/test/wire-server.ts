@@ -24,6 +24,23 @@ export interface RecordedRequest {
 
 const NOW = "2026-07-11T12:00:00.000Z";
 
+/** `[smoke-build]` pacing: long enough that the browser smoke pack can observe
+ *  each phase on a loaded runner, short enough to keep the pack under a minute. */
+const SMOKE_STEP_MS = 250;
+const SMOKE_BUILD_MS = 2_500;
+
+/** The view `[smoke-build]` builds — a titled tree, so the card's bar has a real
+ *  name to flip to when the build lands. */
+const SMOKE_VIEW = {
+  formatVersion: "vendo-genui/v2",
+  root: "root",
+  nodes: [
+    { id: "root", component: "Stack", props: { gap: 8 }, children: ["title", "line"] },
+    { id: "title", component: "Text", props: { text: "Spending board", variant: "heading" } },
+    { id: "line", component: "Text", props: { text: "$1,240 this month across 4 categories." } },
+  ],
+};
+
 /** Mirror of the runtime's stable generated-component name for one captured
  *  slot (`pinComponentName` in @vendoai/apps) — the fixture's forked trees
  *  must carry the REAL name so the wrapper's in-place mount finds the node. */
@@ -537,6 +554,73 @@ export async function createWireServer(options: WireServerOptions = {}) {
           const settledGapResponse = createUIMessageStreamResponse({ stream: settledGapChunks });
           settledGapResponse.headers.set("x-vendo-thread-id", threadId);
           await sendFetchResponse(settledGapResponse, response);
+          return;
+        }
+        if (sentText.includes("[smoke-build]")) {
+          // The smoke pack's one scripted turn (checklist 11): two tool steps
+          // that settle into beats, then an app BUILD that holds the floor —
+          // §8's card-is-the-step, with the hairline as the only moving thing —
+          // then the closing text that folds the whole turn into its summary.
+          // Paced with real timers, not a gate: the browser harness has no way
+          // to release one.
+          const smokeChunks = createUIMessageStream<UIMessage>({
+            originalMessages: [input.message],
+            generateId: () => "msg_assistant_smoke",
+            execute: async ({ writer }) => {
+              const steps = [
+                { call: "call_smoke_read", tool: "host_list_transactions", output: { transactions: [1, 2, 3] } },
+                { call: "call_smoke_insights", tool: "host_getSpendingInsights", output: { categories: [1, 2] } },
+              ];
+              for (const step of steps) {
+                writer.write({
+                  type: "tool-input-available",
+                  toolCallId: step.call,
+                  toolName: step.tool,
+                  input: {},
+                  dynamic: true,
+                });
+                await new Promise(resolve => setTimeout(resolve, SMOKE_STEP_MS));
+                writer.write({
+                  type: "tool-output-available",
+                  toolCallId: step.call,
+                  output: step.output,
+                  dynamic: true,
+                } as UIMessageChunk);
+              }
+              writer.write({
+                type: "tool-input-available",
+                toolCallId: "call_smoke_build",
+                toolName: "vendo_apps_create",
+                input: { prompt: "a board showing where my money goes" },
+                dynamic: true,
+              });
+              // Same stream id both times, exactly as the real emitter does
+              // (vendoViewStreamId), so the partial view becomes the live one.
+              writer.write({
+                type: "data-vendo-view",
+                id: "vendo-view:app_smoke",
+                data: { appId: "app_smoke", payload: { ...SMOKE_VIEW, streaming: true } },
+              } as UIMessageChunk);
+              await new Promise(resolve => setTimeout(resolve, SMOKE_BUILD_MS));
+              writer.write({
+                type: "data-vendo-view",
+                id: "vendo-view:app_smoke",
+                data: { appId: "app_smoke", payload: SMOKE_VIEW },
+              } as UIMessageChunk);
+              writer.write({
+                type: "tool-output-available",
+                toolCallId: "call_smoke_build",
+                output: { kind: "tree", appId: "app_smoke" },
+                dynamic: true,
+              } as UIMessageChunk);
+              writer.write({ type: "text-start", id: "text_smoke" });
+              writer.write({ type: "text-delta", id: "text_smoke", delta: "Your spending board is ready." });
+              writer.write({ type: "text-end", id: "text_smoke" });
+            },
+          });
+          const smokeResponse = createUIMessageStreamResponse({ stream: smokeChunks });
+          smokeResponse.headers.set("x-vendo-thread-id", threadId);
+          await sendFetchResponse(smokeResponse, response);
           return;
         }
         if (sentText.includes("[stream-long]")) {

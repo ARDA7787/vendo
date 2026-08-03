@@ -6,7 +6,7 @@
  *  is only what the center itself owns: the two named doors, the attention
  *  section while it has something to say, and the conversations.
  */
-import { useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useVendoContext } from "../../context.js";
 import { useAttention } from "../../hooks/use-approvals.js";
 import type { ThreadSummary } from "../../wire-types.js";
@@ -23,6 +23,18 @@ const PRIMARY: CenterView[] = ["chat", "apps", "automations"];
  *  under the quiet ··· row, opening the same panels unchanged. */
 const SECONDARY: CenterView[] = ["activity", "accounts"];
 
+/** The ONE panel every tab controls: the column swaps its contents, it is never
+ *  a panel per tab. (Each tab used to point `aria-controls` at `vendo-panel-<its
+ *  own view>`, so four of the five references pointed at nothing.) */
+export const CENTER_PANEL_ID = "vendo-center-panel";
+
+/** The rows the tablist actually renders. Exported because the column's panel
+ *  has to know whether the view it is showing still HAS a tab: closing the ···
+ *  row while Activity is open removes the tab that labelled it. */
+export function railRows(moreOpen: boolean): CenterView[] {
+  return moreOpen ? [...PRIMARY, ...SECONDARY] : PRIMARY;
+}
+
 const LABEL: Record<CenterView, string> = {
   chat: "New chat",
   apps: "Apps",
@@ -31,9 +43,17 @@ const LABEL: Record<CenterView, string> = {
   accounts: "Accounts",
 };
 
+/** The view's own words, for a surface that has to name it without a tab. */
+export function centerViewLabel(view: CenterView): string {
+  return LABEL[view];
+}
+
 /** Same cadence as the waiting strip: an ask raised elsewhere (an automation
  *  run, another tab) reaches the badge without a reload. */
 const NEEDS_POLL_MS = 5_000;
+
+/** The history sheet's tab cycle (same shape as the overlay panel's). */
+const SHEET_FOCUSABLE = "button:not([disabled]),input:not([disabled]),a[href],[tabindex]:not([tabindex='-1'])";
 
 function Glyph({ view }: { view: CenterView }) {
   const common = {
@@ -73,11 +93,27 @@ export interface RailNavProps {
   activityBump: boolean;
 }
 
-/** The section switcher: real WAI-ARIA tabs (automatic activation, roving
- *  tabindex) in ONE vertical tablist — the ··· disclosure sits outside it, and
- *  the rows it reveals join the same list rather than forming a second one. */
+/** The section switcher: real WAI-ARIA tabs in ONE vertical tablist — the ···
+ *  disclosure sits outside it, and the rows it reveals join the same list rather
+ *  than forming a second one.
+ *
+ *  MANUAL activation (APG): arrows move focus, Enter/Space activate. Automatic
+ *  activation is not available to this tablist — "New chat" is not a view, it is
+ *  an ACT (it discards the open conversation and the composer's draft), so an
+ *  arrow key that activated as it moved destroyed the user's work on the way
+ *  past. */
 export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: RailNavProps) {
-  const rows = moreOpen ? [...PRIMARY, ...SECONDARY] : PRIMARY;
+  const rows = railRows(moreOpen);
+  // Roving tabindex: the stop follows the row the user last put focus on, else
+  // the selected row. The selection can be a row that is no longer here
+  // (Activity, with the ··· row closed again), and a tablist where every row is
+  // tabIndex -1 cannot be reached by keyboard at all — so it falls back to the
+  // first row and a stop always exists.
+  const [focused, setFocused] = useState<CenterView>();
+  const stop = Math.max(0, rows.indexOf(focused ?? view));
+  // A view chosen elsewhere (a home tile opening the Apps door) owns the stop
+  // again — the selected tab is where Tab should land.
+  useEffect(() => setFocused(undefined), [view]);
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const move = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next = index;
@@ -87,7 +123,8 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
     else if (event.key === "End") next = rows.length - 1;
     else return;
     event.preventDefault();
-    onView(rows[next]!);
+    // Focus only. Activation is the button's own Enter/Space.
+    setFocused(rows[next]!);
     refs.current[next]?.focus();
   };
   // The ··· row carries the dock while Activity is folded away.
@@ -103,10 +140,10 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
             type="button"
             role="tab"
             aria-selected={view === row}
-            aria-controls={`vendo-panel-${row}`}
-            tabIndex={view === row ? 0 : -1}
+            aria-controls={CENTER_PANEL_ID}
+            tabIndex={index === stop ? 0 : -1}
             key={row}
-            onClick={() => onView(row)}
+            onClick={() => { setFocused(row); onView(row); }}
             onKeyDown={event => move(event, index)}
             {...(anchored === row ? { [ACTIVITY_ANCHOR_ATTRIBUTE]: "" } : {})}
           >
@@ -139,20 +176,64 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
 export function NeedsYou({ onOpen }: { onOpen(): void }) {
   const { tools } = useVendoContext();
   const { askCount, asks } = useAttention({ pollMs: NEEDS_POLL_MS });
-  if (askCount === 0) return null;
+  const spoken = useAskAnnouncement(askCount);
+  const settled = useRef<HTMLParagraphElement>(null);
+  // Whether the rows that are about to disappear are holding the keyboard: an
+  // ask decided ANYWHERE (the strip in the column, another tab, an automation
+  // finishing) retires this whole section, and focus was landing on <body>.
+  const held = useRef(false);
+  useEffect(() => {
+    if (askCount > 0 || !held.current) return;
+    held.current = false;
+    // The line that says why the rows went is the honest place to stand.
+    settled.current?.focus();
+  }, [askCount]);
   return (
-    <section className="fl-rail-group" aria-label={`Needs you — ${askCount} waiting`}>
-      <p className="fl-rail-label">
-        Needs you
-        <span className="fl-rail-badge">{askCount}</span>
-      </p>
-      {asks.map(approval => (
-        <button type="button" className="fl-rail-chat fl-rail-need" key={approval.id} onClick={onOpen}>
-          {toolTitle(approval.call.tool, tools[approval.call.tool])}
-        </button>
-      ))}
-    </section>
+    <>
+      {/* The spoken half. An ask can arrive from anywhere — an automation run,
+          another tab — and the section appearing silently told nobody; the
+          section VANISHING told nobody either. A live region has to be mounted
+          BEFORE its words change to be announced reliably, so it lives out here
+          (empty until something happens) rather than inside the section that
+          comes and goes. */}
+      <p className="fl-sr-only" role="status" tabIndex={-1} ref={settled}>{spoken}</p>
+      {askCount === 0 ? null : (
+        <section
+          className="fl-rail-group"
+          aria-label={`Needs you — ${askCount} waiting`}
+          onFocus={() => { held.current = true; }}
+          onBlur={() => { held.current = false; }}
+        >
+          <p className="fl-rail-label">
+            Needs you
+            <span className="fl-rail-badge">{askCount}</span>
+          </p>
+          {asks.map(approval => (
+            <button type="button" className="fl-rail-chat fl-rail-need" key={approval.id} onClick={onOpen}>
+              {toolTitle(approval.call.tool, tools[approval.call.tool])}
+            </button>
+          ))}
+        </section>
+      )}
+    </>
   );
+}
+
+/** What the live region says, in the user's words: only ever the CHANGE. */
+function useAskAnnouncement(askCount: number): string {
+  const [spoken, setSpoken] = useState("");
+  const previous = useRef(askCount);
+  useEffect(() => {
+    const was = previous.current;
+    previous.current = askCount;
+    if (askCount === was) return;
+    if (askCount === 0) {
+      setSpoken("Nothing is waiting on you now.");
+      return;
+    }
+    setSpoken(askCount === 1 ? "1 thing needs you." : `${askCount} things need you.`);
+  }, [askCount]);
+  return spoken;
 }
 
 interface ThreadGroup {
@@ -185,14 +266,21 @@ function groupThreads(threads: ThreadSummary[], now: number): ThreadGroup[] {
 export interface CenterChatsProps {
   threads: ThreadSummary[];
   activeId: string | undefined;
+  /** The conversation a turn is running in, if any (§10 "a running background
+   *  turn shows a quiet pulse on its row"). Read from the run-activity store by
+   *  the page — the row it marks does NOT have to be the one you are viewing. */
+  runningId?: string | undefined;
   onSelect(id: string): void;
 }
 
 /** The conversation rows. A row's title is the conversation's opening line (the
  *  wire's own thread title), ellipsized by CSS — never truncated in JS, so the
  *  full line stays available to assistive tech and to a wider rail. */
-export function CenterChats({ threads, activeId, onSelect }: CenterChatsProps) {
-  const groups = useMemo(() => groupThreads(threads, Date.now()), [threads]);
+export function CenterChats({ threads, activeId, runningId, onSelect }: CenterChatsProps) {
+  // Not memoized on [threads]: "today" is a fact about the CLOCK, and a rail
+  // left open across midnight kept yesterday's answer (the grouping is three
+  // comparisons over a short list — there was nothing to save).
+  const groups = groupThreads(threads, Date.now());
   return (
     <>
       {groups.map(group => (
@@ -203,14 +291,16 @@ export function CenterChats({ threads, activeId, onSelect }: CenterChatsProps) {
               type="button"
               className="fl-rail-chat"
               aria-current={activeId === thread.id ? "page" : undefined}
+              {...(runningId === thread.id ? { "data-vendo-running": "" } : {})}
               key={thread.id}
               onClick={() => onSelect(thread.id)}
             >
               {thread.title}
               {/* The running-turn pulse (§10 "a running background turn shows a
-                  quiet pulse on its row"). Painted by CSS only while the
-                  column's composer is mid-turn — the honest signal, since a
-                  turn only ever runs on the conversation that is open. */}
+                  quiet pulse on its row"), painted from the run store rather
+                  than from "is this the row you are looking at" — the CSS used
+                  to require aria-current, so the one row it could never mark was
+                  a background one. */}
               <span className="fl-rail-pulse" aria-hidden="true" />
             </button>
           ))}
@@ -262,19 +352,63 @@ export function CenterHeader({ view, onView, onChats, chatsOpen }: CenterHeaderP
 /** The slide-in history sheet: conversations, the attention section, and the
  *  panels the desktop rail folds under ···. Mounted only while open (so the
  *  entrance plays and nothing off-screen holds focus), with a scrim that
- *  dismisses — the page underneath stays a page. */
+ *  dismisses — the page underneath stays a page.
+ *
+ *  It covers the page and holds the keyboard while it is up, so it keeps the
+ *  same contract every other Vendo surface keeps (the overlay panel, the
+ *  approval sheet): focus lands inside on open, Tab cycles inside it, Escape
+ *  dismisses, and dismissing hands focus back to the button that opened it.
+ *  Choosing a row is NOT a dismissal — the caller moves focus into the column
+ *  it just navigated to. */
 export function CenterSheet({ view, onView, onClose, children }: {
   view: CenterView;
   onView(view: CenterView): void;
   onClose(): void;
   children: ReactNode;
 }) {
+  const sheetRef = useRef<HTMLElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const dismiss = () => {
+    opener.current?.focus();
+    closeRef.current();
+  };
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    (sheet.querySelector<HTMLElement>(SHEET_FOCUSABLE) ?? sheet).focus();
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        opener.current?.focus();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const stops = [...sheet.querySelectorAll<HTMLElement>(SHEET_FOCUSABLE)];
+      const edge = event.shiftKey ? stops[0] : stops.at(-1);
+      if (stops.length === 0 || document.activeElement !== edge) return;
+      event.preventDefault();
+      (event.shiftKey ? stops.at(-1) : stops[0])?.focus();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
   return (
     <>
-      <div className="fl-center-scrim" onClick={onClose} />
-      <aside className="fl-center-sheet" id="vendo-center-sheet" aria-label="Conversations">
+      <div className="fl-center-scrim" onClick={dismiss} />
+      <aside
+        ref={sheetRef}
+        className="fl-center-sheet"
+        id="vendo-center-sheet"
+        aria-label="Conversations"
+        tabIndex={-1}
+      >
         <div className="fl-center-sheet-top">
-          <button type="button" className="fl-center-head-btn" onClick={onClose} aria-label="Close conversations">✕</button>
+          <button type="button" className="fl-center-head-btn" onClick={dismiss} aria-label="Close conversations">✕</button>
         </div>
         {children}
         <nav className="fl-rail-nav" aria-label="More sections">

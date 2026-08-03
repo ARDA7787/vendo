@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useApps } from "../hooks/use-apps.js";
 import { useMobileTakeover } from "../hooks/use-mobile-takeover.js";
 import { useThreads } from "../hooks/use-threads.js";
@@ -6,10 +6,12 @@ import { ActivityPanel } from "./activity-panel.js";
 import { AutomationsPanel } from "./automations-panel.js";
 import { AppsPage } from "./center/apps-page.js";
 import { AppShelf } from "./center/home.js";
-import { CenterChats, CenterHeader, CenterSheet, NeedsYou, RailNav, type CenterView } from "./center/rail.js";
+import { CENTER_PANEL_ID, CenterChats, CenterHeader, CenterSheet, NeedsYou, RailNav, centerViewLabel, railRows, type CenterView } from "./center/rail.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { ConnectedAccountsPanel } from "./connected-accounts-panel.js";
+import { LauncherToast, useLauncherStatus } from "./launcher-status.js";
 import { ACTIVITY_BUMP_EVENT } from "./morph-toast.js";
+import { IDLE_RUN_ACTIVITY, runActivity, subscribeRunActivity } from "./run-activity.js";
 import { PrefillScopeContext } from "./overlay-registry.js";
 import { TakeoverPortal } from "./takeover-portal.js";
 import { VendoThread, type VendoThreadProps } from "./thread/index.js";
@@ -75,11 +77,14 @@ function useConversations() {
   // lands a render later — both transients would burn (or flash) the one-time
   // greeting, and would flash the app shelf, for a returning user who is about
   // to be snapped to their latest conversation. Hold both quiet until the
-  // surface has SETTLED on a genuinely fresh thread: list resolved with no
-  // conversations (a FAILED list proves nothing — the empty array is just the
-  // initial value, so an error keeps the gate shut), or an explicit user choice
-  // (userChose is set synchronously before the click's re-render).
-  const settledFresh = userChose.current || (!isLoading && error === undefined && threads.length === 0);
+  // surface has SETTLED on a genuinely fresh thread: a RESOLVED list (a failed
+  // one proves nothing — the empty array is just the initial value) that either
+  // has no conversations at all or that the user has explicitly left for a new
+  // one. The health of the list is a precondition of both: an explicit New chat
+  // against an erroring list is not evidence of a first-ever conversation, and
+  // the once-per-user-ever greeting must never be burned on a guess.
+  const settledFresh = !isLoading && error === undefined
+    && (userChose.current || threads.length === 0);
   return { threads, selected, activeId, onThreadId, choose, settledFresh };
 }
 
@@ -144,22 +149,49 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
     arrivedAt.current = station;
   }, [station, refreshApps]);
 
+  // Navigating from the mobile history sheet unmounts the sheet the user's focus
+  // was standing in. The column they just chose is where they land — the sheet
+  // itself only restores focus to its opener when it is DISMISSED. Synchronous
+  // (before the commit that removes the sheet) so nothing has to chase it.
+  const panel = useRef<HTMLDivElement>(null);
+  const landInColumn = useCallback(() => {
+    if (chatsOpen) panel.current?.focus();
+  }, [chatsOpen]);
   const goto = useCallback((next: CenterView) => {
+    landInColumn();
     setView(next);
     setChatsOpen(false);
     // "New chat" is both the door to the column and the act of starting over —
     // the ChatGPT gesture, and the one every host's users already know.
     if (next === "chat") conversation.choose(undefined);
-  }, [conversation]);
+  }, [conversation, landInColumn]);
   const select = useCallback((id: string) => {
+    landInColumn();
     conversation.choose(id);
     setView("chat");
     setChatsOpen(false);
-  }, [conversation]);
+  }, [conversation, landInColumn]);
   const openConversation = useCallback(() => {
+    landInColumn();
     setView("chat");
     setChatsOpen(false);
-  }, []);
+  }, [landInColumn]);
+
+  // What the center says about a run the user has walked away from (§2 G1: the
+  // panel's promise, which the center never kept — LauncherToast and the run
+  // narration were overlay-only, so a turn that finished while the user was on
+  // Apps or Automations finished in silence). Same hook, same store; "open" here
+  // means the conversation column is what they are actually looking at.
+  const looking = view === "chat" && !chatsOpen;
+  const status = useLauncherStatus({
+    open: looking,
+    ...(conversation.activeId === undefined ? {} : { threadId: conversation.activeId }),
+    onOpen: openConversation,
+  });
+  // Which conversation row pulses. The store knows a turn is live; the page
+  // knows whose it is.
+  const activity = useSyncExternalStore(subscribeRunActivity, runActivity, () => IDLE_RUN_ACTIVITY);
+  const runningId = activity.running ? conversation.activeId : undefined;
 
   // The shelf rides the composer's accessory seam, and ONLY while the column is
   // actually showing: every tile is a real mounted app, so a shelf sitting
@@ -179,7 +211,12 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
     <>
       {/* §4 — the numbered attention section, present only while asks wait. */}
       <NeedsYou onOpen={openConversation} />
-      <CenterChats threads={conversation.threads} activeId={conversation.activeId} onSelect={select} />
+      <CenterChats
+        threads={conversation.threads}
+        activeId={conversation.activeId}
+        runningId={runningId}
+        onSelect={select}
+      />
     </>
   );
 
@@ -189,7 +226,11 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
           (`.fl-takeover`) instead of fighting the host layout for width,
           portaled to body so transformed host ancestors cannot capture it. */}
       <TakeoverPortal active={takeover.active}>
-      <main
+      {/* §12 — the center is a PAGE INSIDE the host's app, so the host's own
+          <main> is the document's main landmark. This used to be a second one,
+          which is a landmark the host never asked for and a duplicate for anyone
+          navigating by landmark. A named region is what we actually are. */}
+      <section
         className={`fl-page fl-center${takeover.active ? " fl-center--mobile fl-takeover" : ""}`}
         style={takeover.style}
         aria-label="Vendo workspace"
@@ -204,10 +245,25 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
           )}
         <div
           className="fl-center-main"
+          ref={panel}
+          tabIndex={-1}
           {...(takeover.active
             ? {}
-            : { role: "tabpanel", id: `vendo-panel-${view}`, "aria-labelledby": `vendo-tab-${view}` })}
+            : {
+              role: "tabpanel",
+              id: CENTER_PANEL_ID,
+              // The tab that labels the panel has to still BE there: closing the
+              // ··· row while Activity is open takes its tab away, and an
+              // aria-labelledby pointing at a removed id leaves the panel
+              // nameless. Then the panel names itself.
+              ...(railRows(moreOpen).includes(view)
+                ? { "aria-labelledby": `vendo-tab-${view}` }
+                : { "aria-label": centerViewLabel(view) }),
+            })}
         >
+          {/* The spoken half of a run the user has walked away from: the pill's
+              narration, for a surface that has no pill. */}
+          <p className="fl-sr-only" role="status">{status.working ? `${status.label}…` : ""}</p>
           {/* The conversation stays MOUNTED behind the other doors: visiting
               Apps must not abandon a running turn (or lose the transcript). */}
           <div className="fl-center-col" hidden={view !== "chat"}>
@@ -216,7 +272,12 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
             <WaitingQueue />
             <div className={`fl-center-thread${home ? " fl-center-home" : ""}`}>
               <PrefillScopeContext.Provider value={scope}>
+                {/* keyed on the conversation: switching threads is a NEW
+                    conversation surface, and re-using the instance handed the
+                    next thread a live transport still streaming the last one's
+                    turn — the running turn's UI simply went missing. */}
                 <VendoThread
+                  key={conversation.selected ?? "new"}
                   threadId={conversation.selected}
                   onThreadId={conversation.onThreadId}
                   {...(thread?.suggestions === undefined ? {} : { suggestions: thread.suggestions })}
@@ -236,7 +297,20 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
         {takeover.active && chatsOpen
           ? <CenterSheet view={view} onView={goto} onClose={() => setChatsOpen(false)}>{chats}</CenterSheet>
           : null}
-      </main>
+        {/* §3 H1 — the completion toast is the way back INTO the conversation
+            that produced the result; the record itself stays the thread. Same
+            component the overlay raises, so there is one of these, not two. */}
+        {status.toast === undefined
+          ? null
+          : (
+            <LauncherToast
+              result={status.toast}
+              position="bottom-right"
+              onView={status.view}
+              onDismiss={status.dismissToast}
+            />
+          )}
+      </section>
       </TakeoverPortal>
     </ChromeRoot>
   );

@@ -17,11 +17,12 @@
  *    overlay.
  */
 import type { ApprovalRequest, AppDocument } from "@vendoai/core";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, type VendoClient } from "../../src/index.js";
 import { VendoPage } from "../../src/chrome/index.js";
 import { markSeen } from "../../src/chrome/discoverability.js";
+import { publishThreadRun, resetRunActivity } from "../../src/chrome/run-activity.js";
 import type { ThreadSummary } from "../../src/wire-types.js";
 
 const DAY_MS = 86_400_000;
@@ -36,7 +37,13 @@ function appDoc(id: string, name: string): AppDocument {
     tree: {
       formatVersion: "vendo-genui/v2",
       root: "root",
-      nodes: [{ id: "root", component: "Text", props: { text: `${name} app surface` } }],
+      nodes: [
+        { id: "root", component: "Stack", children: ["label", "act"] },
+        { id: "label", component: "Text", props: { text: `${name} app surface` } },
+        // A real generated view has its own interactive furniture — the reason a
+        // tile preview cannot simply be aria-hidden.
+        { id: "act", component: "Button", props: { label: "Pay now", action: "pay" } },
+      ],
     },
   } as AppDocument;
 }
@@ -57,9 +64,12 @@ function stubClient(over: {
   threads?: ThreadSummary[];
   apps?: AppDocument[];
   pending?: () => ApprovalRequest[];
+  /** Every app read this client is asked for, in order (H16 boot accounting). */
+  log?: string[];
 } = {}): VendoClient {
   const apps = over.apps ?? [];
   const pending = over.pending ?? (() => []);
+  const log = over.log ?? [];
   return {
     baseUrl: "http://vendo.test",
     headers: {},
@@ -71,8 +81,12 @@ function stubClient(over: {
     },
     apps: {
       async list() { return apps; },
-      async get(id: string) { return apps.find(app => app.id === id) ?? apps[0]!; },
+      async get(id: string) {
+        log.push(`get:${id}`);
+        return apps.find(app => app.id === id) ?? apps[0]!;
+      },
       async open(id: string) {
+        log.push(`open:${id}`);
         const app = apps.find(item => item.id === id) ?? apps[0]!;
         return { kind: "tree", payload: (app as { tree: unknown }).tree };
       },
@@ -135,7 +149,11 @@ describe("the center rail", () => {
     expect(await screen.findByRole("heading", { name: "Connected accounts" })).toBeTruthy();
   });
 
-  it("keeps roving tab semantics: one selected tab, arrow keys move, the panel is labelled", async () => {
+  // APG MANUAL activation (H18). This case previously asserted the opposite —
+  // that an arrow key activated the row it landed on — which is the destructive
+  // behavior itself: "New chat" is an ACT (it discards the open conversation and
+  // the composer's draft), so arrowing past it threw the user's work away.
+  it("keeps roving tab semantics: arrows move focus, Enter activates, the panel is labelled", async () => {
     mount(stubClient());
     const chat = await screen.findByRole("tab", { name: "New chat" });
     expect(chat.getAttribute("aria-selected")).toBe("true");
@@ -144,11 +162,86 @@ describe("the center rail", () => {
     expect(apps.getAttribute("tabindex")).toBe("-1");
     chat.focus();
     fireEvent.keyDown(chat, { key: "ArrowDown" });
+    // Focus moved, and the roving stop moved with it — but NOTHING was chosen.
     expect(document.activeElement).toBe(apps);
+    expect(apps.getAttribute("tabindex")).toBe("0");
+    expect(apps.getAttribute("aria-selected")).toBe("false");
+    expect(chat.getAttribute("aria-selected")).toBe("true");
+    // Enter is what chooses (Space too — it is a real <button>).
+    fireEvent.click(apps);
     expect(apps.getAttribute("aria-selected")).toBe("true");
     expect(chat.getAttribute("aria-selected")).toBe("false");
     const panel = screen.getByRole("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe(apps.getAttribute("id"));
+  });
+
+  it("an arrow key never starts a new chat: the open conversation survives (H18)", async () => {
+    mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
+    const row = await screen.findByRole("button", { name: "Where did July go?" });
+    await waitFor(() => expect(row.getAttribute("aria-current")).toBe("page"));
+    fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
+    const apps = screen.getByRole("tab", { name: "Apps" });
+    apps.focus();
+    // ArrowUp lands on "New chat". Under automatic activation this fired
+    // conversation.choose(undefined) — the open conversation and the draft in
+    // its composer, gone, from a keystroke that was only meant to move.
+    fireEvent.keyDown(apps, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "New chat" }));
+    expect(row.getAttribute("aria-current")).toBe("page");
+    expect(apps.getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByRole("heading", { name: "Apps" })).toBeTruthy();
+  });
+
+  it("every tab's aria-controls resolves — there is ONE panel, not one per tab (M39)", async () => {
+    mount(stubClient());
+    const more = await screen.findByRole("button", { name: "More sections" });
+    fireEvent.click(more);
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.length).toBe(5);
+    const panel = screen.getByRole("tabpanel");
+    for (const tab of tabs) {
+      const controls = tab.getAttribute("aria-controls")!;
+      expect(document.getElementById(controls), `${tab.textContent} controls a real element`).toBe(panel);
+    }
+  });
+
+  it("a rail left open across midnight regroups (M40)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 7, 2, 23, 59));
+      mount(stubClient({
+        threads: [{ id: "thr_late", title: "Where did July go?", updatedAt: new Date(2026, 7, 2, 23, 30).toISOString() }] as ThreadSummary[],
+      }));
+      expect(await screen.findByText("Today")).toBeTruthy();
+      // Two minutes later it is tomorrow, and last night's conversation is not
+      // "Today" any more. The thread list has not changed — which is exactly
+      // what the [threads] memo keyed on.
+      vi.setSystemTime(new Date(2026, 7, 3, 0, 1));
+      fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
+      await waitFor(() => expect(screen.getByText("Previous 7 days")).toBeTruthy());
+      expect(screen.queryByText("Today")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closing ··· on an open Activity keeps a tab stop and a named panel (H10)", async () => {
+    mount(stubClient());
+    await screen.findByRole("tablist", { name: "Workspace sections" });
+    const more = screen.getByRole("button", { name: "More sections" });
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(await screen.findByRole("heading", { name: "Activity" })).toBeTruthy();
+    // Fold the row away again while Activity is what the column shows.
+    fireEvent.click(more);
+    expect(screen.queryByRole("tab", { name: "Activity" })).toBeNull();
+    // The tablist still has exactly one keyboard entry point…
+    const stops = screen.getAllByRole("tab").filter(tab => tab.getAttribute("tabindex") === "0");
+    expect(stops.length).toBe(1);
+    // …and the panel still has a NAME (its label can no longer be a tab that
+    // does not exist).
+    const panel = screen.getByRole("tabpanel", { name: "Activity" });
+    expect(panel.getAttribute("aria-labelledby")).toBeNull();
   });
 
   it("groups conversations by recency and titles each row with its opening line", async () => {
@@ -169,6 +262,59 @@ describe("the center rail", () => {
   });
 });
 
+describe("a run the user walked away from (M27)", () => {
+  const surface = Symbol("test-thread-surface");
+  const thread = (): ThreadSummary[] => [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[];
+  afterEach(() => resetRunActivity());
+
+  it("pulses the running conversation's row and narrates the finish", async () => {
+    mount(stubClient({ threads: thread() }));
+    const row = await screen.findByRole("button", { name: "Where did July go?" });
+    await waitFor(() => expect(row.getAttribute("aria-current")).toBe("page"));
+    // Walk away from the conversation — the run keeps going (§2 G1).
+    fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
+    await screen.findByRole("heading", { name: "Apps" });
+
+    act(() => publishThreadRun(surface, { threadId: "thr_1", status: "streaming", messages: [] }));
+    // The row says a turn is live — from the run store, not from "is this the
+    // row you happen to be viewing".
+    await waitFor(() => expect(row.hasAttribute("data-vendo-running")).toBe(true));
+
+    act(() => publishThreadRun(surface, {
+      threadId: "thr_1",
+      status: "ready",
+      messages: [{ id: "m1", role: "assistant", parts: [{ type: "text", text: "July is ready" }] }] as never,
+    }));
+    // …and the finish is announced where the user actually is, with one way back.
+    const toast = await screen.findByText("July is ready");
+    expect(row.hasAttribute("data-vendo-running")).toBe(false);
+    fireEvent.click(within(toast.closest(".fl-launcher-toast") as HTMLElement).getByRole("button", { name: "View" }));
+    expect(screen.getByRole("tab", { name: "New chat" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("the pulse no longer requires the row to be the one you are viewing", async () => {
+    const { CHROME_CSS } = await import("../../src/chrome/chrome-css.js");
+    expect(CHROME_CSS).toContain(".fl-rail-chat[data-vendo-running] .fl-rail-pulse { display: block; }");
+    expect(CHROME_CSS).not.toMatch(/aria-current="page"\] \.fl-rail-pulse/);
+  });
+
+  it("switching conversations remounts the column instead of re-labelling a live one", async () => {
+    mount(stubClient({
+      threads: [
+        { id: "thr_1", title: "Where did July go?", updatedAt: iso(0) },
+        { id: "thr_2", title: "An older question", updatedAt: iso(DAY_MS) },
+      ] as ThreadSummary[],
+    }));
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(composer, { target: { value: "half-typed question" } });
+    fireEvent.click(screen.getByRole("button", { name: "An older question" }));
+    // A fresh conversation surface: without the key, the same instance kept the
+    // previous thread's draft — and its in-flight turn.
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe(""));
+    expect(screen.getByRole("textbox", { name: "Message" })).not.toBe(composer);
+  });
+});
+
 describe("Needs you", () => {
   it("exists only while asks are waiting, and carries the count", async () => {
     let waiting = [ask("apr_1"), ask("apr_2", "host_transfer_send")];
@@ -180,6 +326,35 @@ describe("Needs you", () => {
     waiting = [];
     await waitFor(
       () => expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull(),
+      { timeout: 12000 },
+    );
+  });
+
+  it("a new ask is announced, and so is the moment it settles (M31)", async () => {
+    let waiting = [ask("apr_1")];
+    mount(stubClient({ pending: () => waiting }));
+    const rail = await screen.findByRole("navigation", { name: "Assistant" });
+    const status = within(rail).getByRole("status");
+    await waitFor(() => expect(status.textContent).toBe("1 thing needs you."));
+    waiting = [];
+    await waitFor(
+      () => expect(status.textContent).toBe("Nothing is waiting on you now."),
+      { timeout: 12000 },
+    );
+  });
+
+  it("when the last ask settles under the user's feet, focus lands on the reason (H17)", async () => {
+    let waiting = [ask("apr_1")];
+    mount(stubClient({ pending: () => waiting }));
+    const section = await screen.findByRole("region", { name: /Needs you/ });
+    const row = within(section).getByRole("button", { name: /Email send/i });
+    row.focus();
+    expect(document.activeElement).toBe(row);
+    // Decided somewhere else — the strip in the column, another tab, an
+    // automation finishing. The rows go, and focus used to go to <body>.
+    waiting = [];
+    await waitFor(
+      () => expect(document.activeElement?.textContent).toBe("Nothing is waiting on you now."),
       { timeout: 12000 },
     );
   });
@@ -200,6 +375,24 @@ describe("the home shelf", () => {
     expect(ghosts.length).toBeGreaterThan(0);
     expect(shelf.textContent).toMatch(/tap to build/i);
     expect(screen.queryByRole("region", { name: "Your apps" })).toBeNull();
+  });
+
+  it("a live tile's preview is inert, not aria-hidden-with-focusables (H11)", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    const shelf = await screen.findByRole("region", { name: "Your apps" });
+    await within(shelf).findByText("Invoices app surface");
+    const preview = shelf.querySelector(".fl-tile-view")!;
+    // The generated view really does carry its own focusable furniture…
+    expect(preview.querySelector("button")).toBeTruthy();
+    // …so hiding it from assistive tech while leaving it in the tab order is the
+    // defect. `inert` does both halves; aria-hidden does neither safely.
+    expect(preview.hasAttribute("inert")).toBe(true);
+    expect(preview.getAttribute("aria-hidden")).toBeNull();
+    // Every focusable inside the tile sits under that inert wrapper — the only
+    // thing the keyboard can reach on a tile is its own "Open" hit area.
+    const reachable = [...shelf.querySelectorAll<HTMLElement>("button,input,select,textarea,a[href],[tabindex]")]
+      .filter(node => node.closest("[inert]") === null);
+    expect(reachable.map(node => node.getAttribute("aria-label"))).toEqual(["Open Invoices"]);
   });
 
   it("once an app exists the ghosts are gone and the shelf is live", async () => {
@@ -262,6 +455,102 @@ describe("mobile P1 (§12)", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Close conversations" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
   });
+
+  it("choosing a conversation from the sheet lands focus in the column (H17)", async () => {
+    installMobile();
+    mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
+    const nav = await screen.findByRole("navigation", { name: "Assistant sections" });
+    fireEvent.click(within(nav).getByRole("button", { name: "Chats" }));
+    const sheet = await screen.findByRole("complementary", { name: "Conversations" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Where did July go?" }));
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
+    // The sheet the keyboard was standing in is gone; the column it chose has it.
+    expect(document.activeElement?.className).toContain("fl-center-main");
+  });
+
+  it("the history sheet has a keyboard contract: focus in, trapped, Escape out, focus back (M34)", async () => {
+    installMobile();
+    mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
+    const nav = await screen.findByRole("navigation", { name: "Assistant sections" });
+    const chats = within(nav).getByRole("button", { name: "Chats" });
+    chats.focus();
+    fireEvent.click(chats);
+    const sheet = await screen.findByRole("complementary", { name: "Conversations" });
+
+    // Focus went INTO the sheet (its first stop is the close button).
+    const close = within(sheet).getByRole("button", { name: "Close conversations" });
+    expect(document.activeElement).toBe(close);
+
+    // Tab cycles inside it rather than walking out into the covered page.
+    const stops = [...sheet.querySelectorAll<HTMLElement>("button")];
+    const last = stops.at(-1)!;
+    last.focus();
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(document.activeElement!, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    // Escape dismisses, and focus goes back to the button that opened it.
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
+    expect(document.activeElement).toBe(chats);
+  });
+});
+
+// H16 (round C's mechanism, adopted here): TilePreview is the ONE place both the
+// home shelf and the Apps grid boot an app, so the gate belongs there — the grid
+// maps the FULL list, and every tile is a real `apps.get` + `apps.open` (often an
+// iframe too). jsdom has no IntersectionObserver, so this case installs one.
+describe("the app boot gate on the Apps grid (H16)", () => {
+  type Watcher = { node: Element; fire(entries: { isIntersecting: boolean }[]): void };
+  class Observer {
+    static watchers: Watcher[] = [];
+    #callback: (entries: { isIntersecting: boolean }[]) => void;
+    constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
+      this.#callback = callback;
+    }
+    observe(node: Element) { Observer.watchers.push({ node, fire: this.#callback }); }
+    disconnect() {}
+  }
+  /** Scroll one tile into view: every watcher standing on that node answers. */
+  const scrollTo = (node: Element) => act(() => {
+    for (const watcher of Observer.watchers.filter(entry => entry.node === node)) {
+      watcher.fire([{ isIntersecting: true }]);
+    }
+  });
+  /** Previews being watched RIGHT NOW (the home shelf's own tiles were watched
+   *  and then unmounted when the Apps door opened). */
+  const watched = () => new Set(Observer.watchers.map(entry => entry.node).filter(node => node.isConnected));
+  beforeEach(() => {
+    Observer.watchers = [];
+    Object.defineProperty(globalThis, "IntersectionObserver", { configurable: true, writable: true, value: Observer });
+  });
+  afterEach(() => Reflect.deleteProperty(globalThis, "IntersectionObserver"));
+
+  it("boots nothing for a tile nobody has scrolled to, then exactly one when they do", async () => {
+    const log: string[] = [];
+    mount(stubClient({
+      log,
+      apps: [appDoc("app_1", "Invoices"), appDoc("app_2", "Payroll"), appDoc("app_3", "Receipts")],
+    }));
+    // Land on the Apps door FIRST (the home shelf caps itself at four tiles for
+    // the same reason; the grid is the unbounded one).
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    await screen.findByRole("heading", { name: "Apps", exact: true });
+    // Three tiles, three watched previews, and not one app booted.
+    await waitFor(() => expect(watched().size).toBe(3));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(log).toEqual([]);
+    expect(document.querySelectorAll(".fl-tile-skel").length).toBe(3);
+
+    // The reader scrolls the first tile into view.
+    scrollTo(document.querySelectorAll(".fl-tile")[0]!.querySelector(".fl-tile-skel")!);
+    await waitFor(() => expect(log).toEqual(["get:app_1", "open:app_1"]));
+    expect(await screen.findByText("Invoices app surface")).toBeTruthy();
+    // The two below the fold still cost nothing.
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(log).toEqual(["get:app_1", "open:app_1"]);
+  });
 });
 
 describe("the named doors", () => {
@@ -279,6 +568,27 @@ describe("the named doors", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open Invoices" }));
     const open = await screen.findByRole("region", { name: "Invoices" });
     expect(within(open).getByText("Invoices app surface")).toBeTruthy();
+  });
+
+  it("focus follows the navigation: into the opened app, back to its tile (H17)", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    const tile = await screen.findByRole("button", { name: "Open Invoices" });
+    fireEvent.click(tile);
+    const open = await screen.findByRole("region", { name: "Invoices" });
+    // The grid the keyboard was standing in is gone; focus went with the user.
+    expect(document.activeElement).toBe(open);
+    fireEvent.click(within(open).getByRole("button", { name: "← All apps" }));
+    // Coming back is a return: focus lands on the tile it came from.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open Invoices" })));
+  });
+
+  it("an opened app names its region from the FIRST paint, not after the fetch (M40)", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Invoices" }));
+    // No await: the region must already be "Invoices" while the surface loads.
+    expect(screen.getByRole("region", { name: "Invoices" })).toBeTruthy();
   });
 
   it("Automations opens the existing panel, unchanged", async () => {

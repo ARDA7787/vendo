@@ -8,7 +8,11 @@ import {
   unseenRunResult,
   type RunResult,
 } from "../chrome/run-activity.js";
-import { type PollOptions, useResource } from "./use-resource.js";
+import { APPROVALS_LOADING, approvalsFeed } from "./approvals-feed.js";
+import { type PollOptions } from "./use-resource.js";
+
+/** SSR / first-render snapshot, stable across calls. */
+const loadingSnapshot = () => APPROVALS_LOADING;
 
 export function useApprovals(options?: PollOptions): {
   /** Back-compat alias for `data` (contract §3). */
@@ -20,8 +24,14 @@ export function useApprovals(options?: PollOptions): {
   decide(ids: ApprovalId | ApprovalId[], decision: ApprovalDecision, decideOptions?: { grantSetId?: string }): Promise<void>;
 } {
   const { client } = useVendoContext();
-  const list = useCallback(() => client.approvals.pending(), [client]);
-  const { data, error, isLoading, refresh } = useResource(list, [] as ApprovalRequest[], options);
+  // H15 — every surface shares ONE poller per client (approvals-feed), so the
+  // launcher badge, the waiting strip, the rail and the toast feed cost one
+  // request between them instead of one each.
+  const feed = approvalsFeed(client);
+  const pollMs = options?.pollMs ?? 0;
+  const subscribe = useCallback((listener: () => void) => feed.subscribe(listener, pollMs), [feed, pollMs]);
+  const { data, error, isLoading } = useSyncExternalStore(subscribe, feed.read, loadingSnapshot);
+  const refresh = useCallback(() => feed.refresh(), [feed]);
 
   const decide = useCallback(
     async (ids: ApprovalId | ApprovalId[], decision: ApprovalDecision, decideOptions?: { grantSetId?: string }) => {

@@ -68,7 +68,9 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     }));
 
     fireEvent.click(screen.getByRole("button", { name: "Dry run" }));
-    expect((await screen.findByLabelText("Dry run for Invoice watcher")).textContent).toContain("host_invoices_list — ready");
+    // M30 — the dry-run block is a real group; a bare <div> may not be labelled.
+    const dry = await screen.findByRole("group", { name: "Dry run for Invoice watcher" });
+    expect(dry.textContent).toContain("host_invoices_list — ready");
 
     fireEvent.click(screen.getByRole("button", { name: "Run history" }));
     const stop = await screen.findByRole("button", { name: "Stop" });
@@ -80,6 +82,9 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable Invoice watcher" }));
     await waitFor(() => expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("false"));
+    // M33 — OFF is a STATE, so its track has to be visible as one (WCAG 1.4.11);
+    // the 14% hairline it used to wear sat at ~1.4:1.
+    expect(screen.getByRole("switch").style.background).toBe("var(--vendo-indicator)");
     expect(wire.requests).toContainEqual(expect.objectContaining({ method: "POST", path: "/automations/app_auto/disable" }));
   });
 

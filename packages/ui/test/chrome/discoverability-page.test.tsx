@@ -56,6 +56,15 @@ describe("greeting-as-tutorial on VendoPage", () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(intro()).toBeNull();
     expect(hasSeen("greeting")).toBe(false);
+    // …and it stays withheld through a later re-render from any other cause (an
+    // approvals poll, a run publishing itself). The gate used to hold only
+    // because the click happened to schedule no re-render — arming is REACTIVE,
+    // so the next incidental one would have burned the greeting.
+    fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
+    fireEvent.click(screen.getByRole("tab", { name: "New chat" }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(intro()).toBeNull();
+    expect(hasSeen("greeting")).toBe(false);
   });
 
   it("brand-new user (no conversations): the settled empty landing shows the tutorial", async () => {

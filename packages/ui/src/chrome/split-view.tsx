@@ -28,16 +28,28 @@ export interface SplitViewState {
   selectedAppId: string | undefined;
   /** Registered app embeds in thread order (latest last). */
   embeds: SplitEmbed[];
+  /** Apps whose plan-time "stage" hint has already had its one auto-open shot
+      (spec §2 G1: nothing may open itself twice, and nothing re-opens after the
+      user has closed it). */
+  autoStaged: string[];
+  /** Whether the workspace on screen is the USER's (their Expand affordance)
+      rather than a build's auto-opened stage. Only the latter goes away with
+      its embed. */
+  userExpanded: boolean;
 }
 
 export const initialSplitViewState: SplitViewState = {
   expanded: false,
   selectedAppId: undefined,
   embeds: [],
+  autoStaged: [],
+  userExpanded: false,
 };
 
 export type SplitViewAction =
-  | { type: "expand" }
+  /** `auto` marks a build's stage opening itself (the §5 V4 hint); absent, this
+      is the user's own Expand and the workspace becomes theirs to close. */
+  | { type: "expand"; auto?: boolean }
   | { type: "collapse" }
   | { type: "toggle" }
   /** An explicit user pick (clicking an app embed in the rail). */
@@ -46,17 +58,22 @@ export type SplitViewAction =
       registration moves the embed to "latest" only when its payload changed
       message identity — re-renders keep order. */
   | { type: "embed"; appId: string; payload: unknown }
+  /** The plan-time display hint spending its ONE auto-open shot for an app. */
+  | { type: "auto-stage"; appId: string }
   /** The embed left the thread (unmounted with the conversation). */
   | { type: "remove-embed"; appId: string };
 
 export function splitViewReducer(state: SplitViewState, action: SplitViewAction): SplitViewState {
   switch (action.type) {
-    case "expand":
-      return state.expanded ? state : { ...state, expanded: true };
+    case "expand": {
+      const userExpanded = state.userExpanded || action.auto !== true;
+      if (state.expanded && state.userExpanded === userExpanded) return state;
+      return { ...state, expanded: true, userExpanded };
+    }
     case "collapse":
-      return state.expanded ? { ...state, expanded: false } : state;
+      return state.expanded ? { ...state, expanded: false, userExpanded: false } : state;
     case "toggle":
-      return { ...state, expanded: !state.expanded };
+      return { ...state, expanded: !state.expanded, userExpanded: !state.expanded };
     case "feature": {
       if (!state.embeds.some(embed => embed.appId === action.appId)) return state;
       return { ...state, selectedAppId: action.appId };
@@ -70,13 +87,27 @@ export function splitViewReducer(state: SplitViewState, action: SplitViewAction)
       }
       return { ...state, embeds: [...state.embeds, { appId: action.appId, payload: action.payload }] };
     }
+    case "auto-stage":
+      // The shot is recorded whether or not it actually OPENS anything: a hint
+      // that fires against an already-open workspace is still spent. Recording
+      // it only on the open is what made Back-to-chat re-expand the panel — the
+      // collapse re-armed the hint, and the panel opened itself again (G1).
+      return state.autoStaged.includes(action.appId)
+        ? state
+        : { ...state, autoStaged: [...state.autoStaged, action.appId] };
     case "remove-embed": {
       if (!state.embeds.some(embed => embed.appId === action.appId)) return state;
+      const embeds = state.embeds.filter(embed => embed.appId !== action.appId);
       return {
         ...state,
-        embeds: state.embeds.filter(embed => embed.appId !== action.appId),
+        embeds,
         // A removed explicit pick falls back to following the latest.
         selectedAppId: state.selectedAppId === action.appId ? undefined : state.selectedAppId,
+        // A failed staged build withdraws its embed; the stage that opened FOR
+        // that build goes with it rather than leaving the user sitting in an
+        // expanded workspace with nothing on the stage. A workspace the user
+        // opened themselves is theirs — it stays, empty stage and all.
+        expanded: state.expanded && (embeds.length > 0 || state.userExpanded),
       };
     }
   }
@@ -105,8 +136,14 @@ export interface SplitViewContextValue {
   featuredAppId: string | undefined;
   feature(appId: string): void;
   /** Expand the workspace with THIS app featured — the compact card's
-      prominent Expand affordance (2026-07 demo feedback). */
+      prominent Expand affordance (2026-07 demo feedback). A USER gesture. */
   expandTo(appId: string): void;
+  /** The plan-time display hint (§5 V4) asking for the stage. Idempotent per
+      app for the life of the surface, so a hint can never fight the user:
+      after Back-to-chat the workspace stays closed until they open it
+      themselves (§2 G1 — nothing auto-opens or auto-folds). Callers do NOT
+      need their own "already fired" bookkeeping. */
+  autoStage(appId: string): void;
   registerEmbed(appId: string, payload: unknown): void;
   removeEmbed(appId: string): void;
 }
