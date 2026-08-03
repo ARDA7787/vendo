@@ -2400,21 +2400,19 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-center-ask { display: flex; align-items: flex-end; gap: 8px; margin-top: auto; padding-top: 22px; }
 .fl-center-ask-field { flex: 1; display: flex; flex-direction: column; }
 .fl-center-ask-field .fl-picker-group { margin: 0 2px 7px; }
-/* Room to breathe (§10 "with room to breathe"): the per-app verbs are quiet
-   until the tile is hovered or holds focus — the same reveal the transcript's
-   turn actions use. Always present for touch, where there is no hover. */
-.fl-tile-acts { display: flex; flex-wrap: wrap; gap: 6px; opacity: 0; transition: opacity .14s; }
-.fl-tile:hover .fl-tile-acts, .fl-tile:focus-within .fl-tile-acts { opacity: 1; }
-@media (pointer: coarse) { .fl-tile-acts { opacity: 1; } }
+/* Room to breathe (§10 "with room to breathe"): the per-app verbs are ONE quiet
+   line of text under the name — four bordered pills wrapped onto two rows and
+   turned every tile into a toolbar, and hiding them until hover only traded the
+   clutter for a dead band of reserved space. */
+.fl-tile-acts { display: flex; flex-wrap: wrap; gap: 12px; }
 /* An app with no view of its own (an automation) says so, rather than resting
    forever on a skeleton that pretends one is coming. */
 .fl-tile-none { display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 7px; height: 100%; color: var(--vendo-fg-muted); font-size: 11.5px; }
-.fl-tile-act { border: 1px solid var(--vendo-border); border-radius: 999px; padding: 4px 10px;
-  background: transparent; color: var(--vendo-fg-muted); font: 500 11.5px/1.4 var(--vendo-font);
-  cursor: pointer; transition: color .14s, border-color .14s; }
-.fl-tile-act:hover { color: var(--vendo-fg); border-color: var(--vendo-border-strong); }
-.fl-tile-act--ceremony:hover { color: var(--vendo-warn); border-color: var(--vendo-warn-border); }
+.fl-tile-act { border: 0; padding: 0; background: transparent; color: var(--vendo-fg-muted);
+  font: 500 11.5px/1.4 var(--vendo-font); cursor: pointer; transition: color .14s; }
+.fl-tile-act:hover { color: var(--vendo-fg); }
+.fl-tile-act--ceremony:hover { color: var(--vendo-warn); }
 .fl-tile-act:focus-visible { outline: 2px solid var(--vendo-accent); outline-offset: 2px; }
 .fl-tile-form { display: flex; align-items: center; gap: 6px; }
 .fl-tile-form .fl-picker-search { margin-bottom: 0; }
