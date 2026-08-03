@@ -6,7 +6,7 @@
  *  is only what the center itself owns: the two named doors, the attention
  *  section while it has something to say, and the conversations.
  */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useVendoContext } from "../../context.js";
 import { useAttention } from "../../hooks/use-approvals.js";
 import type { ThreadSummary } from "../../wire-types.js";
@@ -254,7 +254,10 @@ export interface CenterChatsProps {
  *  wire's own thread title), ellipsized by CSS — never truncated in JS, so the
  *  full line stays available to assistive tech and to a wider rail. */
 export function CenterChats({ threads, activeId, onSelect }: CenterChatsProps) {
-  const groups = useMemo(() => groupThreads(threads, Date.now()), [threads]);
+  // Not memoized on [threads]: "today" is a fact about the CLOCK, and a rail
+  // left open across midnight kept yesterday's answer (the grouping is three
+  // comparisons over a short list — there was nothing to save).
+  const groups = groupThreads(threads, Date.now());
   return (
     <>
       {groups.map(group => (

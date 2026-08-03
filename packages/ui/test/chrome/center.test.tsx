@@ -18,7 +18,7 @@
  */
 import type { ApprovalRequest, AppDocument } from "@vendoai/core";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, type VendoClient } from "../../src/index.js";
 import { VendoPage } from "../../src/chrome/index.js";
 import { markSeen } from "../../src/chrome/discoverability.js";
@@ -194,6 +194,26 @@ describe("the center rail", () => {
     for (const tab of tabs) {
       const controls = tab.getAttribute("aria-controls")!;
       expect(document.getElementById(controls), `${tab.textContent} controls a real element`).toBe(panel);
+    }
+  });
+
+  it("a rail left open across midnight regroups (M40)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 7, 2, 23, 59));
+      mount(stubClient({
+        threads: [{ id: "thr_late", title: "Where did July go?", updatedAt: new Date(2026, 7, 2, 23, 30).toISOString() }] as ThreadSummary[],
+      }));
+      expect(await screen.findByText("Today")).toBeTruthy();
+      // Two minutes later it is tomorrow, and last night's conversation is not
+      // "Today" any more. The thread list has not changed — which is exactly
+      // what the [threads] memo keyed on.
+      vi.setSystemTime(new Date(2026, 7, 3, 0, 1));
+      fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
+      await waitFor(() => expect(screen.getByText("Previous 7 days")).toBeTruthy());
+      expect(screen.queryByText("Today")).toBeNull();
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -375,6 +395,14 @@ describe("the named doors", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open Invoices" }));
     const open = await screen.findByRole("region", { name: "Invoices" });
     expect(within(open).getByText("Invoices app surface")).toBeTruthy();
+  });
+
+  it("an opened app names its region from the FIRST paint, not after the fetch (M40)", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Invoices" }));
+    // No await: the region must already be "Invoices" while the surface loads.
+    expect(screen.getByRole("region", { name: "Invoices" })).toBeTruthy();
   });
 
   it("Automations opens the existing panel, unchanged", async () => {

@@ -37,8 +37,11 @@ function refusalSentence(reason: unknown): string {
   return "That didn’t go through — nothing changed. Try again in a moment.";
 }
 
-/** An app open full in the column. */
-export function OpenApp({ appId, onClose }: { appId: string; onClose(): void }) {
+/** An app open full in the column. `name` comes from the list the caller
+ *  already has, so the region is named from its FIRST paint: naming it from the
+ *  fetch renamed the landmark under the user a moment after they arrived (and
+ *  told anyone who had just been moved into it that they were in "Open app"). */
+export function OpenApp({ appId, name, onClose }: { appId: string; name?: string; onClose(): void }) {
   const { client, components } = useVendoContext();
   const { app, surface, error, isLoading, refresh } = useApp(appId);
   // Wave 7 H2 — same keepalive as VendoSlot's MountedApp (see frames.tsx).
@@ -70,10 +73,10 @@ export function OpenApp({ appId, onClose }: { appId: string; onClose(): void }) 
       )
       : <div role="status">Opening app…</div>;
   return (
-    <section className="fl-center-open" aria-label={app?.name ?? "Open app"}>
+    <section className="fl-center-open" aria-label={name ?? "Open app"}>
       <div className="fl-center-open-top">
         <button type="button" className="fl-btn" onClick={onClose}>← All apps</button>
-        <span className="fl-center-open-name">{app?.name}</span>
+        <span className="fl-center-open-name">{name ?? app?.name}</span>
       </div>
       {body}
     </section>
@@ -136,7 +139,15 @@ export function AppsPage({ api, opened, onOpened }: AppsPageProps) {
   };
 
   if (opened !== undefined) {
-    return <OpenApp key={opened} appId={opened} onClose={() => onOpened(undefined)} />;
+    const name = apps.find(app => app.id === opened)?.name;
+    return (
+      <OpenApp
+        key={opened}
+        appId={opened}
+        {...(name === undefined ? {} : { name })}
+        onClose={() => onOpened(undefined)}
+      />
+    );
   }
 
   return (
