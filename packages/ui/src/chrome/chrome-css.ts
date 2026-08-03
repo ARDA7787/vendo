@@ -1638,12 +1638,9 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
    amber fill + white text in light (7.1:1); light amber fill + near-black text
    in dark (8.7:1, and the fill itself pops ~8:1 off the dark warn-bg) — flipping only the fill
    would drop white-on-#d9a94e to 2.2:1 (ENG-226 review catch). */
-/* .fl-btn-critical is the legacy alias the voice consent bar still emits; it
-   carries NO style of its own — one ceremony look, two names until Lane B
-   migrates the markup (packages/ui/test/voice/stage.test.tsx asserts the name). */
-.fl-btn-ceremony, .fl-btn-critical { background: var(--vendo-warn); border-color: transparent;
+.fl-btn-ceremony { background: var(--vendo-warn); border-color: transparent;
   color: var(--vendo-warn-on-fill); }
-.fl-btn-ceremony:hover, .fl-btn-critical:hover { opacity: .92; background: var(--vendo-warn); }
+.fl-btn-ceremony:hover { opacity: .92; background: var(--vendo-warn); }
 
 /* ==================== ui-lane-panels lane block ====================
    Converged picks (the lane report they came from was worktree scratch, never
@@ -2268,5 +2265,31 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-card-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 /* The byline: who/what is asking, or when it settled. Always last, always quiet. */
 .fl-card-byline { margin-top: 10px; font-size: 11.5px; color: var(--vendo-fg-muted); }
+
+/* ================== LANE B — card-shell surfaces (spec §16, §4) ==================
+   Nothing here dresses or undresses a card: it sizes the shell inside each
+   ancestor (law 1) and styles the two containers the shell lives in. */
+
+/* N1 — the waiting strip is COUNT-FIRST: a slim summary row that expands the
+   shell cards in place. Native <details>, so no state and no JS. */
+.fl-waiting-strip > summary { display: flex; align-items: center; gap: 8px; cursor: pointer;
+  list-style: none; font: 600 11px/1 var(--vendo-font); letter-spacing: .04em;
+  text-transform: uppercase; color: var(--vendo-fg-muted); }
+.fl-waiting-strip > summary::-webkit-details-marker { display: none; }
+.fl-waiting-strip > summary:focus-visible { outline: 2px solid var(--vendo-accent); outline-offset: 3px; border-radius: 4px; }
+.fl-waiting-strip > summary::after { content: ""; width: 6px; height: 6px; margin-left: auto;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg); transition: transform var(--vendo-duration) var(--vendo-ease); }
+.fl-waiting-strip[open] > summary { margin-bottom: 10px; }
+.fl-waiting-strip[open] > summary::after { transform: rotate(225deg); }
+.fl-waiting-cards { display: flex; flex-direction: column; gap: 8px; }
+/* Law 1 — the ancestors that size the shell (width only, never its dress):
+   the strip, the mobile sheet, and the activities stack. */
+.fl-waiting-cards > .fl-cardshell,
+.fl-approval-sheet .fl-cardshell,
+.fl-approvals-stack .fl-cardshell { width: 100%; max-width: none; min-width: 0; }
+/* The automation card's flow nodes are CONTENTS now: the panel's padded block
+   loses its own box because the shell owns the padding. */
+.fl-cardshell > .fl-auto-flow { margin-top: 12px; padding: 12px 0 0; }
 
 `;
