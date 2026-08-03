@@ -19,12 +19,40 @@ function sendFromComposer(text: string) {
 /** C4 — the ONE gate both error surfaces read, against the three strings the
  *  agent's `wireErrorMessage` actually puts on the wire. */
 describe("the turn-error gate (C4)", () => {
-  it("keeps the operator's sentence and drops the marker and the code token", () => {
+  // ⚠️⚠️ DEFECT-PINNING TEST EDIT (CR-3). This asserted that the OPERATOR's
+  // sentence reached the reader, which is the defect: the "Vendo: " marker says
+  // a string is safe on the WIRE, never that it was written for a person.
+  // `packages/vendo/src/sandbox.ts` raises "Vendo Cloud sandbox sbx_… is gone
+  // (destroyed by the provider): <raw provider message>" through this exact
+  // path — an id and a nested exception, inside a turn. The reader now gets
+  // copy chosen by the VendoError CODE (the refusalCopy pattern).
+  it("answers by CODE, never with the operator's own sentence", () => {
     expect(turnErrorSentence("Vendo: this deployment's plan does not include app machines (cloud-required)"))
-      .toBe("this deployment's plan does not include app machines");
+      .toBe("That isn’t turned on for this workspace yet — nothing was changed.");
   });
 
-  it("strips only the TRAILING code — a sentence's own parentheses are content", () => {
+  it("never prints an id or a nested provider exception from a Vendo-prefixed string", () => {
+    const sandbox = "Vendo: Vendo Cloud sandbox sbx_9f21 is gone (destroyed by the provider):"
+      + " Error: 404 sandbox not found at https://api.provider.test/v1/sandboxes/sbx_9f21 (not-found)";
+    const sentence = turnErrorSentence(sandbox)!;
+    expect(sentence).toBe("What that was about isn’t there any more — nothing was changed.");
+    expect(sentence).not.toContain("sbx_9f21");
+    expect(sentence).not.toContain("provider");
+    expect(sentence).not.toContain("http");
+  });
+
+  it("strips EVERY trailing code token — a doubly-gated message left one on screen", () => {
+    expect(turnErrorSentence("Vendo: boom (validation) (cloud-required)"))
+      .toBe("That isn’t turned on for this workspace yet — nothing was changed.");
+  });
+
+  it("says nothing for a Vendo-prefixed string carrying no code at all", () => {
+    // The surfaces' own headline ("Something went wrong…") is the honest
+    // answer; printing the wire instead of it is the defect.
+    expect(turnErrorSentence("Vendo: something happened in run_18f0")).toBeUndefined();
+  });
+
+  it("keeps the ONE crafted sentence that is consumer copy — the meter refusal", () => {
     const meter = "Vendo: Vendo Cloud paused AI tokens — the allowance for this billing period is used up "
       + "(1,204,000 of 1,000,000 used; resets 2026-08-01). "
       + "Upgrade your plan (https://console.vendo.run/billing) "
@@ -88,11 +116,12 @@ describe("visible error surface + retry (ENG-214)", () => {
     sendFromComposer("Hello");
     const banner = (await screen.findByText(/Something went wrong/)).closest(".fl-error");
     expect(banner?.textContent).toContain("Something went wrong");
-    // ⚠️ TEST EDIT (C4): this line used to require the trailing "(cloud-required)"
-    // token — "code kept for support". The code is the DEVELOPER's half of the
-    // string; `wireErrorMessage` already logs it to the console and the server
-    // log. The reader gets the sentence, nothing else.
-    expect(banner?.textContent).toContain("this deployment's plan does not include app machines");
+    // ⚠️⚠️ DEFECT-PINNING TEST EDIT (CR-3): this required the OPERATOR's
+    // sentence in the banner. It is the developer's half of the string and now
+    // stays in the server log and the console; the banner carries the copy for
+    // this VendoError code.
+    expect(banner?.textContent).toContain("That isn’t turned on for this workspace yet");
+    expect(banner?.textContent).not.toContain("does not include app machines");
     expect(banner?.textContent).not.toContain("(cloud-required)");
   });
 
@@ -156,8 +185,12 @@ describe("visible error surface + retry (ENG-214)", () => {
     // The user's message stays, and the failure reads where the answer would be
     // — with no live thread.error, so nothing but the turn itself is saying it.
     expect(await screen.findByText("Show me a dashboard")).toBeTruthy();
-    const notice = await screen.findByText(/Vendo found no model key/);
+    // ⚠️⚠️ DEFECT-PINNING TEST EDIT (CR-3): this pinned "Vendo found no model
+    // key. Run `vendo login` for a free dev key." INSIDE a user's transcript —
+    // a shell command in a consumer surface, admitted by the prefix alone.
+    const notice = await screen.findByText(/I couldn’t make that request work/);
     expect(notice.closest("[data-vendo-turn-error]")).toBeTruthy();
+    expect(notice.textContent).not.toContain("vendo login");
     // The wire's "Vendo: " marker is plumbing, never shown to the reader.
     expect(notice.textContent).not.toContain("Vendo: ");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
