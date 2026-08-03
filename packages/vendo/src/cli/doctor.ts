@@ -20,6 +20,7 @@ import { doctorFixRef, type DoctorErrorCode } from "./doctor-codes.js";
 import { EJECT_MANIFEST_FILE, type EjectedManifest } from "./eject.js";
 import { applyJudgment, judgmentsFileSchema, overridesFileSchema, toolsFileSchema, type ToolJudgment } from "@vendoai/actions";
 import { detectFramework, detectVendoWiring } from "./framework.js";
+import { importsGeneratedMap, missingRegistrations, registrationKey, requiredServerActions, serverActionsWiring } from "./init-scaffolds.js";
 import { CONFIG_SURFACES, OVERRIDES_ENABLEMENT_NOTE } from "../config-surface.js";
 import { walk } from "./theme/walk.js";
 import { remoteUrls, sameUrl, validateRegistryServer } from "./mcp/registry.js";
@@ -208,8 +209,50 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       join(root, "app", "api", "vendo", "[...vendo]", "route.ts"),
       join(root, "src", "app", "api", "vendo", "[...vendo]", "route.ts"),
     ];
-    if ((await Promise.all(routeCandidates.map(exists))).some(Boolean)) pass("wiring/next-route", "catch-all handler is wired");
+    const routePath = (await Promise.all(
+      routeCandidates.map(async (candidate) => (await exists(candidate)) ? candidate : null),
+    )).find((candidate) => candidate !== null) ?? null;
+    if (routePath !== null) pass("wiring/next-route", "catch-all handler is wired");
     else fail("wiring/next-route", "E-WIRE-003", "missing app/api/vendo/[...vendo]/route.ts");
+
+    // Server actions (ENG-248): init only ever CREATES, so a route or a
+    // registration map that predates the host's `"use server"` surface stays
+    // exactly as the developer left it — and every server-action tool then
+    // fails closed at execution time with nothing else red. Doctor is where
+    // that shows up. Every judgment below is the SAME one init makes, from the
+    // same shared helpers: the two must never disagree about whether a host is
+    // wired, or one of them is lying. Silent when the host has no live server
+    // actions at all.
+    const registrations = routePath === null ? [] : await requiredServerActions(root);
+    if (routePath !== null && registrations.length > 0) {
+      const routeSource = await readFile(routePath, "utf8").catch(() => "");
+      const wiring = serverActionsWiring(routeSource);
+      if (wiring === "unknown") {
+        // No recognizable createVendo({ … }) — the same shape init declines to
+        // name a paste for. Nothing honest to grade.
+      } else if (wiring === "wired" && !importsGeneratedMap(routeSource)) {
+        // The route passes a map it composes itself (a local object, an aliased
+        // import). Init leaves that alone by design, and there is no generated
+        // map to grade against — so doctor says nothing rather than guessing.
+      } else {
+        const mapPath = join(dirname(routePath), "vendo-actions.ts");
+        const map = await readOptional(mapPath);
+        const missing = map === null ? registrations : missingRegistrations(map, registrations);
+        if (wiring === "wired" && missing.length === 0) {
+          pass("wiring/server-actions", `${registrations.length} server action${registrations.length === 1 ? " is" : "s are"} registered and wired`);
+        } else {
+          fail("wiring/server-actions", "E-WIRE-009",
+            `server actions fail closed — ${[
+              ...(missing.length === 0 ? [] : [map === null
+                ? `${relative(root, mapPath)} is missing`
+                : `${relative(root, mapPath)} does not register ${missing.map(registrationKey).join(", ")}`]),
+              // Scoped to the call on purpose: an import line alone is not
+              // wiring, and it is exactly where a half-applied paste lands.
+              ...(wiring === "unwired" ? [`${relative(root, routePath)} does not pass serverActions inside createVendo({ … })`] : []),
+            ].join("; ")}. Re-run \`npx vendo init\`: it prints the exact paste for each (it never rewrites a file you already have).`);
+        }
+      }
+    }
 
     // The mount may live in ANY layout, not just the root one (i18n/route-group
     // hosts mount in e.g. app/[locale]/layout.tsx — the literal root-layout
