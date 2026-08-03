@@ -1336,12 +1336,19 @@ function offeredAtDoor(menu: Set<string> | undefined, name: string): boolean {
  * rides along here too — the spec moved it to a top-level field, but clients
  * that predate that move still read `annotations.title`, so the door emits
  * both and neither can drift from the other.
+ *
+ * `ungraded` asserts NEITHER hint. MCP's own default for `destructiveHint` is
+ * `true`, so emitting `false` was an active claim of safety about a tool nobody
+ * judged — the exact guess the risk-grading redesign deleted everywhere else.
+ * `true` would be the opposite guess and just as unfounded, and `readOnlyHint:
+ * false` claims "modifies its environment", also unknown. Omitted, the client
+ * falls back to the spec's own conservative defaults and the door says nothing
+ * it cannot support.
  */
 function toolAnnotations(risk: RiskLabel, title?: string): NonNullable<Tool["annotations"]> {
   return {
     ...(title === undefined ? {} : { title }),
-    readOnlyHint: risk === "read",
-    destructiveHint: risk === "destructive",
+    ...(risk === "ungraded" ? {} : { readOnlyHint: risk === "read", destructiveHint: risk === "destructive" }),
   };
 }
 
