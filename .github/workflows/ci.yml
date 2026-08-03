@@ -169,6 +169,7 @@ jobs:
       - name: UI solidity + stress suite
         run: >-
           pnpm --filter @vendoai/ui test:browser
+          e2e/smoke.spec.ts
           e2e/stress.spec.ts
           e2e/scroll-management.spec.ts
           e2e/extreme-content.spec.ts
