@@ -279,28 +279,17 @@ export function VendoThread({
   // sentence isn't printed twice.
   const turnErrorInThread = activeAssistant?.parts.some(part => part.type === "data-vendo-turn-error") ?? false;
   const errorDetail = turnErrorInThread ? undefined : turnErrorSentence(thread.error?.message);
+  // Ruling 16 — §15 governs the surfaces where the AGENT CAN SPEAK, and this is
+  // one: the banner used to carry its own Retry button, a bespoke failure
+  // control beside a conversation that already has one recovery path (the turn's
+  // Regenerate action, and the composer). The banner states what happened and
+  // stops there.
   const errorBanner = thread.error ? (
     <div className="fl-error">
       <span>
         Something went wrong and the response didn&rsquo;t finish.
         {errorDetail === undefined ? null : <span className="fl-error-detail">{errorDetail}</span>}
       </span>
-      <button
-        type="button"
-        className="fl-error-retry"
-        onClick={() => {
-          // Nothing to re-issue (sends append the user turn before any request
-          // fires, so this is a defensive rail): degrade to dismissing the
-          // error instead of letting regenerate() throw on an empty thread.
-          if (thread.messages.length === 0) {
-            thread.clearError();
-            return;
-          }
-          void thread.regenerate();
-        }}
-      >
-        Retry
-      </button>
     </div>
   ) : null;
 
