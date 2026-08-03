@@ -11,13 +11,35 @@ The umbrella owns the `vendo` bin. It has nine commands.
 Non-interactive setup with zero questions on the happy path. It scans the app,
 scaffolds the server surface (an empty `vendo/registry.tsx` plus the
 composition wired to it), writes the `.vendo/` contract, and — on Next.js —
-generates the `vendo/vendo-root.tsx` client mount (which renders
-`<VendoOverlay />`, the visible launcher + panel) and wires it into your
-layout with one bounded, reviewable edit; a layout it can't edit unambiguously
-gets the exact paste lines instead. Theme is extracted automatically and auth
-is detected from `package.json`. See
+generates the `vendo/vendo-root.tsx` client mount, which renders
+`<VendoOverlay />`, the visible launcher + panel. Theme is extracted
+automatically and auth is detected from `package.json`. See
 [vendo init](/connect/vendo-init) for the full walkthrough and
 [the agent playbook](/agents) for the agent-driven flow.
+
+**Init never writes to a file you authored.** Every file it creates is new and
+Vendo-owned; the only exception is `package.json`, where it maintains its own
+`predev`/`prebuild` hooks. Mounting `<VendoRoot>` in your layout is therefore
+yours to paste, and init ends with a framed block naming the exact file and
+lines:
+
+```
+────────────────────────────────────────────────────────────────
+ONE STEP LEFT — paste this yourself (init never edits your files)
+
+  File: app/layout.tsx
+    import { VendoRoot } from "../vendo/vendo-root";
+    … then wrap: <VendoRoot>{children}</VendoRoot>
+
+  vendo/vendo-root.tsx mounts <VendoOverlay />, the visible launcher +
+  panel — until this lands, Vendo is wired but invisible.
+  Then confirm it landed: npx vendo doctor
+────────────────────────────────────────────────────────────────
+```
+
+The same step rides `--agent` as a `mount` object (`{ file, lines, why }`) and
+as the first entries of `manualSteps`. Until it lands, `vendo doctor` fails
+with [E-WIRE-004](/agents/verify#E-WIRE-004) and prints the same paste.
 
 Init detects the host framework from `package.json`: a `next` dependency
 scaffolds `app/api/vendo/[...vendo]/route.ts` (under `src/app` when that
@@ -37,14 +59,14 @@ which future sync runs respect.
 Options:
 
 - `--agent` emits the setup plan as JSON and writes nothing: the detected
-  framework, every file init would write, every proposed code diff (including
-  the layout mount), any remaining `<VendoRoot>` paste lines, `extraction`
+  framework, every file init would write, every proposed code diff (all
+  Vendo-owned files), `mount` (the `<VendoRoot>` paste as
+  `{ file, lines, why }`) plus the same lines in `manualSteps`, `extraction`
   (deterministic extraction runs first,
   against a throwaway directory, so the plan carries the extracted tools),
-  `riskRecommendations` (per-tool advice: destructive tools should be marked
-  critical, disabled tools reviewed before enabling), and an `aiPolish`
-  delegation contract. It is a read-only plan, not a scaffolding step; scaffold
-  with `--yes`.
+  and `riskRecommendations` (per-tool advice: destructive tools should be
+  marked critical, disabled tools reviewed before enabling). It is a read-only
+  plan, not a scaffolding step; scaffold with `--yes`.
 - `--yes` skips the interactive prompts (auth confirm, theme review, Cloud
   offer) and scaffolds non-interactively, ending with an `Agent tail:` block
   naming the files left to hand-edit.
@@ -54,8 +76,12 @@ Options:
   when detection fails.
 - `--cloud-key <key>` writes an existing Vendo Cloud key to `.env.local`;
   `--byo` declines the Cloud offer (bring your own model key).
-- `--ai-polish` consents to the AI pass non-interactively: tool judgment
+- `--ai` / `--no-ai` force the AI pass on or off — tool judgment
   (descriptions, risk, brief) and theme-slot filling, one consent for both.
+  Without either flag, an interactive run **asks, every run** (nothing is ever
+  saved) and a non-interactive one skips. `--yes` counts as non-interactive.
+  `--ai-polish` is the older spelling of `--ai` and still works. The same
+  rule and the same flag pair apply to `vendo sync`.
 - `--engine <claude|codex|npx>` pins which engine runs the AI pass instead of
   first-available (`claude` = Claude Agent SDK or the `claude` CLI, `codex` =
   the `codex` CLI, `npx` = the npx-fetched engine on Vendo Cloud fuel). A
@@ -85,14 +111,19 @@ your dev and build scripts:
 ```json
 {
   "scripts": {
-    "predev": "vendo sync",
-    "prebuild": "vendo sync --strict"
+    "predev": "vendo sync --no-ai",
+    "prebuild": "vendo sync --strict --no-ai"
   }
 }
 ```
 
-If either script already exists, `vendo sync` is prepended. Existing formatting
-is preserved.
+The hooks carry `--no-ai` explicitly, so a `npm run dev` or `npm run build`
+can never stop to ask a question or spend on inference. If a script already
+exists and does not call `vendo sync`, the command is prepended and existing
+formatting is preserved. If it holds the hookless entry an older init wrote
+(`vendo sync` / `vendo sync --strict`, exactly), re-running init upgrades that
+one entry in place; any other `vendo sync …` in your scripts is your own call
+and is left untouched.
 
 ## `vendo login [email]`
 
@@ -209,9 +240,10 @@ behind every check.
 
 ## `vendo sync [dir]`
 
-Runs the build-step extraction manually. It updates tool extraction, remix
-baselines, and the host component catalog for `dir`, which defaults to the
-current directory. The default is fail-soft and warns on breaking changes.
+Runs the build-step scan manually. Sync owns the WHOLE scan: tool extraction,
+remix baselines, the host component catalog, and the theme, for `dir`, which
+defaults to the current directory. The default is fail-soft and warns on
+breaking changes.
 When tools changed or broke, sync asks the running dev server which saved
 apps, automations, and grants they impact and prints one `impact:` line per
 tool (or `impact unknown` when no server is reachable). Drifted pins get an
@@ -245,29 +277,133 @@ catalog.json: 2 discovered, 2 registered
 A malformed existing `.vendo/catalog.json` fails sync loudly instead of
 being silently overwritten.
 
-After the structural scan, sync runs an AI enrichment pass over the tools the
-code diff affected: it reads `git diff` from the `tools.json` watermark (the
-tree at the last enrichment) plus the current catalog, rewrites descriptions,
-grades risk/audience, infers response-field semantics, and prints a change
-narrative (apply-then-show — the git diff of `.vendo/tools.json` is the
-review). The pass is restrictive-only: it can raise risk, narrow audience, or
-disable, never the reverse — loosening is a human edit in
-`.vendo/overrides.json`. Engines resolve like init's ladder: a BYO model key
-(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), then `VENDO_API_KEY` managed
-inference, then none — keyless syncs stay structural-only with entries left
-unmarked as enriched, and never fail.
+### The theme re-scan
+
+Sync re-runs the same deterministic theme scan `vendo init` does and
+reconciles it with `.vendo/theme.json`, so a rebrand actually reaches the
+agent instead of it rendering last quarter's colors forever. Hand edits are
+never clobbered.
+
+Provenance rides a sibling merge base, `.vendo/theme.extracted.json` — what
+the deterministic scan produced last time, written by init and kept current by
+sync. It mirrors the split `.vendo/` already lives by (`tools.json` is the
+machine layer, `overrides.json` is what a person decided), and it leaves
+`theme.json` exactly the frozen `VendoTheme` shape. Commit both. Per slot:
+
+A slot is machine-owned **only** when the base records it and `theme.json`
+still holds exactly that value. Everything else is yours:
+
+- recorded, and `theme.json` still equals it → machine-extracted; sync takes
+  the new value
+- recorded, and `theme.json` differs → you edited it; pinned, and reported
+  with both values so the choice is visible
+- **not recorded at all** — no base file yet, or a token init never saw →
+  pinned. There is no evidence about who chose the value on disk, and Vendo
+  will not guess from "it looks like one of our defaults" (the neutral
+  defaults are ordinary Tailwind palette values — `#2563eb` is blue-600 — so
+  guessing would silently overwrite a real brand choice).
+
+Values are compared by meaning, not bytes: `#FFFFFF` and `#ffffff` are the
+same color.
+
+**Derived slots follow their source.** `accentText` is the accent's contrast
+color, `headingFamily` inherits `fontFamily`, and `radius.small`/`radius.large`
+scale from `radius.medium`. A derived slot moves only when its source moves —
+so a pinned accent keeps its own contrast text rather than getting the one
+computed for your app's accent (which is how a hand-picked dark blue would end
+up with black text on it). `radius.small`/`radius.large` additionally hold if
+you tuned them away from the derived values.
+
+The summary line names exactly what happened, and only that: the "re-read"
+list is the set of slots actually written to `theme.json`, and pinned slots are
+reported separately with both values.
+
+```
+theme: 1 slot re-read from your app (accent) → .vendo/theme.json · 1 pinned by you, unchanged (border — yours #111111 vs your app's #e2e8f0) — `vendo sync --theme-refresh` takes your app's values
+```
+
+`--json` mirrors it as `theme: { updated, pinned }`, both lists of slot names.
+
+The base only advances on an unambiguous run — one with no pinned slots. So an
+install from before the base existed touches nothing and warns with the diff on
+**every** sync until you either accept it with `--theme-refresh` (which takes
+every changed slot and records the base) or edit `theme.json` yourself. When
+the scan and `theme.json` already agree everywhere, the base bootstraps
+silently. The file has no timestamp and is rewritten only when its values
+change, so a no-op sync leaves your tree clean.
+
+### Pin baselines reach Vendo Cloud
+
+When a Vendo Cloud key resolves (`VENDO_API_KEY`, `.env.local`/`.env`, or
+`--key`), a normal sync also reconciles the captured baselines in
+`.vendo/remixable/` with the `vendo_pin_baselines` collection in your project's
+hosted store — the collection the console's Remix reviews screen reads. New and
+changed slots are uploaded, slots whose baseline **file is gone** are deleted
+remotely, and one line reports both. This does **not** require `--report`.
+
+A baseline file that exists but cannot be read (a truncated or half-written
+capture) is skipped with a warning and its Cloud row is left alone — only an
+absent file is a deletion signal, so a bad file on one machine can never wipe
+the console's review baseline. The whole reconcile runs under one ~20s budget;
+if it runs out, whatever already landed is still reported and the rest retries
+on the next sync.
+
+What crosses the wire is the baseline file verbatim: the wrapped component's
+**source**, the source of every module it imports within the capture depth, and
+the captured app-root stylesheets. That is the point — a reviewer cannot review
+a fork's diff against source Cloud does not have — but it is worth knowing
+before you set a key. Keyless and BYO installs make no request at all; the
+baselines stay on disk. A Cloud failure is a warning line and never changes the
+exit code; the next sync retries.
+
+### The judgment pass
+
+After the structural scan, sync judges the freshly extracted catalog: a coding
+agent grades each tool with a verbatim source quote behind every proposal, an
+independent skeptic checks each one, and the surviving judgments land in
+`.vendo/judgments.json`. Candidates are chosen by drift — a changed `srcHash`
+or a binding mismatch — unless `--full` judges everything. Hardenings and prose
+apply themselves; loosenings wait for a human (`--review` asks now, otherwise
+they queue as `pending`).
+
+`.vendo/overrides.json` is **not** written by this pass. It is read-only prompt
+context now, and it means exactly one thing: what a human decided. A re-sync
+can never clobber either file.
+
+Whether the pass runs at all follows the same rule as `vendo init`:
+
+| | no flag | `--ai` | `--no-ai` |
+| --- | --- | --- | --- |
+| Interactive (TTY) | asks, **every run** | runs | skipped |
+| Non-interactive | skipped, with a note | runs | skipped |
+
+Nothing is ever persisted, so an interactive run asks again every time. A
+non-interactive run with no flag stays deterministic and never spends —
+which is why the hooks init installs pass `--no-ai` explicitly.
+
+"Non-interactive" means CI, a pipe, `--json`, `--yes`, **or a run started by a
+package script** (`predev`, `prebuild`, any `npm run …` — detected via
+`npm_lifecycle_event`). A lifecycle hook inherits your terminal, so without
+that last rule an older install's bare `predev: vendo sync` would stop
+`npm run dev` on a prompt whose reflexive Enter starts spending. A run you did
+not invoke never gets a question. Engines resolve
+like init's ladder: a BYO model key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`),
+then `VENDO_API_KEY` managed inference, then none — keyless syncs stay
+structural-only, and the pass never fails a run.
 
 Options:
 
 - `--strict`: CI gate: exit 2 on breaking tool changes, exit 3 when a
   breaking tool impacts saved references.
 - `--json`: print exactly one machine-readable object on stdout:
-  `{ ok, exitCode, report, impact, notes }`, where `report` carries
-  `tools`/`breaking`/`pins`/`remixableErrors`/`catalog`/`warnings` (`pins`
-  lists the slots captured, drifted, and pruned this run), `impact`
+  `{ ok, exitCode, report, impact, notes, theme, baselines }`, where `report`
+  carries `tools`/`breaking`/`pins`/`remixableErrors`/`catalog`/`warnings`
+  (`pins` lists the slots captured, drifted, and pruned this run), `impact`
   is the per-tool blast radius (`[]` when nothing changed, `null` when unknown),
-  and `notes` collects CLI-level events. An `error` field appears when
-  extraction itself failed soft.
+  `theme` is `{ updated, pinned }` (or `null` with no `.vendo/theme.json`),
+  `baselines` is `{ pushed, pruned }` (or `null` when keyless), and `notes`
+  collects CLI-level events. An `error` field appears when extraction itself
+  failed soft. `--json` never prompts.
 - `--url <url>`: override `VENDO_URL` for the blast-radius impact query
   against a running dev server (`POST /sync/impact`).
 - `--report`: push the report to Vendo Cloud (requires `VENDO_API_KEY` or
@@ -277,15 +413,24 @@ Options:
 - `--full`: judge the whole catalog instead of only what moved.
 - `--engine <name>`: pin the judgment engine family (`claude`, `codex`,
   `npx`); an unavailable pin skips loudly, never falls back.
-- `--no-ai`: workspace-internal sync — skip the judgment pass (used by the demo
-  apps' `predev`/`prebuild` hooks so committed files never churn).
-  `--no-watermark` remains accepted as a silent alias.
+- `--ai`: run the judgment pass with no prompt, interactive or not.
+- `--no-ai`: force the judgment pass off (what the installed `predev`/
+  `prebuild` hooks pass, so committed files never churn and a build never
+  spends). `--no-watermark` remains accepted as an alias.
+- `--yes`: this run cannot ask — take the flags as given and never prompt.
+- `--theme-refresh`: take the theme scan's values even for slots you
+  hand-edited.
+- `--key <key>` / `--api-url <url>`: the Vendo Cloud key and console base URL
+  used for the baseline reconcile (and `--report`).
 
 ```console
-$ vendo sync --strict --url http://127.0.0.1:3000/api/vendo
+$ vendo sync --strict --no-ai --url http://127.0.0.1:3000/api/vendo
 tools: +0 -0 ~1
 pins: 1 captured, 0 drifted
 pruned: LegacyHeroCard — stale baseline deleted (no <Remixable> wrapper names this slot anymore)
+catalog.json: 2 discovered, 2 registered
+theme: 2 slots re-read from your app (accent, accentText) → .vendo/theme.json
+baselines → Vendo Cloud: 1 pushed, 1 pruned (component source crosses the wire so the console can review forks)
 breaking: host_listAccounts input-narrowed
 impact: host_listAccounts breaks 1 automation, 1 grant
 ```
