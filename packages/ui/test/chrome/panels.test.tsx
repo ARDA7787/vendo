@@ -73,7 +73,9 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run history" }));
     const stop = await screen.findByRole("button", { name: "Stop" });
     fireEvent.click(stop);
-    await waitFor(() => expect(screen.getByText("stopped")).toBeTruthy());
+    // ⚠️ The row label is the owner-facing label, never the status slug
+    // (spec §16 law 3): RUN_STATUS_LABEL.stopped === "Stopped".
+    await waitFor(() => expect(screen.getByText("Stopped")).toBeTruthy());
     expect(wire.requests).toContainEqual(expect.objectContaining({ method: "POST", path: "/runs/run_1/stop" }));
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable Invoice watcher" }));
