@@ -26,10 +26,15 @@ export function useChromeRootPresence(): boolean {
 /**
  * The "running without a policy" banner is written for the host DEVELOPER (it
  * names a file to configure), so spec §16.3 — the consumer-voice guarantee —
- * bounds it to the developer-facing workspace surfaces: the Activity and
- * Automations panels, the stage, the page. Every CONSENT card passes
- * `automaticPolicyNotice={false}`: a card is the most end-user surface there is,
- * and this banner used to auto-prepend itself above one in any BYO host.
+ * keeps it OFF every surface a person reaches.
+ *
+ * THE DEFECT this default closes: `automaticPolicyNotice` defaulted to TRUE, so
+ * the banner auto-prepended itself inside every chrome boundary that didn't
+ * think to opt out — the thread, the overlay, the host's pinned slot, a BYO
+ * embed, the voice stage, the share dialog. A bank customer read "Vendo is
+ * running without a policy · Configure `.vendo/policy.json`" mid-conversation.
+ * It is now opt-IN: a developer/console surface asks for it, and any host that
+ * wants the banner mounts the exported {@link NoPolicyNotice} itself.
  */
 function AutomaticPolicyNotice() {
   const { posture, connected } = useVendoStatus();
@@ -66,7 +71,8 @@ function ChromeBoundary({
 export function ChromeRoot({
   children,
   className,
-  automaticPolicyNotice = true,
+  /** Opt IN to the developer policy banner (dev/console surfaces only). */
+  automaticPolicyNotice = false,
 }: {
   children: ReactNode;
   className?: string;

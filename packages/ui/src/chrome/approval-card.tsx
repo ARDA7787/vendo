@@ -189,10 +189,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
 
   const inputs = <CardFields rows={rows} />;
   return (
-    // No automatic policy notice: that banner is written for the host
-    // DEVELOPER, and a consent card is the most end-user surface there is
-    // (spec §16.3, the consumer-voice guarantee).
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
       <CardShell label={`Approval for ${title}`} className="fl-approval fl-item-in" ceremony={critical}>
         <CardHead
           icon={<ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} fallback={SHIELD_GLYPH} />}

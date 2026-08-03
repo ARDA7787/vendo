@@ -97,7 +97,7 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
   };
 
   return (
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
       <CardShell
         label={`Take on — ${card.automation}`}
         className="fl-approval fl-grantset fl-item-in"

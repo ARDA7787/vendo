@@ -92,7 +92,7 @@ export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
   const { askCount, asks, decide } = useAttention(pollMs > 0 ? { pollMs } : {});
   if (askCount === 0) return null;
   return (
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
       <section className="fl-waiting" aria-label="Waiting on you">
         <details className="fl-waiting-strip">
           <summary>{CARD_EYEBROWS.waiting} · {askCount}</summary>

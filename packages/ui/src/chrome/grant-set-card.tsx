@@ -101,7 +101,7 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
   };
 
   return (
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
       <CardShell
         label={`Standing access — ${name}`}
         className="fl-approval fl-grantset fl-item-in"

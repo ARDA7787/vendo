@@ -7,10 +7,15 @@ import {
   ActivityPanel,
   ApprovalCard,
   AutomationsPanel,
+  ChromeRoot,
   NoPolicyNotice,
+  VendoOverlay,
   VendoPage,
   VendoPalette,
+  VendoSlot,
   VendoStage,
+  VendoThread,
+  WaitingQueue,
 } from "../../src/chrome/index.js";
 import { createWireServer } from "../wire-server.js";
 
@@ -133,6 +138,42 @@ describe("ApprovalCard and NoPolicyNotice exports", () => {
     const unreachable = createVendoClient({ baseUrl: "http://127.0.0.1:9/api/vendo" });
     render(<VendoProvider client={unreachable}><NoPolicyNotice /></VendoProvider>);
     await waitFor(() => expect(screen.queryByRole("region", { name: "Vendo is running without a policy" })).toBeNull());
+  });
+
+  it("renders the developer banner on NO end-user surface, even under unconfigured posture", async () => {
+    // C1 — the banner names a file to configure, so it may never ride a surface
+    // a PERSON reaches. It used to arrive automatically inside every chrome
+    // boundary (ChromeRoot's default was `true`): the thread, the overlay, a
+    // pinned slot, an embed, the voice stage, the share dialog. Now it is opt-in.
+    wire.state.posture = "unconfigured";
+    const surfaces: React.ReactNode[] = [
+      <VendoThread threadId="thr_1" />,
+      <VendoOverlay open />,
+      <VendoSlot appId="app_1" />,
+      <VendoStage />,
+      <ApprovalCard approval={approval} onDecide={() => undefined} />,
+      <WaitingQueue pollMs={0} />,
+      <ActivityPanel />,
+    ];
+    for (const surface of surfaces) {
+      // The host's OWN explicit banner rides alongside: it renders only on a
+      // known-unconfigured posture, so its presence proves the probe answered —
+      // and the count proves the surface beside it contributed none of its own.
+      render(<VendoProvider client={client}><NoPolicyNotice />{surface}</VendoProvider>);
+      await screen.findByRole("region", { name: "Vendo is running without a policy" });
+      expect(screen.getAllByRole("region", { name: "Vendo is running without a policy" })).toHaveLength(1);
+      cleanup();
+    }
+  });
+
+  it("still renders the banner for a surface that explicitly opts in", async () => {
+    wire.state.posture = "unconfigured";
+    render(
+      <VendoProvider client={client}>
+        <ChromeRoot automaticPolicyNotice>developer console</ChromeRoot>
+      </VendoProvider>,
+    );
+    expect(await screen.findByRole("region", { name: "Vendo is running without a policy" })).toBeTruthy();
   });
 
   it("automatically renders the notice on every standalone chrome surface", async () => {
