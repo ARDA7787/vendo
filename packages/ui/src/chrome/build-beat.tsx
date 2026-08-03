@@ -72,107 +72,36 @@ export interface ToolConsequence {
     first. Only these: a sentence may never guess who the counterparty is. */
 const TARGET_FIELDS = ["recipient_name", "recipient", "payee", "to", "destination", "merchant", "channel"];
 
-/** The verb CLASS a tool belongs to, read off the ASK's own verb. A class is a
-    category ("moves money"), never the tool's own label — that distinction is
-    the whole point of {@link consentClassLine}.
-
-    `does` completes "This ‹does›, as you."; `word` leads a permission row
-    ("‹word›: Send money") — the same class, in the two cadences the consent
-    surfaces need. */
-interface VerbClass {
-  kind: "delete" | "money" | "message" | "create" | "change" | "read";
-  does: string;
-  word: string;
-}
-
-/** CR-1 — the verbs, by class. Membership is tested against ONE token (the
-    verb), never against the whole humanized name, so a noun can never vote. */
-const VERB_CLASSES: VerbClass[] = [
-  { kind: "delete", does: "deletes something", word: "Deletes" },
-  { kind: "money", does: "moves money", word: "Moves money" },
-  { kind: "message", does: "sends a message", word: "Sends" },
-  { kind: "create", does: "creates something", word: "Creates" },
-  { kind: "change", does: "changes something", word: "Changes" },
-  { kind: "read", does: "reads your data", word: "Reads" },
-];
-
-const VERBS: Record<VerbClass["kind"], Set<string>> = {
-  delete: new Set(["delete", "remove", "destroy", "archive", "revoke", "cancel"]),
-  money: new Set(["transfer", "pay", "refund", "charge", "order", "withdraw", "deposit", "buy", "sell"]),
-  message: new Set(["send", "post", "email", "mail", "message", "notify", "reply", "share"]),
-  create: new Set(["create", "add", "draft", "schedule", "book"]),
-  change: new Set(["update", "edit", "set", "change", "rename", "move"]),
-  read: new Set(["get", "list", "read", "fetch", "search", "view", "show", "find", "lookup"]),
-};
-
-/**
- * CR-1 — the token that carries the ACTION, and only that token.
- *
- * THE DEFECT this replaces (proven on live tool ids): the class was matched by
- * running keyword regexes over the WHOLE humanized name, with no notion of
- * which word was the verb. So a brokerage price lookup, `host_getSharePrice`,
- * matched `share` and told a customer "This sends a message, as you.";
- * `host_getOrder` and `host_getChargeDetails` matched `order`/`charge` and said
- * "This moves money, as you." on a read; `host_listEmailTemplates` matched
- * `email`. The OBJECT of the sentence was voting on what the sentence claimed.
- *
- * The verb of a tool id is its LEADING token, after the plumbing that is not a
- * verb: `host_`/`fn:` (stripped by `humanizeToolName`) and a connector's toolkit
- * prefix (`gmail_GMAIL_SEND_EMAIL` → "send"). Nothing else votes.
- */
-function verbToken(name: string): string | undefined {
-  const words = humanizeToolName(name).toLowerCase().split(" ");
-  const toolkit = toolkitFromToolName(name);
-  const tokens = toolkit !== undefined && words[0] === toolkit ? words.slice(1) : words;
-  return tokens[0];
-}
-
-/** The class of an ask's verb, or undefined when its leading token names no
-    verb we know — in which case NOTHING is guessed (see `consentClassLine`). */
-function verbClassOf(name: string): VerbClass | undefined {
-  const verb = verbToken(name);
-  if (verb === undefined) return undefined;
-  return VERB_CLASSES.find(entry => VERBS[entry.kind].has(verb));
-}
-
-/** A read VERB may not speak for a GRADED write: the grade knows about effects
-    the name does not admit to, and "Reads" on a write is the one direction this
-    may never be wrong in. (The reverse — ruling 15 — still stands: a send tool
-    graded `read` reads as a send.) */
-function understates(verb: VerbClass, risk: string | undefined): boolean {
-  return verb.kind === "read" && risk !== undefined && risk !== "read";
-}
-
-/** Ruling 15 — the word a permission row leads with, taken from the ASK's own
-    verb. A grant row read "Reads: Email send" for a SEND tool because the row's
-    word came from the ask's RISK grade alone, and a mis-graded (or ungraded)
-    ask made the row a false statement about what it lets an automation do. */
-export function verbWord(name: string, risk?: string): string | undefined {
-  const verb = verbClassOf(name);
-  if (verb === undefined || understates(verb, risk)) return undefined;
-  return verb.word;
-}
-
 /**
  * The plain-words line when NOTHING truthful can be synthesized: no host
  * description, no authored one, no sentence the real inputs support.
  *
- * THE DEFECT it replaces: `Vendo will run Send money as you.` — the tool's own
- * label read back at a bank customer, which is exactly the machine copy the
- * consumer-voice guarantee exists to keep off a consent card. This says what
- * approving DOES by class, plus the one thing always true of a Vendo call (it
- * runs as the person approving it), and never names the tool.
+ * THE GRADE IS THE ONLY VOTER. Yousef's ruling (risk-grading redesign, D1) is
+ * categorical: no code path may conclude anything from a tool's NAME. Two
+ * generations of name inference lived here and both lied on a consent card —
+ * first keyword regexes over the whole humanized name (a brokerage price
+ * lookup, `host_getSharePrice`, matched `share` and said "This sends a message,
+ * as you."), then a narrower leading-verb token, which still guessed from a
+ * word list that English guarantees will miss things. A miss is silent, and a
+ * hit reads as coverage. Both are gone.
+ *
+ * What may speak instead, in `consentWords`' order: the host's own sentence
+ * (`ToolMeta.description`), the consequence synthesized from the REAL inputs,
+ * and — last — this line, which says only what the GRADE licenses plus the one
+ * thing always true of a Vendo call (it runs as the person approving it).
+ *
+ * An UNGRADED ask gets the cautious wording, never the safest-sounding one:
+ * defaulting the unknown to "This reads your data" is precisely the false
+ * safety the ruling exists to kill.
  */
-export function consentClassLine(name: string, risk: string): string {
-  const verb = verbClassOf(name);
-  // CR-1 — an unrecognized verb is UNKNOWN, and an unknown verb gets no class:
-  // guessing one is how a price lookup came to say "This moves money, as you."
-  // The risk grade then carries the sentence, which is the honest answer about
-  // a call whose name tells us nothing.
-  if (verb !== undefined && !understates(verb, risk)) return `This ${verb.does}, as you.`;
-  if (risk === "destructive") return "This makes a change you can’t undo, as you.";
-  if (risk === "write") return "This changes something in your account, as you.";
-  return "This reads your data, as you.";
+const CLASS_LINE: Record<string, string> = {
+  read: "This reads your data, as you.",
+  write: "This changes something in your account, as you.",
+  destructive: "This makes a change you can’t undo, as you.",
+};
+
+export function consentClassLine(risk: string): string {
+  return CLASS_LINE[risk] ?? "This hasn’t been checked, so we can’t say what it changes — it runs as you.";
 }
 
 /** A consequence as one flat string — what a queue row renders, and what the
@@ -227,7 +156,7 @@ export function consentWords(
   // this module composed from the real inputs; nothing from the wire.
   const ours = presentation.description?.trim();
   if (ours !== undefined && ours.length > 0 && ours !== presentation.title) return { sentence: ours };
-  return { sentence: consentClassLine(name, risk) };
+  return { sentence: consentClassLine(risk) };
 }
 
 /**
@@ -341,11 +270,19 @@ export function toolPresentation(
     // sight. The fold is only earned when the sentence carries the full
     // content (the Slack branch above) — otherwise the card keeps its open
     // fields so the user reviews the real inputs before approving.
-  } else if (verbClassOf(name)?.kind === "money") {
+  } else {
     // The general money case — the same idea as the Slack branch, for the asks
     // that actually gate money: a DECLARED amount plus a named counterparty is
     // enough for one truthful sentence ("Sends $47.50 to Acme Utilities"),
     // which is what the robotic `Vendo will run Send money as you.` replaced.
+    //
+    // The INPUTS decide, not the name. This branch used to be gated on the
+    // tool's verb class being "money" — name inference, which the grading
+    // ruling forbids outright. The gate is gone and nothing weakened: the
+    // sentence still requires EXACTLY ONE field the host's own schema declares
+    // as money (`moneyValue` → `declaredMoneyUnit`) AND a field from
+    // `TARGET_FIELDS` naming the counterparty. That input shape IS the money
+    // movement; a word list was never what made the sentence true.
     const amount = moneyValue(flat, meta, inputSchema);
     const target = TARGET_FIELDS
       .map(field => flat[field])

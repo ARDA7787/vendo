@@ -127,7 +127,7 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
               <li className="fl-grant" key={`${need.tool}-${index}`}>
                 <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
-                  <b>{grantRowWord(need.tool, need.risk)}: {presentation.title || need.title}</b>
+                  <b>{grantRowWord(need.risk)}: {presentation.title || need.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
                   {args === undefined ? null : <span>{args}</span>}
                 </span>

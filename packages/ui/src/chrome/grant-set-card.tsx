@@ -1,7 +1,7 @@
 import type { RiskLabel } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
-import { toolPresentation, verbWord } from "./build-beat.js";
+import { toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardHead,
@@ -42,7 +42,7 @@ export interface GrantSetPermission {
  *  plain-words line — and the only sentence allowed under it is one the HOST
  *  wrote for people (`ToolMeta.description`). Shared with the adoption card so
  *  both consent surfaces speak one vocabulary. */
-const RISK_WORD: Record<RiskLabel, string> = {
+const RISK_WORD: Record<string, string> = {
   read: "Reads",
   write: "Changes",
   // Ruling 15 — an irreversible permission may NEVER share a word with an
@@ -52,23 +52,21 @@ const RISK_WORD: Record<RiskLabel, string> = {
 };
 
 /**
- * RULING 15 — the word a permission row leads with, from the ASK ITSELF.
+ * The word a permission row leads with — FROM THE GRADE, and only the grade.
  *
- * THE DEFECT: the word came from the risk GRADE alone, so
- *   · a send tool graded `read` rendered "Reads: Email send" — a false statement
- *     about what the automation is being allowed to do, on the highest-stakes
- *     card in the product; and
- *   · `destructive` flattened to "Changes", the same word as an ordinary write,
- *     erasing the one distinction that matters on it.
+ * This briefly took the word from the ask's own verb instead (ruling 15, to
+ * stop a `read`-graded send tool rendering "Reads: Email send"). Yousef's
+ * grading ruling retires that mechanism: no code path may conclude anything
+ * from a tool's NAME, because a word list misses silently and its existence
+ * reads as coverage. The honest fix for a mis-graded tool is to fix the GRADE —
+ * the judge and `overrides.json` exist for exactly that — not to have the
+ * highest-stakes card in the product second-guess it from a slug.
  *
- * The ask's own verb (its humanized words) decides, and an irreversible grade
- * overrides everything — never quietly softened by a verb class.
+ * An UNGRADED permission says so. It may not borrow "Reads": that is the
+ * safest-sounding word available and the one thing nobody has established.
  */
-export function grantRowWord(tool: string, risk: RiskLabel): string {
-  if (risk === "destructive") return RISK_WORD.destructive;
-  // CR-1 — the grade rides along so a READ verb can never lead the row of a
-  // graded write ("Reads: …" for something that changes the account).
-  return verbWord(tool, risk) ?? RISK_WORD[risk];
+export function grantRowWord(risk: RiskLabel | string): string {
+  return RISK_WORD[risk] ?? "Unchecked";
 }
 
 export interface GrantSetCardProps {
@@ -150,7 +148,7 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
               <li className="fl-grant" key={permission.approvalId}>
                 <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
-                  <b>{grantRowWord(permission.tool, permission.risk)}: {presentation.title}</b>
+                  <b>{grantRowWord(permission.risk)}: {presentation.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
                 </span>
                 {state === "approved" ? (
