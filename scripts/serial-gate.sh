@@ -56,7 +56,11 @@ run() {
 run build     pnpm build --force
 run test      pnpm exec turbo run test test:ui --force --concurrency=1 --continue
 run typecheck pnpm typecheck --force
-run lint      pnpm exec turbo run lint --force
+# All three legs of the root `lint` script. `pnpm lint --force` would hand
+# --force to dependency-guard.mjs instead of turbo, so the target is spelled out
+# — the earlier gate spelled out only the turbo leg and silently skipped the
+# dependency guard and the portability gate while reporting "lint EXIT=0".
+run lint      zsh -c 'node scripts/dependency-guard.mjs && node scripts/portability-gate.mjs && pnpm exec turbo run lint --force'
 
 # --- verdict -----------------------------------------------------------------
 
