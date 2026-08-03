@@ -23,6 +23,14 @@ export function useChromeRootPresence(): boolean {
   return useContext(ChromeRootContext);
 }
 
+/**
+ * The "running without a policy" banner is written for the host DEVELOPER (it
+ * names a file to configure), so spec §16.3 — the consumer-voice guarantee —
+ * bounds it to the developer-facing workspace surfaces: the Activity and
+ * Automations panels, the stage, the page. Every CONSENT card passes
+ * `automaticPolicyNotice={false}`: a card is the most end-user surface there is,
+ * and this banner used to auto-prepend itself above one in any BYO host.
+ */
 function AutomaticPolicyNotice() {
   const { posture, connected } = useVendoStatus();
   return connected && posture === "unconfigured" ? <PolicyNoticeBody /> : null;

@@ -141,7 +141,7 @@ describe("VendoStage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
 
     const confirm = await screen.findByRole("button", { name: "Confirm — Delete invoice" });
-    expect(confirm.classList.contains("fl-btn-critical")).toBe(true);
+    expect(confirm.classList.contains("fl-btn-ceremony")).toBe(true);
     expect(confirm.closest(".fl-voice-consent")?.classList.contains("is-critical")).toBe(true);
     expect(screen.getByText("Confirm this action by hand")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));

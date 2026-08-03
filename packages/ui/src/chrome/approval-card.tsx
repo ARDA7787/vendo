@@ -3,15 +3,24 @@ import {
   sha256Hex,
   type ApprovalDecision,
   type ApprovalRequest,
-  type Json,
-  type JsonSchema,
 } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
 import { toolPresentation } from "./build-beat.js";
+import {
+  CardActions,
+  CardByline,
+  CardFields,
+  CardHead,
+  CardLine,
+  CardShell,
+  runsAsYouLine,
+  SHIELD_GLYPH,
+  ToolkitLogo,
+} from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
-import { argProperties, argValue, humanizeToolName, type ToolMeta } from "./humanize.js";
+import { fieldRows } from "./field-rows.js";
 
 /** The wire risk slugs, in the user's language (the raw slug stays available
     on the chip's tooltip via the tool name; end users never read jargon). */
@@ -20,36 +29,6 @@ const RISK_LABEL: Record<string, string> = {
   write: "Makes changes",
   destructive: "Irreversible",
 };
-
-/** Flat, primitive-valued args render as aligned field rows — humanized label,
-    host-formatted value (ToolMeta.formatField), raw value on the tooltip so
-    the real input stays one hover away; anything nested falls back to the raw
-    JSON preview (real inputs, always).
-
-    With no host formatter, the value still goes through `argValue`, so a
-    declared money amount reads as money and never as the raw integer a person
-    misreads by 100×. */
-function flatFields(
-  args: unknown,
-  inputSchema: JsonSchema | undefined,
-  meta?: ToolMeta,
-): Array<[string, string, string]> | undefined {
-  if (typeof args !== "object" || args === null || Array.isArray(args)) return undefined;
-  const entries = Object.entries(args as Record<string, unknown>);
-  if (entries.length === 0 || entries.length > 8) return undefined;
-  const properties = argProperties(inputSchema);
-  const rows: Array<[string, string, string]> = [];
-  for (const [key, value] of entries) {
-    if (value !== null && typeof value === "object") return undefined;
-    const raw = String(value);
-    rows.push([
-      humanizeToolName(key),
-      meta?.formatField?.(key, value as Json) ?? argValue(key, value, properties),
-      raw,
-    ]);
-  }
-  return rows;
-}
 
 const VENUE_LABEL: Record<string, string> = {
   chat: "asked here in chat",
@@ -86,7 +65,8 @@ function approvalDate(grantedAt: string): string {
   );
 }
 
-/** 01-core §5; 08-ui §4 — the one consent surface, always showing real inputs. */
+/** 01-core §5; 08-ui §4; spec §16 — the one consent surface, on the one card
+    shell, always showing the real inputs. */
 export function ApprovalCard({ approval, onDecide, allowRemember = true, showContext = true }: ApprovalCardProps) {
   const [remember, setRemember] = useState(false);
   const [scope, setScope] = useState<"exact" | "tool">("exact");
@@ -107,14 +87,13 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   );
   const title = presentation.title;
   const description = (presentation.description ?? approval.descriptor.description).trim();
-  const fields = flatFields(approval.call.args, approval.descriptor.inputSchema, meta);
+  const rows = fieldRows(approval.call.args, approval.descriptor.inputSchema, meta);
   // Lane pick 1-A — consequence-first: when the presentation can truthfully
   // say what approving does in one sentence, that sentence leads and the raw
   // fields fold behind a "Details" disclosure (still the same real inputs,
   // one tap away). Critical/destructive asks are exempt: maximum scrutiny
   // keeps every input in plain sight.
   const consequence = !critical ? presentation.consequence : undefined;
-  const showDescription = !consequence && description.length > 0 && description !== title;
 
   const decide = async (approve: boolean) => {
     const decision: ApprovalDecision = { approve };
@@ -141,91 +120,55 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
     }
   };
 
+  const inputs = <CardFields rows={rows} />;
   return (
-    <ChromeRoot>
-      <article className={`fl-approval fl-item-in${critical ? " fl-approval--ceremony" : ""}`} aria-label={`Approval for ${title}`}>
-        <div className="fl-approval-head">
-          <span className="fl-approval-ic" aria-hidden="true">
-            {presentation.logoUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element -- chrome surface, plain img by design
-              <img
-                src={presentation.logoUrl}
-                alt=""
-                width={16}
-                height={16}
-                style={{ display: "block", objectFit: "contain" }}
-              />
-            ) : (
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
-              </svg>
-            )}
-          </span>
-          <div className="fl-approval-heading">
-            <div className="fl-approval-eyebrow">{presentation.eyebrow}</div>
-            <div className="fl-approval-title">{title}</div>
-            {showDescription ? <div className="fl-approval-desc">{description}</div> : null}
-          </div>
-          <span
-            className="fl-chip"
-            data-risk={approval.descriptor.risk}
-            title={approval.descriptor.name}
-            style={{ marginLeft: "auto", padding: "2px 7px", fontSize: "10px", cursor: "default" }}
-          >
-            {RISK_LABEL[approval.descriptor.risk] ?? approval.descriptor.risk}
-          </span>
-        </div>
+    // No automatic policy notice: that banner is written for the host
+    // DEVELOPER, and a consent card is the most end-user surface there is
+    // (spec §16.3, the consumer-voice guarantee).
+    <ChromeRoot automaticPolicyNotice={false}>
+      <CardShell label={`Approval for ${title}`} className="fl-approval fl-item-in" ceremony={critical}>
+        <CardHead
+          icon={<ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} fallback={SHIELD_GLYPH} />}
+          eyebrow={presentation.eyebrow}
+          title={title}
+          aside={
+            <span
+              className="fl-chip"
+              data-risk={approval.descriptor.risk}
+              title={approval.descriptor.name}
+              style={{ marginLeft: "auto", padding: "2px 7px", fontSize: "10px", cursor: "default" }}
+            >
+              {RISK_LABEL[approval.descriptor.risk] ?? approval.descriptor.risk}
+            </span>
+          }
+        />
+        {/* Law 3 — the card always says what approving DOES: the synthesized
+            consequence, else the described one, else the one thing that is
+            true of every call. */}
         {consequence ? (
-          <p className="fl-approval-consequence-line">
+          <CardLine className="fl-approval-consequence-line">
             {consequence.pre}
             {consequence.artifact !== undefined ? <strong>{consequence.artifact}</strong> : null}
             {consequence.mid}
             {consequence.target !== undefined ? <strong>{consequence.target}</strong> : null}
             {consequence.post}
-          </p>
-        ) : null}
-        {(() => {
-          const inputs = fields ? (
-            <dl className="fl-approval-fields" aria-label="Real tool inputs" style={{ display: "grid", gap: "7px", margin: 0 }}>
-              {fields.map(([label, value, raw]) => (
-                <div className="fl-approval-field" key={label}>
-                  <dt>{label}</dt>
-                  <dd title={raw === value ? undefined : raw}>{value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <pre
-              className="fl-approval-fields"
-              aria-label="Real tool inputs"
-              style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
-            >
-              {approval.inputPreview}
-            </pre>
-          );
-          // The consequence sentence carries the meaning; the mechanical rows
-          // fold but never leave the DOM (the a11y contract keeps its name).
-          return consequence ? (
-            <details className="fl-approval-details">
-              <summary>Details — real inputs</summary>
-              {inputs}
-            </details>
-          ) : inputs;
-        })()}
+          </CardLine>
+        ) : (
+          <CardLine>{description.length > 0 && description !== title ? description : runsAsYouLine(title)}</CardLine>
+        )}
+        {/* The consequence sentence carries the meaning; the mechanical rows
+            fold but never leave the DOM (the a11y contract keeps its name). */}
+        {consequence ? (
+          <details className="fl-approval-details">
+            <summary>Details — real inputs</summary>
+            {inputs}
+          </details>
+        ) : inputs}
         {showContext ? (
-          <div className="fl-approval-more" style={{ marginTop: "8px" }}>
+          <CardByline>
             Runs as you · {VENUE_LABEL[approval.ctx.venue] ?? approval.ctx.venue}
             {approval.ctx.appId ? ` · ${approval.ctx.appId}` : ""}
-          </div>
+          </CardByline>
         ) : null}
         {allowRemember ? (
           <details className="fl-auto-details">
@@ -270,11 +213,11 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
           </div>
         ) : null}
         {error ? <div role="alert" className="fl-error">{error}</div> : null}
-        <div className="fl-approval-actions">
+        <CardActions>
           <button className={`fl-btn ${critical ? "fl-btn-ceremony" : "fl-btn-primary"}`} type="button" disabled={busy} onClick={() => void decide(true)}>Approve</button>
           <button className="fl-btn" type="button" disabled={busy} onClick={() => void decide(false)}>Deny</button>
-        </div>
-      </article>
+        </CardActions>
+      </CardShell>
     </ChromeRoot>
   );
 }

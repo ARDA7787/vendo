@@ -1,17 +1,59 @@
-/** ENG-193 §4.6 / ENG-225 — the "waiting on you" strip: every approval parked
-    while the user was away, decidable in place. Renders nothing while the queue
-    is empty; height-capped with internal scroll (see .fl-waiting in chrome-css)
-    so a deep inbox never starves the surface that mounts it. */
+/** ENG-193 §4.6 / ENG-225 / spec §4 (N1) — the "waiting on you" strip: every
+    approval parked while the user was away, decidable in place.
+
+    COUNT-FIRST: the strip is a slim "Waiting on you · N" row that expands the
+    cards in place and clears itself the moment the queue empties. Native
+    <details>, so the disclosure needs no state and keeps keyboard semantics.
+    Height-capped with internal scroll (see .fl-waiting in chrome-css) so a deep
+    inbox never starves the surface that mounts it.
+
+    The rows are the SAME card shell the thread renders (spec §16): a queue row
+    used to be its own hand-rolled layout showing the SERVER's `inputPreview`
+    (the raw `tool slug + canonical JSON` the guard mints) — the one place an end
+    user read our internals. The args are humanized here, client-side, exactly as
+    they are in-thread. */
 import type { ApprovalRequest } from "@vendoai/core";
 import { useVendoContext } from "../context.js";
 import { useApprovals } from "../hooks/use-approvals.js";
 import { formatAuditTime } from "./activity-semantics.js";
+import { toolPresentation } from "./build-beat.js";
+import {
+  CardActions,
+  CardByline,
+  CardFields,
+  CardHead,
+  CardLine,
+  CardShell,
+  CARD_EYEBROWS,
+  CLOCK_GLYPH,
+  runsAsYouLine,
+  ToolkitLogo,
+} from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
-import { toolTitle } from "./humanize.js";
+import { developmentMode } from "./dev-mode.js";
+import { fieldRows } from "./field-rows.js";
 
 export interface WaitingQueueProps {
   /** Poll cadence for pending approvals; 0 disables polling. */
   pollMs?: number;
+}
+
+/* integration: replace with useAttention — Lane D's single attention source
+   (`import { useAttention } from "../hooks/use-approvals.js"`), which the
+   launcher badge reads too, so the strip and the badge cannot disagree. This
+   worktree predates that hook, so this shim exposes the exact same names the
+   strip consumes: deleting it and adding the import is the whole swap. */
+function useAttention({ pollMs }: { pollMs: number }): {
+  askCount: number;
+  asks: ApprovalRequest[];
+  decide(id: string, decision: { approve: boolean }): void;
+} {
+  const { pending, decide } = useApprovals(pollMs > 0 ? { pollMs } : {});
+  return {
+    askCount: pending.length,
+    asks: pending,
+    decide: (id, decision) => void decide(id, decision),
+  };
 }
 
 function WaitingRow({ approval, onDecide }: {
@@ -19,46 +61,59 @@ function WaitingRow({ approval, onDecide }: {
   onDecide(approve: boolean): void;
 }) {
   const { tools } = useVendoContext();
-  // A destructive ask reads as ceremony — the warm wash + warn title.
-  const ceremony = approval.descriptor.risk === "destructive";
+  const meta = tools[approval.call.tool];
+  const presentation = toolPresentation(
+    approval.call.tool,
+    approval.call.args,
+    meta,
+    approval.descriptor.title,
+  );
+  // A destructive ask reads as ceremony — the amber edge, same as in-thread.
+  const ceremony = approval.descriptor.risk === "destructive" || approval.descriptor.critical === true;
+  const description = (presentation.description ?? approval.descriptor.description).trim();
+  const title = presentation.title;
   return (
-    <div className={`fl-waiting-row${ceremony ? " fl-waiting-row--ceremony" : ""}`}>
-      <div className="fl-waiting-row-main">
-        <span className="fl-waiting-ic" aria-hidden="true">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
-          </svg>
-        </span>
-        <div>
-          <div className="fl-waiting-row-title">{toolTitle(approval.call.tool, tools[approval.call.tool])}</div>
-          {approval.inputPreview ? <div className="fl-waiting-row-preview">{approval.inputPreview}</div> : null}
-          <div className="fl-waiting-row-meta">Asked {formatAuditTime(approval.createdAt)}</div>
-        </div>
-      </div>
-      <div className="fl-waiting-actions">
+    <CardShell label={`Approval for ${title}`} ceremony={ceremony}>
+      <CardHead
+        icon={<ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} fallback={CLOCK_GLYPH} />}
+        // The strip's own summary already says "Waiting on you"; the row says
+        // what KIND of ask it is (the humanization source's own eyebrow).
+        eyebrow={presentation.eyebrow}
+        title={title}
+      />
+      <CardLine>{description.length > 0 && description !== title ? description : runsAsYouLine(title)}</CardLine>
+      <CardFields rows={fieldRows(approval.call.args, approval.descriptor.inputSchema, meta)} />
+      {/* The server's own preview is a debugging aid, not consumer copy. */}
+      {developmentMode() ? <CardByline>{approval.inputPreview}</CardByline> : null}
+      <CardActions>
         <button type="button" className="fl-btn" onClick={() => onDecide(false)}>Deny</button>
         <button type="button" className="fl-btn fl-btn-primary" onClick={() => onDecide(true)}>Approve</button>
-      </div>
-    </div>
+      </CardActions>
+      <CardByline>Asked {formatAuditTime(approval.createdAt)}</CardByline>
+    </CardShell>
   );
 }
 
 /** The waiting-on-you queue (08-ui §4 chrome; mounted by VendoPage's chat
     workspace, exportable for any host placement). */
 export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
-  const { pending, decide } = useApprovals(pollMs > 0 ? { pollMs } : {});
-  if (pending.length === 0) return null;
+  const { askCount, asks, decide } = useAttention({ pollMs });
+  if (askCount === 0) return null;
   return (
-    <ChromeRoot>
+    <ChromeRoot automaticPolicyNotice={false}>
       <section className="fl-waiting" aria-label="Waiting on you">
-        <div className="fl-waiting-head">Waiting on you · {pending.length}</div>
-        {pending.map(approval => (
-          <WaitingRow
-            key={approval.id}
-            approval={approval}
-            onDecide={approve => void decide(approval.id, { approve })}
-          />
-        ))}
+        <details className="fl-waiting-strip">
+          <summary>{CARD_EYEBROWS.waiting} · {askCount}</summary>
+          <div className="fl-waiting-cards">
+            {asks.map(approval => (
+              <WaitingRow
+                key={approval.id}
+                approval={approval}
+                onDecide={approve => decide(approval.id, { approve })}
+              />
+            ))}
+          </div>
+        </details>
       </section>
     </ChromeRoot>
   );
