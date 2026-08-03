@@ -378,6 +378,34 @@ describe("mobile P1 (§12)", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Close conversations" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
   });
+
+  it("the history sheet has a keyboard contract: focus in, trapped, Escape out, focus back (M34)", async () => {
+    installMobile();
+    mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
+    const nav = await screen.findByRole("navigation", { name: "Assistant sections" });
+    const chats = within(nav).getByRole("button", { name: "Chats" });
+    chats.focus();
+    fireEvent.click(chats);
+    const sheet = await screen.findByRole("complementary", { name: "Conversations" });
+
+    // Focus went INTO the sheet (its first stop is the close button).
+    const close = within(sheet).getByRole("button", { name: "Close conversations" });
+    expect(document.activeElement).toBe(close);
+
+    // Tab cycles inside it rather than walking out into the covered page.
+    const stops = [...sheet.querySelectorAll<HTMLElement>("button")];
+    const last = stops.at(-1)!;
+    last.focus();
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(document.activeElement!, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    // Escape dismisses, and focus goes back to the button that opened it.
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
+    expect(document.activeElement).toBe(chats);
+  });
 });
 
 describe("the named doors", () => {

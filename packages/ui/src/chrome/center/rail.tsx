@@ -52,6 +52,9 @@ export function centerViewLabel(view: CenterView): string {
  *  run, another tab) reaches the badge without a reload. */
 const NEEDS_POLL_MS = 5_000;
 
+/** The history sheet's tab cycle (same shape as the overlay panel's). */
+const SHEET_FOCUSABLE = "button:not([disabled]),input:not([disabled]),a[href],[tabindex]:not([tabindex='-1'])";
+
 function Glyph({ view }: { view: CenterView }) {
   const common = {
     width: 15,
@@ -327,19 +330,63 @@ export function CenterHeader({ view, onView, onChats, chatsOpen }: CenterHeaderP
 /** The slide-in history sheet: conversations, the attention section, and the
  *  panels the desktop rail folds under ···. Mounted only while open (so the
  *  entrance plays and nothing off-screen holds focus), with a scrim that
- *  dismisses — the page underneath stays a page. */
+ *  dismisses — the page underneath stays a page.
+ *
+ *  It covers the page and holds the keyboard while it is up, so it keeps the
+ *  same contract every other Vendo surface keeps (the overlay panel, the
+ *  approval sheet): focus lands inside on open, Tab cycles inside it, Escape
+ *  dismisses, and dismissing hands focus back to the button that opened it.
+ *  Choosing a row is NOT a dismissal — the caller moves focus into the column
+ *  it just navigated to. */
 export function CenterSheet({ view, onView, onClose, children }: {
   view: CenterView;
   onView(view: CenterView): void;
   onClose(): void;
   children: ReactNode;
 }) {
+  const sheetRef = useRef<HTMLElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const dismiss = () => {
+    opener.current?.focus();
+    closeRef.current();
+  };
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    (sheet.querySelector<HTMLElement>(SHEET_FOCUSABLE) ?? sheet).focus();
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        opener.current?.focus();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const stops = [...sheet.querySelectorAll<HTMLElement>(SHEET_FOCUSABLE)];
+      const edge = event.shiftKey ? stops[0] : stops.at(-1);
+      if (stops.length === 0 || document.activeElement !== edge) return;
+      event.preventDefault();
+      (event.shiftKey ? stops.at(-1) : stops[0])?.focus();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
   return (
     <>
-      <div className="fl-center-scrim" onClick={onClose} />
-      <aside className="fl-center-sheet" id="vendo-center-sheet" aria-label="Conversations">
+      <div className="fl-center-scrim" onClick={dismiss} />
+      <aside
+        ref={sheetRef}
+        className="fl-center-sheet"
+        id="vendo-center-sheet"
+        aria-label="Conversations"
+        tabIndex={-1}
+      >
         <div className="fl-center-sheet-top">
-          <button type="button" className="fl-center-head-btn" onClick={onClose} aria-label="Close conversations">✕</button>
+          <button type="button" className="fl-center-head-btn" onClick={dismiss} aria-label="Close conversations">✕</button>
         </div>
         {children}
         <nav className="fl-rail-nav" aria-label="More sections">
