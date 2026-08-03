@@ -57,16 +57,63 @@ const WAITING_ASK = {
 /**
  * Every element inside `scope` that is running a LOOPING animation, itself or
  * through a pseudo-element. §8's "the build animates ONE thing" is a claim about
- * exactly this set, and nothing else can measure it.
+ * exactly this set, and nothing else can measure it. Names carry the pseudo
+ * (`P::after`) so a failure says WHICH loop came back.
  */
 async function looping(scope: Locator): Promise<string[]> {
-  return scope.locator("*").evaluateAll(nodes => nodes
-    .filter(node => ["", "::before", "::after"].some(pseudo => {
-      const style = getComputedStyle(node, pseudo === "" ? undefined : pseudo);
-      return style.animationName !== "none"
-        && style.animationIterationCount.split(",").some(count => count.trim() === "infinite");
-    }))
-    .map(node => node.className.toString().split(" ").at(-1) ?? node.tagName));
+  return scope.locator("*").evaluateAll(nodes => nodes.flatMap((node) => {
+    const name = node.className.toString().trim().split(/\s+/).at(-1) || node.tagName.toLowerCase();
+    return (["", "::before", "::after"] as const)
+      .filter((pseudo) => {
+        const style = getComputedStyle(node, pseudo === "" ? undefined : pseudo);
+        return style.animationName !== "none"
+          && style.animationIterationCount.split(",").some(count => count.trim() === "infinite");
+      })
+      .map(pseudo => `${name}${pseudo}`);
+  }));
+}
+
+/**
+ * Sample `looping()` continuously for as long as a card in `scope` is building,
+ * and report the UNION of everything that ever moved plus what the fixture was
+ * actually showing while we looked.
+ *
+ * One instant is not enough (ruling 21): the suppressed set changes shape
+ * through the build — an empty streamed turn shows the lone `.fl-caret`, flowing
+ * prose shows the trailing pseudo-caret, and a half-written table shows the
+ * forming row's shimmer. Sampling the whole window catches all three without
+ * racing any of them.
+ */
+async function loopingThroughBuild(scope: Locator): Promise<{
+  moved: string[]; sawCaret: boolean; sawFlowingProse: boolean; sawFormingTable: boolean; samples: number;
+}> {
+  const moved = new Set<string>();
+  const seen = { caret: false, prose: false, table: false };
+  let samples = 0;
+  const deadline = Date.now() + 25_000;
+  while (Date.now() < deadline) {
+    const frame = await scope.evaluate(root => ({
+      building: root.querySelector('.fl-appcard-bar[data-state="building"]') !== null,
+      caret: root.querySelector(".fl-caret") !== null,
+      prose: root.querySelector(".fl-md--streaming") !== null,
+      table: root.querySelector(".fl-skeleton-bar") !== null,
+    }));
+    if (!frame.building && samples > 0) break;
+    if (frame.building) {
+      samples += 1;
+      seen.caret ||= frame.caret;
+      seen.prose ||= frame.prose;
+      seen.table ||= frame.table;
+      for (const name of await looping(scope)) moved.add(name);
+    }
+  }
+  return {
+    moved: [...moved].sort(),
+    sawCaret: seen.caret,
+    sawFlowingProse: seen.prose,
+    sawFormingTable: seen.table,
+    samples,
+  };
 }
 
 test("landing renders its greeting, suggestions and composer", async ({ page }) => {
@@ -134,9 +181,21 @@ test("a build animates exactly one thing, and the bar flips to the app's name", 
 
   const list = page.locator(".fl-msglist");
   await expect(page.getByText("Building your view…")).toBeVisible({ timeout: 20_000 });
-  // §8 — the hairline gliding across the card bar is the ONLY moving element:
-  // no pulsing beat orb, no pulsing card dot, no shimmering skeleton.
-  expect(await looping(list)).toEqual(["fl-boot-hairline"]);
+  const window_ = await loopingThroughBuild(list);
+
+  // The fixture must have SHOWN the competing loops, or the §8 claim below is
+  // about an empty set and cannot fail (ruling 21). These three are the exact
+  // elements chrome-css suppresses while a card builds.
+  expect(window_.samples, "the build window must have been sampled").toBeGreaterThan(3);
+  expect(
+    { caret: window_.sawCaret, prose: window_.sawFlowingProse, table: window_.sawFormingTable },
+    "the fixture must stream prose beside the building card",
+  ).toEqual({ caret: true, prose: true, table: true });
+
+  // §8 — the hairline gliding across the card bar is the ONLY moving element
+  // for the WHOLE build: no blinking caret, no pulsing beat orb, no shimmering
+  // forming row. Reverting the suppression puts the caret and shimmer back here.
+  expect(window_.moved).toEqual(["fl-boot-hairline"]);
 
   await expect(page.getByText("Spending board").first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("button", { name: /Did 3 things/ })).toBeVisible({ timeout: 20_000 });

@@ -28,6 +28,20 @@ const NOW = "2026-07-11T12:00:00.000Z";
  *  each phase on a loaded runner, short enough to keep the pack under a minute. */
 const SMOKE_STEP_MS = 250;
 const SMOKE_BUILD_MS = 2_500;
+/** How long the turn streams EMPTY text beside the building card — the window in
+ *  which the lone `.fl-caret` exists. Wide enough that a loaded runner's sampler
+ *  cannot miss it. */
+const SMOKE_CARET_MS = 900;
+
+/** The narration `[smoke-build]` streams WHILE its card builds. The trailing
+ *  half-written table matters: a streaming table grows a forming row
+ *  (`.fl-skeleton-bar`), which is the third loop §8's suppression covers. */
+const SMOKE_LIVE_PROSE = [
+  "Pulling your spending together",
+  " — here is the shape of it so far:\n\n",
+  "| Category | Spend |\n| --- | --- |\n",
+  "| Groceries | $420 |\n",
+];
 
 /** The view `[smoke-build]` builds — a titled tree, so the card's bar has a real
  *  name to flip to when the build lands. */
@@ -606,7 +620,25 @@ export async function createWireServer(options: WireServerOptions = {}) {
                 id: "vendo-view:app_smoke",
                 data: { appId: "app_smoke", payload: { ...SMOKE_VIEW, streaming: true } },
               } as UIMessageChunk);
+              // Ruling 21 — the fixture must be able to EXPRESS the defect §8's
+              // suppression fixes. Prose streams WHILE the card builds (the real
+              // agent narrates as it works), and the prose carries a half-formed
+              // markdown table. Without this the turn has no caret and no
+              // shimmer at all, so "the build animates exactly one thing" is a
+              // claim about an empty set and cannot fail.
+              writer.write({ type: "text-start", id: "text_smoke_live" });
+              // A beat of empty streamed text first: that is the LONE `.fl-caret`
+              // (parts.tsx), a different element from the trailing pseudo-caret
+              // the flowing prose grows. Both are suppressed; both get sampled.
+              await new Promise(resolve => setTimeout(resolve, SMOKE_CARET_MS));
+              for (const delta of SMOKE_LIVE_PROSE) {
+                writer.write({ type: "text-delta", id: "text_smoke_live", delta });
+                await new Promise(resolve => setTimeout(resolve, SMOKE_STEP_MS));
+              }
               await new Promise(resolve => setTimeout(resolve, SMOKE_BUILD_MS));
+              // The narration settles BEFORE the card does, so the §8 sample
+              // window (card building + prose streaming) is the whole build hold.
+              writer.write({ type: "text-end", id: "text_smoke_live" });
               writer.write({
                 type: "data-vendo-view",
                 id: "vendo-view:app_smoke",
