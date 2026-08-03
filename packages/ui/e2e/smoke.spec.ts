@@ -279,3 +279,74 @@ test("a failed build ends the turn in ✕ and prose, and offers no component to 
   // …and the developer's sentence never reaches the reader (§16 law 3).
   await expect(failure).not.toContainText("DataTable");
 });
+
+/* ------------------------------------------------------------------ */
+/* Round-2 additions: the cheap high-value axes the 11-test pack missed */
+/* ------------------------------------------------------------------ */
+
+const POLICY_BANNER = "Vendo is running without a policy";
+
+test("C1 — a conversation grows no policy banner of its own", async ({ page }) => {
+  // Two-sided on purpose: "no banner" alone would also pass if the banner were
+  // deleted outright, or if the status probe never resolved. One per branch.
+  await openScenario(page, "composer");
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+  await expect(page.getByRole("region", { name: POLICY_BANNER })).toHaveCount(0);
+
+  // …and it is still a real, reachable surface where the HOST mounts it
+  // (`/notice`, an unconfigured client): §6's banner is the host's call, never
+  // furniture the conversation adds for itself.
+  await page.goto("/notice");
+  await expect(page.getByRole("region", { name: POLICY_BANNER })).toBeVisible();
+});
+
+test("H9 — collapsing the workspace is final; the stage does not re-open it", async ({ page }) => {
+  await openScenario(page, "overlay-manual");
+  await page.getByRole("button", { name: "AI agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Vendo assistant" });
+  await send(dialog, BUILD_TURN);
+
+  await expect(page.getByRole("button", { name: /Did 3 things/ })).toBeVisible({ timeout: 20_000 });
+
+  // Opening the built view expands the split workspace…
+  const panel = page.locator(".fl-overlay-panel");
+  await page.getByRole("button", { name: "Expand this view" }).click();
+  await expect(panel).toHaveAttribute("data-vendo-expanded", "", { timeout: 10_000 });
+
+  // …and Collapse workspace means it. The one-shot hint ledger lives in the
+  // split, so collapsing cannot re-arm the thing that opened it (H9): back to
+  // chat is FINAL, not a state the stage may quietly undo a beat later.
+  await page.getByRole("button", { name: "Collapse workspace" }).click();
+  await expect(panel).not.toHaveAttribute("data-vendo-expanded", /.*/);
+  await page.waitForTimeout(1_500);
+  await expect(panel).not.toHaveAttribute("data-vendo-expanded", /.*/);
+});
+
+test("H18 — arrows move focus in the rail, they never activate", async ({ page }) => {
+  await openScenario(page, "page-chat");
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("a draft the arrow keys must not eat");
+  const newChat = page.getByRole("tab", { name: "New chat" });
+  await expect(newChat).toHaveAttribute("aria-selected", "true");
+
+  await newChat.focus();
+  for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "End", "Home"]) {
+    await page.keyboard.press(key);
+  }
+  // Nothing was activated by moving: the selected door and the draft survive.
+  await expect(newChat).toHaveAttribute("aria-selected", "true");
+  await expect(composer).toHaveValue("a draft the arrow keys must not eat");
+});
+
+test("mobile 390px — the thread renders, sends, and answers", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openScenario(page, "composer");
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await expect(composer).toBeVisible();
+  // Nothing overflows the phone: the composer sits inside the viewport.
+  const box = (await composer.boundingBox())!;
+  expect(box.x, "the composer starts inside the viewport").toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width, "the composer ends inside the viewport").toBeLessThanOrEqual(391);
+  await send(page, "Say something back");
+  await expect(page.getByText("Turn complete")).toBeVisible({ timeout: 20_000 });
+});
