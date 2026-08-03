@@ -24,6 +24,15 @@ of the model's way.
 - **Delete** `canUseTool` (`boxPermission`) and `allowedTools` entirely.
 - `disallowedTools: ["WebSearch", "WebFetch", "AskUserQuestion"]` stays — the
   only local tool law. Everything else the SDK ships, now or later, runs.
+  - *Build-time amendment 2026-08-03:* five names added, so the list is eight
+    rather than three — `Projects`, `Artifact`, `RemoteTrigger`,
+    `PushNotification`, `SendFeedback`. Not a walk-back of "everything else
+    runs": these act on the vendor's own surfaces over the inference channel,
+    not through this host, so they pass neither the box nor the door
+    (`Projects`' `project_write` uploads a workspace file provider-side with no
+    audit row and no egress filter). `allowDangerouslySkipPermissions: true`
+    added beside the mode — the SDK documents the two as a pair; today's CLI
+    treats it as advisory (measured 2026-08-03).
 - Rationale: the box is a copy with no credentials and filtered egress — the box
   IS the permission. Host tools are still guarded at the door; nothing about
   that moves. The old allow-list was already denying tools its own sync hook
@@ -52,6 +61,14 @@ remains is reaching the unexpanded connector catalog:
   adapter (their index, their ranking); our wrapper maps results to our
   namespaced tool names, triggers lazy expansion, annotates per-user connect
   status. Adapter-shaped: another provider (or none) fills the slot the same way.
+  - *Build-time deviation 2026-08-03 (flagged for Yousef):* shipped on the
+    existing local index instead of Composio's search API, on three pieces of
+    evidence — the default `VENDO_API_KEY` path rides the console broker,
+    which has no search endpoint (their API would serve only BYO-Composio and
+    leave two ranking paths that disagree); their endpoint returns no
+    relevance scores (we would re-rank anyway); and it ranks tools while
+    callability requires toolkit expansion regardless. The adapter seam
+    stands, so swapping the backend later is contained.
 - **`list_connections`** — read-only: available toolkits + this user's
   connection status (the dock catalog query, exposed to the model — Composio's
   `MANAGE_CONNECTIONS` equivalent, minus initiation). Connecting stays a UI act

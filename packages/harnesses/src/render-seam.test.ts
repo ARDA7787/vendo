@@ -10,7 +10,7 @@
  * `CommitResult.changed` names exactly what reached the store. So every case here
  * writes AND commits, which is what the runtime makes happen for the harness.
  */
-import { vendoViewPartSchema, vendoViewStreamId, type VendoViewPart } from "@vendoai/core";
+import { vendoViewPartSchema, vendoViewStreamId, type Json, type VendoViewPart } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { HOT_PATH_FILES, HOT_PATH_WATCH, hotPathAppId, wrapWorkspaceForRender } from "./render-seam.js";
 import { testWorkspace } from "./test-doubles.test-util.js";
@@ -214,6 +214,104 @@ describe("a save to plan.vendo", () => {
     const { emitted, save } = seam();
     await save(PLAN_VENDO, "there is no plan document here");
     expect(emitted).toHaveLength(0);
+  });
+});
+
+describe("the app half of an app.vendo commit (§1.6)", () => {
+  /** The wire the E2E defect was found on: a value that only exists once the
+   *  query has run. Painted with no data it reads "—". */
+  const WITH_QUERY = `<App name="Spending">
+  <Query id="spend" tool="maple_spend_summary" />
+  <Stack>
+    <Text text={spend.total} />
+  </Stack>
+</App>`;
+
+  function appSeam(data: Record<string, Json> | undefined) {
+    const calls: Array<{ appId: string; name: string | undefined; queries: number }> = [];
+    const emitted: Array<{ id: string; part: VendoViewPart }> = [];
+    const workspace = wrapWorkspaceForRender(testWorkspace(), {
+      emit: (id, part) => emitted.push({ id, part }),
+      authoredApp: async ({ appId, compiled }) => {
+        calls.push({
+          appId,
+          name: compiled.name,
+          queries: compiled.tree.queries?.length ?? 0,
+        });
+        return data;
+      },
+    });
+    const save = async (path: string, content: string): Promise<void> => {
+      await workspace.writeFile(path, content);
+      await workspace.commit();
+    };
+    return { calls, emitted, save };
+  }
+
+  it("hands the compiled document over, so the row and the queries are the runtime's to resolve", async () => {
+    const { calls, save } = appSeam({});
+    await save(APP_VENDO, WITH_QUERY);
+    expect(calls).toEqual([{ appId: APP, name: "Spending", queries: 1 }]);
+  });
+
+  it("paints the data it answers with — the fix for an app of em-dashes", async () => {
+    const { emitted, save } = appSeam({ spend: { total: 4210 } });
+    await save(APP_VENDO, WITH_QUERY);
+    expect((emitted.at(-1)!.part.payload as { data?: unknown }).data)
+      .toEqual({ spend: { total: 4210 } });
+  });
+
+  it("emits the skeleton FIRST, on the same stream id — §1.6 is a promise about seconds", async () => {
+    const { emitted, save } = appSeam({ spend: { total: 4210 } });
+    await save(APP_VENDO, WITH_QUERY);
+    expect(emitted).toHaveLength(2);
+    expect(new Set(emitted.map((entry) => entry.id))).toEqual(new Set([vendoViewStreamId(APP)]));
+    // The first write is on screen before any host query has run.
+    expect((emitted[0]!.part.payload as { data?: unknown }).data).toBeUndefined();
+    expect((emitted[0]!.part.payload as { streaming?: boolean }).streaming).toBe(true);
+  });
+
+  it("never mutates the part it already emitted when the data lands", async () => {
+    const { emitted, save } = appSeam({ spend: { total: 4210 } });
+    await save(APP_VENDO, WITH_QUERY);
+    expect((emitted[0]!.part.payload as { data?: unknown }).data).toBeUndefined();
+  });
+
+  it("is not called for plan.vendo — a plan is a skeleton, not an app document", async () => {
+    const { calls, emitted, save } = appSeam({});
+    await save(
+      PLAN_VENDO,
+      `<Plan name="Invoices"><Group title="Unpaid"><Leaf component="Table" /></Group></Plan>`,
+    );
+    expect(calls).toEqual([]);
+    expect(emitted).toHaveLength(1);
+  });
+
+  it("is not called for a save that does not parse — nothing is stored for a non-app", async () => {
+    const { calls, save } = appSeam({});
+    await save(APP_VENDO, "just some prose, no elements at all");
+    expect(calls).toEqual([]);
+  });
+
+  it("still renders when it answers nothing at all", async () => {
+    const { emitted, save } = appSeam(undefined);
+    await save(APP_VENDO, WITH_QUERY);
+    expect(emitted.at(-1)!.part.appId).toBe(APP);
+    expect((emitted.at(-1)!.part.payload as { data?: unknown }).data).toBeUndefined();
+  });
+
+  it("a throwing app half never fails the commit, and the skeleton still stands", async () => {
+    const emitted: Array<{ id: string; part: VendoViewPart }> = [];
+    const workspace = wrapWorkspaceForRender(testWorkspace(), {
+      emit: (id, part) => emitted.push({ id, part }),
+      authoredApp: async () => {
+        throw new Error("the store is gone");
+      },
+    });
+    await workspace.writeFile(APP_VENDO, WITH_QUERY);
+    await expect(workspace.commit()).resolves.toMatchObject({ status: "ok" });
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0]!.part.payload as { data?: unknown }).data).toBeUndefined();
   });
 });
 

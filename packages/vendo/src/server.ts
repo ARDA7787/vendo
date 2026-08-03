@@ -2656,6 +2656,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     connectorDiscovery: resolvedConnectors.length > 0,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
+    // §1.6's app half. Without it a files-first app (D4) is a PICTURE of an app:
+    // no store row, so it never lists and `vendo_apps_open` masks it as
+    // not-found, and no query data, so every value on screen renders "—" while
+    // the real host data sits one call away (live E2E, 2026-08-03). The seam
+    // declared this slot and nothing ever filled it.
+    render: (ctx) => ({ authoredApp: (input) => apps.authored(input, ctx) }),
     // Build contract §9.1/§9.7 — the same host org query the wire resolves per
     // request, so a harness turn's façade mounts the team's files too.
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),

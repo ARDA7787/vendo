@@ -156,9 +156,14 @@ describe("the tools are the HOST's MCP door — the projection is gone", () => {
 });
 
 describe("permissions — the box is the permission, the door is the permission (D1)", () => {
-  test("the session bypasses the SDK's permission system entirely", async () => {
+  test("the session bypasses the SDK's permission system entirely — the mode AND its flag", async () => {
+    // The SDK documents the two as a PAIR: the flag is what makes the transport
+    // pass `--allow-dangerously-skip-permissions`. Today's CLI treats it as
+    // advisory (measured 2026-08-03) — asserted so a CLI that starts enforcing
+    // its own documented requirement can't break a real session silently.
     const { options } = await run([], { toolDoor: TOOL_DOOR });
     expect(options.permissionMode).toBe("bypassPermissions");
+    expect(options.allowDangerouslySkipPermissions).toBe(true);
   });
 
   test("no permission callback — the guard decides at the door, not in this process", async () => {
@@ -173,9 +178,21 @@ describe("permissions — the box is the permission, the door is the permission 
     expect(options).not.toHaveProperty("allowedTools");
   });
 
-  test("the deny-list is the whole of the local tool law — these three names, exactly", async () => {
+  test("the deny-list is the whole of the local tool law — these names, exactly", async () => {
+    // Two groups: nothing a headless turn cannot do (no user, no egress), and the
+    // SDK's provider-side tools, which reach the vendor's surfaces over the
+    // inference channel and so pass neither the box nor the door.
     const { options } = await run([]);
-    expect(options.disallowedTools).toEqual(["WebSearch", "WebFetch", "AskUserQuestion"]);
+    expect(options.disallowedTools).toEqual([
+      "WebSearch",
+      "WebFetch",
+      "AskUserQuestion",
+      "Projects",
+      "Artifact",
+      "RemoteTrigger",
+      "PushNotification",
+      "SendFeedback",
+    ]);
   });
 });
 

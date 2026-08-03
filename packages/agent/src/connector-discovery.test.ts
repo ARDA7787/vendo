@@ -67,6 +67,29 @@ describe("the connector-discovery pair is projected as ordinary tools (D3)", () 
     expect(outcome).toMatchObject({ status: "error", error: { code: "validation" } });
   });
 
+  it("bounds the query at both ends — in the schema AND in execute", async () => {
+    const [search] = await connectorDiscoveryRegistry(ports()).descriptors();
+    const query = (search?.inputSchema as { properties?: { query?: Record<string, unknown> } }).properties?.query;
+    expect(query).toMatchObject({ minLength: 1, maxLength: 512 });
+
+    // A schema is advice to the model; the guard is what makes it true. A whole
+    // pasted document as a "search intent" is ranked against the broker's entire
+    // toolkit index otherwise.
+    let searched = false;
+    const outcome = await connectorDiscoveryRegistry(ports({
+      search: async () => { searched = true; return []; },
+    })).execute(call("search_connectors", { query: "x".repeat(513) }), ctx());
+
+    expect(outcome).toMatchObject({ status: "error", error: { code: "validation" } });
+    expect(searched).toBe(false);
+  });
+
+  it("accepts a query right at the bound", async () => {
+    const outcome = await connectorDiscoveryRegistry(ports())
+      .execute(call("search_connectors", { query: "x".repeat(512) }), ctx());
+    expect(outcome).toMatchObject({ status: "ok" });
+  });
+
   it("list_connections needs no input and reports each service's connect status", async () => {
     const outcome = await connectorDiscoveryRegistry(ports()).execute(call("list_connections", {}), ctx());
     expect(outcome).toEqual({

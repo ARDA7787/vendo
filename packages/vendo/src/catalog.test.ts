@@ -1,9 +1,10 @@
 import { parseModule, zodFromExpression, type StaticExtraction } from "@vendoai/actions/sync";
+import { VendoError } from "@vendoai/core";
 import type { ComponentCatalog, ComponentRegistry, NormalizedCatalog } from "@vendoai/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromJson } from "./catalog.js";
+import { mergeRuntimeCatalog, normalizeCatalogConfig, runtimeCatalogFromFile, runtimeCatalogFromJson } from "./catalog.js";
 
 const validateResult = async (
   entry: NormalizedCatalog[number] | undefined,
@@ -65,6 +66,42 @@ describe("catalog@1 runtime mapping", () => {
       propsSchema: { "~standard": { validate: (value: unknown) => ({ value }) } },
     }]);
     expect(mergeRuntimeCatalog(disk, explicit)).toEqual(explicit);
+  });
+
+  it("rejects a disk entry whose name the /host projection cannot carry, naming the file", () => {
+    // The disk leg of the same fail-early. `catalogFileSchema` already rejects a
+    // hyphen, but its pattern is `[A-Z][A-Za-z0-9_$]*` — LOOSER than core's in two
+    // ways it never noticed: `$` is legal in it, and there is no length cap. Both
+    // used to parse, boot green, and throw once per turn forever. The file's
+    // existing policy for a bad document holds: one loud boot line naming the file
+    // and no components, rather than a dead host.
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const entry = (name: string) =>
+      ({ name, exportPath: `./x#${name}`, propsSchema: {}, description: "D.", source: "scanned" });
+
+    expect(runtimeCatalogFromJson(
+      JSON.stringify({ format: "vendo/catalog@1", entries: [entry("MetricCard"), entry("Card$Legacy")] }),
+      ".vendo/catalog.json",
+    )).toEqual([]);
+
+    const line = String(error.mock.calls[0]?.[0]);
+    expect(line).toContain(".vendo/catalog.json");
+    expect(line).toContain("Card$Legacy");
+    expect(line).toContain("letters, digits and \"_\"");
+    error.mockRestore();
+  });
+
+  it("throws through runtimeCatalogFromFile itself, for the in-memory profile caller", () => {
+    // `config.profile.catalog` is handed to `runtimeCatalogFromFile` directly, so
+    // there is no swallow in front of it: that caller gets the boot error.
+    const file = (name: string) => ({
+      format: "vendo/catalog@1",
+      entries: [{ name, exportPath: `./x#${name}`, propsSchema: {}, description: "D.", source: "scanned" }],
+    } as never);
+    expect(() => runtimeCatalogFromFile(file("Card$Legacy"))).toThrow(VendoError);
+    // 65 characters: one past core's cap, which the file schema does not have.
+    expect(() => runtimeCatalogFromFile(file(`C${"a".repeat(64)}`))).toThrow(VendoError);
+    expect(() => runtimeCatalogFromFile(file("MetricCard"))).not.toThrow();
   });
 
   it("warns loudly and actionably when strict catalog parsing fails", () => {
@@ -183,6 +220,36 @@ describe("normalizeCatalogConfig (01 §14 registry form + derivation)", () => {
 
   it("returns an empty catalog for undefined config", () => {
     expect(normalizeCatalogConfig(undefined)).toEqual([]);
+  });
+
+  describe("a name the /host projection cannot carry fails at BOOT, not on every turn", () => {
+    // `hostComponentFiles` builds `/host/components/<Name>.md` through core's
+    // `componentPath`, per TURN. So a name core rejects used to normalize fine,
+    // boot green, and throw for the whole life of the deployment — once per turn.
+    // Same defect the pack merge closes for a pack's components; this is the HOST
+    // half of it, and both ends call the same builder so they cannot drift.
+    for (const name of ["Data-Table", "9Lives", "Data Table", "../x", "data.table"]) {
+      it(`rejects the registered name ${JSON.stringify(name)}`, () => {
+        expect(() => normalizeCatalogConfig([{ name, description: "D." }])).toThrow(VendoError);
+        expect(() => normalizeCatalogConfig({ [name]: { component: null, description: "D." } }))
+          .toThrow(VendoError);
+      });
+    }
+
+    it("names the source and the entry, and gives core's own reason", () => {
+      const attempt = (): unknown => normalizeCatalogConfig([{ name: "Data-Table", description: "D." }]);
+      expect(attempt).toThrow(/createVendo\(\{ catalog \}\)/);
+      expect(attempt).toThrow(/Data-Table/);
+      expect(attempt).toThrow(/letters, digits and "_"/);
+    });
+
+    it("still accepts the names real hosts register", () => {
+      expect(() => normalizeCatalogConfig([
+        { name: "MetricCard", description: "D." },
+        { name: "Chart2", description: "D." },
+        { name: "spending_donut", description: "D." },
+      ])).not.toThrow();
+    });
   });
 
   it("derives the SAME JSON Schema statically (sync/disk) and at runtime (live registration)", async () => {

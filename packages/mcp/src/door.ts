@@ -578,10 +578,15 @@ class Door {
         await this.#state.deleteSession(sessionId);
       },
     });
+    // `listChanged` is a PROMISE the door now keeps: `search_connectors` expands
+    // the registry mid-session, and an SDK client lists once and caches, so
+    // without the notification the tool the model just found is invisible and
+    // uncallable until the client reconnects. See `#announceExpansion`.
+    const tools = { listChanged: true };
     const capabilities = this.#config.apps === undefined
-      ? { tools: {} }
+      ? { tools }
       : {
-          tools: {},
+          tools,
           resources: {},
           extensions: { "io.modelcontextprotocol/ui": {} },
         };
@@ -705,29 +710,78 @@ class Door {
     // parity by construction rather than a second implementation of it. The
     // turn's own curation (the loadout, `surfaces.agent`, §12) already decided
     // what is callable, and an unknown name comes back as its own error.
-    if (state.turn !== undefined) return turnResult(await state.turn.tools.call(name, args as Json));
+    if (state.turn !== undefined) {
+      const turn = state.turn;
+      const result = await turn.tools.call(name, args as Json);
+      await this.#announceExpansion(state, name, result.status === "ok");
+      return turnResult(result, await this.#turnDeclaresWireOutput(turn, name, result));
+    }
     const descriptors = await this.#config.tools.descriptors(state.context);
+    const called = descriptors.find((descriptor) => descriptor.name === name);
     // An off-menu name answers exactly like a name that does not exist: the
     // menu decides what this door OFFERS, and offering nothing is the whole
     // refusal (the guard, not the menu, is what stops a call that IS offered).
-    if (!offeredAtDoor(await this.#menu(), name) || !descriptors.some((descriptor) => descriptor.name === name)) {
+    if (!offeredAtDoor(await this.#menu(), name) || called === undefined) {
       if (this.#config.apps !== undefined && APP_TOOL_NAMES.has(name)) {
         return this.#callAppsTool(name, args, state, identity);
       }
       return inBandError(`not-found: Tool ${name} was not found`);
     }
+    // Asked with the SAME sanitizer the listing used, so what the door promised
+    // and what the door keeps cannot drift.
+    const declaredOutput = declaresWireOutput(called.outputSchema);
     const id = await this.#replayId(state, name, args);
     const outcome = await this.#config.tools.execute({ id, tool: name, args }, state.context);
     await this.#recordReplay(state, name, args, id, outcome.status);
+    await this.#announceExpansion(state, name, outcome.status === "ok");
     // FIX E: a bound registry that owns an app-viewer name (vendo_apps_open via
     // apps.agentTools()) returns an OpenSurface envelope ({kind,payload}); the
     // MCP Apps shim renders a bare format-tagged UIPayload (core §8), so unwrap
     // it exactly as the door's own apps path does before mapping the result.
     if (name === "vendo_apps_open" && this.#config.apps !== undefined && outcome.status === "ok") {
       const output = await this.#mcpAppsOpenOutput(outcome.output, args, state.context, identity);
-      return mapOutcome({ status: "ok", output: output as Json }, identity.name);
+      return mapOutcome({ status: "ok", output: output as Json }, identity.name, declaredOutput);
     }
-    return mapOutcome(outcome, identity.name);
+    return mapOutcome(outcome, identity.name, declaredOutput);
+  }
+
+  /**
+   * Did the door's turn listing advertise an `outputSchema` for `name`?
+   *
+   * Asked only when the answer changes the wire. A record output rides as
+   * `structuredContent` verbatim whether a schema was advertised or not, so the
+   * equipped listing is never re-fetched for one; a NON-record ok output is the
+   * single case that would otherwise carry no structured content at all and make
+   * the official client throw, and that is the case this pays a `list()` for.
+   */
+  async #turnDeclaresWireOutput(turn: LiveTurn, name: string, result: ToolResult): Promise<boolean> {
+    if (result.status !== "ok" || isRecord(result.output)) return false;
+    const listing = (await turn.tools.list()).find((candidate) => candidate.name === name);
+    return declaresWireOutput(listing?.outputSchema);
+  }
+
+  /**
+   * `search_connectors` is the one tool whose SUCCESS grows the callable surface:
+   * it expands a matching connector toolkit, so the tools it just reported exist
+   * only from the NEXT listing onward. An SDK client lists once and caches, so
+   * without this notification the found tool is named to the model and then
+   * refuses to run for the rest of the session.
+   *
+   * Tied to that one trigger by NAME, because the door already knows the name of
+   * the call it just served — no generic broadcast, no per-call diffing.
+   */
+  async #announceExpansion(state: SessionState, name: string, ok: boolean): Promise<void> {
+    if (!ok || name !== CONNECTOR_SEARCH_TOOL) return;
+    try {
+      await state.server.sendToolListChanged();
+    } catch (error) {
+      // The tool already ran. A notification the transport could not place (no
+      // standalone SSE stream open, a session already closing) must not turn a
+      // completed call into a JSON-RPC error the client would retry.
+      console.error("[vendo] mcp door: tools/list_changed notification failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /** The ride-along tools are door tool calls like any other (10-mcp §2/§4).
@@ -1091,6 +1145,11 @@ const APP_TOOL_NAMES = new Set(APP_TOOL_DESCRIPTORS.map((descriptor) => descript
  *  literal because block layering keeps mcp off the agent/actions packages. */
 const VENDO_TOOL_PREFIX = "vendo_";
 
+/** D3's connector search — the one tool whose success MATERIALIZES tools (a lazy
+ *  toolkit expands), which is why the door has a `listChanged` promise to keep.
+ *  Duplicated as a literal for the same layering reason as the prefix above. */
+const CONNECTOR_SEARCH_TOOL = "search_connectors";
+
 /** Whether a curated door offers `name`. Asked by BOTH the listing and the call
  *  path, so a curated door cannot advertise one surface and answer to another. */
 function offeredAtDoor(menu: Set<string> | undefined, name: string): boolean {
@@ -1114,20 +1173,65 @@ function toolAnnotations(risk: RiskLabel, title?: string): NonNullable<Tool["ann
   };
 }
 
+/** ~32KB of serialized JSON Schema. A generated response schema can be an entire
+ *  inlined OpenAPI response model, and every `tools/list` pays for it — the
+ *  model's context first. Past the cap the door says nothing rather than
+ *  everything, exactly as it does for a shape it cannot state. */
+const OUTPUT_SCHEMA_CAP = 32 * 1024;
+
 /**
- * The tool's declared result shape on the wire, carried verbatim from the
- * descriptor (design 2026-08-03 D5) so the model knows a query's fields before
- * calling it.
+ * The tool's declared result shape on the wire (design 2026-08-03 D5) so the
+ * model knows a query's fields before calling it — SANITIZED, because the
+ * official MCP client turns the declaration into two hard promises and the door
+ * has to be able to keep both.
  *
- * OBJECT-TYPED ONLY, and that is protocol, not taste: MCP's `Tool.outputSchema`
- * is `{ type: "object", … }` by definition, a client parses `tools/list` with
- * that schema, and a top-level `{"type":"array"}` response schema — ordinary in
- * an OpenAPI spec — would fail the parse and take the WHOLE listing down. The
- * door omits what it cannot state; the descriptor still carries it for the
- * in-process surfaces, which have no such wire constraint.
+ * 1. `tools/list` is parsed with the SDK's `ToolSchema`, whose `outputSchema` is
+ *    `{ type: "object", properties?: Record<string, object>, required?: string[] }`.
+ *    A top-level `{"type":"array"}` (ordinary in an OpenAPI spec), a boolean
+ *    property subschema (`{"x": true}` — LEGAL JSON Schema 2020-12), or a
+ *    malformed `required: "id"` all fail that parse and take the WHOLE listing
+ *    down, every other tool with it. So the shape is checked here, and a schema
+ *    that cannot be stated is omitted rather than shipped.
+ * 2. `tools/call` THROWS on any non-`isError` result whose `structuredContent`
+ *    is missing or does not validate against the advertised schema. The door
+ *    cannot promise the host's declaration describes every result it must
+ *    return: `toolOutputCap` replaces a large output with
+ *    `{truncated, chars, preview}`, which matches no host schema. So `required`
+ *    is dropped and `additionalProperties` is forced open. Field names and types
+ *    survive, which is the whole of D5's value to the model; what dies is the
+ *    schema's power to REJECT a result the door has no choice about.
+ *
+ * The descriptor still carries the original for the in-process surfaces, which
+ * have no wire constraint.
  */
 function wireOutputSchema(schema?: Record<string, unknown>): { outputSchema?: Tool["outputSchema"] } {
-  return schema?.type === "object" ? { outputSchema: schema as Tool["outputSchema"] } : {};
+  if (!isRecord(schema) || schema.type !== "object") return {};
+  if (schema.properties !== undefined && !isObjectValued(schema.properties)) return {};
+  if (schema.required !== undefined && !isStringArray(schema.required)) return {};
+  const { required: _unenforceable, ...rest } = schema;
+  // `type` is respelled (not re-ordered — the key keeps its place) so the wire
+  // shape is the literal the SDK's schema demands without a cast.
+  const wire: Tool["outputSchema"] = { ...rest, type: "object", additionalProperties: true };
+  if (stringify(wire).length > OUTPUT_SCHEMA_CAP) return {};
+  return { outputSchema: wire };
+}
+
+/** Did the door ADVERTISE a result shape for this descriptor? The call path asks
+ *  with the listing's own sanitizer, so the promise and the kept promise are one
+ *  decision made twice, never two decisions. */
+function declaresWireOutput(schema?: Record<string, unknown>): boolean {
+  return wireOutputSchema(schema).outputSchema !== undefined;
+}
+
+/** The client's `ToolSchema` asserts every `properties` value is an OBJECT, so a
+ *  boolean subschema is legal JSON Schema the wire cannot carry. */
+function isObjectValued(value: unknown): boolean {
+  return isRecord(value)
+    && Object.values(value).every((entry) => typeof entry === "object" && entry !== null);
+}
+
+function isStringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
 /** 10-mcp §4 — the MCP Apps `_meta` that advertises the shim resource so a host
@@ -1193,8 +1297,8 @@ async function turnTools(turn: LiveTurn): Promise<Tool[]> {
  * in-process projection uses (`guardedProjection` in `apps/src/claude-turn.ts`):
  * a denial is text the model narrates, never a protocol error it reads as a bug.
  */
-function turnResult(result: ToolResult): CallToolResult {
-  if (result.status === "ok") return textResult(result.output);
+function turnResult(result: ToolResult, declaredOutput = false): CallToolResult {
+  if (result.status === "ok") return textResult(result.output, declaredOutput);
   if (result.status === "denied") return inBandError(result.reason);
   return inBandError(`${result.error.code}: ${result.error.message}`);
 }
@@ -1263,10 +1367,10 @@ function appToolPreview(name: string, args: Record<string, unknown>): string {
   return preview.length > 500 ? `${preview.slice(0, 499)}…` : preview;
 }
 
-function mapOutcome(outcome: ToolOutcome, productName: string): CallToolResult {
+function mapOutcome(outcome: ToolOutcome, productName: string, declaredOutput = false): CallToolResult {
   switch (outcome.status) {
     case "ok":
-      return textResult(outcome.output);
+      return textResult(outcome.output, declaredOutput);
     case "error":
       return inBandError(`${outcome.error.code}: ${outcome.error.message}`);
     case "pending-approval":
@@ -1284,12 +1388,24 @@ function mapOutcome(outcome: ToolOutcome, productName: string): CallToolResult {
   }
 }
 
-function textResult(output: unknown): CallToolResult {
+/**
+ * `declaredOutput` says the LISTING advertised an outputSchema for this tool,
+ * which the official client reads as a guarantee: an ok result without
+ * conforming `structuredContent` makes `callTool` THROW rather than return, so
+ * the model sees a broken server instead of its answer. Records already ride
+ * verbatim (the truncation envelope included — the sanitized schema accepts any
+ * object); a non-record output — a string, a number, a bare array — carried
+ * nothing at all, so it rides under one added key, which a sanitized schema's
+ * open `additionalProperties` accepts. Undeclared tools keep the previous wire
+ * exactly.
+ */
+function textResult(output: unknown, declaredOutput = false): CallToolResult {
   const text = isOpenInProductPayload(output)
     ? `Open ${output.appName ?? "this app"} in ${output.productName}: ${output.url}`
     : stringify(output);
   const result: CallToolResult = { content: [{ type: "text", text }] };
   if (isRecord(output)) result.structuredContent = output;
+  else if (declaredOutput) result.structuredContent = { value: output };
   return result;
 }
 

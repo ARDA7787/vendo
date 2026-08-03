@@ -337,10 +337,10 @@ describe("H3 — the seam's payload is a STREAMING tree", () => {
     expect((view?.part.payload as { streaming?: boolean }).streaming).toBe(true);
   });
 
-  it("awaits an async progressive fill, so the real resolver can wire in", async () => {
+  it("awaits the async app half, so the real resolver can wire in", async () => {
     const view = await viewForWrite(APP_VENDO, GOOD, {
       emit: () => undefined,
-      fillData: async () => ({ rows: [{ id: 1 }] }),
+      authoredApp: async () => ({ rows: [{ id: 1 }] }),
     });
     expect((view?.part.payload as { data?: unknown }).data).toEqual({ rows: [{ id: 1 }] });
   });

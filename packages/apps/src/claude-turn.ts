@@ -63,11 +63,29 @@
 /** The MCP server name our projected tools live under (`mcp__vendo__<tool>`). */
 export const VENDO_MCP_SERVER = "vendo";
 
-/** The whole of the local tool law: never available to a headless box turn, no
- *  user to ask and no egress to spend. `disallowedTools` removes them from the
- *  model's view entirely, so it never plans around them. Everything else the SDK
- *  ships, now or later, runs. */
-const DISALLOWED_TOOLS = ["WebSearch", "WebFetch", "AskUserQuestion"];
+/** The whole of the local tool law, in two groups.
+ *
+ *  A headless box turn has no user to ask and no egress to spend, so `WebSearch`,
+ *  `WebFetch` and `AskUserQuestion` can never be available. And the SDK's
+ *  PROVIDER-SIDE tools act on the vendor's own surfaces over the inference
+ *  channel rather than through this host, which puts them outside the box and the
+ *  door both — no guard, no audit row, no egress filter (`Projects`' own
+ *  `project_write` uploads a workspace file's contents provider-side, and the
+ *  tool's schema says the contents "never enter your context", so not even the
+ *  transcript records what left).
+ *
+ *  `disallowedTools` removes them from the model's view entirely, so it never
+ *  plans around them. Everything else the SDK ships, now or later, runs. */
+const DISALLOWED_TOOLS = [
+  "WebSearch",
+  "WebFetch",
+  "AskUserQuestion",
+  "Projects",
+  "Artifact",
+  "RemoteTrigger",
+  "PushNotification",
+  "SendFeedback",
+];
 
 export type ClaudeTurnEvent =
   | { type: "text"; delta: string }
@@ -278,6 +296,10 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       // Nothing local left to ask: the box contains the box's own hands, and the
       // guard decides host tools at the door (module header).
       permissionMode: "bypassPermissions",
+      // The SDK documents the pair as required ("Must be set to `true` when using
+      // `permissionMode: 'bypassPermissions'`"); today's CLI treats it as advisory
+      // (measured 2026-08-03), so this is hygiene against one that enforces it.
+      allowDangerouslySkipPermissions: true,
       disallowedTools: DISALLOWED_TOOLS,
       // The host's own door, over native remote MCP. `alwaysLoad` because this
       // surface is deliberately UNCURATED (`toolSurface: { curated: false }`):

@@ -192,8 +192,16 @@ describe("parity gate — the MCP door vs the in-process projection", () => {
   }, 30_000);
 
   // D5 (2026-08-03): the model in the box learns a query's field names from the
-  // listing. The schema travels extraction → descriptor → turn listing → wire
-  // verbatim; a tool whose host declared none lists without the field.
+  // listing. The schema travels extraction → descriptor → turn listing → wire;
+  // a tool whose host declared none lists without the field.
+  //
+  // The FIELDS travel verbatim — that is D5's whole value — but `required` does
+  // not reach the wire and `additionalProperties` arrives open. The official
+  // client turns an advertised outputSchema into a validator it THROWS on, and
+  // the door has to be able to return results the host never declared (the
+  // `toolOutputCap` truncation envelope first among them), so the door omits the
+  // parts of the declaration it cannot honour. Pinned at the source in
+  // `packages/mcp/src/door.test.ts`.
   it("an EXTRACTED tool's declared outputSchema reaches the wire listing, and an undeclared one carries none", async () => {
     const outputSchema = {
       type: "object",
@@ -218,7 +226,11 @@ describe("parity gate — the MCP door vs the in-process projection", () => {
     await runHarnessTurn(host.vendo, "thr_output_schema", "what can you do");
 
     const byName = new Map(listed.map((tool) => [tool.name, tool]));
-    expect(byName.get("host_declared")?.outputSchema).toEqual(outputSchema);
+    expect(byName.get("host_declared")?.outputSchema).toEqual({
+      type: outputSchema.type,
+      properties: outputSchema.properties,
+      additionalProperties: true,
+    });
     expect(byName.get("host_undeclared")).not.toHaveProperty("outputSchema");
   }, 30_000);
 

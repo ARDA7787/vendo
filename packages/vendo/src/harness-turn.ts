@@ -111,7 +111,10 @@ export interface HarnessTurnsConfig {
    *  either — so without this a connector-less `claudeCode()` deployment would be
    *  taught two tools that are not on its listing. */
   connectorDiscovery?: boolean;
-  render?: HarnessRuntimeDeps["render"];
+  /** The render seam's halves composition owns, per turn — like `bridge` below,
+   *  and for the same reason: the app half (`authoredApp`) stores the app row and
+   *  runs the tree's queries as the CALLER, so it needs this turn's ctx. */
+  render?: (ctx: RunContext) => HarnessRuntimeDeps["render"];
   /** The shipped tool-bridge rails composition owns, per turn (`toolOutputCap`,
    *  the connect `preflight`, the capability-miss `onCall`). */
   bridge?: (ctx: RunContext, threadId: ThreadId) => HarnessRuntimeDeps["bridge"];
@@ -408,7 +411,7 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
         skills: createTurnSkills(workspace),
         transcript,
         harnessState,
-        ...(config.render === undefined ? {} : { render: config.render }),
+        ...(config.render === undefined ? {} : { render: config.render(input.ctx) }),
         ...(config.bridge === undefined
           ? {}
           : { bridge: config.bridge(input.ctx, thread.id) as ToolBridgeOptions | undefined }),

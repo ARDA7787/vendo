@@ -11,7 +11,17 @@
  *
  * - **Delegation advice is a sentence in the body**, never a pack property and
  *   never our machinery (architecture §6). A harness maps it to its native
- *   subagents, or ignores it; the checks floor holds either way.
+ *   subagents, or ignores it; the checks floor holds either way. Which is why the
+ *   body names `Task` CONDITIONALLY: the same text is read by `claudeCode()`,
+ *   which has it, and by `vendo()`'s hired specialist, which has no hiring tool at
+ *   all (depth is bounded at one) — an unconditional order would be a lie to one
+ *   of them.
+ *
+ * - **Every path is workspace-RELATIVE.** The `/host` mount is a WORKSPACE path;
+ *   on disk it lands under the machine's root (`/workspace/host/...` in a box, a
+ *   temp dir on `machine: "local"`), and the session's cwd is that root. So
+ *   `host/components/` resolves on both legs and `/host/components/` resolves on
+ *   neither.
  * - **Write early, write per group.** The screen re-renders on every parsing
  *   save of a hot-path file (build contract §1.6), so writing the plan file
  *   first and the app file per group is what gives the person a growing app.
@@ -34,21 +44,36 @@ const BODY = `# Building an app
 Somebody asked for something they want to look at or use. You are going to build
 it out of this product's own components and its own live data.
 
-**Run me in a fresh subagent** — that is the \`Task\` tool. This is a big, loud job
-with a lot of reading in it, and the assistant talking to the person should stay
-light. Hand the whole thing over, let it finish, and keep one line about what
-came back.
+**Run me in a fresh subagent**, through whatever your delegation tool is — the
+\`Task\` tool, where you have one. This is a big, loud job with a lot of reading in
+it, and the assistant talking to the person should stay light. Hand the whole
+thing over, let it finish, and keep one line about what came back. If you have no
+way to delegate, do the job yourself, in the order below — everything here still
+holds.
 
 Put the person's ask in that brief **verbatim** — their sentence, their words —
 plus anything the conversation already settled ("only this quarter", "they mean
 the EU entity"). A paraphrase is where their app quietly becomes yours.
 
-Two references, on disk, whenever you need them:
+Two references, on disk, whenever you need them. Both paths are relative to the
+directory you are working in:
 
-- \`/host/skills/building-apps/references/format.md\` — the whole \`.vendo\` syntax.
-- \`/host/components/\` — one file per component you may use: what it is for, its
+- \`host/skills/building-apps/references/format.md\` — the whole \`.vendo\` syntax.
+  It is the \`references/format.md\` beside this skill.
+- \`host/components/\` — one file per component you may use: what it is for, its
   full props schema, its examples. Grep it; \`search_components\` is the quick
   lookup when you do not know a name yet.
+
+Tools are named bare here — \`search_components\`, \`validate\`, \`ask_user\`, and this
+product's own operations. Your own tool list may show every one of them behind a
+server prefix (\`mcp__vendo__validate\`, \`mcp__vendo__host_listTransactions\`): call
+them by the exact name your list shows, and if a bare name comes back as no such
+tool, look for the prefixed one before concluding it does not exist.
+
+**Your hands are how an app gets built.** You write \`plan.vendo\` and \`app.vendo\`
+yourself. If your tool list has no app-creation or app-edit tool, that is
+deliberate and not a gap — writing the files IS the mechanism, and the screen
+repaints on every save. Do not go searching for a tool that builds the app for you.
 
 ## Write early. Write as you go.
 
@@ -56,9 +81,12 @@ The person is watching. Their screen re-renders every time you save a file that
 parses, so:
 
 1. Save \`plan.vendo\` **first**. The plan IS the layout — the moment it lands, the
-   skeleton of their app appears on screen.
+   skeleton of their app appears on screen. Run \`validate\` on it right there: a
+   plan that names a tool or a component that does not exist is a whole app built
+   on sand.
 2. Save \`app.vendo\` again **after every group you fill in**, so the app grows a
-   section at a time in front of them.
+   section at a time in front of them. Run \`validate\` on every one of those
+   saves, so a mistake is one section old instead of a whole app old.
 
 Both files live in the app's own directory — \`user/apps/app_<something>/\`. A new
 app is a new directory, and its name must start with \`app_\`, or nothing paints.
@@ -110,13 +138,16 @@ else — because that is exactly what happens next.
   you learn them.
 - **Call the query once** only when a tool declares no output schema, or when the
   actual values matter (what a status string really says, whether money is cents).
-- Look up every component you intend to use: \`/host/components/<Name>.md\` for
+- Look up every component you intend to use: \`host/components/<Name>.md\` for
   this product's own, \`references/format.md\` for the ones that ship with the
   format. Props are checked by name, so a guessed prop is a failed app.
 
 ## 4. Fill the groups in — one worker per group, blinkered
 
-Give each group to its own worker — one \`Task\` per group, all launched together.
+Give each group to its own worker — one \`Task\` per group, all launched together,
+where you have that tool. Without one, fill the groups yourself, one at a time in
+order, and read only what that group needs while you are on it.
+
 A worker sees **only** its own group, the docs for the components its leaves name,
 and the shape of its queries. The blinkers are the design, not a limitation: a
 worker that cannot see the rest of the app cannot quietly contradict it.
@@ -144,8 +175,8 @@ and wrong every day after.
 
 ## 5. Check it, then fix it
 
-Run \`validate\` on the app document — the text you just saved. It reads like a
-compiler: does it parse, do the tools and components and fields and props exist,
+Run \`validate\` on the app document one last time, over the whole thing — the
+final gate after the per-save runs above. It reads like a compiler: does it parse, do the tools and components and fields and props exist,
 do the types fit. Every issue it reports is a sentence that names the real
 alternative — fix from it and validate again.
 

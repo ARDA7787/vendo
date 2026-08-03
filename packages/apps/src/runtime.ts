@@ -39,6 +39,7 @@ import {
   type VendoViewPart,
   type VendoTheme,
   type VendoRecord,
+  type WireCompileResult,
 } from "@vendoai/core";
 import type { LanguageModel } from "ai";
 import { createAgentTools } from "./agent-tools.js";
@@ -54,6 +55,8 @@ import type {
 } from "./cloud.js";
 import {
   applyPinFork,
+  asPayload,
+  asTree,
   prewarmModels,
   snapshotDesignRules,
   type GenerationDependencies,
@@ -613,6 +616,33 @@ export interface AppsRuntime {
      *  apology for something the user can see. */
     onUnsaved?: (reason: string) => void;
   }, ctx: RunContext): Promise<AppDocument>;
+  /**
+   * Build contract §1.6 / redesign D4 — the files-first counterpart of
+   * {@link AppsRuntime.create}: the app a HARNESS wrote with its own hands, as
+   * `app.vendo` in the workspace.
+   *
+   * Nothing else makes such an app an APP. There is no row, so it never lists,
+   * never opens (`vendo_apps_open` masks it as `not-found`), and has no document
+   * to resolve queries against — which is why a file-authored app rendered every
+   * value as "—" while real host data sat on the wire (live E2E, 2026-08-03).
+   * This door closes both halves at once: it upserts the row through the same
+   * writer generation persists with, and resolves the tree's queries through the
+   * same guard-bound caller `open()` uses — one guard decision per query, the
+   * person's own authority, the app venue.
+   *
+   * Deliberately NOT generation: no model, no conductor, no checking floor. The
+   * `validate` verb is this loop's review floor (D7's skill law), and a mid-turn
+   * save is partial by design — refusing to store what the person can already
+   * see would be the worse failure.
+   *
+   * The render seam (`@vendoai/harnesses`) is the only caller; it hands over the
+   * compile it already did, so the stored tree is byte-identical to the painted
+   * one.
+   */
+  authored(
+    input: { appId: AppId; compiled: WireCompileResult },
+    ctx: RunContext,
+  ): Promise<Record<string, Json>>;
   /** Speed lane — best-effort page-open warm-up of the generation model(s)
    *  (full + paint), so the first create reuses a live connection. Safe to
    *  call on surface mount; never throws. */
@@ -947,6 +977,52 @@ export const assembleTree = (source: {
   ...(source.components === undefined ? {} : { components: structuredClone(source.components) }),
   ...(source.componentTools === undefined ? {} : { componentTools: structuredClone(source.componentTools) }),
 } as Tree);
+
+/**
+ * §1.6 files-first — the app a harness wrote as `app.vendo`, as a document.
+ *
+ * The tree, the name and the islands are the model's; on an app that ALREADY
+ * exists, everything else — trigger, storage, machine, pins, description, the
+ * egress grant — is the app's own history and survives untouched. That is
+ * exactly `documentFromEdit`'s rule (generation/validation/validate.ts), applied
+ * without a model, because saving a file is not a generation.
+ *
+ * `componentTools` is deliberately NOT stamped: stamping is island admission's
+ * job (`prepareIslands`, behind the checking floor), and a manifest invented here
+ * would either lie about the sources or carry the PREVIOUS version's islands. Left
+ * absent, the renderer derives each island's tool surface from the source it was
+ * handed — the pre-stamped rule, and the same posture the mid-turn paint already
+ * has (the seam emits raw compiled islands too).
+ */
+const authoredDocument = (
+  appId: AppId,
+  compiled: WireCompileResult,
+  previous: AppDocument | undefined,
+): AppDocument => {
+  const name = compiled.name?.trim();
+  const document: AppDocument = {
+    ...(previous === undefined ? { format: "vendo/app@1" as const } : structuredClone(previous)),
+    id: appId,
+    // A save mid-build often has no name yet, and the stored name is the app's
+    // title in the person's list — so an unnamed document keeps whatever title
+    // the app already had rather than losing it.
+    name: name === undefined || name === "" ? previous?.name ?? "Untitled app" : name,
+    ui: "tree",
+    tree: asPayload(structuredClone(compiled.tree)),
+  };
+  if (Object.keys(compiled.components).length === 0) {
+    delete document.components;
+  } else {
+    document.components = structuredClone(compiled.components);
+  }
+  delete document.componentTools;
+  // The same rule at rest as at serve time (create's own line): a model-forged
+  // venue verdict or drift report is never persisted, and a file save can never
+  // resurrect a terminal build failure.
+  if (document.tree !== undefined) stripServerAuthoritativeFields(document.tree);
+  delete document.buildFailed;
+  return document;
+};
 
 const pinnedSubtree = (app: AppDocument, componentName: string): unknown[] => {
   if (app.tree?.formatVersion !== VENDO_TREE_FORMAT) return [];
@@ -2384,6 +2460,52 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       return structuredClone(app);
     },
 
+    async authored(input, ctx) {
+      const record = await apps.get(input.appId);
+      const row = record === null ? null : rowFromRecord(record);
+      // A row that already exists belongs to whoever holds it. `/user/**` is its
+      // subject's at EVERY level (core `accessForPath`), so a harness can write
+      // `/user/apps/<someone-else's-id>/app.vendo` in its own mount and the
+      // workspace will happily land the file — this is the only place that can
+      // refuse to let that rewrite the other person's app.
+      //
+      // A row that does NOT exist can only have come from this caller's own
+      // `/user` mount: a fresh `/orgs/<org>/apps/<id>/` path has no app row to
+      // grant on, so `canCommit` refuses it and the file never lands at all.
+      const mayWrite = row === null || await holds(input.appId, ctx, "editor", record);
+      const previous = row === null
+        ? undefined
+        : classifyLegacyPlacements(row.doc, config.pinBaselines);
+      const document = authoredDocument(input.appId, input.compiled, previous);
+      if (mayWrite) {
+        try {
+          await apps.put(appRecordInput(
+            document,
+            // §9.5 — a promoted app's row subject is the ORG id; the editor check
+            // above is what authorized this write, and the row keeps its owner.
+            row?.subject ?? ctx.principal.subject,
+            previous === undefined
+              ? false
+              : enabledAfterDocumentEdit(previous, document, row?.enabled ?? false),
+            previous === undefined ? undefined : sessionOf(previous),
+          ));
+          if (previous === undefined) await reportLifecycle("create", document.id, ctx);
+        } catch (error) {
+          // The same degradation create takes on a refused write: the app is on
+          // screen, it just is not in the list. Never silent — and never a reason
+          // to withhold the data the person can already see.
+          console.error(`[vendo] app not saved (${input.appId}): the harness wrote it as a file but the store rejected it — ${safeErrorMessage(error)}`);
+        }
+      }
+      // The queries, through the SAME guard-bound caller `open()` resolves with:
+      // one guard decision per query, this person's authority, `venue: "app"`.
+      // A query that does not settle "ok" contributes no data and says so in the
+      // logs (see createProgressiveQueryResolver) — which is what turns a silent
+      // "No spending in this period" back into a diagnosable fact.
+      const queries = createProgressiveQueryResolver(caller, document, ctx);
+      queries.update(asTree(document.tree));
+      return await queries.complete();
+    },
 
     async get(appId, ctx) {
       // The brain's conversation is server-authoritative, on the same footing as

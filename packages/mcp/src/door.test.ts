@@ -9,6 +9,7 @@ import {
   type RecordQuery,
   type RecordStore,
   type StoreAdapter,
+  type ToolCall,
   type ToolOutcome,
   type ToolRegistry,
   type VendoTheme,
@@ -16,6 +17,7 @@ import {
 } from "@vendoai/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { exportJWK, generateKeyPair, jwtVerify, SignJWT, type KeyLike } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMcpDoorWithState } from "./door.js";
@@ -1956,12 +1958,233 @@ describe("createMcpDoor tool menu, titles, and annotations", () => {
   });
 });
 
+/**
+ * D5's declared result shape, measured against what the OFFICIAL client actually
+ * does with it: `tools/list` is parsed with the SDK's own `ToolSchema` (one bad
+ * schema rejects the WHOLE listing) and `tools/call` THROWS on any non-`isError`
+ * result whose `structuredContent` is missing or fails the advertised schema.
+ * Every assertion here therefore goes through the real SDK client.
+ */
+describe("createMcpDoor declared output schemas on the wire", () => {
+  /** The shape a generated tools.json really carries: named fields, plus a
+   *  `required` and a closed `additionalProperties` the door cannot honour. */
+  const declared = {
+    type: "object",
+    properties: {
+      rows: { type: "array", items: { type: "object", properties: { id: { type: "string" } } } },
+      total: { type: "integer" },
+    },
+    required: ["rows", "total"],
+    additionalProperties: false,
+  };
+
+  const declaring = (name: string, outputSchema: Record<string, unknown>) => ({
+    name,
+    description: `the ${name} tool`,
+    inputSchema: { type: "object", properties: {} },
+    outputSchema,
+    risk: "read" as const,
+  });
+
+  async function open(options: HarnessOptions) {
+    const harness = makeHarness(options);
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    return { harness, connected: await connect(harness.door, tokens.access_token) };
+  }
+
+  it("keeps the declared fields and types, and drops only what it cannot enforce", async () => {
+    const { connected } = await open({ extraDescriptors: [declaring("host_report", declared)] });
+    const listed = await connected.client.listTools();
+    expect(listed.tools.find((tool) => tool.name === "host_report")?.outputSchema).toEqual({
+      // The field names and types are the whole of D5's value to the model, and
+      // they survive verbatim...
+      type: "object",
+      properties: declared.properties,
+      // ...while `required` and a closed `additionalProperties` do not: the
+      // client validates EVERY ok result against this, and the door has to be
+      // able to return results the host never declared.
+      additionalProperties: true,
+    });
+    await connected.client.close();
+  });
+
+  it("a TRUNCATED ok output still validates against the advertised schema", async () => {
+    // Exactly what `toolOutputCap` substitutes for a large output (agent/tools.ts
+    // capOutcome) — a shape no host schema mentions. Against the unsanitized
+    // schema the client threw "Structured content does not match the tool's
+    // output schema" and the model never saw its answer.
+    const envelope = { truncated: true, chars: 91_000, preview: '{"rows":[{"id":"a"}' };
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_report", declared)],
+      getOutcome: () => ({ status: "ok", output: envelope }),
+    });
+    await connected.client.listTools();
+
+    const result = await connected.client.callTool({ name: "host_report", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual(envelope);
+    await connected.client.close();
+  });
+
+  it("wraps a NON-record ok output for a declaring tool, and invents nothing for the rest", async () => {
+    // A declaring tool that answered with a bare string carried no
+    // structuredContent at all, and the client threw on the RESULT: "has an
+    // output schema but did not return structured content".
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_report", declared)],
+      getOutcome: (call) => ({
+        status: "ok",
+        output: call.tool === "host_report" ? "just text" : ["a", "b"],
+      }),
+    });
+    await connected.client.listTools();
+
+    const declaringCall = await connected.client.callTool({ name: "host_report", arguments: {} });
+    expect(declaringCall.isError).toBeFalsy();
+    expect(declaringCall.structuredContent).toEqual({ value: "just text" });
+    expect(textOf(declaringCall)).toBe('"just text"');
+
+    // host_lookup declares no output shape, so its wire is untouched.
+    const undeclared = await connected.client.callTool({ name: "host_lookup", arguments: {} });
+    expect(undeclared.structuredContent).toBeUndefined();
+    expect(textOf(undeclared)).toBe('["a","b"]');
+    await connected.client.close();
+  });
+
+  it("an unstatable host schema costs that ONE tool its schema, never the whole listing", async () => {
+    const { connected } = await open({
+      extraDescriptors: [
+        declaring("host_report", declared),
+        // `required` as a bare string — not the array the client's ToolSchema wants.
+        declaring("host_bad_required", { type: "object", properties: { id: { type: "string" } }, required: "id" }),
+        // A boolean subschema is LEGAL JSON Schema 2020-12 and still unstatable:
+        // the client asserts every `properties` value is an object.
+        declaring("host_bool_property", { type: "object", properties: { anything: true } }),
+        // A top-level array — ordinary in an OpenAPI response spec.
+        declaring("host_array", { type: "array", items: { type: "string" } }),
+        // Past the serialized-size cap.
+        declaring("host_huge", { type: "object", properties: hugeProperties() }),
+      ],
+    });
+
+    // The listing PARSES — which is the finding: any one of these used to reject
+    // the whole tools/list result and leave the client with no tools at all.
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    expect([...byName.keys()]).toEqual([
+      "host_lookup",
+      "host_report",
+      "host_bad_required",
+      "host_bool_property",
+      "host_array",
+      "host_huge",
+    ]);
+    expect(byName.get("host_report")?.outputSchema).toBeDefined();
+    for (const name of ["host_bad_required", "host_bool_property", "host_array", "host_huge"]) {
+      expect(byName.get(name), name).not.toHaveProperty("outputSchema");
+    }
+    await connected.client.close();
+  });
+});
+
+/**
+ * `search_connectors` MATERIALIZES tools — it expands a matching connector
+ * toolkit — so the tools it just named to the model are only on the NEXT
+ * listing. An SDK client lists once and caches, so without a list-changed
+ * notification the found tool refuses to run for the rest of the session.
+ */
+describe("createMcpDoor announces a connector search that grew the surface", () => {
+  const search = {
+    name: "search_connectors",
+    description: "Search the connector catalog",
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    risk: "read" as const,
+  };
+  const late = { name: "gmail_send", description: "Send mail", inputSchema: { type: "object" }, risk: "write" as const };
+
+  async function open(options: HarnessOptions) {
+    const harness = makeHarness(options);
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const connected = await connect(harness.door, tokens.access_token);
+    const seen: string[] = [];
+    let announced!: () => void;
+    const notification = new Promise<void>((resolve) => { announced = resolve; });
+    connected.client.setNotificationHandler(ToolListChangedNotificationSchema, (message) => {
+      seen.push(message.method);
+      announced();
+    });
+    // A notification sent before the client's standalone stream exists is
+    // dropped by the transport, so nothing is asserted until it is up.
+    await connected.sseReady;
+    return { harness, connected, seen, notification };
+  }
+
+  it("advertises listChanged and notifies, so the expanded tool is callable in-session", async () => {
+    let expanded = false;
+    const { connected, seen, notification } = await open({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = true;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+
+    expect(connected.client.getServerCapabilities()?.tools).toEqual({ listChanged: true });
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).not.toContain("gmail_send");
+
+    const searched = await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } });
+    expect(searched.isError).toBeFalsy();
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+
+    // ...and the re-list the notification exists to provoke finds the tool the
+    // search reported, on the same session.
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).toContain("gmail_send");
+    await connected.client.close();
+  });
+
+  it("announces only a SUCCESSFUL search — never an ordinary tool, never a failed one", async () => {
+    let searches = 0;
+    const { connected, seen, notification } = await open({
+      extraDescriptors: [search],
+      getOutcome: (call) => {
+        if (call.tool !== "search_connectors") return { status: "ok", output: { answer: 42 } };
+        searches += 1;
+        return searches === 1
+          ? { status: "error", error: { code: "upstream", message: "broker down" } }
+          : { status: "ok", output: { tools: [] } };
+      },
+    });
+
+    await connected.client.callTool({ name: "host_lookup", arguments: {} });
+    const failed = await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } });
+    expect(failed.isError).toBe(true);
+    // The one success is also the flush: once ITS notification has arrived, the
+    // two calls before it are proven to have sent nothing.
+    await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail again" } });
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+    await connected.client.close();
+  });
+});
+
+/** Comfortably past the door's ~32KB serialized-schema cap. */
+function hugeProperties(): Record<string, unknown> {
+  return Object.fromEntries(Array.from({ length: 800 }, (_, index) => [
+    `field_${index}`,
+    { type: "string", description: "x".repeat(64) },
+  ]));
+}
+
 interface HarnessOptions {
   store?: MemoryStore;
   menuTools?: string[] | (() => string[] | undefined | Promise<string[] | undefined>);
   productName?: string;
   state?: McpDoorState;
-  getOutcome?: () => ToolOutcome;
+  /** The call is passed so one harness can answer several tools differently. */
+  getOutcome?: (call: ToolCall) => ToolOutcome;
   principal?: (subject: string) => Principal | null;
   apps?: AppsPort;
   /** A function form lets a test GROW the surface mid-session (lazy connector
@@ -2009,7 +2232,7 @@ function makeHarness(options: HarnessOptions = {}) {
     },
     async execute(call, ctx) {
       executions.push({ id: call.id, ctx });
-      return options.getOutcome?.() ?? { status: "ok", output: { answer: 42 } };
+      return options.getOutcome?.(call) ?? { status: "ok", output: { answer: 42 } };
     },
   };
   const config = {
@@ -2163,17 +2386,26 @@ async function revoke(door: McpDoor, token: string, clientId: string, tokenTypeH
 }
 
 async function connect(door: McpDoor, accessToken: string) {
+  // The SDK client opens the standalone GET SSE stream after `initialized` and
+  // does NOT await it; a server-initiated notification sent before that stream
+  // exists is dropped by the transport. Anything asserting one has to wait for
+  // the GET to be served, so record it here rather than sleeping in the test.
+  let sseServed!: () => void;
+  const sseReady = new Promise<void>((resolve) => { sseServed = resolve; });
   const transport = new StreamableHTTPClientTransport(new URL(BASE), {
     requestInit: { headers: { authorization: `Bearer ${accessToken}` } },
     fetch: async (input, init) => {
       const headers = new Headers(init?.headers);
       headers.set("authorization", `Bearer ${accessToken}`);
-      return door.handler(new Request(input, { ...init, headers }));
+      const request = new Request(input, { ...init, headers });
+      const response = await door.handler(request);
+      if (request.method === "GET" && response.ok) sseServed();
+      return response;
     },
   });
   const client = new Client({ name: "door-test", version: "1.0.0" });
   await client.connect(transport);
-  return { client, transport };
+  return { client, transport, sseReady };
 }
 
 function mcpRequest(accessToken: string, sessionId?: string, resource = BASE) {

@@ -379,8 +379,8 @@ carry this product's own look.
 
 Host components come first when one fits: they are this product's own, already
 branded. One file each, with the full props schema and examples:
-\`/host/components/<Name>.md\`. \`search_components\` finds one by intent when you
-do not know the name.
+\`host/components/<Name>.md\`, relative to the directory you are working in.
+\`search_components\` finds one by intent when you do not know the name.
 
 Everything below ships with the format and is available in every app. Use these
 exact component and prop names — an unknown prop fails validation.

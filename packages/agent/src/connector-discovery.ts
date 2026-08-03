@@ -14,6 +14,13 @@ import { VENDO_TOOL_TITLES, vendoAuthored, type Json, type RunContext, type Tool
  */
 export const CONNECTOR_DISCOVERY_TOOLS = ["search_connectors", "list_connections"] as const;
 
+/** A search intent is a phrase ("post a message to slack"), never a document. The
+ *  bound is declared in the schema AND enforced in `execute`, for the same reason
+ *  the blank-query check is: a schema is advice to the model, and the port behind
+ *  this ranks the query against the broker's whole toolkit index. Same order of
+ *  magnitude as `find_tools`' own cap. */
+const MAX_QUERY_LENGTH = 512;
+
 export interface ConnectorDiscoveryPorts {
   /** Search the connector catalog: rank the broker's toolkit index against the
    *  intent, EXPAND the matching toolkits so their tools are callable on the
@@ -43,7 +50,7 @@ const DESCRIPTORS: ToolDescriptor[] = ([
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", minLength: 1 },
+        query: { type: "string", minLength: 1, maxLength: MAX_QUERY_LENGTH },
         limit: { type: "integer", minimum: 1 },
       },
       required: ["query"],
@@ -81,6 +88,9 @@ export function connectorDiscoveryRegistry(ports: ConnectorDiscoveryPorts): Tool
             const query = typeof args["query"] === "string" ? args["query"].trim() : "";
             if (query === "") {
               return fail("validation", "search_connectors needs a query — it never lists the whole catalog");
+            }
+            if (query.length > MAX_QUERY_LENGTH) {
+              return fail("validation", `search_connectors takes a short intent, not a document — keep the query under ${MAX_QUERY_LENGTH} characters (this one was ${query.length})`);
             }
             const limit = typeof args["limit"] === "number" ? args["limit"] : undefined;
             const tools = await ports.search(query, limit, ctx);
