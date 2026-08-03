@@ -1,4 +1,4 @@
-import { VENDO_APPS_CREATE_TOOL, VENDO_APPS_TOOL_PREFIX, type ApprovalRequest, type JsonSchema, type RiskLabel, type VendoCitationsPart, type VendoKnowledgeCitation } from "@vendoai/core";
+import { VENDO_APPS_CREATE_TOOL, VENDO_APPS_TOOL_PREFIX, vendoErrorCodeSchema, type ApprovalRequest, type JsonSchema, type RiskLabel, type VendoCitationsPart, type VendoKnowledgeCitation } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { previewArgs } from "../humanize.js";
 import { LONG_TEXT_CAP, truncateHead } from "../truncate.js";
@@ -13,6 +13,37 @@ export function partData(part: UIMessage["parts"][number]): unknown {
  * strings never carry it. Read by both error surfaces (the banner and the
  * in-thread turn-error part). */
 export const VENDO_ERROR_PREFIX = "Vendo: ";
+
+/**
+ * ENG-214 — the ONE reader of a turn's error string: what a PERSON is told
+ * about a turn that broke, or nothing.
+ *
+ * THE DEFECT this closes: two call sites (the thread's banner and the
+ * in-thread turn-error part) each gated on `startsWith("Vendo: ")` and then
+ * printed the remainder. But that prefix marks a DEVELOPER sentence as
+ * SAFE-to-show, not as consumer copy, and `wireErrorMessage` appends the
+ * VendoError code — so the reader got `… (validation)` on the end of it, and
+ * the turn-error part additionally fell through to the RAW `data.message` when
+ * the prefix was absent, which is exactly the provider/transport string the
+ * prefix exists to keep out. One function now: the marker and the trailing code
+ * token are plumbing and come off, an unprefixed string yields nothing at all,
+ * and the two surfaces cannot drift.
+ *
+ * The code stays where a developer can act on it — the server log and the
+ * browser console line `wireErrorMessage` already writes.
+ */
+export function turnErrorSentence(message: string | undefined): string | undefined {
+  if (message === undefined || !message.startsWith(VENDO_ERROR_PREFIX)) return undefined;
+  let body = message.slice(VENDO_ERROR_PREFIX.length).trim();
+  // The closed 01-core code enum, so stripping the token can never eat a
+  // sentence's own parenthetical ("(1,204,000 of 1,000,000 used; …)").
+  for (const code of vendoErrorCodeSchema.options) {
+    if (!body.endsWith(`(${code})`)) continue;
+    body = body.slice(0, -`(${code})`.length).trimEnd();
+    break;
+  }
+  return body.length > 0 ? body : undefined;
+}
 
 /**
  * Spec §15 + §16 law 3 — what a PERSON is told when an app build fails.
@@ -271,6 +302,15 @@ export function narratedByAppCard(
   siblingParts: UIMessage["parts"],
 ): boolean {
   if (!isToolUIPart(part)) return false;
+  // M20 — a build that FAILED terminally narrates through its own block (the
+  // `data-vendo-build-failed` part: a ✕ beat reading "Couldn't build the app"
+  // plus what it means for the reader). The failed call's own ✕ beat sat right
+  // above it, so one failure printed two ✕ lines. The part names the call it
+  // is about, so the suppression is exact rather than a guess by tool identity.
+  const failed = siblingParts.some(sibling => sibling.type === "data-vendo-build-failed"
+    && (partData(sibling) as { toolCallId?: unknown; reason?: unknown }).toolCallId === part.toolCallId
+    && typeof (partData(sibling) as { reason?: unknown }).reason === "string");
+  if (failed) return true;
   const name = toolName(part);
   if (!name.startsWith(VENDO_APPS_TOOL_PREFIX)) return false;
   const building = part.state === "input-streaming" || part.state === "input-available";

@@ -7,7 +7,7 @@ import {
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
-import { admissibleDescription, consentClassLine, toolPresentation } from "./build-beat.js";
+import { consentWords, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -19,10 +19,13 @@ import {
   ToolkitLogo,
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
+import { developmentMode } from "./dev-mode.js";
 import { fieldRows } from "./field-rows.js";
 
-/** The wire risk slugs, in the user's language (the raw slug stays available
-    on the chip's tooltip via the tool name; end users never read jargon). */
+/** The wire risk slugs, in the user's language. The raw TOOL slug used to ride
+    the chip's `title` tooltip "for developers" — a tooltip is an end-user
+    surface (L37), so it is dev-mode only now; the slug's real home is the
+    `data-risk`/`data-vendo-tool` attributes machines read. */
 const RISK_LABEL: Record<string, string> = {
   read: "Read-only",
   write: "Makes changes",
@@ -137,25 +140,12 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   );
   const title = presentation.title;
   const rows = fieldRows(approval.call.args, approval.descriptor.inputSchema, meta);
-  // Law 3's precedence for the mandatory line, most local authority first (the
-  // same ladder as `toolTitle`):
-  //   1. the HOST's own sentence for this tool (in-code `ToolMeta`);
-  //   2. else the consequence synthesized from the REAL inputs (lane pick 1-A —
-  //      more specific than any generic sentence: it names the actual money and
-  //      counterparty);
-  //   3. else the authored/synthesized description that rode along — ONLY when
-  //      it reads as consumer copy (`admissibleDescription`); a descriptor is
-  //      written for the model, and one that sounds like it is dropped;
-  //   4. else the consequence CLASS — never the tool's own label.
-  const hostSentence = meta?.description?.trim();
-  const written = hostSentence !== undefined && hostSentence.length > 0 && hostSentence !== title
-    ? hostSentence
-    : undefined;
-  const described = admissibleDescription(
-    presentation.description ?? approval.descriptor.description,
-    title,
-  );
-  const consequence = written === undefined ? presentation.consequence : undefined;
+  // Ruling 14 — ONE plain-words ladder, shared with the queue row (`consentWords`
+  // in build-beat.tsx): host sentence → consequence from the real inputs → our
+  // own synthesized sentence → the consequence class. The descriptor's own
+  // description is never on it.
+  const words = consentWords(approval.descriptor.name, approval.descriptor.risk, presentation, meta);
+  const consequence = words.consequence;
   // The FOLD is the separate call: the raw fields tuck behind a "Details"
   // disclosure only on an ordinary ask. Critical/destructive keeps every input
   // in plain sight — maximum scrutiny — and still gets the sentence (a money
@@ -189,10 +179,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
 
   const inputs = <CardFields rows={rows} />;
   return (
-    // No automatic policy notice: that banner is written for the host
-    // DEVELOPER, and a consent card is the most end-user surface there is
-    // (spec §16.3, the consumer-voice guarantee).
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
       <CardShell label={`Approval for ${title}`} className="fl-approval fl-item-in" ceremony={critical}>
         <CardHead
           icon={<ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} fallback={SHIELD_GLYPH} />}
@@ -202,7 +189,8 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             <span
               className="fl-chip"
               data-risk={approval.descriptor.risk}
-              title={approval.descriptor.name}
+              data-vendo-tool={approval.descriptor.name}
+              {...(developmentMode() ? { title: approval.descriptor.name } : {})}
               style={{ marginLeft: "auto", padding: "2px 7px", fontSize: "10px", cursor: "default" }}
             >
               {RISK_LABEL[approval.descriptor.risk] ?? approval.descriptor.risk}
@@ -221,9 +209,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             {consequence.post}
           </CardLine>
         ) : (
-          <CardLine>
-            {written ?? described ?? consentClassLine(approval.descriptor.name, approval.descriptor.risk)}
-          </CardLine>
+          <CardLine>{words.sentence}</CardLine>
         )}
         {/* The consequence sentence carries the meaning; the mechanical rows
             fold but never leave the DOM (the a11y contract keeps its name). */}

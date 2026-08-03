@@ -28,6 +28,7 @@ import {
   ToolkitLogo,
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
+import { developmentMode } from "./dev-mode.js";
 import { fieldRows } from "./field-rows.js";
 import { BUILD_FAILURE_COPY } from "./thread/message-data.js";
 
@@ -136,7 +137,13 @@ function executedCard(summary: string, outcome: ToolOutcome): ReactNode {
   }
   // The resumed call itself failed (error/blocked/…): the honest record, in
   // the thread's existing "couldn't finish" vocabulary.
-  const reason = outcome.status === "error"
+  //
+  // M36 — the WIRE's own sentence used to ride the card. `outcome.error.message`
+  // is the tool's/provider's text (ids, routes, stack-shaped detail) and
+  // `outcome.reason` is a policy sentence written for whoever configures the
+  // policy; `outcome.status` is a slug. This is a host's own page, so the line
+  // above is what a person reads and the wire's half is a dev-mode aid.
+  const detail = outcome.status === "error"
     ? outcome.error.message
     : outcome.status === "blocked"
       ? outcome.reason
@@ -146,7 +153,11 @@ function executedCard(summary: string, outcome: ToolOutcome): ReactNode {
       summary={summary}
       ok={false}
       line="Approved — couldn't finish"
-      detail={<div className="fl-card-byline">{reason}</div>}
+      detail={
+        <div className="fl-card-byline">
+          {developmentMode() ? detail : "Nothing changed. Ask again when you're ready."}
+        </div>
+      }
     />
   );
 }
@@ -197,9 +208,11 @@ export function VendoApprovalEmbed({ refValue }: VendoApprovalEmbedProps) {
   if (data === null) {
     body = error !== undefined
       ? (
-          // Same shell, so a failed lookup is not its own bespoke article. The
-          // wire's own sentence stays: this embed is the BYO-agent surface whose
-          // contract (embeds.test) is that the failure is legible, not silent.
+          // Same shell, so a failed lookup is not its own bespoke article.
+          // Ruling 18 — a non-conversational surface owes the reader BOTH halves:
+          // one honest line, and a way to try again. M36 — the wire's own
+          // sentence is not that line (it carries approval ids and transport
+          // detail); it stays a dev-mode aid.
           <CardShell label={`Approval — ${summary}`} className="fl-approval">
             <CardHead
               icon={<ToolkitLogo fallback={SHIELD_GLYPH} />}
@@ -207,7 +220,14 @@ export function VendoApprovalEmbed({ refValue }: VendoApprovalEmbedProps) {
               title={summary}
             />
             <CardLine>Vendo couldn’t reach this approval just now.</CardLine>
-            <div role="alert" className="fl-error">{error.message}</div>
+            <div role="alert" className="fl-error">
+              {developmentMode() ? error.message : "Nothing was decided."}
+            </div>
+            <CardActions>
+              <button className="fl-btn fl-btn-primary" type="button" onClick={() => void refresh()}>
+                Try again
+              </button>
+            </CardActions>
           </CardShell>
         )
       : <BeatLine state="working">{summary}</BeatLine>;

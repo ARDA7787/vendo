@@ -56,12 +56,16 @@ describe("VendoThread and VendoOverlay exports", () => {
     // says "NEEDS YOUR APPROVAL / Email send" — the same words twice. A parked
     // ask is narrated ONCE, by its card: the ribbon must be gone.
     expect(document.querySelector(".fl-ribbon")).toBeNull();
-    const card = await screen.findByLabelText("Approval for Email send");
+    const card = await screen.findByLabelText("Approval for Send the report");
     expect(card.textContent).toContain("a@example.com");
     expect(card.textContent).toContain(
       "This tool changed since you approved it on Jul 1, 2026 — your previous permission no longer applies.",
     );
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    // L38 — the morph toast is the SAME ask, so it carries the card's title. It
+    // recomputed the presentation without the descriptor's authored title, so a
+    // card reading "Send the report" morphed into "Email send — approved".
+    expect((await screen.findByText(/— approved$/)).textContent).toBe("Send the report — approved");
 
     expect(await screen.findByText("Turn complete")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
@@ -136,6 +140,30 @@ describe("VendoThread and VendoOverlay exports", () => {
 
     await act(async () => release());
     expect(await screen.findByText("All done.")).toBeTruthy();
+    await waitFor(() => expect(document.querySelector(".fl-ribbon--working")).toBeNull());
+  });
+
+  // M22 — a REFUSED ask is terminal. It used to count as a live step forever, so
+  // the between-steps ribbon never returned for the rest of the turn.
+  it("brings the Working ribbon back after a denial — a refused ask is not live", { timeout: 20_000 }, async () => {
+    let release = () => undefined;
+    wire.state.threadReplyGate = new Promise<void>(resolve => { release = resolve; });
+    render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
+    expect(await screen.findByText("Existing thread")).toBeTruthy();
+
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(composer, { target: { value: "[denied-gap] send it" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+
+    // The refusal is settled in the transcript…
+    await waitFor(() => expect(document.querySelector("[data-vendo-tool='host_transferMoney']")?.className)
+      .toContain("fl-beat-done"));
+    expect(document.body.textContent).toContain("you declined it");
+    // …and the still-busy turn narrates its gap again.
+    await waitFor(() => expect(document.querySelector(".fl-ribbon--working")).toBeTruthy());
+
+    await act(async () => release());
+    expect(await screen.findByText("Nothing was sent.")).toBeTruthy();
     await waitFor(() => expect(document.querySelector(".fl-ribbon--working")).toBeNull());
   });
 

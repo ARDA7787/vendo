@@ -189,6 +189,11 @@ function audit(id: string): AuditEvent {
     venue: "chat",
     presence: "present",
     tool: "host_invoices_list",
+    // Ruling 17a — the fixture was BLIND here: it left `inputPreview` unset, so
+    // no audit sweep could see that the ledger printed it. This is the guard's
+    // real shape (guard.ts `inputPreview`: `<tool slug> <canonical JSON>`),
+    // including a declared-cents amount, which is what a person must never read.
+    inputPreview: 'host_invoices_list {"amount_cents":4750,"limit":10,"status":"open"}',
     outcome: "ok",
   };
 }
@@ -623,6 +628,40 @@ export async function createWireServer(options: WireServerOptions = {}) {
           await sendFetchResponse(smokeResponse, response);
           return;
         }
+        if (sentText.includes("[denied-gap]")) {
+          // M22/M23 — the turn's ask was REFUSED and the turn keeps going. A
+          // denial is terminal: the pill must stop narrating that step and the
+          // between-steps ribbon must come back for the rest of the turn.
+          const deniedGapChunks = createUIMessageStream<UIMessage>({
+            originalMessages: [input.message],
+            generateId: () => "msg_assistant_denied_gap",
+            execute: async ({ writer }) => {
+              writer.write({ type: "text-start", id: "text_ask" });
+              writer.write({ type: "text-delta", id: "text_ask", delta: "I'll move the money once you approve." });
+              writer.write({ type: "text-end", id: "text_ask" });
+              writer.write({
+                type: "tool-input-available",
+                toolCallId: "call_denied_gap",
+                toolName: "host_transferMoney",
+                input: { amount_cents: 4750, recipient_name: "Acme Utilities" },
+                dynamic: true,
+              });
+              // The denial chunk is a STRICT { type, toolCallId } object.
+              writer.write({
+                type: "tool-output-denied",
+                toolCallId: "call_denied_gap",
+              } as UIMessageChunk);
+              await state.threadReplyGate;
+              writer.write({ type: "text-start", id: "text_done" });
+              writer.write({ type: "text-delta", id: "text_done", delta: "Nothing was sent." });
+              writer.write({ type: "text-end", id: "text_done" });
+            },
+          });
+          const deniedGapResponse = createUIMessageStreamResponse({ stream: deniedGapChunks });
+          deniedGapResponse.headers.set("x-vendo-thread-id", threadId);
+          await sendFetchResponse(deniedGapResponse, response);
+          return;
+        }
         if (sentText.includes("[stream-long]")) {
           const longChunks = createUIMessageStream<UIMessage>({
             originalMessages: [input.message],
@@ -667,6 +706,15 @@ export async function createWireServer(options: WireServerOptions = {}) {
                 toolCallId: `call_stream${suffix}`,
                 risk: "write",
                 approvalId: `apr_stream${suffix}`,
+                // spec §16 law 2 — a real server rides the descriptor with the
+                // ask. The fixture omitted it, which is how L38 stayed
+                // invisible: with no authored title, the card and the
+                // post-approve toast happened to agree on the humanized slug.
+                descriptor: {
+                  title: "Send the report",
+                  description: "Send email",
+                  inputSchema: { type: "object", properties: { to: { type: "string" } } },
+                },
                 invalidatedGrant: {
                   id: "grt_stale",
                   grantedAt: "2026-07-01T12:00:00.000Z",

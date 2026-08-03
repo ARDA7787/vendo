@@ -120,7 +120,7 @@ export function ConnectCard({ connector, toolkit, message, onConnected, live = t
   };
 
   return (
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
       <CardShell
         label={`Connect ${displayName}`}
         className="fl-approval fl-item-in"

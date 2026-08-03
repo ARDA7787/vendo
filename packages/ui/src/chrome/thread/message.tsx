@@ -87,10 +87,18 @@ export function ThreadMessage({ message, restored, risks, busy, activeAssistantI
   const summaryAt = steps[0]?.index;
   // Wall time: the wire carries no per-part timestamps, so the clock is
   // measured — started when the turn was first seen working, frozen at settle.
-  // A turn nobody watched work (restored history) shows the count alone rather
-  // than an invented duration.
+  // A turn nobody watched work shows the count alone rather than an invented
+  // duration.
+  //
+  // M26 — that last rule leaned on `pending` being false for history, which is
+  // false in the one case it matters: a turn that was ALREADY RUNNING when this
+  // surface first saw it (a reopened conversation, a reload mid-turn) is both
+  // restored AND pending, so the clock started at the moment we arrived and the
+  // row reported "· 1.2s" for a turn that had been working for thirty. `restored`
+  // is exactly "we did not watch this start", so it gates the clock: unknown
+  // start ⇒ the count alone, which the comment above already required.
   const clock = useRef<{ start?: number; seconds?: number }>({});
-  if (pending) clock.current.start ??= Date.now();
+  if (pending && !restored) clock.current.start ??= Date.now();
   else if (clock.current.start !== undefined) {
     clock.current.seconds ??= (Date.now() - clock.current.start) / 1000;
   }

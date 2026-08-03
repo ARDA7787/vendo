@@ -105,6 +105,10 @@ describe("existing-agents embeds", () => {
     });
 
     it("renders the executed outcome's failure with the failed vocabulary, not a blank", async () => {
+      // ⚠️ TEST EDIT (M36): this required the WIRE's own sentence ("downstream
+      // exploded") on the card. That is the tool's/provider's text on a host's
+      // own page — §16 law 3's exact class. The failed vocabulary and a
+      // consumer line stay; the wire's half is dev-mode only (asserted below).
       wire.state.approvals = [];
       wire.state.approvalResolutions.set("apr_1", {
         state: "executed",
@@ -112,7 +116,24 @@ describe("existing-agents embeds", () => {
       });
       mount(<VendoApprovalEmbed refValue={approvalRef} />);
       await waitFor(() => expect(screen.getByText(/couldn't finish/i)).toBeDefined());
-      expect(screen.getByText(/downstream exploded/)).toBeDefined();
+      expect(screen.getByText(/Nothing changed/)).toBeDefined();
+      expect(document.body.textContent).not.toContain("downstream exploded");
+    });
+
+    it("keeps the wire's sentence for developers — dev mode only", async () => {
+      const previous = process.env.NODE_ENV;
+      process.env.NODE_ENV = "development";
+      try {
+        wire.state.approvals = [];
+        wire.state.approvalResolutions.set("apr_1", {
+          state: "executed",
+          outcome: { status: "error", error: { code: "error", message: "downstream exploded" } },
+        });
+        mount(<VendoApprovalEmbed refValue={approvalRef} />);
+        await waitFor(() => expect(screen.getByText(/downstream exploded/)).toBeDefined());
+      } finally {
+        process.env.NODE_ENV = previous;
+      }
     });
 
     it("renders expired for a TTL-swept approval", async () => {
@@ -128,7 +149,10 @@ describe("existing-agents embeds", () => {
       await waitFor(() => expect(screen.getByText(/expired/i)).toBeDefined());
     });
 
-    it("surfaces a wire failure as an alert, never a silent blank", async () => {
+    it("surfaces a wire failure as one honest line plus Try again, never a silent blank", async () => {
+      // ⚠️ TEST EDIT (M36 + ruling 18): this required the wire's "wire down" in
+      // the alert. Ruling 18 says a non-conversational surface owes the reader an
+      // honest LINE and a way to TRY AGAIN — not the transport's sentence.
       wire.state.failures.push({
         method: "GET",
         path: "/approvals/apr_1",
@@ -137,7 +161,10 @@ describe("existing-agents embeds", () => {
         status: 501,
       });
       mount(<VendoApprovalEmbed refValue={approvalRef} />);
-      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("wire down"));
+      await waitFor(() => expect(screen.getByRole("alert")).toBeDefined());
+      expect(screen.getByText(/couldn’t reach this approval/i)).toBeDefined();
+      expect(screen.getByRole("alert").textContent).not.toContain("wire down");
+      expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
     });
   });
 

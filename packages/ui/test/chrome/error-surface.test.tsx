@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-// ENG-214 — a broken turn must surface VISIBLY in the thread (banner + retry),
-// not only through the visually-hidden status span, and retry must re-issue
-// the failed turn without duplicating the user's message.
+// ENG-214 — a broken turn must surface VISIBLY in the thread (the banner), not
+// only through the visually-hidden status span. Ruling 16: the RECOVERY lives in
+// the conversation (the turn's Regenerate / Edit actions), never in a bespoke
+// failure control of the banner's own.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
 import { VendoThread } from "../../src/chrome/index.js";
+import { turnErrorSentence } from "../../src/chrome/thread/message-data.js";
 import { createWireServer } from "../wire-server.js";
 
 function sendFromComposer(text: string) {
@@ -13,6 +15,35 @@ function sendFromComposer(text: string) {
   fireEvent.change(composer, { target: { value: text } });
   fireEvent.keyDown(composer, { key: "Enter" });
 }
+
+/** C4 — the ONE gate both error surfaces read, against the three strings the
+ *  agent's `wireErrorMessage` actually puts on the wire. */
+describe("the turn-error gate (C4)", () => {
+  it("keeps the operator's sentence and drops the marker and the code token", () => {
+    expect(turnErrorSentence("Vendo: this deployment's plan does not include app machines (cloud-required)"))
+      .toBe("this deployment's plan does not include app machines");
+  });
+
+  it("strips only the TRAILING code — a sentence's own parentheses are content", () => {
+    const meter = "Vendo: Vendo Cloud paused AI tokens — the allowance for this billing period is used up "
+      + "(1,204,000 of 1,000,000 used; resets 2026-08-01). "
+      + "Upgrade your plan (https://console.vendo.run/billing) "
+      + "or bring your own infrastructure (https://docs.vendo.run/byo). (cloud-required)";
+    expect(turnErrorSentence(meter)).toBe(
+      "Vendo Cloud paused AI tokens — the allowance for this billing period is used up "
+      + "(1,204,000 of 1,000,000 used; resets 2026-08-01). "
+      + "Upgrade your plan (https://console.vendo.run/billing) "
+      + "or bring your own infrastructure (https://docs.vendo.run/byo).",
+    );
+  });
+
+  it("says NOTHING for an unprefixed string — the generic gate output and any raw one", () => {
+    expect(turnErrorSentence("An error occurred while generating the response.")).toBeUndefined();
+    expect(turnErrorSentence("TypeError: fetch failed at https://api.provider.test?key=sk-live-42"))
+      .toBeUndefined();
+    expect(turnErrorSentence(undefined)).toBeUndefined();
+  });
+});
 
 describe("visible error surface + retry (ENG-214)", () => {
   let wire: Awaited<ReturnType<typeof createWireServer>>;
@@ -38,8 +69,7 @@ describe("visible error surface + retry (ENG-214)", () => {
     await screen.findByText("Existing thread");
 
     sendFromComposer("Hello");
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    const banner = retry.closest(".fl-error");
+    const banner = (await screen.findByText(/Something went wrong/)).closest(".fl-error");
     expect(banner).toBeTruthy();
     // Friendly copy, not the raw transport error string.
     expect(banner?.textContent).toContain("Something went wrong");
@@ -56,12 +86,14 @@ describe("visible error surface + retry (ENG-214)", () => {
     await screen.findByText("Existing thread");
 
     sendFromComposer("Hello");
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    const banner = retry.closest(".fl-error");
+    const banner = (await screen.findByText(/Something went wrong/)).closest(".fl-error");
     expect(banner?.textContent).toContain("Something went wrong");
-    // The detail is OUR safe, operator-crafted message (agent wireErrorMessage
-    // shape) — rendered without the wire prefix, code kept for support.
-    expect(banner?.textContent).toContain("this deployment's plan does not include app machines (cloud-required)");
+    // ⚠️ TEST EDIT (C4): this line used to require the trailing "(cloud-required)"
+    // token — "code kept for support". The code is the DEVELOPER's half of the
+    // string; `wireErrorMessage` already logs it to the console and the server
+    // log. The reader gets the sentence, nothing else.
+    expect(banner?.textContent).toContain("this deployment's plan does not include app machines");
+    expect(banner?.textContent).not.toContain("(cloud-required)");
   });
 
   it("a meter-exhausted refusal ends the turn with the banner naming the meter, reset date, and both exits", async () => {
@@ -78,8 +110,7 @@ describe("visible error surface + retry (ENG-214)", () => {
     await screen.findByText("Existing thread");
 
     sendFromComposer("Hello");
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    const banner = retry.closest(".fl-error");
+    const banner = (await screen.findByText(/Something went wrong/)).closest(".fl-error");
     expect(banner?.textContent).toContain("Something went wrong");
     expect(banner?.textContent).toContain("Vendo Cloud paused AI tokens");
     expect(banner?.textContent).toContain("resets 2026-08-01");
@@ -93,8 +124,7 @@ describe("visible error surface + retry (ENG-214)", () => {
     await screen.findByText("Existing thread");
 
     sendFromComposer("Hello");
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    const banner = retry.closest(".fl-error");
+    const banner = (await screen.findByText(/Something went wrong/)).closest(".fl-error");
     expect(banner?.textContent).toContain("Something went wrong");
     expect(banner?.textContent).not.toContain("connection reset");
   });
@@ -133,16 +163,22 @@ describe("visible error surface + retry (ENG-214)", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
-  it("retries a mid-stream failure without duplicating messages", async () => {
+  it("retries a mid-stream failure through Regenerate, without duplicating messages", async () => {
+    // ⚠️ TEST EDIT (ruling 16): this clicked the banner's own Retry button. §15
+    // gives the conversation ONE recovery path, and it is the turn's Regenerate
+    // action — the same call the banner button made. The banner states what
+    // happened; the turn offers the redo.
     wire.state.streamFailures = 1;
     render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
     await screen.findByText("Existing thread");
 
     sendFromComposer("Hello");
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await screen.findByText(/Something went wrong/);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Regenerate" }));
 
     expect(await screen.findByText("Turn complete")).toBeTruthy();
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Something went wrong/)).toBeNull());
     // The user turn is not duplicated, and the cut partial answer was replaced.
     expect(screen.getAllByText("Hello")).toHaveLength(1);
     expect(screen.queryByText("Starting an answer that will be cut")).toBeNull();
@@ -153,16 +189,25 @@ describe("visible error surface + retry (ENG-214)", () => {
     });
   });
 
-  it("shows the banner on a failed send and retry re-issues the same turn", async () => {
+  it("shows the banner on a failed send, and Edit re-issues the same turn", async () => {
+    // ⚠️ TEST EDIT (ruling 16): a failed SEND has no assistant turn to
+    // regenerate, so the recovery path is the last user turn's own Edit action —
+    // the composer refills with the message and sending re-issues it. No bespoke
+    // failure control, exactly as §15 says.
     wire.state.failures.push({ method: "POST", path: "/threads", code: "internal", message: "boom", status: 500 });
     render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
     await screen.findByText("Existing thread");
 
     sendFromComposer("Hello again");
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await screen.findByText(/Something went wrong/);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit message" }));
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value)
+      .toBe("Hello again"));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
 
     expect(await screen.findByText("Turn complete")).toBeTruthy();
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Something went wrong/)).toBeNull());
     expect(screen.getAllByText("Hello again")).toHaveLength(1);
     const turns = wire.requests.filter(request => request.method === "POST" && request.path === "/threads");
     expect(turns).toHaveLength(2);

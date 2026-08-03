@@ -5,6 +5,8 @@
     relative timestamp (absolute in the title/dateTime). */
 import type { AuditEvent } from "@vendoai/core";
 import { useEffect, useState } from "react";
+import { developmentMode } from "./dev-mode.js";
+import { fieldRows } from "./field-rows.js";
 import type { ToolMetaMap } from "./humanize.js";
 import {
   describeActivity,
@@ -55,6 +57,44 @@ function KindGlyph({ kind, label }: { kind: AuditEvent["kind"]; label: string })
   );
 }
 
+/** How many humanized fields a row's detail carries before it stops being a
+    scannable line. */
+const DETAIL_FIELDS = 3;
+
+/**
+ * What a row says about the INPUTS, in the user's language.
+ *
+ * THE DEFECT this replaces: the row printed `event.inputPreview` verbatim, and
+ * the guard mints that string as `<tool slug> <canonical JSON>` (guard.ts,
+ * `inputPreview`) — so a person's own activity rail read
+ * `host_getSpendingInsights {"period":"month"}`. The same args go through the
+ * consent surfaces' humanization instead (`fieldRows`, so declared money reads
+ * as money at any depth), and a preview that is NOT that shape prints nothing
+ * at all — a string we cannot account for is never shown to a person. The raw
+ * preview stays a debugging aid, dev-mode only, exactly as the waiting strip
+ * keeps it.
+ */
+export function activityDetail(event: Pick<AuditEvent, "tool" | "inputPreview">): string | undefined {
+  const preview = event.inputPreview?.trim();
+  if (preview === undefined || preview.length === 0) return undefined;
+  const brace = preview.indexOf("{");
+  if (brace === -1) return undefined;
+  // Guard previews lead with the tool slug; anything else in front of the args
+  // is a shape this row does not know how to read.
+  const slug = preview.slice(0, brace).trim();
+  if (slug.length > 0 && slug !== event.tool) return undefined;
+  let args: unknown;
+  try {
+    args = JSON.parse(preview.slice(brace));
+  } catch {
+    // A truncated (500-char capped) or non-JSON preview: nothing honest to say.
+    return undefined;
+  }
+  const rows = fieldRows(args);
+  if (rows.length === 0) return undefined;
+  return rows.slice(0, DETAIL_FIELDS).map(row => `${row.label} ${row.value}`).join(" · ");
+}
+
 /** The rows only — header, caption, footer and empty states stay with the
     owning panel (they differ between the audit table and the shelf feed). */
 export function ActivityLedger({ events, tools }: { events: AuditEvent[]; tools?: ToolMetaMap }) {
@@ -70,12 +110,15 @@ export function ActivityLedger({ events, tools }: { events: AuditEvent[]; tools?
       {events.map(event => {
         const { kindLabel, action } = describeActivity(event, tools);
         const { label, tone } = eventOutcomeLabel(event);
+        // The server's own preview is a debugging aid, not consumer copy
+        // (waiting-queue.tsx keeps it the same way).
+        const detail = developmentMode() ? event.inputPreview : activityDetail(event);
         return (
           <li className="fl-act-led-row" key={event.id}>
             <KindGlyph kind={event.kind} label={kindLabel} />
             <span className="fl-act-led-main">
               <b>{action}</b>
-              {event.inputPreview ? <span className="fl-act-led-det"> — {event.inputPreview}</span> : null}
+              {detail ? <span className="fl-act-led-det"> — {detail}</span> : null}
             </span>
             <span className="fl-act-led-out">
               <span className="fl-act-outcome">

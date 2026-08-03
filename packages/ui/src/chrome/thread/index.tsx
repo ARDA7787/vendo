@@ -10,7 +10,7 @@ import { MorphToast, type MorphToastProps } from "../morph-toast.js";
 import { Composer, dragHasFiles, useComposer } from "./composer.js";
 import { MessageList } from "./message-list.js";
 import { useMessageWindow, useStickToBottom } from "./scrolling.js";
-import { approvalByCall, grantSetByCall, riskByCall, userText, VENDO_ERROR_PREFIX } from "./message-data.js";
+import { approvalByCall, grantSetByCall, riskByCall, toolCallPending, turnErrorSentence, userText } from "./message-data.js";
 
 /** Lane pick 4B — a rich landing suggestion: two-line starter card. */
 export interface VendoSuggestionCard {
@@ -278,31 +278,18 @@ export function VendoThread({
   // already saying it, the banner keeps only its headline + Retry so the same
   // sentence isn't printed twice.
   const turnErrorInThread = activeAssistant?.parts.some(part => part.type === "data-vendo-turn-error") ?? false;
-  const errorDetail = !turnErrorInThread && thread.error?.message?.startsWith(VENDO_ERROR_PREFIX) === true
-    ? thread.error.message.slice(VENDO_ERROR_PREFIX.length)
-    : null;
+  const errorDetail = turnErrorInThread ? undefined : turnErrorSentence(thread.error?.message);
+  // Ruling 16 — §15 governs the surfaces where the AGENT CAN SPEAK, and this is
+  // one: the banner used to carry its own Retry button, a bespoke failure
+  // control beside a conversation that already has one recovery path (the turn's
+  // Regenerate action, and the composer). The banner states what happened and
+  // stops there.
   const errorBanner = thread.error ? (
     <div className="fl-error">
       <span>
         Something went wrong and the response didn&rsquo;t finish.
-        {errorDetail !== null && <span className="fl-error-detail">{errorDetail}</span>}
+        {errorDetail === undefined ? null : <span className="fl-error-detail">{errorDetail}</span>}
       </span>
-      <button
-        type="button"
-        className="fl-error-retry"
-        onClick={() => {
-          // Nothing to re-issue (sends append the user turn before any request
-          // fires, so this is a defensive rail): degrade to dismissing the
-          // error instead of letting regenerate() throw on an empty thread.
-          if (thread.messages.length === 0) {
-            thread.clearError();
-            return;
-          }
-          void thread.regenerate();
-        }}
-      >
-        Retry
-      </button>
     </div>
   ) : null;
 
@@ -356,8 +343,10 @@ export function VendoThread({
   // twice (the D1 ruling: the card IS the step). A parked turn is not in
   // progress either, so the pulsing orb was a lie.
   const narratable = activeToolParts.filter(part => part.state !== "approval-requested");
-  const liveToolPart = [...narratable].reverse()
-    .find(part => part.state !== "output-available" && part.state !== "output-error");
+  // M22 — "live" is the SAME terminal set the transcript uses (`toolCallPending`):
+  // this list left out `output-denied`, so a refused ask counted as a live step
+  // forever and the between-steps ribbon never came back for the rest of the turn.
+  const liveToolPart = [...narratable].reverse().find(part => toolCallPending(part));
   // 2026-07 loading-state audit — the between-steps gap: a busy turn whose
   // prose has already streamed and whose tool parts have all settled had NO
   // indicator anywhere (no live beat, the caret needs streaming text,

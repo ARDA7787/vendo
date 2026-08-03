@@ -61,17 +61,22 @@ const wirePermissions = (description: string): GrantSetPermission[] => ([
   { approvalId: "apr_2", tool: "host_transferMoney", description, risk: "destructive" },
 ] as unknown as GrantSetPermission[]);
 
-/** Everything a person can READ or HEAR from a rendered surface: every text node
- *  plus every accessible name, one per line so adjacent nodes cannot glue into a
- *  token neither of them contains. The `title` attribute is deliberately
- *  excluded — the consent honesty contract keeps the RAW argument value one hover
- *  away, on purpose. */
+/** Everything a person can READ or HEAR from a rendered surface: every text node,
+ *  every accessible name AND every `title` tooltip, one per line so adjacent
+ *  nodes cannot glue into a token neither of them contains.
+ *
+ *  RULING 17a — `title` used to be excluded "on purpose", to let the consent
+ *  cards keep the raw argument value one hover away. That exclusion is how L37
+ *  survived every audit in the wave: a tooltip IS an end-user surface, and the
+ *  cards were putting raw JSON and developer literals in one. The sweep can see
+ *  it now. */
 function readable(root: ParentNode): string {
   const lines: string[] = [];
   const walker = (root.ownerDocument ?? (root as Document))
     .createTreeWalker(root as Node, 4 /* NodeFilter.SHOW_TEXT */);
   while (walker.nextNode()) lines.push(walker.currentNode.textContent ?? "");
   for (const node of root.querySelectorAll("[aria-label]")) lines.push(node.getAttribute("aria-label") ?? "");
+  for (const node of root.querySelectorAll("[title]")) lines.push(node.getAttribute("title") ?? "");
   return lines.join("\n");
 }
 
@@ -104,7 +109,10 @@ describe("LEAK 1 — the standing-access card rendered model instructions", () =
       </VendoProvider>,
     );
     const rows = [...document.querySelectorAll(".fl-grant")].map(row => row.textContent);
-    expect(rows).toEqual(["Reads: Get spending insights", "Changes: Transfer money"]);
+    // ⚠️ TEST EDIT (ruling 15): the second row used to read "Changes: Transfer
+    // money" — a DESTRUCTIVE permission described with the word an ordinary
+    // write gets. An irreversible grant now says so.
+    expect(rows).toEqual(["Reads: Get spending insights", "Irreversible: Transfer money"]);
     // The cadence stays on the card's own plain-words line, said once.
     expect(document.querySelector(".fl-card-line")?.textContent)
       .toContain("Granted once, used every run");
@@ -264,19 +272,21 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
 
   /** The queue row goes through the real hook, so the ask arrives the way the
    *  wire delivers it. */
-  const showQueue = (description: string) => {
+  const showQueueAsk = (pending: ApprovalRequest, tools: Record<string, { description: string }> = {}) => {
     const base = createVendoClient({ baseUrl: wire.url });
     const bound = {
       ...base,
-      approvals: { ...base.approvals, pending: async () => [ask(description)] },
+      approvals: { ...base.approvals, pending: async () => [pending] },
     } as unknown as VendoClient;
     render(
-      <VendoProvider client={bound}>
+      <VendoProvider client={bound} tools={tools}>
         <WaitingQueue pollMs={0} />
       </VendoProvider>,
     );
     return waitFor(() => screen.getByRole("article", { name: /Approval for/ }));
   };
+
+  const showQueue = (description: string) => showQueueAsk(ask(description));
 
   it("drops a model-instruction descriptor from the card and says what the call does instead", () => {
     showCard(MODEL_INSTRUCTION);
@@ -301,12 +311,102 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
     expect(cardLine()).toBe("This reads your data, as you.");
   });
 
-  it("still shows a clean host-authored descriptor, on the card and on the row", async () => {
+  // ⚠️ TEST EDIT (ruling 14 reverses ruling 11): this asserted that a "clean"
+  // DESCRIPTOR sentence still occupied the card's plain-words line — the exact
+  // behaviour ruling 14 removes. A descriptor is authored for the model or minted
+  // by extraction, and whether it "reads clean" was decided by a regex set that
+  // admitted raw JSON and exceptions. There is no rung for it now: the same
+  // sentence in the HOST's own ToolMeta (the human-authored channel) is shown,
+  // and from the wire it is dropped.
+  it("drops even a CLEAN-READING descriptor sentence — the wire is not an authoring channel", async () => {
     showCard(HOST_AUTHORED);
-    expect(cardLine()).toBe(HOST_AUTHORED);
+    expect(cardLine()).toBe("This reads your data, as you.");
     cleanup();
     const row = await showQueue(HOST_AUTHORED);
+    expect(row.textContent).not.toContain(HOST_AUTHORED);
+    expect(cardLine()).toBe("This reads your data, as you.");
+  });
+
+  it("shows that same sentence when the HOST authored it in its own ToolMeta", async () => {
+    const tools = { host_getSpendingInsights: { description: HOST_AUTHORED } };
+    render(
+      <VendoProvider client={client} tools={tools}>
+        <ApprovalCard approval={ask("")} onDecide={() => undefined} />
+      </VendoProvider>,
+    );
+    expect(cardLine()).toBe(HOST_AUTHORED);
+    cleanup();
+    const row = await showQueueAsk(ask(""), tools);
     expect(row.textContent).toContain(HOST_AUTHORED);
+  });
+
+  /** H6 + ruling 14 — ONE ladder, so the card and the row are the same sentence
+   *  on the same fixture, at every rung. */
+  describe("the card and its queue row read from one ladder", () => {
+    const money = (): ApprovalRequest => ({
+      id: "apr_money",
+      call: {
+        id: "call_money",
+        tool: "host_transferMoney",
+        args: { amount_cents: 4750, recipient_name: "Acme Utilities" },
+      },
+      descriptor: {
+        name: "host_transferMoney",
+        title: "Send money",
+        // The wire's own sentence rides along and must reach neither surface.
+        description: MODEL_INSTRUCTION,
+        inputSchema: {},
+        risk: "write",
+      },
+      inputPreview: 'host_transferMoney {"amount_cents":4750}',
+      ctx: { principal: { kind: "user", subject: "user_1" }, venue: "chat", presence: "present" },
+      createdAt: "2026-08-03T12:00:00.000Z",
+    } as unknown as ApprovalRequest);
+
+    it("tier 2 — the same synthesized consequence, word for word", async () => {
+      render(
+        <VendoProvider client={client}>
+          <ApprovalCard approval={money()} onDecide={() => undefined} />
+        </VendoProvider>,
+      );
+      const onCard = cardLine();
+      expect(onCard).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+      cleanup();
+      const row = await showQueueAsk(money());
+      expect(cardLine()).toBe(onCard);
+      expect(row.textContent).not.toContain("integer cents");
+    });
+
+    it("tier 1 — the host's own sentence, on both", async () => {
+      const tools = { host_transferMoney: { description: "Pays your water bill from checking." } };
+      render(
+        <VendoProvider client={client} tools={tools}>
+          <ApprovalCard approval={money()} onDecide={() => undefined} />
+        </VendoProvider>,
+      );
+      const onCard = cardLine();
+      expect(onCard).toBe("Pays your water bill from checking.");
+      cleanup();
+      await showQueueAsk(money(), tools);
+      expect(cardLine()).toBe(onCard);
+    });
+
+    it("tier 4 — the same class sentence when nothing truthful can be said", async () => {
+      const bare = (): ApprovalRequest => ({
+        ...money(),
+        call: { id: "call_bare", tool: "host_transferMoney", args: { note: "hi" } },
+      } as unknown as ApprovalRequest);
+      render(
+        <VendoProvider client={client}>
+          <ApprovalCard approval={bare()} onDecide={() => undefined} />
+        </VendoProvider>,
+      );
+      const onCard = cardLine();
+      expect(onCard).toBe("This moves money, as you.");
+      cleanup();
+      await showQueueAsk(bare());
+      expect(cardLine()).toBe(onCard);
+    });
   });
 
   it("tells the person what a failed decision means, never the wire's sentence", async () => {
@@ -391,6 +491,31 @@ describe("the widened audit — no chrome surface renders a developer string", (
         { tool: "gmail_GMAIL_SEND_EMAIL", title: "Send email", risk: "write" },
       ],
     }} />],
+    // Ruling 17a — the sweep never mounted the APPROVAL CARD, the surface the
+    // whole §16 law was written for. With a money ask (a formatted value, a
+    // graded chip) it exercises the tooltip and chip paths the widened
+    // `readable()` can now see.
+    ["approval card", <ApprovalCard
+      approval={{
+        id: "apr_sweep",
+        call: {
+          id: "call_sweep",
+          tool: "host_getSpendingInsights",
+          args: { amount_cents: 4750, recipient_name: "Acme Utilities", permanent: true },
+        },
+        descriptor: {
+          name: "host_getSpendingInsights",
+          title: "Send money",
+          description: MODEL_INSTRUCTION,
+          inputSchema: {},
+          risk: "destructive",
+        },
+        inputPreview: 'host_getSpendingInsights {"amount_cents":4750}',
+        ctx: { principal: { kind: "user", subject: "user_1" }, venue: "app", presence: "present", appId: "app_7f3a2b41" },
+        createdAt: "2026-08-03T12:00:00.000Z",
+      } as unknown as ApprovalRequest}
+      onDecide={() => undefined}
+    />],
     ["waiting strip", <WaitingQueue pollMs={0} />],
     ["activity", <ActivityPanel />],
     ["automations panel", <AutomationsPanel />],
@@ -416,9 +541,13 @@ describe("the widened audit — no chrome surface renders a developer string", (
    * thread/composer, automations-panel), leaving only the one that is a DECIDED
    * exception rather than an open defect.
    */
-  const KNOWN_OPEN: Record<string, string> = {
-    "embeds.tsx": "decided exception, documented at the render site: the BYO-agent embed's contract (embeds.test) is that the wire failure stays legible",
-  };
+  // Pass 3 closed the last three (approval-card, thread/composer,
+  // automations-panel); the post-check round closed the final entry, embeds.tsx
+  // (M36) — the "decided exception" was the BYO-agent embed rendering the wire's
+  // own sentence, and ruling 18 answers it differently: one honest line plus
+  // Try again, with the wire's half dev-mode only. The table is now EMPTY, and
+  // the staleness check below keeps it honest.
+  const KNOWN_OPEN: Record<string, string> = {};
 
   const chromeSources = (): string[] => {
     const collect = (dir: string): string[] =>

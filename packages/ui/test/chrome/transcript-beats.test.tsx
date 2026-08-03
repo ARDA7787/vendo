@@ -68,6 +68,17 @@ describe("toolResultSummary (the beat's short result)", () => {
     expect(toolResultSummary({ count: 7 })).toBe("7 results");
   });
 
+  it("M24 — never counts an ENVELOPE key: the noun has to be a thing", () => {
+    // These read "· 6 data" and "· 1 row" on a settled beat — the developer's
+    // word for the payload's shape, counted like a noun.
+    expect(toolResultSummary({ data: new Array(6).fill(0) })).toBeUndefined();
+    expect(toolResultSummary({ rows: [0] })).toBeUndefined();
+    expect(toolResultSummary({ items: new Array(4).fill(0) })).toBeUndefined();
+    // A real noun beside an envelope key still gets said.
+    expect(toolResultSummary({ data: new Array(6).fill(0), invoices: new Array(3).fill(0) }))
+      .toBe("3 invoices");
+  });
+
   it("stays silent when the output offers no honest count", () => {
     expect(toolResultSummary({ ok: true })).toBeUndefined();
     expect(toolResultSummary({ rows: [] })).toBeUndefined();
@@ -491,10 +502,14 @@ describe("a build in flight, and a build that dies", () => {
     expect(document.querySelector(".fl-boot-hairline")).toBeNull();
     expect(document.querySelector("[data-vendo-app-embed]")).toBeNull();
     expect(screen.queryByText(/Building your view/)).toBeNull();
-    // The record of the failure: the ✕ beat is back (a failed call is content),
-    // the runtime's own line, and the agent's sentence.
-    expect(document.querySelector("[data-vendo-tool='vendo_apps_create']")?.className)
-      .toContain("fl-beat-error");
+    // ⚠️ TEST EDIT (M20): this asserted the failed CREATE's own ✕ beat, which
+    // sat directly above the build-failed block's ✕ — one failure, two identical
+    // ✕ lines in the same vocabulary. §15 wants the ✕ in the record, and the
+    // block IS that record (it also says what the failure means for the reader).
+    expect(document.querySelector("[data-vendo-tool='vendo_apps_create']")).toBeNull();
+    const failures = [...document.querySelectorAll(".fl-beat-error")];
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.closest("[data-vendo-build-failed]")).toBeTruthy();
     expect(document.body.textContent).toContain("nothing was changed");
     // No retry furniture grew in the process (§15).
     for (const button of Array.from(document.querySelectorAll("button"))) {
@@ -519,5 +534,65 @@ describe("a build in flight, and a build that dies", () => {
   it("leaves a still-running build's skeleton alone", () => {
     render(turnTree(midBuild(), true, null));
     expect(document.querySelector("[data-vendo-app-embed='app_money']")).toBeTruthy();
+  });
+});
+
+/** M26 — the settled row's duration. A turn that was ALREADY RUNNING when this
+ *  surface first saw it (a reopened conversation, a reload mid-turn) is both
+ *  restored and pending, so the measured clock started when we arrived and the
+ *  row understated a thirty-second turn as "· 1.2s". */
+describe("the settled turn's duration (M26)", () => {
+  let wire: Awaited<ReturnType<typeof createWireServer>>;
+  let client: VendoClient;
+
+  beforeEach(async () => {
+    wire = await createWireServer();
+    client = createVendoClient({ baseUrl: wire.url });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    await wire.close();
+  });
+
+  const message = (state: "input-available" | "output-available"): UIMessage => ({
+    id: "msg_clock",
+    role: "assistant",
+    parts: [{
+      type: "dynamic-tool",
+      toolName: "host_list_transactions",
+      toolCallId: "call_1",
+      state,
+      input: {},
+      ...(state === "output-available" ? { output: { rows: [] } } : {}),
+    }],
+  } as unknown as UIMessage);
+
+  const view = (state: "input-available" | "output-available", restored: boolean) => (
+    <VendoProvider client={client}>
+      <ThreadMessage
+        message={message(state)}
+        restored={restored}
+        risks={new Map()}
+        busy={false}
+        onEditLast={() => undefined}
+        onRegenerateLast={() => undefined}
+      />
+    </VendoProvider>
+  );
+
+  it("shows the count ALONE when the turn was already running before we arrived", () => {
+    const { rerender } = render(view("input-available", true));
+    // Still working: nothing folded yet.
+    expect(document.querySelector(".fl-beatsummary")).toBeNull();
+    rerender(view("output-available", true));
+    expect(document.querySelector(".fl-beatsummary")?.textContent).toBe("Did 1 thing");
+  });
+
+  it("still measures a turn it watched start", () => {
+    const { rerender } = render(view("input-available", false));
+    rerender(view("output-available", false));
+    expect(document.querySelector(".fl-beatsummary")?.textContent)
+      .toMatch(/^Did 1 thing · \d+\.\d+s$/);
   });
 });

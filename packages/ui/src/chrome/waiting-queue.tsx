@@ -16,7 +16,7 @@ import type { ApprovalRequest } from "@vendoai/core";
 import { useVendoContext } from "../context.js";
 import { useAttention } from "../hooks/use-approvals.js";
 import { formatAuditTime } from "./activity-semantics.js";
-import { admissibleDescription, consentClassLine, toolPresentation } from "./build-beat.js";
+import { consentWords, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -53,13 +53,11 @@ function WaitingRow({ approval, onDecide }: {
   // A destructive ask reads as ceremony — the amber edge, same as in-thread.
   const ceremony = approval.descriptor.risk === "destructive" || approval.descriptor.critical === true;
   const title = presentation.title;
-  // The SAME plain-words ladder the in-thread card uses (ruling 11): a
-  // descriptor sentence is admissible only in consumer voice, so the card and
-  // its queue row cannot say different things about one ask.
-  const described = admissibleDescription(
-    presentation.description ?? approval.descriptor.description,
-    title,
-  );
+  // The SAME plain-words ladder the card uses, from the same function (ruling
+  // 14): host sentence → consequence from the real inputs → our own synthesized
+  // sentence → the consequence class, and never the descriptor's own line. A
+  // card and its queue row cannot say different things about one ask.
+  const words = consentWords(approval.call.tool, approval.descriptor.risk, presentation, meta);
   return (
     <CardShell label={`Approval for ${title}`} ceremony={ceremony}>
       <CardHead
@@ -69,9 +67,7 @@ function WaitingRow({ approval, onDecide }: {
         eyebrow={presentation.eyebrow}
         title={title}
       />
-      <CardLine>
-        {described ?? consentClassLine(approval.call.tool, approval.descriptor.risk)}
-      </CardLine>
+      <CardLine>{words.sentence}</CardLine>
       <CardFields rows={fieldRows(approval.call.args, approval.descriptor.inputSchema, meta)} />
       {/* The server's own preview is a debugging aid, not consumer copy. */}
       {developmentMode() ? <CardByline>{approval.inputPreview}</CardByline> : null}
@@ -90,9 +86,19 @@ export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
   // spec §4 (N1) — the strip counts from Lane D's ONE attention source, the
   // same hook the launcher badge reads, so the two can never disagree.
   const { askCount, asks, decide } = useAttention(pollMs > 0 ? { pollMs } : {});
-  if (askCount === 0) return null;
   return (
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
+      {/* M31 — the announcement lives OUTSIDE the section, so it is mounted
+          before the first ask exists. The strip itself appears and disappears,
+          and a live region that mounts with its content is announced by nothing:
+          a person who cannot see the strip appear was never told an approval had
+          arrived. Count-first, in the strip's own words. */}
+      <p className="fl-sr-only" role="status">
+        {askCount === 0 ? "Nothing is waiting on you now."
+          : askCount === 1 ? "1 thing needs you."
+          : `${askCount} things need you.`}
+      </p>
+      {askCount === 0 ? null : (
       <section className="fl-waiting" aria-label="Waiting on you">
         <details className="fl-waiting-strip">
           <summary>{CARD_EYEBROWS.waiting} · {askCount}</summary>
@@ -107,6 +113,7 @@ export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
           </div>
         </details>
       </section>
+      )}
     </ChromeRoot>
   );
 }

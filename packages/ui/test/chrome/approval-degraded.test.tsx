@@ -152,8 +152,23 @@ describe("a boolean field is an answer, never the literal", () => {
   it("keeps the raw literal for dev mode, on the dd tooltip", () => {
     const rows = fieldRows({ permanent: true, notifyOwner: false });
     expect(rows.map(row => [row.value, row.raw])).toEqual([["Yes", "true"], ["No", "false"]]);
+    // ⚠️ TEST EDIT (L37): the tooltip used to render for EVERYONE — the test
+    // name always said "for dev mode", and now the code agrees. A `title` is an
+    // end-user surface (it put raw JSON and developer literals one hover from a
+    // bank customer, invisible to every audit because the law excluded `title`).
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    try {
+      const dev = show(ask({ args: { permanent: true } }));
+      expect(dev.querySelector(".fl-card-field dd")!.getAttribute("title")).toBe("true");
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+    cleanup();
     const container = show(ask({ args: { permanent: true } }));
-    expect(container.querySelector(".fl-card-field dd")!.getAttribute("title")).toBe("true");
+    expect(container.querySelector(".fl-card-field dd")!.getAttribute("title")).toBeNull();
+    // The honesty contract lives in the ROW, which always shows every input.
+    expect(rowsOf(container)).toEqual([["Permanent", "Yes"]]);
   });
 
   it("reads a declared boolean and a NESTED boolean the same way", () => {
@@ -227,6 +242,49 @@ describe("the plain-words line says what happens, not which tool", () => {
     expect(line(unknown)).not.toContain("Thing do");
   });
 
+  it("C5 — two declared money fields synthesize NO sentence, and nothing folds", () => {
+    // The live shape: a fee beside the amount. The old rule took the FIRST
+    // numeric field whose display changed, so this read "Sends $1.99 to Acme
+    // Utilities" — the wrong number — and the card then folded the true rows
+    // behind Details, hiding the $47.50 the person was actually approving.
+    const container = show(ask({
+      call: {
+        id: "call_send",
+        tool: "host_transferMoney",
+        args: { fee_cents: 199, amount_cents: 4750, recipient_name: "Acme Utilities" },
+      },
+      descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
+    } as Partial<ApprovalRequest>));
+    expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
+    expect(line(container)).toBe("This moves money, as you.");
+    expect(line(container)).not.toContain("$1.99");
+    // Never fold on uncertainty: both amounts stay in plain sight.
+    expect(container.querySelector(".fl-approval-details")).toBeNull();
+    expect(rowsOf(container)).toEqual([
+      ["Fee cents", "$1.99"],
+      ["Amount cents", "$47.50"],
+      ["Recipient name", "Acme Utilities"],
+    ]);
+  });
+
+  it("C5 — a host formatter that formats a RATE is not a money declaration", () => {
+    const container = show(
+      ask({
+        call: {
+          id: "call_send",
+          tool: "host_transferMoney",
+          args: { rate: 5, recipient_name: "Acme Utilities" },
+        },
+        descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
+      } as Partial<ApprovalRequest>),
+      { host_transferMoney: { formatField: (key, value) => key === "rate" ? `${String(value)}%` : undefined } },
+    );
+    // "Sends 5% to Acme Utilities" was a real possible sentence here.
+    expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
+    expect(line(container)).toBe("This moves money, as you.");
+    expect(rowsOf(container)).toEqual([["Rate", "5%"], ["Recipient name", "Acme Utilities"]]);
+  });
+
   it("keeps folding the fields behind Details on an ORDINARY consequence ask", () => {
     const container = show(money({ critical: false }));
     expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
@@ -296,15 +354,25 @@ describe("the in-thread approval carries the real descriptor", () => {
   });
 
   it("still builds a usable ask when the wire carries no descriptor at all", () => {
+    // ⚠️ TEST EDIT (ruling 14): the host's ToolMeta was handed to the BUILDER only
+    // and the card was rendered with no provider `tools`, so the sentence reached
+    // the card through `descriptor.description`. A descriptor sentence is no
+    // longer a rung on the ladder; the host's ToolMeta is, and in production the
+    // card reads it from the same provider the builder does (ThreadApprovals
+    // passes the context's tools to both). The fixture now does what production
+    // does; every other assertion is unchanged.
+    const tools = { host_email_send: { description: "Send an email as you." } };
     const approval = buildApprovalRequest(
       { approvalId: "apr_bare", toolCallId: "call_bare", tool: "host_email_send", args: { to: "a@example.com" } },
-      { host_email_send: { description: "Send an email as you." } },
+      tools,
     );
     expect(approval.descriptor.inputSchema).toEqual({});
-    expect(approval.descriptor.risk).toBe("read");
+    // ⚠️ TEST EDIT (ruling 15): this pinned "read" for an ask the wire never
+    // graded — the chip then said "Read-only" about a call we know nothing about.
+    expect(approval.descriptor.risk).toBe("write");
     // Never the server's `tool slug + canonical JSON`.
     expect(approval.inputPreview).toBe("To: a@example.com");
-    const container = show(approval);
+    const container = show(approval, tools);
     expect(container.querySelector(".fl-card-line")!.textContent).toBe("Send an email as you.");
   });
 });

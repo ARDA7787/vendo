@@ -23,6 +23,7 @@
  *  import this module directly.
  */
 import { useState, type HTMLAttributes, type ReactNode } from "react";
+import { developmentMode } from "./dev-mode.js";
 import type { CardFieldRow } from "./field-rows.js";
 
 /** The eyebrow strings, once (six were hardcoded across the card files). The
@@ -144,7 +145,19 @@ export function CardList({ label, className, children }: {
   );
 }
 
-/** The one body: the real inputs, as a person must read them. */
+/**
+ * The one body: the real inputs, as a person must read them.
+ *
+ * L37 — the `dd` used to carry `title={row.raw}` whenever display changed the
+ * value, "keeping the raw input one hover away". A tooltip is an END-USER
+ * surface: on a consent card that put raw JSON, `true`, `4750` and the
+ * developer's literals one hover from a bank customer — and the law's sweep
+ * could not see any of it, because `readable()` excluded `title` by
+ * construction. RULING (post-check): the honesty contract is satisfied by the
+ * ROWS (every real input is displayed, always); the raw literal is a developer's
+ * aid and rides the tooltip in dev mode only. `CardFieldRow.raw` still exists —
+ * it is what dev mode shows, and what tests assert on.
+ */
 export function CardFields({ rows, label = "Real tool inputs" }: {
   rows: CardFieldRow[];
   label?: string;
@@ -159,7 +172,7 @@ export function CardFields({ rows, label = "Real tool inputs" }: {
           <dt>{row.label}</dt>
           <dd
             {...(row.numeric ? { "data-numeric": "" } : {})}
-            {...(row.raw === row.value ? {} : { title: row.raw })}
+            {...(developmentMode() && row.raw !== row.value ? { title: row.raw } : {})}
           >
             {row.value}
           </dd>

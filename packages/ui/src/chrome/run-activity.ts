@@ -61,13 +61,35 @@ const listeners = new Set<() => void>();
 let activity: RunActivity = IDLE;
 let result: RunResult | undefined;
 let resultSeq = 0;
+/** The last settle ANNOUNCED (conversation + last message id), so two surfaces
+    on one conversation cannot raise two toasts for one turn. */
+let announced: string | undefined;
 
 function notify(): void {
   for (const listener of listeners) listener();
 }
 
+/**
+ * M25 — the toast headline is the turn's own first line, and the agent writes
+ * MARKDOWN: the pill announced "### July spending" and "**Done** — see the
+ * `spending` view" verbatim, syntax and all. The thread renders that text
+ * through the markdown renderer; a toast has no renderer, so the syntax comes
+ * off here instead of being read out as characters.
+ */
+function plainWords(line: string): string {
+  return line
+    // Leading block syntax: heading hashes, a blockquote, a list bullet or number.
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|(?:[-*+]|\d+[.)])\s+)/, "")
+    // Links and images keep their words, never their target.
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    // Inline emphasis / code / strikethrough marks.
+    .replace(/(\*\*|__|~~|[*_`])/g, "")
+    .trim();
+}
+
 function firstLine(text: string): string {
-  const line = text.trim().split("\n").find(candidate => candidate.trim().length > 0) ?? "";
+  const raw = text.trim().split("\n").find(candidate => candidate.trim().length > 0) ?? "";
+  const line = plainWords(raw);
   return line.length > 90 ? `${line.slice(0, 89).trimEnd()}…` : line;
 }
 
@@ -78,11 +100,19 @@ function derive(snapshot: ThreadRunSnapshot): Derived {
   let tool: string | undefined;
   let waiting = false;
   for (const part of parts) {
-    if (part.state === "output-available" || part.state === "output-error") done += 1;
+    // M23 — the pill's two lies, both from this loop:
+    //   · a PARKED ask and a DENIED one were narrated as the live step ("Send
+    //     money…" with a spinning ring while the card waited for a click, or
+    //     after the user had already said no);
+    //   · a denial never counted as done, so `done` could never reach `total`
+    //     and the determinate ring stalled one step short for the whole turn.
+    // A denial is settled; a parked ask is waiting, and its card is the record.
+    if (part.state === "output-available" || part.state === "output-error"
+      || part.state === "output-denied") done += 1;
+    else if (part.state === "approval-requested") waiting = true;
     // Dynamic tools (host tools arrive that way) carry the name in the part,
     // not in the type — the same read BuildBeat does.
     else tool = part.type === "dynamic-tool" ? part.toolName : part.type.replace(/^tool-/, "");
-    if (part.state === "approval-requested") waiting = true;
   }
   return {
     running: snapshot.status === "submitted" || snapshot.status === "streaming",
@@ -147,7 +177,16 @@ export function publishThreadRun(key: symbol, snapshot: ThreadRunSnapshot): void
   // an approval is waiting, not finished (the badge already counts it).
   const settled = previous?.running === true && !next.running
     && next.status === "ready" && !next.waiting;
-  if (settled) result = summarize(snapshot, next.done);
+  // A host may mount TWO thread surfaces on one conversation (VendoOverlay and
+  // VendoPage): each hook publishes independently, so ONE turn settled twice and
+  // the user was told about it twice. The turn's identity is its conversation
+  // plus its last message, so a second surface reporting the same settle is the
+  // same news — announced once (Round B's dual-surface finding).
+  const identity = `${snapshot.threadId ?? ""}::${snapshot.messages.at(-1)?.id ?? ""}`;
+  if (settled && identity !== announced) {
+    announced = identity;
+    result = summarize(snapshot, next.done);
+  }
   recompute();
   // Always notify: both snapshots keep stable identities while the facts are
   // unchanged, so React bails out of the render on its own.
@@ -187,6 +226,7 @@ export function resetRunActivity(): void {
   surfaces.clear();
   activity = IDLE;
   result = undefined;
+  announced = undefined;
   notify();
 }
 
