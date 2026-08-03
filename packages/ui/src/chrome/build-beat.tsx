@@ -1,7 +1,7 @@
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoContext } from "../context.js";
-import { toolTitle, type ToolMeta } from "./humanize.js";
+import { humanizeToolName, toolTitle, type ToolMeta } from "./humanize.js";
 
 /**
  * The thread's in-progress presentation speaks in the product's voice: each
@@ -112,12 +112,15 @@ export function toolPresentation(
   return { title, eyebrow, description, sub, toolkit, logoUrl, consequence };
 }
 
-/** Lane pick C1 (1A+1D) — the live status ribbon. While a turn works, ONE
-    surface above the composer narrates the build: the humanized label of the
-    active tool call, a live elapsed clock, and a "step N of M" counter. The
-    transcript stays beat-free (only errored calls still leave a line — a
-    failure is content, not progress). Label changes crossfade via the
-    .fl-ribbon-label key remount; the elapsed clock resets per tool call. */
+/** The live status ribbon above the composer: humanized label, live elapsed
+    clock, "step N of M".
+
+    Spec §1 (2026-08-03) retired its TOOL-NARRATION role — the transcript shows
+    the work now, one beat per call — so the thread mounts it for exactly one
+    moment: the hold while a parked call waits for the user's approval. The
+    component itself is unchanged (hosts may still narrate any part with it).
+    Label changes crossfade via the .fl-ribbon-label key remount; the elapsed
+    clock resets per tool call. */
 export function StatusRibbon({ part, stepIndex, stepTotal, risk = "read" }: {
   part: AnyToolPart;
   /** 1-based index of the active call within the turn's tool calls. */
@@ -194,6 +197,50 @@ export function WorkingRibbon({ label = "Working" }: { label?: string }) {
   );
 }
 
+/** The settled tick — shared by a done beat and the turn's summary row. */
+function BeatTick() {
+  return (
+    <span className="fl-beat-ic fl-beat-tick" aria-hidden="true">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m5 12 4 4L19 6" />
+      </svg>
+    </span>
+  );
+}
+
+/**
+ * Spec §1 — the short result a settled beat earned ("Reading transactions ·
+ * 142 transactions").
+ *
+ * Only a COUNT rides here, named by the output's own key. An arbitrary string
+ * off a tool's output is the TOOL's voice (and often a raw slug or an id), and
+ * this line sits in the product's own transcript — so anything we can't say in
+ * plain words is simply absent, exactly like the humanization pipeline's rule
+ * for labels.
+ */
+export function toolResultSummary(output: unknown): string | undefined {
+  if (Array.isArray(output)) return countLabel(output.length, "results");
+  if (typeof output !== "object" || output === null) return undefined;
+  for (const [key, value] of Object.entries(output)) {
+    // Identifier-shaped keys only: a key we can't humanize into words would
+    // put a slug on the line.
+    if (!Array.isArray(value) || !/^[A-Za-z][A-Za-z0-9]*$/.test(key)) continue;
+    return countLabel(value.length, humanizeToolName(key).toLowerCase());
+  }
+  const count = (output as { count?: unknown }).count;
+  return typeof count === "number" && Number.isFinite(count)
+    ? countLabel(count, "results")
+    : undefined;
+}
+
+/** "142 transactions" / "1 transaction"; nothing at all for an empty result —
+    "0 rows" is noise on a line whose job is reassurance. */
+function countLabel(count: number, noun: string): string | undefined {
+  if (count <= 0) return undefined;
+  const singular = count === 1 && noun.endsWith("s") ? noun.slice(0, -1) : noun;
+  return `${count.toLocaleString()} ${singular}`;
+}
+
 export function BuildBeat({
   part,
   risk,
@@ -209,8 +256,13 @@ export function BuildBeat({
   const error = part.state === "output-error";
   const done = part.state === "output-available";
   const waiting = part.state === "approval-requested";
+  // A refused ask is a settled outcome with a ✕, not a failure and not a
+  // heartbeat: without this, a declined call's beat sat in the finished turn
+  // still saying "…", as if it were about to happen.
+  const declined = part.state === "output-denied";
   const label = toolTitle(name, tools[name]);
-  const state = error ? "fl-beat-error" : done ? "fl-beat-done" : "fl-beat-working";
+  const result = done ? toolResultSummary(part.output) : undefined;
+  const state = error ? "fl-beat-error" : done || declined ? "fl-beat-done" : "fl-beat-working";
   return (
     <div
       className={`fl-beat ${state}`}
@@ -218,26 +270,59 @@ export function BuildBeat({
       data-vendo-tool={name}
       title={name}
     >
-      {error ? (
-        <span className="fl-beat-ic fl-beat-x" aria-hidden="true">
+      {error || declined ? (
+        // Same glyph, different register: the error beat is danger-colored
+        // (.fl-beat-error), a decline quiets to muted like any settled line.
+        <span className={`fl-beat-ic${error ? " fl-beat-x" : ""}`} aria-hidden="true">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>
         </span>
       ) : done ? (
-        <span className="fl-beat-ic fl-beat-tick" aria-hidden="true">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="m5 12 4 4L19 6" />
-          </svg>
-        </span>
+        <BeatTick />
       ) : (
         <span className="fl-beat-orb" aria-hidden="true" />
       )}
       <span className="fl-beat-label">
-        {label}
-        {waiting ? " — waiting for your approval" : error ? " — couldn't finish" : done ? "" : "…"}
+        {waiting ? `${label} — waiting for your approval`
+          : error ? `${label} — couldn't finish`
+          : declined ? `${label} — you declined it`
+          : done ? label
+          : `${label}…`}
       </span>
+      {result ? <span className="fl-beat-result">· {result}</span> : null}
       {count > 1 ? <span className="fl-beat-count" aria-label={`repeated ${count} times`}>×{count}</span> : null}
     </div>
+  );
+}
+
+/**
+ * Spec §1 — the settled turn's ONE reopenable row: "✓ Did 4 things · 7.1s".
+ *
+ * Beats are the live record of the work; once the turn closes, history has to
+ * stay scannable, so the whole checklist folds into this line and reopens on
+ * click. `seconds` is the turn's measured wall time and is absent for a turn
+ * nobody watched work (restored history carries no per-part timestamps, and an
+ * invented duration would be a lie on a receipt).
+ */
+export function BeatSummary({ steps, seconds, open, onToggle }: {
+  steps: number;
+  seconds?: number | undefined;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="fl-beatsummary"
+      aria-expanded={open}
+      onClick={onToggle}
+    >
+      <BeatTick />
+      <span className="fl-beatsummary-label">
+        Did {steps} thing{steps === 1 ? "" : "s"}
+        {seconds === undefined ? "" : ` · ${seconds.toFixed(1)}s`}
+      </span>
+    </button>
   );
 }

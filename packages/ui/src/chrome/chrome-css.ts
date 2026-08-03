@@ -2269,4 +2269,28 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 /* The byline: who/what is asking, or when it settled. Always last, always quiet. */
 .fl-card-byline { margin-top: 10px; font-size: 11.5px; color: var(--vendo-fg-muted); }
 
+/* ============================ LANE C ============================
+   The transcript shows the work (spec §1 + §8 D1 + §15). The beat vocabulary
+   itself lives above (.fl-beat*); this section adds the two pieces the settled
+   transcript needed: the result a beat earned, and the row a finished turn
+   folds into. */
+
+/* "Reading transactions · 142 transactions" — the count trails the label a
+   step quieter, so the eye reads the work first and the receipt second. */
+.fl-beat-result { flex-shrink: 0; font-weight: 400; color: var(--vendo-fg-muted); }
+
+/* The settled turn's one reopenable row: reads as a beat (same rhythm, same
+   tick, same indent), behaves as a disclosure. */
+.fl-beatsummary { align-self: flex-start; display: flex; align-items: center; gap: 9px;
+  margin: 0; padding: 3px 2px; border: 0; background: none; cursor: pointer;
+  font: 500 13px/1.35 var(--vendo-font); color: var(--vendo-fg-muted); text-align: left; }
+.fl-beatsummary:hover { color: var(--vendo-fg); }
+.fl-beatsummary:focus-visible { outline: 2px solid var(--vendo-accent); outline-offset: 2px;
+  border-radius: var(--vendo-radius-sm); }
+
+/* No entrance stampede: a restored turn already carries .fl-no-entrance, and
+   reopening one mounts its whole checklist in a single commit — N fade-ins at
+   once is the opposite of calm. */
+.fl-no-entrance .fl-beat { animation: none; }
+
 `;

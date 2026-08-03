@@ -21,7 +21,9 @@ import {
   appTitle,
   partData,
   preview,
+  producedAppCard,
   SYNTHESIZED_CREATED_AT,
+  toolCallIsContent,
   toolName,
 } from "./message-data.js";
 
@@ -60,13 +62,16 @@ function UserText({ text: rawText, restored }: { text: string; restored?: boolea
 /** One stream part in a turn: text (user verbatim / assistant markdown with the
     ENG-217 caret choreography), assistant files, tool build beats, and the
     jailed generated-view app card (06-apps §§8–9). */
-export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, sendMessage, siblingParts, respond }: {
+export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, hideBeats = false, sendMessage, siblingParts, respond }: {
   part: UIMessage["parts"][number];
   partKey: string;
   role: UIMessage["role"];
   restored: boolean;
   count?: number;
   risks: Map<string, RiskLabel>;
+  /** Spec §1 — the settled turn folded its beats into the summary row (see
+      ThreadMessage), so successful calls render nothing until it reopens. */
+  hideBeats?: boolean;
   /** Whether a connect-required outcome in this turn is still the actionable
       ask (this is the LATEST assistant turn). Stale turns render the quiet
       Connected record instead — see ConnectCard's `live`. */
@@ -128,13 +133,18 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
         );
       }
     }
-    // Lane pick C1 — live progress moved to the StatusRibbon above the
-    // composer, so working/done calls leave NO transcript line (the
-    // mechanical record stays in the Activity panel). A FAILED call is
-    // content, not progress: it keeps the error beat so the failure stays
-    // readable after the turn settles.
-    if (part.state !== "output-error") return null;
+    // Spec §1 — THE TRANSCRIPT SHOWS THE WORK: every tool call leaves a beat at
+    // its position in the conversation (this reverses lane pick C1, which sent
+    // progress to the StatusRibbon and kept the transcript beat-free). Two
+    // exceptions:
+    //   · the settled turn folds its beats into one summary row (hideBeats) —
+    //     but a failed or declined call is content, not progress, so its ✕ beat
+    //     stays visible either way (spec §15: the ✕ stays in the record);
+    //   · D1 — an app-building call renders no beat, because its card IS that
+    //     step (the summary still counts it).
     const risk = risks.get(part.toolCallId) ?? "read";
+    if (toolCallIsContent(part)) return <BuildBeat part={part} risk={risk} count={count} />;
+    if (hideBeats || producedAppCard(part, siblingParts ?? [])) return null;
     return <BuildBeat part={part} risk={risk} count={count} />;
   }
   if (part.type === "data-vendo-build-failed") {
@@ -328,23 +338,46 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
     observer.observe(canvas);
     return () => observer.disconnect();
   }, [compact]);
+  // V4 (spec §5) — the brain's plan-time display hint. It knows the shape
+  // before the fill, so a "stage" view opens the workspace at BUILD START,
+  // where instant()'s skeleton is actually visible; absent hint keeps today's
+  // inline card.
+  const staged = (payload as { display?: unknown }).display === "stage";
   // Register the finished view with the workspace stage; a re-stream of the
   // same app (regenerate) re-registers when streaming flips back off. The
   // registration carries the payload snapshot at settle time.
+  //
+  // A STAGED view also registers its FIRST streaming snapshot: the stage can
+  // only feature an embed the split already knows, so without it the auto-open
+  // below would land on an empty stage and hide the very skeleton the hint
+  // exists to show. Only the first snapshot — the effect is keyed on the
+  // streaming flip, never the payload, because re-registering per render would
+  // dispatch a fresh state object every render.
   const registerEmbed = split?.registerEmbed;
   const removeEmbed = split?.removeEmbed;
   useEffect(() => {
-    if (!registerEmbed || streaming) return;
+    if (!registerEmbed || (streaming && !staged)) return;
     registerEmbed(appId, payload);
     // payload is a fresh object every render (destructured from the part);
     // keying the effect on it would re-register per render. appId + the
     // streaming flip are the real identity edges.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registerEmbed, appId, streaming]);
+  }, [registerEmbed, appId, streaming, staged]);
   useEffect(() => {
     if (!removeEmbed) return;
     return () => removeEmbed(appId);
   }, [removeEmbed, appId]);
+  // Live turns only (restored history never reopens a stage), and never against
+  // an already-open workspace. The ref makes it fire once per card: a wrong hint
+  // costs one tap, so once the user takes Back-to-chat the hint doesn't fight
+  // them for the rest of the turn.
+  const autoStaged = useRef(false);
+  useEffect(() => {
+    if (!staged || restored || autoStaged.current) return;
+    if (split === null || split.expanded) return;
+    autoStaged.current = true;
+    split.expandTo(appId);
+  }, [staged, restored, split, appId]);
   const featured = split?.expanded === true && split.featuredAppId === appId;
   // The compact card's activation: expanded → feature on the stage;
   // collapsed → expand the workspace WITH this app staged. Clicking the card
