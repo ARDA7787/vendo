@@ -166,6 +166,12 @@ export function VendoToasts({ placement = "bottom-right", approvals = false, pol
       {toasts.length > 0 ? createPortal(
         <div
           className="vendo-root"
+          // H-2 — the toast stack lives ABOVE the modal layer: it portals to
+          // <body> with no dialog semantics, so `inertBehind` (overlay panel,
+          // mobile takeover) inerted it and every toast raised while one was
+          // open — an approval ask with its Approve button included — became
+          // unclickable. This marks it as a Vendo surface that is never behind.
+          data-vendo-portal="toasts"
           data-vendo-motion={theme.motion}
           data-vendo-density={theme.density}
           style={themeCssVariables(theme) as React.CSSProperties}

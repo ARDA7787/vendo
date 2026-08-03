@@ -5,11 +5,12 @@
 // --fl-kb-inset var so the composer rides above the virtual keyboard; the
 // stylesheet gains the iOS-zoom (>=16px inputs) and 44px touch-target floor
 // plus a min-width floor on thread surfaces.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
-import { VendoOverlay, VendoPage, VendoPalette } from "../../src/chrome/index.js";
+import { VendoOverlay, VendoPage, VendoPalette, VendoToasts, dismissAllVendoToasts, vendoToast } from "../../src/chrome/index.js";
 import { CHROME_CSS } from "../../src/chrome/chrome-css.js";
+import { inertBehind } from "../../src/chrome/inert-behind.js";
 import { createWireServer } from "../wire-server.js";
 
 const TAKEOVER_QUERY = "(max-width: 767px)";
@@ -295,5 +296,69 @@ describe("mobile takeover (ENG-228)", () => {
       // over them, so its takeover scrim must sit higher.
       expect(CHROME_CSS).toMatch(/\.fl-overlay-scrim\.fl-takeover \{[^}]*z-index: 2147483002/);
     });
+  });
+});
+
+/**
+ * H-2 — `inertBehind` had no ownership, so two overlapping body-level surfaces
+ * corrupted each other's state. The function is the whole mechanism, so it is
+ * driven directly here (no mock): a real body, real elements, real attributes.
+ */
+describe("inertBehind ownership and the surfaces that stay above it (H-2)", () => {
+  const nodes: Element[] = [];
+  const bodyChild = (attrs: Record<string, string> = {}): HTMLDivElement => {
+    const node = document.createElement("div");
+    for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
+    document.body.appendChild(node);
+    nodes.push(node);
+    return node;
+  };
+
+  afterEach(() => {
+    for (const node of nodes.splice(0)) node.remove();
+  });
+
+  it("a first surface's release never un-inerts the host under a SECOND one", () => {
+    const host = bodyChild();
+    const overlay = bodyChild();
+    const takeover = bodyChild();
+
+    const releaseOverlay = inertBehind(overlay);
+    expect(host.hasAttribute("inert")).toBe(true);
+    // The takeover opens on top and finds the host already inert.
+    const releaseTakeover = inertBehind(takeover);
+    // The overlay closes. The takeover is still covering the whole viewport.
+    releaseOverlay();
+    expect(host.hasAttribute("inert")).toBe(true);
+    // …and only the last surface out puts the host back.
+    releaseTakeover();
+    expect(host.hasAttribute("inert")).toBe(false);
+  });
+
+  it("never clears an `inert` the HOST set itself", () => {
+    const host = bodyChild({ inert: "" });
+    const surface = bodyChild();
+    inertBehind(surface)();
+    expect(host.hasAttribute("inert")).toBe(true);
+  });
+
+  it("leaves the toast stack reachable — it is above the modal layer, not behind it", async () => {
+    installMatchMedia(false);
+    // No wire traffic: the stack is the imperative feed (`approvals` is off).
+    const offline = createVendoClient({ baseUrl: "http://vendo.test" });
+    render(<VendoProvider client={offline}><VendoToasts /></VendoProvider>);
+    act(() => { vendoToast({ text: "Waiting on you: Send money", actions: [{ label: "Approve", onAction: () => undefined }] }); });
+    const region = await screen.findByRole("region", { name: "Notifications" });
+    const portal = region.closest(".vendo-root")!;
+    expect(portal.parentElement).toBe(document.body);
+
+    const surface = bodyChild();
+    const release = inertBehind(surface);
+    // The ask, and its Approve button, must still be reachable while a modal
+    // Vendo surface is up.
+    expect(region.closest("[inert]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Approve" }).closest("[inert]")).toBeNull();
+    release();
+    dismissAllVendoToasts();
   });
 });
