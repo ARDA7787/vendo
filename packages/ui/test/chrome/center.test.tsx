@@ -135,7 +135,11 @@ describe("the center rail", () => {
     expect(await screen.findByRole("heading", { name: "Connected accounts" })).toBeTruthy();
   });
 
-  it("keeps roving tab semantics: one selected tab, arrow keys move, the panel is labelled", async () => {
+  // APG MANUAL activation (H18). This case previously asserted the opposite —
+  // that an arrow key activated the row it landed on — which is the destructive
+  // behavior itself: "New chat" is an ACT (it discards the open conversation and
+  // the composer's draft), so arrowing past it threw the user's work away.
+  it("keeps roving tab semantics: arrows move focus, Enter activates, the panel is labelled", async () => {
     mount(stubClient());
     const chat = await screen.findByRole("tab", { name: "New chat" });
     expect(chat.getAttribute("aria-selected")).toBe("true");
@@ -144,11 +148,34 @@ describe("the center rail", () => {
     expect(apps.getAttribute("tabindex")).toBe("-1");
     chat.focus();
     fireEvent.keyDown(chat, { key: "ArrowDown" });
+    // Focus moved, and the roving stop moved with it — but NOTHING was chosen.
     expect(document.activeElement).toBe(apps);
+    expect(apps.getAttribute("tabindex")).toBe("0");
+    expect(apps.getAttribute("aria-selected")).toBe("false");
+    expect(chat.getAttribute("aria-selected")).toBe("true");
+    // Enter is what chooses (Space too — it is a real <button>).
+    fireEvent.click(apps);
     expect(apps.getAttribute("aria-selected")).toBe("true");
     expect(chat.getAttribute("aria-selected")).toBe("false");
     const panel = screen.getByRole("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe(apps.getAttribute("id"));
+  });
+
+  it("an arrow key never starts a new chat: the open conversation survives (H18)", async () => {
+    mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
+    const row = await screen.findByRole("button", { name: "Where did July go?" });
+    await waitFor(() => expect(row.getAttribute("aria-current")).toBe("page"));
+    fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
+    const apps = screen.getByRole("tab", { name: "Apps" });
+    apps.focus();
+    // ArrowUp lands on "New chat". Under automatic activation this fired
+    // conversation.choose(undefined) — the open conversation and the draft in
+    // its composer, gone, from a keystroke that was only meant to move.
+    fireEvent.keyDown(apps, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "New chat" }));
+    expect(row.getAttribute("aria-current")).toBe("page");
+    expect(apps.getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByRole("heading", { name: "Apps" })).toBeTruthy();
   });
 
   it("closing ··· on an open Activity keeps a tab stop and a named panel (H10)", async () => {

@@ -6,7 +6,7 @@
  *  is only what the center itself owns: the two named doors, the attention
  *  section while it has something to say, and the conversations.
  */
-import { useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useVendoContext } from "../../context.js";
 import { useAttention } from "../../hooks/use-approvals.js";
 import type { ThreadSummary } from "../../wire-types.js";
@@ -85,16 +85,27 @@ export interface RailNavProps {
   activityBump: boolean;
 }
 
-/** The section switcher: real WAI-ARIA tabs (automatic activation, roving
- *  tabindex) in ONE vertical tablist — the ··· disclosure sits outside it, and
- *  the rows it reveals join the same list rather than forming a second one. */
+/** The section switcher: real WAI-ARIA tabs in ONE vertical tablist — the ···
+ *  disclosure sits outside it, and the rows it reveals join the same list rather
+ *  than forming a second one.
+ *
+ *  MANUAL activation (APG): arrows move focus, Enter/Space activate. Automatic
+ *  activation is not available to this tablist — "New chat" is not a view, it is
+ *  an ACT (it discards the open conversation and the composer's draft), so an
+ *  arrow key that activated as it moved destroyed the user's work on the way
+ *  past. */
 export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: RailNavProps) {
   const rows = railRows(moreOpen);
-  // The list's ONE tab stop. Normally the selected row — but the selection can
-  // be a row that is no longer here (Activity, with the ··· row closed again),
-  // and a tablist where every row is tabIndex -1 cannot be reached by keyboard
-  // at all. Fall back to the first row so a stop always exists.
-  const stop = Math.max(0, rows.indexOf(view));
+  // Roving tabindex: the stop follows the row the user last put focus on, else
+  // the selected row. The selection can be a row that is no longer here
+  // (Activity, with the ··· row closed again), and a tablist where every row is
+  // tabIndex -1 cannot be reached by keyboard at all — so it falls back to the
+  // first row and a stop always exists.
+  const [focused, setFocused] = useState<CenterView>();
+  const stop = Math.max(0, rows.indexOf(focused ?? view));
+  // A view chosen elsewhere (a home tile opening the Apps door) owns the stop
+  // again — the selected tab is where Tab should land.
+  useEffect(() => setFocused(undefined), [view]);
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const move = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next = index;
@@ -104,7 +115,8 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
     else if (event.key === "End") next = rows.length - 1;
     else return;
     event.preventDefault();
-    onView(rows[next]!);
+    // Focus only. Activation is the button's own Enter/Space.
+    setFocused(rows[next]!);
     refs.current[next]?.focus();
   };
   // The ··· row carries the dock while Activity is folded away.
@@ -123,7 +135,7 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
             aria-controls={`vendo-panel-${row}`}
             tabIndex={index === stop ? 0 : -1}
             key={row}
-            onClick={() => onView(row)}
+            onClick={() => { setFocused(row); onView(row); }}
             onKeyDown={event => move(event, index)}
             {...(anchored === row ? { [ACTIVITY_ANCHOR_ATTRIBUTE]: "" } : {})}
           >
