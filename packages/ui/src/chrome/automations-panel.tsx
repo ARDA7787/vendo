@@ -421,8 +421,11 @@ export function AutomationsPanel() {
                 />
               </div>
 
+              {/* role="group": a bare <div> may not carry aria-label (axe
+                  aria-prohibited-attr) — and this IS a group, the two labelled
+                  nodes of one trigger→action flow. */}
               {flow ? (
-                <div className="fl-auto-flow" aria-label={`Automation flow for ${entry.app.name}`}>
+                <div className="fl-auto-flow" role="group" aria-label={`Automation flow for ${entry.app.name}`}>
                   <span className="fl-auto-node" style={{ flex: 1 }}>
                     <span className="fl-auto-node-ic" aria-hidden="true">↳</span>
                     <span>
@@ -443,8 +446,11 @@ export function AutomationsPanel() {
                 </div>
               ) : null}
 
+              {/* role="img": the dots and the rollup are all aria-hidden, so
+                  the label IS the whole content — a graphic with a text
+                  alternative, which is what role=img means. */}
               {strip && strip.length > 0 ? (
-                <div className="fl-auto-runs" aria-label={`Last ${strip.length} run${strip.length === 1 ? "" : "s"} for ${entry.app.name}: ${runRollup(strip)}`}>
+                <div className="fl-auto-runs" role="img" aria-label={`Last ${strip.length} run${strip.length === 1 ? "" : "s"} for ${entry.app.name}: ${runRollup(strip)}`}>
                   <span className="fl-auto-runs-lbl" aria-hidden="true">Last {strip.length} run{strip.length === 1 ? "" : "s"}</span>
                   {strip.map(run => (
                     <span
@@ -539,7 +545,7 @@ export function AutomationsPanel() {
               ) : null}
 
               {appRuns !== undefined ? (
-                <div className="fl-act-body" aria-label={`Run history for ${entry.app.name}`}>
+                <div className="fl-act-body" role="group" aria-label={`Run history for ${entry.app.name}`}>
                   {appRuns.length === 0 ? <p className="fl-act-row">No runs yet.</p> : appRuns.map(run => (
                     <article key={run.id}>
                       <div className="fl-act-row">
