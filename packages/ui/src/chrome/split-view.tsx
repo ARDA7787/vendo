@@ -28,12 +28,17 @@ export interface SplitViewState {
   selectedAppId: string | undefined;
   /** Registered app embeds in thread order (latest last). */
   embeds: SplitEmbed[];
+  /** Apps whose plan-time "stage" hint has already had its one auto-open shot
+      (spec §2 G1: nothing may open itself twice, and nothing re-opens after the
+      user has closed it). */
+  autoStaged: string[];
 }
 
 export const initialSplitViewState: SplitViewState = {
   expanded: false,
   selectedAppId: undefined,
   embeds: [],
+  autoStaged: [],
 };
 
 export type SplitViewAction =
@@ -46,6 +51,8 @@ export type SplitViewAction =
       registration moves the embed to "latest" only when its payload changed
       message identity — re-renders keep order. */
   | { type: "embed"; appId: string; payload: unknown }
+  /** The plan-time display hint spending its ONE auto-open shot for an app. */
+  | { type: "auto-stage"; appId: string }
   /** The embed left the thread (unmounted with the conversation). */
   | { type: "remove-embed"; appId: string };
 
@@ -70,6 +77,14 @@ export function splitViewReducer(state: SplitViewState, action: SplitViewAction)
       }
       return { ...state, embeds: [...state.embeds, { appId: action.appId, payload: action.payload }] };
     }
+    case "auto-stage":
+      // The shot is recorded whether or not it actually OPENS anything: a hint
+      // that fires against an already-open workspace is still spent. Recording
+      // it only on the open is what made Back-to-chat re-expand the panel — the
+      // collapse re-armed the hint, and the panel opened itself again (G1).
+      return state.autoStaged.includes(action.appId)
+        ? state
+        : { ...state, autoStaged: [...state.autoStaged, action.appId] };
     case "remove-embed": {
       if (!state.embeds.some(embed => embed.appId === action.appId)) return state;
       return {
@@ -105,8 +120,14 @@ export interface SplitViewContextValue {
   featuredAppId: string | undefined;
   feature(appId: string): void;
   /** Expand the workspace with THIS app featured — the compact card's
-      prominent Expand affordance (2026-07 demo feedback). */
+      prominent Expand affordance (2026-07 demo feedback). A USER gesture. */
   expandTo(appId: string): void;
+  /** The plan-time display hint (§5 V4) asking for the stage. Idempotent per
+      app for the life of the surface, so a hint can never fight the user:
+      after Back-to-chat the workspace stays closed until they open it
+      themselves (§2 G1 — nothing auto-opens or auto-folds). Callers do NOT
+      need their own "already fired" bookkeeping. */
+  autoStage(appId: string): void;
   registerEmbed(appId: string, payload: unknown): void;
   removeEmbed(appId: string): void;
 }

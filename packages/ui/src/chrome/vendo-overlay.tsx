@@ -263,6 +263,18 @@ export function VendoOverlay({
   // per-render state for the ghost flight) so the identity stays stable.
   const setWorkspaceRef = useRef<(next: boolean, featureAppId?: string) => void>(() => undefined);
   const expandTo = useCallback((appId: string) => setWorkspaceRef.current(true, appId), []);
+  // The plan hint's ONE shot per app (§2 G1). The ledger lives in the split
+  // state, not in the calling card, so the shot is spent even when the hint
+  // arrives against an already-open workspace — otherwise the second staged
+  // view of a turn never records, and the first Back-to-chat re-opens the
+  // panel on the user's behalf.
+  const autoStage = useCallback((appId: string) => {
+    const state = splitStateRef.current;
+    if (state.autoStaged.includes(appId)) return;
+    dispatchSplit({ type: "auto-stage", appId });
+    if (state.expanded) return;
+    setWorkspaceRef.current(true, appId);
+  }, []);
   const registerEmbed = useCallback((appId: string, payload: unknown) => {
     const state = splitStateRef.current;
     if (!state.expanded && !state.embeds.some(embed => embed.appId === appId)) {
@@ -279,9 +291,10 @@ export function VendoOverlay({
     featuredAppId,
     feature: featureApp,
     expandTo,
+    autoStage,
     registerEmbed,
     removeEmbed,
-  }), [expanded, featuredAppId, featureApp, expandTo, registerEmbed, removeEmbed]);
+  }), [expanded, featuredAppId, featureApp, expandTo, autoStage, registerEmbed, removeEmbed]);
 
   // Yousef polish (2026-07): the expand↔collapse must read as ONE continuous
   // morph — a FLIP-style shared-element flight (EmbedMorphGhost above) of the
