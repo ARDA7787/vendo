@@ -16,9 +16,12 @@ import { ACTIVITY_ANCHOR_ATTRIBUTE } from "../morph-toast.js";
 /** The center's views. `chat` is the conversation column (and the home). */
 export type CenterView = "chat" | "apps" | "automations" | "activity" | "accounts";
 
-/** The rows the rail always shows — New chat plus the two named doors (§10:
- *  "the home stays pure … the sidebar gets two nav rows under New chat"). */
-const PRIMARY: CenterView[] = ["chat", "apps", "automations"];
+/** The two named doors under New chat (§10: "the home stays pure … the sidebar
+ *  gets two nav rows under New chat").
+ *
+ *  `chat` is NOT here. It is an ACT, not a view you switch to, and it renders as
+ *  its own button ABOVE the tablist — see {@link RailNav}. */
+const PRIMARY: CenterView[] = ["apps", "automations"];
 /** Everything that used to be a top-level tab and is not a door: reachable
  *  under the quiet ··· row, opening the same panels unchanged. */
 const SECONDARY: CenterView[] = ["activity", "accounts"];
@@ -93,27 +96,30 @@ export interface RailNavProps {
   activityBump: boolean;
 }
 
-/** The section switcher: real WAI-ARIA tabs in ONE vertical tablist — the ···
- *  disclosure sits outside it, and the rows it reveals join the same list rather
- *  than forming a second one.
+/** The section switcher: New chat, then real WAI-ARIA tabs in ONE vertical
+ *  tablist — the ··· disclosure sits outside it, and the rows it reveals join
+ *  the same list rather than forming a second one.
  *
- *  MANUAL activation (APG): arrows move focus, Enter/Space activate. Automatic
- *  activation is not available to this tablist — "New chat" is not a view, it is
- *  an ACT (it discards the open conversation and the composer's draft), so an
- *  arrow key that activated as it moved destroyed the user's work on the way
- *  past. */
+ *  NEW CHAT IS NOT A TAB. It is an ACT: it discards the open conversation and
+ *  the composer's draft (`goto` in vendo-page calls `conversation.choose(
+ *  undefined)`). Giving it `role="tab"` made it inaccessible as what it is —
+ *  a `getByRole("button", { name: "New conversation" })`, which is how the
+ *  overlay, the palette and the mobile header all expose the same gesture,
+ *  matched nothing on the page surface — and it forced the whole tablist onto
+ *  MANUAL activation, because an arrow key that activated as it moved would
+ *  have destroyed the user's work on the way past.
+ *
+ *  With the act lifted out, every remaining row is a view whose panel appears
+ *  instantly, so the tablist takes APG's AUTOMATIC activation: arrows move the
+ *  selection. Enter/Space still work, because they are buttons. */
 export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: RailNavProps) {
   const rows = railRows(moreOpen);
-  // Roving tabindex: the stop follows the row the user last put focus on, else
-  // the selected row. The selection can be a row that is no longer here
-  // (Activity, with the ··· row closed again), and a tablist where every row is
-  // tabIndex -1 cannot be reached by keyboard at all — so it falls back to the
-  // first row and a stop always exists.
-  const [focused, setFocused] = useState<CenterView>();
-  const stop = Math.max(0, rows.indexOf(focused ?? view));
-  // A view chosen elsewhere (a home tile opening the Apps door) owns the stop
-  // again — the selected tab is where Tab should land.
-  useEffect(() => setFocused(undefined), [view]);
+  // Roving tabindex. Selection follows focus now, so the stop IS the selected
+  // row — no separate "last focused" state to keep in step with it. The
+  // selection can be a row that is not here (chat, or Activity with the ···
+  // row closed again), and a tablist where every row is tabIndex -1 cannot be
+  // reached by keyboard at all, so it falls back to the first row.
+  const stop = Math.max(0, rows.indexOf(view));
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const move = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next = index;
@@ -123,14 +129,26 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
     else if (event.key === "End") next = rows.length - 1;
     else return;
     event.preventDefault();
-    // Focus only. Activation is the button's own Enter/Space.
-    setFocused(rows[next]!);
+    // Automatic activation: the arrow moves the selection, not just the focus.
+    onView(rows[next]!);
     refs.current[next]?.focus();
   };
   // The ··· row carries the dock while Activity is folded away.
   const anchored: CenterView | "more" = moreOpen ? "activity" : "more";
   return (
     <>
+      {/* The act, outside the tablist. `aria-current` (not `aria-selected`) is
+          what a nav row uses to say "you are here", and the rail's stylesheet
+          already keys the selected look off both. */}
+      <button
+        type="button"
+        className="fl-rail-row fl-rail-new"
+        aria-current={view === "chat" ? "page" : undefined}
+        onClick={() => onView("chat")}
+      >
+        <Glyph view="chat" />
+        {LABEL.chat}
+      </button>
       <div className="fl-rail-nav" role="tablist" aria-orientation="vertical" aria-label="Workspace sections">
         {rows.map((row, index) => (
           <button
@@ -143,7 +161,7 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
             aria-controls={CENTER_PANEL_ID}
             tabIndex={index === stop ? 0 : -1}
             key={row}
-            onClick={() => { setFocused(row); onView(row); }}
+            onClick={() => onView(row)}
             onKeyDown={event => move(event, index)}
             {...(anchored === row ? { [ACTIVITY_ANCHOR_ATTRIBUTE]: "" } : {})}
           >
