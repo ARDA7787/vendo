@@ -24,6 +24,7 @@ import {
   ConnectCard,
   ConnectedAccountsPanel,
   GrantSetCard,
+  VendoThread,
   WaitingQueue,
   type GrantSetPermission,
 } from "../../src/chrome/index.js";
@@ -320,6 +321,47 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
   });
 });
 
+/** LEAK 3 — the composer printed the BROWSER's sentence. A failed attachment
+ *  read rendered `reason.message`, which for a real FileReader failure is
+ *  "NotReadableError: The requested file could not be read…" — a developer
+ *  string with a code in it, on the most everyday surface there is. */
+describe("LEAK 3 — a failed attachment read speaks to the person", () => {
+  const BROWSER_SENTENCE = "NotReadableError: The requested file could not be read, typically due to permission problems";
+
+  /** Every read fails, the way a revoked file handle fails in a real browser. */
+  class FailingFileReader {
+    error = new Error(BROWSER_SENTENCE);
+    onerror: (() => void) | null = null;
+    onload: (() => void) | null = null;
+    onprogress: (() => void) | null = null;
+    result: string | null = null;
+    readAsDataURL(): void {
+      queueMicrotask(() => this.onerror?.());
+    }
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("says what happened and that nothing was sent — never the browser's error", async () => {
+    vi.stubGlobal("FileReader", FailingFileReader);
+    render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
+    await screen.findByText("Existing thread");
+    const form = screen.getByRole("form", { name: "Message composer" });
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    fireEvent.drop(form, { dataTransfer: { types: ["Files"], files: [file] } });
+    await screen.findByText("notes.txt");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "here you go" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+
+    const alert = await waitFor(() => screen.getByRole("alert"));
+    expect(alert.textContent).not.toContain("NotReadableError");
+    expect(alert.textContent).toMatch(/nothing was sent/i);
+    // And the message itself is still there to send again.
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("here you go");
+  });
+});
+
 /**
  * THE WIDENED AUDIT — every chrome surface, not just the cards.
  *
@@ -374,7 +416,6 @@ describe("the widened audit — no chrome surface renders a developer string", (
    * this wave; the rest are named in the lane report.
    */
   const KNOWN_OPEN: Record<string, string> = {
-    "thread/composer.tsx": "owned by another worker this wave — an attachment read error renders raw (line 141)",
     "embeds.tsx": "decided exception, documented at the render site: the BYO-agent embed's contract (embeds.test) is that the wire failure stays legible",
     "automations-panel.tsx": "a run-history row prints the run's own error code + message (line 568), and the disable-repair sentence folds the wire message in (line 275) — both need a product decision about what a failed unattended run may say to its owner",
   };
