@@ -1,0 +1,294 @@
+/** The center's in-page rail (redesign spec §10 X1, §12 page-inside-host-app).
+ *
+ *  It is a RAIL, not an app frame: no brand row, no user row, no search — the
+ *  host's own application chrome surrounds the center everywhere it mounts, and
+ *  §12's standing law is that we never bring a shell of our own. What lives here
+ *  is only what the center itself owns: the two named doors, the attention
+ *  section while it has something to say, and the conversations.
+ */
+import { useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useVendoContext } from "../../context.js";
+import { useApprovals } from "../../hooks/use-approvals.js";
+import type { ThreadSummary } from "../../wire-types.js";
+import { toolTitle } from "../humanize.js";
+import { ACTIVITY_ANCHOR_ATTRIBUTE } from "../morph-toast.js";
+
+/** The center's views. `chat` is the conversation column (and the home). */
+export type CenterView = "chat" | "apps" | "automations" | "activity" | "accounts";
+
+/** The rows the rail always shows — New chat plus the two named doors (§10:
+ *  "the home stays pure … the sidebar gets two nav rows under New chat"). */
+const PRIMARY: CenterView[] = ["chat", "apps", "automations"];
+/** Everything that used to be a top-level tab and is not a door: reachable
+ *  under the quiet ··· row, opening the same panels unchanged. */
+const SECONDARY: CenterView[] = ["activity", "accounts"];
+
+const LABEL: Record<CenterView, string> = {
+  chat: "New chat",
+  apps: "Apps",
+  automations: "Automations",
+  activity: "Activity",
+  accounts: "Accounts",
+};
+
+/** Same cadence as the waiting strip: an ask raised elsewhere (an automation
+ *  run, another tab) reaches the badge without a reload. */
+const NEEDS_POLL_MS = 5_000;
+
+function Glyph({ view }: { view: CenterView }) {
+  const common = {
+    width: 15,
+    height: 15,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.9,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+  if (view === "chat") return <svg {...common}><path d="M12 5v14" /><path d="M5 12h14" /></svg>;
+  if (view === "apps") {
+    return (
+      <svg {...common}>
+        <rect width="7" height="7" x="3" y="3" rx="1.5" /><rect width="7" height="7" x="14" y="3" rx="1.5" />
+        <rect width="7" height="7" x="3" y="14" rx="1.5" /><rect width="7" height="7" x="14" y="14" rx="1.5" />
+      </svg>
+    );
+  }
+  if (view === "automations") return <svg {...common}><path d="m13 2-9 12h8l-1 8 9-12h-8l1-8Z" /></svg>;
+  if (view === "activity") return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3.5 2" /></svg>;
+  return <svg {...common}><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1" /><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1" /></svg>;
+}
+
+export interface RailNavProps {
+  view: CenterView;
+  onView(view: CenterView): void;
+  /** Whether the ··· row is expanded (Activity + Accounts revealed). */
+  moreOpen: boolean;
+  onMoreOpen(open: boolean): void;
+  /** Lane pick 4-C — the approved pill docks into the Activity row; the pulse
+   *  answers, teaching where receipts live. Rides the ··· row while Activity
+   *  itself is folded away, so the dock always has somewhere to land. */
+  activityBump: boolean;
+}
+
+/** The section switcher: real WAI-ARIA tabs (automatic activation, roving
+ *  tabindex) in ONE vertical tablist — the ··· disclosure sits outside it, and
+ *  the rows it reveals join the same list rather than forming a second one. */
+export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: RailNavProps) {
+  const rows = moreOpen ? [...PRIMARY, ...SECONDARY] : PRIMARY;
+  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+  const move = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next = index;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (index + 1) % rows.length;
+    else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (index - 1 + rows.length) % rows.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = rows.length - 1;
+    else return;
+    event.preventDefault();
+    onView(rows[next]!);
+    refs.current[next]?.focus();
+  };
+  // The ··· row carries the dock while Activity is folded away.
+  const anchored: CenterView | "more" = moreOpen ? "activity" : "more";
+  return (
+    <>
+      <div className="fl-rail-nav" role="tablist" aria-orientation="vertical" aria-label="Workspace sections">
+        {rows.map((row, index) => (
+          <button
+            ref={node => { refs.current[index] = node; }}
+            className={`fl-rail-row${row === "activity" && activityBump ? " fl-tab--bump" : ""}`}
+            id={`vendo-tab-${row}`}
+            type="button"
+            role="tab"
+            aria-selected={view === row}
+            aria-controls={`vendo-panel-${row}`}
+            tabIndex={view === row ? 0 : -1}
+            key={row}
+            onClick={() => onView(row)}
+            onKeyDown={event => move(event, index)}
+            {...(anchored === row ? { [ACTIVITY_ANCHOR_ATTRIBUTE]: "" } : {})}
+          >
+            <Glyph view={row} />
+            {LABEL[row]}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        className={`fl-rail-more${anchored === "more" && activityBump ? " fl-tab--bump" : ""}`}
+        aria-label="More sections"
+        aria-expanded={moreOpen}
+        onClick={() => onMoreOpen(!moreOpen)}
+        {...(anchored === "more" ? { [ACTIVITY_ANCHOR_ATTRIBUTE]: "" } : {})}
+      >
+        <span aria-hidden="true">···</span>
+      </button>
+    </>
+  );
+}
+
+/** §4 attention — the pinned section that EXISTS only while asks are waiting,
+ *  numbered. Read-only over the approvals transport: deciding stays with the
+ *  surfaces built for it (the waiting strip above the conversation, the card in
+ *  the transcript), so a rail row's one job is taking you there. */
+export function NeedsYou({ onOpen }: { onOpen(): void }) {
+  const { tools } = useVendoContext();
+  const { pending } = useApprovals({ pollMs: NEEDS_POLL_MS });
+  if (pending.length === 0) return null;
+  return (
+    <section className="fl-rail-group" aria-label={`Needs you — ${pending.length} waiting`}>
+      <p className="fl-rail-label">
+        Needs you
+        <span className="fl-rail-badge">{pending.length}</span>
+      </p>
+      {pending.map(approval => (
+        <button type="button" className="fl-rail-chat fl-rail-need" key={approval.id} onClick={onOpen}>
+          {toolTitle(approval.call.tool, tools[approval.call.tool])}
+        </button>
+      ))}
+    </section>
+  );
+}
+
+interface ThreadGroup {
+  label: string;
+  id: string;
+  threads: ThreadSummary[];
+}
+
+/** Recency groups (§10 "conversations grouped by recency"). "Earlier" is not
+ *  decoration: a thread from March has to land somewhere true, and calling it
+ *  "Previous 7 days" would be a lie. Empty groups never render. */
+function groupThreads(threads: ThreadSummary[], now: number): ThreadGroup[] {
+  const startOfToday = new Date(now).setHours(0, 0, 0, 0);
+  const weekAgo = startOfToday - 6 * 86_400_000;
+  const groups: ThreadGroup[] = [
+    { label: "Today", id: "today", threads: [] },
+    { label: "Previous 7 days", id: "week", threads: [] },
+    { label: "Earlier", id: "earlier", threads: [] },
+  ];
+  for (const thread of threads) {
+    const at = Date.parse(thread.updatedAt);
+    // An unparseable timestamp is not evidence of age — group it with the
+    // newest rather than exiling it to "Earlier".
+    const bucket = Number.isNaN(at) || at >= startOfToday ? 0 : at >= weekAgo ? 1 : 2;
+    groups[bucket]!.threads.push(thread);
+  }
+  return groups.filter(group => group.threads.length > 0);
+}
+
+export interface CenterChatsProps {
+  threads: ThreadSummary[];
+  activeId: string | undefined;
+  onSelect(id: string): void;
+}
+
+/** The conversation rows. A row's title is the conversation's opening line (the
+ *  wire's own thread title), ellipsized by CSS — never truncated in JS, so the
+ *  full line stays available to assistive tech and to a wider rail. */
+export function CenterChats({ threads, activeId, onSelect }: CenterChatsProps) {
+  const groups = useMemo(() => groupThreads(threads, Date.now()), [threads]);
+  return (
+    <>
+      {groups.map(group => (
+        <div className="fl-rail-group" role="group" aria-labelledby={`vendo-rail-${group.id}`} key={group.id}>
+          <p className="fl-rail-label" id={`vendo-rail-${group.id}`}>{group.label}</p>
+          {group.threads.map(thread => (
+            <button
+              type="button"
+              className="fl-rail-chat"
+              aria-current={activeId === thread.id ? "page" : undefined}
+              key={thread.id}
+              onClick={() => onSelect(thread.id)}
+            >
+              {thread.title}
+              {/* The running-turn pulse (§10 "a running background turn shows a
+                  quiet pulse on its row"). Painted by CSS only while the
+                  column's composer is mid-turn — the honest signal, since a
+                  turn only ever runs on the conversation that is open. */}
+              <span className="fl-rail-pulse" aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      ))}
+    </>
+  );
+}
+
+export interface CenterHeaderProps {
+  view: CenterView;
+  onView(view: CenterView): void;
+  /** Opens the conversation-history sheet. */
+  onChats(): void;
+  chatsOpen: boolean;
+}
+
+/** Mobile P1 (§12) — ONE self-contained page under the host's own tab or menu
+ *  item: a compact in-page header, never a second app bar. Plain navigation
+ *  semantics rather than the desktop tablist: there is no roving-focus keyboard
+ *  to serve here, and `aria-current` says exactly what the highlight means. */
+export function CenterHeader({ view, onView, onChats, chatsOpen }: CenterHeaderProps) {
+  return (
+    <header className="fl-center-head">
+      <span className="fl-center-head-title">Assistant</span>
+      <nav className="fl-center-head-nav" aria-label="Assistant sections">
+        <button
+          type="button"
+          className="fl-center-head-btn"
+          aria-expanded={chatsOpen}
+          aria-controls="vendo-center-sheet"
+          onClick={onChats}
+        >Chats</button>
+        {(["apps", "automations"] as const).map(row => (
+          <button
+            type="button"
+            className="fl-center-head-btn"
+            key={row}
+            aria-current={view === row ? "page" : undefined}
+            onClick={() => onView(row)}
+          >{LABEL[row]}</button>
+        ))}
+        <button type="button" className="fl-center-head-btn fl-center-head-new" onClick={() => onView("chat")}>New</button>
+      </nav>
+    </header>
+  );
+}
+
+/** The slide-in history sheet: conversations, the attention section, and the
+ *  panels the desktop rail folds under ···. Mounted only while open (so the
+ *  entrance plays and nothing off-screen holds focus), with a scrim that
+ *  dismisses — the page underneath stays a page. */
+export function CenterSheet({ view, onView, onClose, children }: {
+  view: CenterView;
+  onView(view: CenterView): void;
+  onClose(): void;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <div className="fl-center-scrim" onClick={onClose} />
+      <aside className="fl-center-sheet" id="vendo-center-sheet" aria-label="Conversations">
+        <div className="fl-center-sheet-top">
+          <button type="button" className="fl-center-head-btn" onClick={onClose} aria-label="Close conversations">✕</button>
+        </div>
+        {children}
+        <nav className="fl-rail-nav" aria-label="More sections">
+          {SECONDARY.map(row => (
+            <button
+              type="button"
+              className="fl-rail-row"
+              key={row}
+              aria-current={view === row ? "page" : undefined}
+              onClick={() => onView(row)}
+            >
+              <Glyph view={row} />
+              {LABEL[row]}
+            </button>
+          ))}
+        </nav>
+      </aside>
+    </>
+  );
+}
