@@ -128,23 +128,42 @@ describe("splitViewReducer (state machine)", () => {
     expect(CHROME_CSS).toContain("flex-basis: max(360px, 33.5%);");
   });
 
-  it("the plan hint's auto-stage shot is recorded ONCE per app, open or not (G1)", () => {
+  it("the plan hint's auto-stage shot is recorded ONCE per BUILD, open or not (G1)", () => {
+    // ⚠️ FIXTURE/KEY CHANGE (ruling 23): the ledger is keyed by BUILD — the
+    // turn's own view part — not by app id. Every G1 assertion below is
+    // unchanged in substance; the keys are build keys now.
     let state = splitViewReducer(initialSplitViewState, embed("app_a"));
-    state = splitViewReducer(state, { type: "auto-stage", appId: "app_a" });
-    expect(state.autoStaged).toEqual(["app_a"]);
-    // A repeat for the same app changes nothing (identity kept = no re-render).
-    expect(splitViewReducer(state, { type: "auto-stage", appId: "app_a" })).toBe(state);
+    state = splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-0-app_a" });
+    expect(state.autoStaged).toEqual(["msg_1-0-app_a"]);
+    // A repeat for the same build changes nothing (identity kept = no re-render).
+    expect(splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-0-app_a" })).toBe(state);
     // A SECOND staged view records its own shot even though the workspace is
     // already open — this is the record that used to be skipped, so the first
     // Back-to-chat re-opened the panel.
     state = splitViewReducer(state, { type: "expand" });
-    state = splitViewReducer(state, { type: "auto-stage", appId: "app_b" });
-    expect(state.autoStaged).toEqual(["app_a", "app_b"]);
-    expect(splitViewReducer(state, { type: "auto-stage", appId: "app_b" })).toBe(state);
+    state = splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-1-app_b" });
+    expect(state.autoStaged).toEqual(["msg_1-0-app_a", "msg_1-1-app_b"]);
+    expect(splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-1-app_b" })).toBe(state);
     // And the ledger survives the collapse: neither hint is armed again.
     state = splitViewReducer(state, { type: "collapse" });
-    expect(splitViewReducer(state, { type: "auto-stage", appId: "app_a" })).toBe(state);
-    expect(splitViewReducer(state, { type: "auto-stage", appId: "app_b" })).toBe(state);
+    expect(splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-0-app_a" })).toBe(state);
+    expect(splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-1-app_b" })).toBe(state);
+  });
+
+  it("RULING 23 — a NEW build of the SAME app gets its own shot after a collapse", () => {
+    // The unwritten cost of an app-keyed ledger: once the user had collapsed a
+    // stage, an EXPLICIT new build request for that app never staged again. G1
+    // forbids the UI opening ITSELF; honouring a fresh request is not that.
+    let state = splitViewReducer(initialSplitViewState, embed("app_a"));
+    state = splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-0-app_a" });
+    state = splitViewReducer(state, { type: "expand" });
+    state = splitViewReducer(state, { type: "collapse" });
+    // Same build, still spent — Back-to-chat is final for the build in hand.
+    expect(splitViewReducer(state, { type: "auto-stage", buildKey: "msg_1-0-app_a" })).toBe(state);
+    // A new turn's build of the same app is a fresh, asked-for request.
+    const next = splitViewReducer(state, { type: "auto-stage", buildKey: "msg_2-0-app_a" });
+    expect(next).not.toBe(state);
+    expect(next.autoStaged).toEqual(["msg_1-0-app_a", "msg_2-0-app_a"]);
   });
 
   it("Escape order: collapse while expanded, close otherwise", () => {
@@ -172,6 +191,48 @@ describe("VendoOverlay split view", () => {
 
   const dialogQuery = () => screen.queryByRole("dialog", { name: "Vendo assistant" });
   const expandButton = () => screen.getByRole("button", { name: "Expand workspace" });
+
+  /**
+   * The H9 chain's MIDDLE — `vendo-overlay.tsx`'s `autoStage` closure over
+   * `splitStateRef`, the code that actually decides whether the panel opens.
+   * The post-check found it mocked in both unit tests and exercised for real
+   * nowhere. This drives it through the real provider: a probe mounted as the
+   * overlay's thread calls the context's own `autoStage`, exactly as
+   * `ThreadAppCard`'s effect does.
+   */
+  it("H9 + ruling 23 — Back-to-chat is final for a build, and a NEW build still stages", async () => {
+    const Probe = () => {
+      const split = useSplitView();
+      return (
+        <div>
+          <button type="button" onClick={() => split?.autoStage("app_first", "msg_1-0-app_first")}>stage build one</button>
+          <button type="button" onClick={() => split?.autoStage("app_first", "msg_2-0-app_first")}>stage build two</button>
+        </div>
+      );
+    };
+    render(
+      <VendoProvider client={client}>
+        <VendoOverlay defaultOpen thread={Probe as unknown as (props: VendoThreadProps) => React.JSX.Element} />
+      </VendoProvider>,
+    );
+    const dialog = dialogQuery()!;
+    expect(dialog.hasAttribute("data-vendo-expanded")).toBe(false);
+
+    // The plan hint opens the stage for the build in hand.
+    fireEvent.click(screen.getByRole("button", { name: "stage build one" }));
+    await waitFor(() => expect(dialog.hasAttribute("data-vendo-expanded")).toBe(true));
+
+    // Back to chat. §2 G1: this build's hint is spent — it may not re-open.
+    fireEvent.click(screen.getByRole("button", { name: "Collapse workspace" }));
+    expect(dialog.hasAttribute("data-vendo-expanded")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "stage build one" }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(dialog.hasAttribute("data-vendo-expanded")).toBe(false);
+
+    // A NEW build of the SAME app is a fresh, asked-for request, and it stages.
+    fireEvent.click(screen.getByRole("button", { name: "stage build two" }));
+    await waitFor(() => expect(dialog.hasAttribute("data-vendo-expanded")).toBe(true));
+  });
 
   it("expands into the workspace and collapses back, WITHOUT remounting the thread", async () => {
     render(<VendoProvider client={client}><VendoOverlay defaultOpen /></VendoProvider>);

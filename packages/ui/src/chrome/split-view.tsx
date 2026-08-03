@@ -28,9 +28,14 @@ export interface SplitViewState {
   selectedAppId: string | undefined;
   /** Registered app embeds in thread order (latest last). */
   embeds: SplitEmbed[];
-  /** Apps whose plan-time "stage" hint has already had its one auto-open shot
+  /** BUILDS whose plan-time "stage" hint has already had its one auto-open shot
       (spec §2 G1: nothing may open itself twice, and nothing re-opens after the
-      user has closed it). */
+      user has closed it).
+
+      RULING 23 — these are build keys, not app ids. Keyed by app, the ledger
+      was per-app for the LIFE OF THE SURFACE: after a user collapsed the stage,
+      an EXPLICIT new build request for the same app never staged again. G1
+      forbids the UI opening ITSELF; answering a fresh request is not that. */
   autoStaged: string[];
   /** Whether the workspace on screen is the USER's (their Expand affordance)
       rather than a build's auto-opened stage. Only the latter goes away with
@@ -58,8 +63,9 @@ export type SplitViewAction =
       registration moves the embed to "latest" only when its payload changed
       message identity — re-renders keep order. */
   | { type: "embed"; appId: string; payload: unknown }
-  /** The plan-time display hint spending its ONE auto-open shot for an app. */
-  | { type: "auto-stage"; appId: string }
+  /** The plan-time display hint spending its ONE auto-open shot for a BUILD
+      (ruling 23 — `buildKey` identifies the turn's view part, not the app). */
+  | { type: "auto-stage"; buildKey: string }
   /** The embed left the thread (unmounted with the conversation). */
   | { type: "remove-embed"; appId: string };
 
@@ -92,9 +98,9 @@ export function splitViewReducer(state: SplitViewState, action: SplitViewAction)
       // that fires against an already-open workspace is still spent. Recording
       // it only on the open is what made Back-to-chat re-expand the panel — the
       // collapse re-armed the hint, and the panel opened itself again (G1).
-      return state.autoStaged.includes(action.appId)
+      return state.autoStaged.includes(action.buildKey)
         ? state
-        : { ...state, autoStaged: [...state.autoStaged, action.appId] };
+        : { ...state, autoStaged: [...state.autoStaged, action.buildKey] };
     case "remove-embed": {
       if (!state.embeds.some(embed => embed.appId === action.appId)) return state;
       const embeds = state.embeds.filter(embed => embed.appId !== action.appId);
@@ -139,11 +145,12 @@ export interface SplitViewContextValue {
       prominent Expand affordance (2026-07 demo feedback). A USER gesture. */
   expandTo(appId: string): void;
   /** The plan-time display hint (§5 V4) asking for the stage. Idempotent per
-      app for the life of the surface, so a hint can never fight the user:
-      after Back-to-chat the workspace stays closed until they open it
-      themselves (§2 G1 — nothing auto-opens or auto-folds). Callers do NOT
-      need their own "already fired" bookkeeping. */
-  autoStage(appId: string): void;
+      BUILD (`buildKey` — the turn's own view part), so a hint can never fight
+      the user: after Back-to-chat this build's workspace stays closed until
+      they open it themselves (§2 G1 — nothing auto-opens or auto-folds), while
+      a NEW build they asked for still gets its stage (ruling 23). Callers do
+      NOT need their own "already fired" bookkeeping. */
+  autoStage(appId: string, buildKey: string): void;
   registerEmbed(appId: string, payload: unknown): void;
   removeEmbed(appId: string): void;
 }

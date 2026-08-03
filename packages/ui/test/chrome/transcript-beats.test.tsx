@@ -317,7 +317,10 @@ describe("the V4 display hint", () => {
   it("stages the view at build start when the brain hinted stage", () => {
     const value = split();
     mountCard(viewPart("stage"), value);
-    expect(value.autoStage).toHaveBeenCalledWith("app_big");
+    // ⚠️ SIGNATURE CHANGE (ruling 23): the ledger key is the BUILD (this part's
+    // key + app), not the app id alone, so a new asked-for build of the same
+    // app can stage after the user collapsed the previous one.
+    expect(value.autoStage).toHaveBeenCalledWith("app_big", "p0-app_big");
     // Never `expandTo` — that is the USER's gesture and carries no one-shot
     // ledger. A hint that borrowed it fought the user (H9).
     expect(value.expandTo).not.toHaveBeenCalled();
@@ -361,7 +364,7 @@ describe("the V4 display hint", () => {
   it("spends the hint's shot even against an already-open workspace", () => {
     const open = split({ expanded: true, featuredAppId: "app_big" });
     mountCard(viewPart("stage"), open);
-    expect(open.autoStage).toHaveBeenCalledWith("app_big");
+    expect(open.autoStage).toHaveBeenCalledWith("app_big", "p0-app_big");
     // It records the shot; it does NOT re-open anything.
     expect(open.expandTo).not.toHaveBeenCalled();
   });

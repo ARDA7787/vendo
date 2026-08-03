@@ -282,7 +282,7 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
       pinDrift: _serverOnly,
       ...payload
     } = data.payload as typeof data.payload & { inClient?: unknown; pinDrift?: unknown };
-    return <ThreadAppCard key={`${partKey}-${data.appId}`} appId={data.appId} payload={payload} restored={restored} />;
+    return <ThreadAppCard key={`${partKey}-${data.appId}`} buildKey={`${partKey}-${data.appId}`} appId={data.appId} payload={payload} restored={restored} />;
   }
   return null;
 }
@@ -370,7 +370,7 @@ const PREVIEW_MAX_HEIGHT = 300;
     registers its FINAL payload with the enclosing overlay's workspace (when
     one exists) and, while the workspace is expanded, clicking the card
     features this app on the big stage. */
-function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: UIPayload; restored: boolean }) {
+function ThreadAppCard({ appId, payload, restored, buildKey }: { appId: string; payload: UIPayload; restored: boolean; buildKey: string }) {
   const { client, components } = useVendoContext();
   const pin = usePinAction();
   const split = useSplitView();
@@ -449,18 +449,24 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
     return () => removeEmbed(appId);
   }, [removeEmbed, appId]);
   // Live turns only — restored history never reopens a stage. The one-shot
-  // ledger lives in the split, not here: `autoStage` is idempotent per app, so
+  // ledger lives in the split, not here: `autoStage` is idempotent per BUILD, so
   // the hint's shot is spent even when it arrives against an ALREADY-OPEN
   // workspace. A card-local ref could not record that — it returned early on
   // `split.expanded`, left the shot unspent, and the first Back-to-chat re-ran
   // this effect and re-opened the panel on the user's behalf (H9, §2 G1).
   // `autoStage` is identity-stable, so keying on it (not on `split`) also stops
   // every expand/collapse from re-running the effect.
+  //
+  // RULING 23 — the ledger key is this BUILD (message id + part index), not the
+  // app. Keyed by app it was per-app for the life of the surface, so once the
+  // user had collapsed a stage, an EXPLICIT new build request for the same app
+  // never staged again. G1 forbids the UI opening ITSELF; honouring a fresh
+  // request is not that.
   const autoStage = split?.autoStage;
   useEffect(() => {
     if (!staged || restored || !autoStage) return;
-    autoStage(appId);
-  }, [staged, restored, autoStage, appId]);
+    autoStage(appId, buildKey);
+  }, [staged, restored, autoStage, appId, buildKey]);
   const featured = split?.expanded === true && split.featuredAppId === appId;
   // The compact card's activation: expanded → feature on the stage;
   // collapsed → expand the workspace WITH this app staged. Clicking the card
