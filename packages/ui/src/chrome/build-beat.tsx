@@ -1,4 +1,4 @@
-import type { Json, JsonSchema } from "@vendoai/core";
+import { declaredMoneyUnit, type Json, type JsonSchema } from "@vendoai/core";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { consumerVoiceViolation, isConsumerSafe } from "../consumer-voice.js";
@@ -137,17 +137,33 @@ export function admissibleDescription(description: string | undefined, title: st
   return undefined;
 }
 
-/** The first argument that is REAL money — declared by the host's own field
-    formatter or by the tool's input schema (`argValue`). An undeclared number
-    is not money and never enters a sentence: dressing an integer as currency is
-    the same defect pointing the other way. */
+/**
+ * The ONE amount an ask is about, or nothing.
+ *
+ * THE DEFECT this closes: this took the first numeric field whose DISPLAY
+ * differed from its raw value, which is not the same question as "is this
+ * money". Two ways it lied:
+ *   · `{ fee_cents: 199, amount_cents: 4750 }` → "Sends $1.99 to Acme
+ *     Utilities". The fee came first in the object, and the card then folded
+ *     the true rows behind Details — the sentence replaced them.
+ *   · a host `formatField` that formats a RATE ("5" → "5%") made that field
+ *     look like money, because any changed display counted.
+ *
+ * Money is now `declaredMoneyUnit`'s answer (01-core: the field's own
+ * declaration, never the value's magnitude), and a sentence is synthesized only
+ * when EXACTLY ONE such field exists — with two, there is no single amount the
+ * ask is about, so the card says no sentence and keeps every row in sight.
+ * The host's formatter still supplies the DISPLAY for that one field.
+ */
 function moneyValue(args: Record<string, unknown>, meta?: ToolMeta, properties?: ArgProperties): string | undefined {
-  for (const [key, value] of Object.entries(args)) {
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    const shown = meta?.formatField?.(key, value as Json) ?? argValue(key, value, properties);
-    if (shown !== String(value) && !shown.includes("unit not specified")) return shown;
-  }
-  return undefined;
+  const declared = Object.entries(args).filter(([key, value]) =>
+    typeof value === "number" && Number.isFinite(value)
+    && declaredMoneyUnit(key, properties?.[key]) !== undefined);
+  if (declared.length !== 1) return undefined;
+  const [key, value] = declared[0]!;
+  const shown = meta?.formatField?.(key, value as Json) ?? argValue(key, value, properties);
+  // An undeclared unit says so out loud; that is not a sentence.
+  return shown.includes("unit not specified") ? undefined : shown;
 }
 
 export function toolPresentation(

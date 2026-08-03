@@ -227,6 +227,49 @@ describe("the plain-words line says what happens, not which tool", () => {
     expect(line(unknown)).not.toContain("Thing do");
   });
 
+  it("C5 — two declared money fields synthesize NO sentence, and nothing folds", () => {
+    // The live shape: a fee beside the amount. The old rule took the FIRST
+    // numeric field whose display changed, so this read "Sends $1.99 to Acme
+    // Utilities" — the wrong number — and the card then folded the true rows
+    // behind Details, hiding the $47.50 the person was actually approving.
+    const container = show(ask({
+      call: {
+        id: "call_send",
+        tool: "host_transferMoney",
+        args: { fee_cents: 199, amount_cents: 4750, recipient_name: "Acme Utilities" },
+      },
+      descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
+    } as Partial<ApprovalRequest>));
+    expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
+    expect(line(container)).toBe("This moves money, as you.");
+    expect(line(container)).not.toContain("$1.99");
+    // Never fold on uncertainty: both amounts stay in plain sight.
+    expect(container.querySelector(".fl-approval-details")).toBeNull();
+    expect(rowsOf(container)).toEqual([
+      ["Fee cents", "$1.99"],
+      ["Amount cents", "$47.50"],
+      ["Recipient name", "Acme Utilities"],
+    ]);
+  });
+
+  it("C5 — a host formatter that formats a RATE is not a money declaration", () => {
+    const container = show(
+      ask({
+        call: {
+          id: "call_send",
+          tool: "host_transferMoney",
+          args: { rate: 5, recipient_name: "Acme Utilities" },
+        },
+        descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
+      } as Partial<ApprovalRequest>),
+      { host_transferMoney: { formatField: (key, value) => key === "rate" ? `${String(value)}%` : undefined } },
+    );
+    // "Sends 5% to Acme Utilities" was a real possible sentence here.
+    expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
+    expect(line(container)).toBe("This moves money, as you.");
+    expect(rowsOf(container)).toEqual([["Rate", "5%"], ["Recipient name", "Acme Utilities"]]);
+  });
+
   it("keeps folding the fields behind Details on an ORDINARY consequence ask", () => {
     const container = show(money({ critical: false }));
     expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
