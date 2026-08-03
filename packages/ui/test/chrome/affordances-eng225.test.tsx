@@ -131,7 +131,10 @@ describe("waiting-on-you queue (ENG-225)", () => {
     within(region).getByText(/Waiting on you ·/);
     // No host metadata in this render → the ENG-216 prettified-id fallback.
     within(region).getByText("Email send");
-    within(region).getByText("to a@example.com");
+    // spec §16.2 — the row humanizes the REAL args (dt "To" / dd the address);
+    // the server's own preview string is never what an end user reads.
+    within(region).getByText("a@example.com");
+    expect(region.textContent).not.toContain("to a@example.com");
     within(region).getByText(/^Asked /);
 
     fireEvent.click(within(region).getByRole("button", { name: "Approve" }));
