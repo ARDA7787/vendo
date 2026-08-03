@@ -43,8 +43,19 @@ of the model's way.
 
 - The claude-code door listing drops the loadout filter (`activeToolNames`):
   the door lists **everything the context projects**. The safety projection
-  (design §12 — unattended runs never see destructive/external tools) is
-  untouched; it runs before the listing.
+  (design §12 — unattended runs never see destructive/external tools) still
+  runs before the listing and is not weakened by this change.
+  - *Amendment 2026-08-03, after #747 landed:* that projection is no longer the
+    same set. #747 withholds `ungraded` from an unattended run alongside
+    `destructive`, and re-grades every extracted GET to `ungraded` ("GET is not
+    a fact about reading"). Because D2 deleted the loadout, "everything the
+    context projects" is now the WHOLE story — so an unattended claude-code run
+    against a catalog nobody has judged sees **zero host tools**, where before
+    it saw a loadout of nominally-`read` ones. That is #747's deliberate
+    fail-closed posture meeting D2's uncurated listing, not a defect in either;
+    the practical consequence is that `vendo judge` (or hand-written
+    `judgments.json`) becomes a prerequisite for unattended automation on this
+    harness. Flagged for Yousef rather than worked around.
 - One MCP mount, `alwaysLoad: true`, exactly as today. No door split: the
   listing is naturally bounded because connector toolkits materialize lazily —
   the 20k-tool Composio catalog is never ON the list.

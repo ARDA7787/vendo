@@ -86,13 +86,15 @@ export interface ToolDescriptor {
                                 // carried verbatim to ToolListing and the door so the model knows a query's fields
                                 // before calling it. NOT in the descriptorHash preimage: no person approved it.
   risk: RiskLabel;
-  critical?: boolean;           // always asks the running user; no grant, rule, or judge may suppress
+  confirmEach?: boolean;        // always asks the running user; no grant, rule, or judge may suppress
+                                // (renamed from `critical` by #747, 2026-08-03; a `critical` field is
+                                //  still read as an alias so stored descriptors keep working)
 }
 // provenance is carried by the name prefix (host_*, <connector>_*, vendo_*) — no separate source field
 
 /** Canonical descriptor fingerprint, algorithm-prefixed like every other ref in the system
  *  ("sha256:<hex>", cf. Pin.base and snapshot refs): SHA-256 over the RFC 8785 (JCS) canonicalization
- *  of { name, description, inputSchema, risk, critical }, absent optional fields omitted — so independent
+ *  of { name, description, inputSchema, risk, confirmEach }, absent optional fields omitted — so independent
  *  implementations always agree, and the algorithm can rotate without a flag-day. */
 export function descriptorHash(d: ToolDescriptor): string;   // "sha256:ab12..."
 export function canonicalJson(value: unknown): string;        // RFC 8785 canonical JSON
@@ -176,7 +178,7 @@ The choke point interface. guard implements it (05); every other block only cons
 ```ts
 export type GuardDecision =
   | { action: "run"; decidedBy: "grant" | "rule" | "judge" | "default"; grantId?: GrantId }
-  | { action: "ask"; approval: ApprovalRequest; decidedBy: "critical" | "rule" | "judge" | "breaker" | "default" }
+  | { action: "ask"; approval: ApprovalRequest; decidedBy: "confirmEach" | "rule" | "judge" | "breaker" | "default" }
   | { action: "block"; reason: string; decidedBy: "rule" | "judge" | "breaker" };
 
 export interface Guard {

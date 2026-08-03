@@ -87,7 +87,11 @@ export type DeniedNeeds =
   | { kind: "unattended-destructive" };        // §12 law: never available off-interaction
 
 export interface ToolListing {
-  name: string; title: string; description: string; risk: "read" | "write" | "destructive";
+  name: string; title: string; description: string; risk: RiskLabel;
+  /** Amendment 2026-08-03 (#747 landed): `risk` widened from the three-value
+   *  union to `RiskLabel`, which adds `ungraded` — a tool nobody has judged.
+   *  Read design §12: `ungraded` asks by default and is withheld from an
+   *  unattended run, exactly like `destructive`. */
   /** Amendment 2026-07-30: JSON Schema for the tool's input — every in-process
    *  harness must hand schemas to its model; JSON Schema is the interchange. */
   inputSchema?: JsonSchema;

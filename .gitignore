@@ -112,3 +112,6 @@ docs/superpowers/evidence/
 docs/superpowers/plans/
 docs/superpowers/lanes/
 docs/eval/runs/
+
+# Per-PID scratch fixtures written by wire-type-parity.test.ts (a killed run leaves them behind)
+packages/vendo/.wire-parity.*
