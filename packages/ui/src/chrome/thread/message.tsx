@@ -132,6 +132,7 @@ export function ThreadMessage({ message, restored, risks, busy, activeAssistantI
                 // older cards settle into the Connected record (or nothing).
                 connectLive={message.role === "assistant" && message.id === lastAssistantId}
                 hideBeats={folded}
+                turnPending={pending}
                 sendMessage={sendMessage}
                 siblingParts={message.parts}
                 respond={respond}

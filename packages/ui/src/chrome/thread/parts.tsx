@@ -20,8 +20,9 @@ import { SentAttachment } from "./attachments.js";
 import { buildApprovalRequest } from "./approval-wire.js";
 import {
   appTitle,
+  BUILD_FAILURE_COPY,
+  narratedByAppCard,
   partData,
-  producedAppCard,
   toolCallIsContent,
   toolName,
   VENDO_ERROR_PREFIX,
@@ -63,7 +64,7 @@ function UserText({ text: rawText, restored }: { text: string; restored?: boolea
 /** One stream part in a turn: text (user verbatim / assistant markdown with the
     ENG-217 caret choreography), assistant files, tool build beats, and the
     jailed generated-view app card (06-apps §§8–9). */
-export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, hideBeats = false, sendMessage, siblingParts, respond }: {
+export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, hideBeats = false, turnPending = true, sendMessage, siblingParts, respond }: {
   part: UIMessage["parts"][number];
   partKey: string;
   role: UIMessage["role"];
@@ -73,6 +74,11 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
   /** Spec §1 — the settled turn folded its beats into the summary row (see
       ThreadMessage), so successful calls render nothing until it reopens. */
   hideBeats?: boolean;
+  /** Spec §8 + §15 — whether this turn is still working. A view whose payload
+      is STILL `streaming` once the turn is over is a build that died: nothing
+      will ever flip it to ready. Defaults to pending so a part rendered on its
+      own (or by a host composing its own list) keeps today's behavior. */
+  turnPending?: boolean;
   /** Whether a connect-required outcome in this turn is still the actionable
       ask (this is the LATEST assistant turn). Stale turns render the quiet
       Connected record instead — see ConnectCard's `live`. */
@@ -141,18 +147,25 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     //   · the settled turn folds its beats into one summary row (hideBeats) —
     //     but a failed or declined call is content, not progress, so its ✕ beat
     //     stays visible either way (spec §15: the ✕ stays in the record);
-    //   · D1 — an app-building call renders no beat, because its card IS that
-    //     step (the summary still counts it).
+    //   · D1 — an app-building call renders no beat, from the moment the build
+    //     starts, because its card IS that step (the summary still counts it).
     const risk = risks.get(part.toolCallId) ?? "read";
     if (toolCallIsContent(part)) return <BuildBeat part={part} risk={risk} count={count} />;
-    if (hideBeats || producedAppCard(part, siblingParts ?? [])) return null;
+    if (hideBeats || narratedByAppCard(part, siblingParts ?? [])) return null;
     return <BuildBeat part={part} risk={risk} count={count} />;
   }
   if (part.type === "data-vendo-build-failed") {
     // 0.4.4 cert defect B — a terminally failed app build is content, not
     // progress: the turn ends right after this part, so without it the thread
     // showed no trace of why nothing appeared. Same beat vocabulary as a
-    // failed tool call, plus the runtime's classified (provider-safe) reason.
+    // failed tool call, plus what the failure MEANS for the reader.
+    //
+    // §16 law 3 — the wire's `reason` is written for whoever can fix the build
+    // and it used to render verbatim: the wave E2E photographed an end user
+    // reading `amount / sum(spending.data.amount)`. The part's presence is what
+    // this branch reads; BUILD_FAILURE_COPY carries the person's half, and the
+    // developer's sentence keeps its home in the server's own log line
+    // (apps/runtime.ts) with every blocking finding beside it.
     const data = partData(part) as Partial<VendoBuildFailedPart>;
     if (typeof data.reason !== "string" || data.reason.length === 0) return null;
     return (
@@ -165,7 +178,7 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
           </span>
           <span className="fl-beat-label">Couldn&apos;t build the app</span>
         </div>
-        <div className="fl-approval-more" role="alert">{data.reason}</div>
+        <div className="fl-approval-more" role="alert">{BUILD_FAILURE_COPY}</div>
       </div>
     );
   }
@@ -241,6 +254,16 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
   if (part.type === "data-vendo-view") {
     const data = partData(part) as Partial<VendoViewPart>;
     if (typeof data.appId !== "string" || !data.payload) return null;
+    // Spec §8 + §15 — a build that DIED never flips `streaming` off: the last
+    // partial view ever emitted is the skeleton. Left mounted, the card sweeps
+    // its hairline over that skeleton forever on a turn that is over (§8 build
+    // calm is a claim about the settled turn too), and it holds the split
+    // view's stage on the same lie — the wave E2E photographed both. §15 says
+    // what replaces it and it is not a component: the failed call's ✕ beat and
+    // the agent's own prose, which are already in the turn. Unmounting also
+    // withdraws the embed (the removeEmbed cleanup below), which is what
+    // clears the stage.
+    if (!turnPending && (data.payload as { streaming?: boolean }).streaming === true) return null;
     // 06-apps §§8–9 — in-thread surfaces are conversational previews, never
     // the approved in-client venue and never a drift report: both fields are
     // server-authoritative, so whatever the stream carried, render jailed
