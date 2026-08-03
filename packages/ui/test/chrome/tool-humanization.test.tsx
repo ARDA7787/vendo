@@ -185,7 +185,9 @@ describe("ApprovalCard humanization", () => {
 
   it("shows the humanized context byline by default and hides it when showContext is false", () => {
     const view = render(<VendoProvider client={client}><ApprovalCard approval={approval} onDecide={() => undefined} /></VendoProvider>);
-    expect(screen.getByText(/Runs as you · asked in an app · app_1/)).toBeTruthy();
+    // This line used to pin the app id INTO the byline (`· app_1`).
+    expect(screen.getByText("Runs as you · asked in an app")).toBeTruthy();
+    expect(screen.queryByText(/app_1/)).toBeNull();
     view.rerender(<VendoProvider client={client}><ApprovalCard approval={approval} onDecide={() => undefined} showContext={false} /></VendoProvider>);
     expect(screen.queryByText(/Runs as you/)).toBeNull();
   });

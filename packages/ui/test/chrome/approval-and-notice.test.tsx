@@ -49,7 +49,8 @@ describe("ApprovalCard and NoPolicyNotice exports", () => {
       row.querySelector("dt")?.textContent,
       row.querySelector("dd")?.textContent,
     ]);
-    expect(rows).toEqual([["Invoice id", "inv_42"], ["Permanent", "true"]]);
+    // A boolean is an answer, not a literal (this line used to pin "true").
+    expect(rows).toEqual([["Invoice id", "inv_42"], ["Permanent", "Yes"]]);
     // The risk chip speaks the user's language; the data attr keeps the slug.
     expect(screen.getByText("Irreversible").getAttribute("data-risk")).toBe("destructive");
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
