@@ -14,7 +14,7 @@
     they are in-thread. */
 import type { ApprovalRequest } from "@vendoai/core";
 import { useVendoContext } from "../context.js";
-import { useApprovals } from "../hooks/use-approvals.js";
+import { useAttention } from "../hooks/use-approvals.js";
 import { formatAuditTime } from "./activity-semantics.js";
 import { toolPresentation } from "./build-beat.js";
 import {
@@ -36,24 +36,6 @@ import { fieldRows } from "./field-rows.js";
 export interface WaitingQueueProps {
   /** Poll cadence for pending approvals; 0 disables polling. */
   pollMs?: number;
-}
-
-/* integration: replace with useAttention — Lane D's single attention source
-   (`import { useAttention } from "../hooks/use-approvals.js"`), which the
-   launcher badge reads too, so the strip and the badge cannot disagree. This
-   worktree predates that hook, so this shim exposes the exact same names the
-   strip consumes: deleting it and adding the import is the whole swap. */
-function useAttention({ pollMs }: { pollMs: number }): {
-  askCount: number;
-  asks: ApprovalRequest[];
-  decide(id: string, decision: { approve: boolean }): void;
-} {
-  const { pending, decide } = useApprovals(pollMs > 0 ? { pollMs } : {});
-  return {
-    askCount: pending.length,
-    asks: pending,
-    decide: (id, decision) => void decide(id, decision),
-  };
 }
 
 function WaitingRow({ approval, onDecide }: {
@@ -97,7 +79,9 @@ function WaitingRow({ approval, onDecide }: {
 /** The waiting-on-you queue (08-ui §4 chrome; mounted by VendoPage's chat
     workspace, exportable for any host placement). */
 export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
-  const { askCount, asks, decide } = useAttention({ pollMs });
+  // spec §4 (N1) — the strip counts from Lane D's ONE attention source, the
+  // same hook the launcher badge reads, so the two can never disagree.
+  const { askCount, asks, decide } = useAttention(pollMs > 0 ? { pollMs } : {});
   if (askCount === 0) return null;
   return (
     <ChromeRoot automaticPolicyNotice={false}>
@@ -109,7 +93,7 @@ export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
               <WaitingRow
                 key={approval.id}
                 approval={approval}
-                onDecide={approve => decide(approval.id, { approve })}
+                onDecide={approve => void decide(approval.id, { approve })}
               />
             ))}
           </div>
