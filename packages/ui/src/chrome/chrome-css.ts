@@ -382,6 +382,15 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   margin-left: 2px; vertical-align: -2px; background: var(--vendo-accent); border-radius: 1px;
   animation: fl-blink 1s steps(1) infinite; }
 @keyframes fl-blink { 50% { opacity: 0; } }
+/* §8's one-animation law, made true in the frame it is actually broken in: a
+   turn that is streaming PROSE while its app card builds ran two loops at once
+   (blinking caret + gliding hairline), and a forming markdown table added a
+   third. While any card in this thread is building, the hairline is the only
+   moving thing — the caret still marks the insertion point, it just stops
+   flashing. */
+.fl-thread:has(.fl-appcard-bar[data-state="building"]) .fl-caret,
+.fl-thread:has(.fl-appcard-bar[data-state="building"]) .fl-md--streaming > :last-child::after,
+.fl-thread:has(.fl-appcard-bar[data-state="building"]) .fl-skeleton-bar { animation: none; }
 
 /* ---------- markdown ---------- */
 .fl-md > :first-child { margin-top: 0; }

@@ -41,8 +41,21 @@ describe("S1 recipe", () => {
   it("animates exactly one element while a card builds — the boot hairline", () => {
     const building = [...CHROME_CSS.matchAll(/^[^\n{]*\[data-state="building"\][^{]*\{[^}]*\}/gm)]
       .map((match) => match[0])
-      .filter((rule) => /animation\s*:/.test(rule));
+      // `animation: none` is a rule that TAKES a loop away (M19) — it is not one
+      // of the animations this law counts.
+      .filter((rule) => /animation\s*:/.test(rule) && !/animation\s*:\s*none/.test(rule));
     expect(building).toHaveLength(1);
     expect(building[0]).toContain(".fl-boot-hairline");
+  });
+
+  it("a building card silences the streaming caret and any shimmer (M19)", () => {
+    // The caret runs in TWO places (the lone caret, and the pseudo-element that
+    // trails streamed prose) and the shimmer bar in a third — all three had to
+    // stand down, or §8's one-animation law is false in the common frame.
+    for (const target of [".fl-caret", ".fl-md--streaming > :last-child::after", ".fl-skeleton-bar"]) {
+      expect(CHROME_CSS, `${target} stands down during a build`)
+        .toContain(`.fl-thread:has(.fl-appcard-bar[data-state="building"]) ${target}`);
+    }
+    expect(CHROME_CSS).toMatch(/:has\(\.fl-appcard-bar\[data-state="building"\]\) \.fl-skeleton-bar \{ animation: none; \}/);
   });
 });
