@@ -184,4 +184,36 @@ describe("lazy expansion is scoped to the listing that asked for it", () => {
     // …and bob's live session is untouched by it.
     expect(names(await actions.descriptors(bob_()))).toContain("gmail_GMAIL_SEND");
   });
+
+  it("a scope released while its own search is IN FLIGHT is not resurrected", async () => {
+    // The release above closed the leak for a scope released between calls. In
+    // flight it was still open: a search records what it expanded AFTER awaiting
+    // the fetch, and recording CREATES the entry — so a session that ended while
+    // its own search was still running came back as an entry with no owner left
+    // to release it, sheddable only by the process-global capacity cap. Which is
+    // exactly the cross-tenant interference channel the release exists to avoid.
+    let landFetch!: () => void;
+    const held = new Promise<void>((resolve) => { landFetch = resolve; });
+    const lazy = lazyConnector();
+    const slow: Connector = {
+      ...lazy.connector,
+      expandToolkits: async (toolkits) => {
+        await held;
+        return lazy.connector.expandToolkits!(toolkits);
+      },
+    };
+    const actions = createActions({ dir: "", tools: [HOST_TOOL], connectors: [slow] });
+    const scoped = (): ToolListingContext => ({ ...ada, listingScope: "mcps_ada" });
+
+    const searching = actions.search("post a message to slack", undefined, scoped());
+    // The session closes — the door releases on every close, sweep and revocation
+    // — while the toolkit fetch this search paid for is still out.
+    actions.releaseListingScope?.("mcps_ada");
+    landFetch();
+    await searching;
+
+    // Still released. Pre-fix the landing search re-created the scope here, with
+    // the expansion in it and nobody left to collect it.
+    expect(names(await actions.descriptors(scoped()))).toEqual(["host_listAccounts"]);
+  });
 });

@@ -238,7 +238,7 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
   </Stack>
 </App>`;
 
-  function appSeam(data: Record<string, Json> | undefined) {
+  function appSeam(data: Record<string, Json> | undefined, dataUnavailable = false) {
     const calls: Array<{ appId: string; name: string | undefined; queries: number }> = [];
     const emitted: Array<{ id: string; part: VendoViewPart }> = [];
     const workspace = wrapWorkspaceForRender(testWorkspace(), {
@@ -249,7 +249,7 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
           name: compiled.name,
           queries: compiled.tree.queries?.length ?? 0,
         });
-        return data;
+        return data === undefined ? undefined : { data, ...(dataUnavailable ? { dataUnavailable } : {}) };
       },
     });
     const save = async (path: string, content: string): Promise<void> => {
@@ -372,6 +372,19 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
     // The skeleton already on screen when the app half ran says nothing about a
     // failure that had not happened yet.
     expect((emitted[0]!.part.payload as { dataUnavailable?: boolean }).dataUnavailable).toBeUndefined();
+  });
+
+  it("marks the view when the app half RAN and its queries failed, not only when it threw", async () => {
+    // The failure users actually hit: the app half answers fine, and the query
+    // inside it was refused or errored — so the data is missing with nothing
+    // thrown anywhere. Without this the marker only ever fired on a throw, and
+    // the common case shipped as "you have no spending".
+    const { emitted, save } = appSeam({}, true);
+    await save(APP_VENDO, WITH_QUERY);
+
+    const last = emitted.at(-1)!.part.payload as { streaming?: boolean; dataUnavailable?: boolean };
+    expect(last.dataUnavailable).toBe(true);
+    expect(last.streaming).toBe(false);
   });
 
   it("marks nothing when the app half ANSWERS — an empty answer is empty data, not a failure", async () => {

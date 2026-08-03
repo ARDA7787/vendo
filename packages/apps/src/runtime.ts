@@ -601,6 +601,21 @@ export interface PinForkResult {
   edit?: EditResult;
 }
 
+/**
+ * What a files-first save answers with: the resolved query data for the tree it
+ * stored, and — when a query FAILED to resolve — the honest marker that says so.
+ *
+ * Without the second half the render seam could only tell the truth about a
+ * whole app half that threw: a query that answered "error", "blocked" or
+ * "connect-required" resolved to nothing, every binding under it rendered "—",
+ * and the view claimed the person has no data. That is the exact lie
+ * `dataUnavailable` exists to kill (see ProgressiveQueryResolver.dataUnavailable).
+ */
+export interface AuthoredAppResult {
+  data: Record<string, Json>;
+  dataUnavailable?: true;
+}
+
 /** 06-apps §1 */
 export interface AppsRuntime {
   create(input: {
@@ -642,7 +657,7 @@ export interface AppsRuntime {
   authored(
     input: { appId: AppId; compiled: WireCompileResult },
     ctx: RunContext,
-  ): Promise<Record<string, Json>>;
+  ): Promise<AuthoredAppResult>;
   /** Speed lane — best-effort page-open warm-up of the generation model(s)
    *  (full + paint), so the first create reuses a live connection. Safe to
    *  call on surface mount; never throws. */
@@ -1700,6 +1715,22 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     }
   };
 
+  /**
+   * The 50-version cap, applied once the write the newest version records has
+   * LANDED. Every append is speculative until then (see discardVersion), so a
+   * prune inside it charged the app's oldest real undo point for a write that
+   * never happened — fifty refused saves erased fifty genuine undo points while
+   * the app itself never changed. Failure is logged, never thrown: the save is
+   * real, and one entry over the cap is not worth turning it into an error.
+   */
+  const pruneHistory = async (appId: AppId): Promise<void> => {
+    try {
+      await history.prune(appId);
+    } catch (error) {
+      console.error(`[vendo] history for ${appId} could not be trimmed to its cap: ${safeErrorMessage(error)}`);
+    }
+  };
+
   const persistEdit = async (
     previous: AppDocument,
     app: AppDocument,
@@ -1780,6 +1811,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       await discardVersion(app.id, versionId);
       throw error;
     }
+    // The write landed, so that version is real history now and the cap applies
+    // to it — see pruneHistory for why this cannot happen inside the append.
+    await pruneHistory(app.id);
     await reportDocumentEdit(previous, appRow.data.doc, subject);
     // The stored row keeps the conversation; the document handed BACK never
     // carries it. One rule, every path out of the runtime (get/list/fork/undo
@@ -2575,7 +2609,13 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
                 at: new Date().toISOString(),
                 intent: "Saved app.vendo",
                 rung: rungFor(document),
-              }, touchedPinSlots(previous, document));
+              }, touchedPinSlots(previous, document),
+              // A "touch", never an "edit": this receipt records THAT the save
+              // changed a pinned component, and nothing about what it changed.
+              // Handing "Saved app.vendo" to a rebase as a replay instruction is
+              // how a file-authored remix gets overwritten by the pristine host
+              // component under a "rebased" verdict (see pins.rebase).
+              "touch");
             }
             // Asserted a SECOND time, after the append, for persistEdit's reason:
             // the append is itself a store round trip, so the first check alone
@@ -2594,8 +2634,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           );
           await apps.put(appRow);
           // The write landed, so the version above is real history now: whatever
-          // the announcements below do, it must not be cleaned up.
+          // the announcements below do, it must not be cleaned up — and the cap
+          // applies to it (pruneHistory).
           appended = undefined;
+          await pruneHistory(input.appId);
           if (previous === undefined) {
             await reportLifecycle("create", document.id, ctx);
           } else if (changed) {
@@ -2633,7 +2675,11 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // "No spending in this period" back into a diagnosable fact.
       const queries = createProgressiveQueryResolver(caller, document, ctx);
       queries.update(asTree(document.tree));
-      return await queries.complete();
+      const data = await queries.complete();
+      // …and when one of them FAILED, the seam is told, so the painted view says
+      // "Data didn't load" instead of showing the person an empty app that looks
+      // like their real, empty data.
+      return { data, ...(queries.dataUnavailable() ? { dataUnavailable: true as const } : {}) };
     },
 
     async get(appId, ctx) {
@@ -2955,7 +3001,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           intent: instruction,
           rung: rungFor(landed),
         };
+        // The box already landed its own write, so this version is real history
+        // the moment it is appended — and the cap applies to it right here.
         await history.append(landed.id, previous, boxVersion, []);
+        await pruneHistory(landed.id);
         return withPinDrift({
           app: landed,
           version: { ...boxVersion },
@@ -3401,21 +3450,40 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           throw new VendoError("conflict", `pin ${input.slot} cannot rebase on a served (http) app`);
         }
         const intents = await history.pinIntents(app.id, input.slot);
-        // The trail must START with the recorded FORK, because that is the only
-        // row whose content the re-fork below reproduces: the fork copied the
-        // captured baseline verbatim, so replaying everything after it lands the
-        // user's own modifications on the new baseline. A trail that does not
-        // begin with a fork cannot vouch for what the pinned component holds —
-        // an empty history (the pin arrived through an app fork or an import) or
-        // a trail whose first row is a write that merely TOUCHED the pin (a
-        // files-first `app.vendo` save records "Saved app.vendo", which is not a
-        // replayable instruction at all). Re-forking either one mechanically
-        // would silently reset the remix to the pristine host component, so fail
-        // closed instead. `kind` is absent on rows written before the
-        // discriminator existed; those cannot vouch for a fork either, and land
-        // on the same refusal.
-        if (intents[0]?.kind !== "fork") {
-          throw new VendoError("conflict", `pin ${input.slot} has no recorded edit trail to replay; remix the updated component manually`);
+        // A rebase is a re-fork of the NEW baseline with the trail replayed on
+        // top, so it is only ever as honest as the trail. Two things must hold,
+        // and each one is a way a user's remix gets silently destroyed:
+        //
+        // 1. The trail STARTS with the recorded fork — the only row whose
+        //    content the re-fork reproduces (the fork copied the captured
+        //    baseline verbatim). An empty trail, or one that begins with
+        //    anything else, cannot vouch for what the pinned component holds.
+        // 2. Every row AFTER it is a replayable "edit" — the user's own words,
+        //    which is what re-saying it to the brain means. A "touch" is a write
+        //    that changed the pinned component while recording only that it did
+        //    ("Saved app.vendo" from a files-first save, the DEFAULT way an app
+        //    is written): the change itself exists nowhere but the document this
+        //    rebase is about to overwrite, so skipping past it resets that work
+        //    to the pristine host component and reports "rebased".
+        //
+        // `kind` is absent on rows written before the discriminator existed;
+        // those vouch for nothing and replay as nothing, so they fail closed on
+        // whichever check they land in. The cost of refusing is one manual
+        // remix; the cost of accepting is the remix itself.
+        const unreplayable = intents.slice(1).filter(({ kind }) => kind !== "edit");
+        if (intents[0]?.kind !== "fork" || unreplayable.length > 0) {
+          throw new VendoError(
+            "conflict",
+            `pin ${input.slot} has no recorded edit trail to replay; remix the updated component manually`,
+            {
+              slot: input.slot,
+              // Which half refused, because the two are different situations to
+              // be in: nothing to replay from, versus a change that was made
+              // outside the replayable trail.
+              reason: intents[0]?.kind === "fork" ? "unreplayable-trail" : "no-fork-recorded",
+              ...(unreplayable.length === 0 ? {} : { unreplayable: unreplayable.map(({ intent }) => intent) }),
+            },
+          );
         }
         const replayIntents = intents.slice(1).map(({ intent }) => intent);
         const componentName = pinComponentName(input.slot);

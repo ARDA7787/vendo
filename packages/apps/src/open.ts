@@ -97,6 +97,24 @@ interface QueryState {
 export interface ProgressiveQueryResolver {
   update(tree: Tree): void;
   complete(): Promise<Record<string, Json>>;
+  /**
+   * Whether a query that HAS settled contributed no data because it failed —
+   * threw, answered "error", or was refused by the guard ("blocked",
+   * "connect-required", "pending-approval").
+   *
+   * The caller turns this into the tree's `dataUnavailable` marker, which the
+   * renderer shows as "Data didn't load — that isn't your data being empty".
+   * The refusals count deliberately: in every one of them the person's data did
+   * not arrive and every binding renders "—", so the notice's sentence is TRUE,
+   * and the alternative is the empty-state lie the marker exists to kill. A
+   * refusal the person can ACT on (connect the account, approve the call) also
+   * deserves its own affordance in the surface — that is renderer work
+   * (packages/ui) on top of this marker, not instead of it.
+   *
+   * A query that answered "ok" with an empty result is NOT a failure: empty is
+   * an answer, and claiming otherwise would be the same lie in reverse.
+   */
+  dataUnavailable(): boolean;
 }
 
 /**
@@ -114,6 +132,8 @@ export const createProgressiveQueryResolver = (
   const pending = new Set<Promise<void>>();
   let baseData: Record<string, Json> = {};
   let resolvedData: Record<string, Json> = {};
+  /** Recomputed with the data, so a re-run query (update()) clears it. */
+  let unavailable = false;
 
   // A query that does not settle "ok" contributes NO data, so the app renders
   // its empty state ("No spending data") with the tree, the document and the
@@ -135,18 +155,18 @@ export const createProgressiveQueryResolver = (
 
   const recompute = (notify = true): void => {
     const data = structuredClone(baseData);
+    let failed = false;
     for (const state of states) {
-      if (!state.settled || state.result === undefined) {
-        if (state.settled) reportUnresolved(state);
-        continue;
-      }
-      if (state.result.status !== "ok") {
+      if (!state.settled) continue;
+      if (state.result?.status !== "ok") {
         reportUnresolved(state);
+        failed = true;
         continue;
       }
       setQueryData(data, queryPointer(state.query), state.result.output);
     }
     resolvedData = data;
+    unavailable = failed;
     if (notify) onData?.(structuredClone(data));
   };
 
@@ -187,6 +207,9 @@ export const createProgressiveQueryResolver = (
       while (pending.size > 0) await Promise.all([...pending]);
       recompute(false);
       return structuredClone(resolvedData);
+    },
+    dataUnavailable() {
+      return unavailable;
     },
   };
 };
@@ -356,7 +379,11 @@ export const createAppOpener = (
     // caller the card, never the app — an app that will not open is a far worse
     // failure than one that opens without an ask on it.
     for (const [key, value] of Object.entries(await additionalVenueState(venueState, app, ctx))) {
-      if (key === "inClient" || key === "data" || key === "pinDrift") continue;
+      // `dataUnavailable` is reserved for the same reason as the other three:
+      // it is a claim about queries THIS open ran, and a venue hook has not run
+      // them — it would be telling the person their data did not load over data
+      // that is right there on the screen.
+      if (key === "inClient" || key === "data" || key === "pinDrift" || key === "dataUnavailable") continue;
       (tree as Tree & Record<string, unknown>)[key] = value;
     }
     const pinDrift = detectPinDrift(app, pinBaselines);
@@ -375,6 +402,13 @@ export const createAppOpener = (
     const queries = createProgressiveQueryResolver(caller, app, ctx);
     queries.update(tree);
     tree.data = await queries.complete();
+    // The honest-refusal law, on the path a stored app actually opens through: a
+    // query that failed contributes no data, so every binding under it renders
+    // "—" and reads as "you have no spending". Say which it is (the marker is
+    // server-written here, after the strip above, so no document can forge it).
+    if (queries.dataUnavailable()) {
+      (tree as Tree & { dataUnavailable: true }).dataUnavailable = true;
+    }
     const payload = {
       ...tree,
       ...(app.components === undefined ? {} : { components: structuredClone(app.components) }),

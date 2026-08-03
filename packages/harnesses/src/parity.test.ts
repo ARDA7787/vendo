@@ -353,7 +353,7 @@ describe("H3 — the seam's payload streams, then settles", () => {
   it("awaits the async app half, so the real resolver can wire in", async () => {
     const view = await viewForWrite(APP_VENDO, GOOD, {
       emit: () => undefined,
-      authoredApp: async () => ({ rows: [{ id: 1 }] }),
+      authoredApp: async () => ({ data: { rows: [{ id: 1 }] } }),
     });
     expect((view?.part.payload as { data?: unknown }).data).toEqual({ rows: [{ id: 1 }] });
   });

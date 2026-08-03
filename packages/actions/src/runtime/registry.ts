@@ -1320,12 +1320,23 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
       // A failed search must not pin its failure for the process lifetime.
       expanding.catch(() => expansionMemo.delete(memoKey));
     }
+    const scope = ctx?.listingScope;
+    // CLAIM the scope before the await, because remembering CREATES the entry it
+    // records into: a scope released while this search was in flight would
+    // otherwise be resurrected below with no owner left to release it — the same
+    // uncollectable entry `releaseListingScope` exists to prevent, reopened for
+    // the in-flight case. Claimed empty, which is what an unexpanded scope is.
+    if (scope !== undefined) rememberExpansion(ctx, []);
     const expanded = await expanding;
     // The asking run may see whatever this query expanded — including on a memo
     // hit, where another run paid for the fetch. Without this the rows would
     // name tools this caller's own next listing does not contain, which is
     // exactly the trap the model fell into (measured 2026-08-03).
-    rememberExpansion(ctx, expanded);
+    //
+    // Unless the claim is gone: released by its owner, or evicted by the cap.
+    // Both mean this listing is over, and a scope that comes back reads as a
+    // fresh listing — "search again", never another run's set.
+    if (scope === undefined || expandedByScope.has(scope)) rememberExpansion(ctx, expanded);
     // The asking run's own surface — post-override and enabled-only, so a
     // disabled tool can never come back as loadable, and scoped, so a hit is
     // never a name this caller cannot then call.

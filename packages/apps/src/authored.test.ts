@@ -22,6 +22,7 @@ import {
   type ToolRegistry,
 } from "@vendoai/core";
 import { describe, expect, it, vi } from "vitest";
+import { createAppHistory } from "./history.js";
 import { createApps, pinComponentName, type AppsRuntime, type PinBaseline } from "./index.js";
 import type { SandboxAdapter, SandboxMachine } from "./sandbox.js";
 import { seedGrantRows, storeAccessFixture } from "./testing/app-access-fixture.js";
@@ -244,9 +245,9 @@ describe("an app.vendo the harness wrote", () => {
 
   it("carries its queries' real data, resolved through the guard-bound registry", async () => {
     const { runtime, calls } = stand();
-    const data = await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    const result = await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
 
-    expect(data).toEqual({ spend: { total: 4210, currency: "USD" } });
+    expect(result).toEqual({ data: { spend: { total: 4210, currency: "USD" } } });
     // The app venue, the app's id, and the caller's own principal — an app's read
     // is attributed as an app's read, never as a bare chat tool call.
     expect(calls).toHaveLength(1);
@@ -255,9 +256,12 @@ describe("an app.vendo the harness wrote", () => {
 
   it("respects the guard on every query — a gated read contributes NO data", async () => {
     const { runtime, guard } = stand({ rules: { maple_spend_summary: "ask" } });
-    const data = await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    const result = await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
 
-    expect(data).toEqual({});
+    // …and the view is TOLD the data is missing rather than being left to render
+    // "—" everywhere, which reads as "you have no spending" (see the
+    // data-unavailable suite: a guard refusal is data that did not load).
+    expect(result).toEqual({ data: {}, dataUnavailable: true });
     // One card, parked exactly as an app's own read would park it — the seam has
     // no second execution path that could skip it.
     expect(guard.approvals).toHaveLength(1);
@@ -297,7 +301,7 @@ describe("an app.vendo the harness wrote", () => {
     // `/user/**` is its subject's at every level, so the workspace will land this
     // file in u1's own mount. This door is the only thing standing between that
     // and u2's app.
-    const data = await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx("u1"));
+    const result = await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx("u1"));
 
     expect((await rowOf(store))?.doc).toEqual(theirs);
     expect((await rowOf(store))?.subject).toBe("u2");
@@ -307,7 +311,7 @@ describe("an app.vendo the harness wrote", () => {
     expect(edits).toEqual([]);
     expect((await store.records(`vendo:app-history:${APP_ID}`).list()).records).toEqual([]);
     // The person still sees their own file painted, with their own data.
-    expect(data).toEqual({ spend: { total: 4210, currency: "USD" } });
+    expect(result).toEqual({ data: { spend: { total: 4210, currency: "USD" } } });
   });
 
   it("never reaches an app it may not edit — not even through that app's machine", async () => {
@@ -325,10 +329,12 @@ describe("an app.vendo the harness wrote", () => {
     // write is not the whole refusal: the document these queries resolve against
     // must carry none of u2's app, or `fn:` routes onto u2's sandbox (fn.ts routes
     // on `app.machine` alone, and the wake takes no ctx).
-    const data = await runtime.authored({ appId: APP_ID, compiled: compiled(LOOT) }, ctx("u1"));
+    const result = await runtime.authored({ appId: APP_ID, compiled: compiled(LOOT) }, ctx("u1"));
 
     expect(seen).toEqual([]);
-    expect(data).toEqual({});
+    // No data, and honestly labelled: the `fn:` query failed (this document has
+    // no machine of its own), which is not the same thing as an empty answer.
+    expect(result).toEqual({ data: {}, dataUnavailable: true });
     expect((await rowOf(store))?.doc).toEqual(theirs);
   });
 
@@ -350,7 +356,7 @@ describe("an app.vendo the harness wrote", () => {
     // `stand()` composes no `model:`, so a generation door would refuse here.
     await expect(runtime.create({ prompt: "anything" }, ctx())).rejects.toThrow(/requires a model/);
     await expect(runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx()))
-      .resolves.toEqual({ spend: { total: 4210, currency: "USD" } } as Record<string, Json>);
+      .resolves.toEqual({ data: { spend: { total: 4210, currency: "USD" } } as Record<string, Json> });
   });
 });
 
@@ -468,7 +474,7 @@ describe("a save whose text left a pinned component out", () => {
     expect((await rowOf(store))?.doc?.components?.[name]).toContain("2");
   });
 
-  it("records the pin intent that edit does, so a rebase can replay this save", async () => {
+  it("records the pin intent that edit does, as a TOUCH a rebase can never replay", async () => {
     const { runtime, store } = stand();
     await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
     await seedAppRow(store, {
@@ -483,19 +489,20 @@ describe("a save whose text left a pinned component out", () => {
 </App>`;
     await runtime.authored({ appId: APP_ID, compiled: compiled(island) }, ctx());
 
-    // The trail is what `pins.rebase` replays onto a new host baseline. Without the
-    // slot on this save's version, an edit the FILE made to a pinned component is
-    // silently dropped the next time the host ships that component — the same
-    // record `persistEdit` writes for a model edit (touchedPinSlots).
+    // The trail is what `pins.rebase` reads before it touches a drifted pin.
+    // Without the slot on this save's version, a rebase would not even know the
+    // file had changed the pinned component — the same record `persistEdit`
+    // writes for a model edit (touchedPinSlots).
     //
-    // Recorded as an "edit", never as the fork. "Saved app.vendo" is a file-save
-    // receipt, not one of the user's instructions: it cannot be replayed, and it
-    // must not be able to vouch for the pinned source having started as the
-    // captured baseline — which is the one thing the FIRST row of a replay trail
-    // certifies (see the rebase below).
+    // Recorded as a "touch": neither the fork (it cannot vouch for the pinned
+    // source having started as the captured baseline) nor an "edit" ("Saved
+    // app.vendo" is a save receipt, not one of the user's instructions — replayed
+    // through the brain it means nothing, and the change it stands for exists
+    // only in the document itself). A trail row that says "touch" is exactly why
+    // the rebase below refuses instead of resetting the remix.
     const trail = await store.records(`vendo:app-pin-intents:${APP_ID}`).list();
     expect(trail.records.map((record) => record.data))
-      .toEqual([expect.objectContaining({ slot, intent: "Saved app.vendo", kind: "edit" })]);
+      .toEqual([expect.objectContaining({ slot, intent: "Saved app.vendo", kind: "touch" })]);
   });
 
   /** The host component as `vendo sync` captured it. */
@@ -587,6 +594,89 @@ describe("the undo point a files-first save leaves", () => {
   });
 });
 
+/**
+ * The cap is 50, and every append is speculative until the write it was appended
+ * FOR lands (a refusal discards it). Pruning inside the append therefore charged
+ * the app's OLDEST real undo point for a write that never happened: at the cap,
+ * one refused save destroyed v0 and left 49. Fifty conflicts erased the whole
+ * undo history of an app that never changed once.
+ */
+describe("a refused write at the history cap", () => {
+  /** Fill the log to exactly the cap with versions of the app as it stands. */
+  const fillToCap = async (store: Stand["store"]): Promise<string[]> => {
+    const doc = (await rowOf(store))!.doc!;
+    const history = createAppHistory(store);
+    for (let index = 1; index <= 50; index += 1) {
+      await history.append(APP_ID, doc, {
+        at: new Date(1_754_000_000_000 + index).toISOString(),
+        intent: `Edit ${index}`,
+        rung: 1,
+      });
+    }
+    const ids = (await store.records(`vendo:app-history:${APP_ID}`).list()).records.map(({ id }) => id);
+    expect(ids).toHaveLength(50);
+    return ids.sort();
+  };
+
+  const versionIds = async (store: Stand["store"]): Promise<string[]> =>
+    (await store.records(`vendo:app-history:${APP_ID}`).list()).records.map(({ id }) => id).sort();
+
+  it("costs the SAVE path no undo point at all", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { runtime, store, arm } = stand();
+      await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+      const stored = (await rowOf(store))!.doc!;
+      const before = await fillToCap(store);
+      // The edit lands after the first concurrency check, so the append runs and
+      // the second check refuses the write — the round-7 case, now at the cap.
+      arm(async () => {
+        await seedAppRow(store, { ...stored, description: "the person's own edit" }, "u1");
+      }, 1);
+
+      await runtime.authored(
+        { appId: APP_ID, compiled: compiled(SPEND.replace("Spending", "Money")) },
+        ctx(),
+      );
+
+      // The save was refused (the person's own edit stands)…
+      expect((await rowOf(store))?.doc?.description).toBe("the person's own edit");
+      expect(errors.mock.calls.map(String).join(" ")).toContain("app not saved");
+      // …and the log is EXACTLY what it was: the speculative version taken back,
+      // and the oldest real one — the furthest back this person can still undo —
+      // never charged for it.
+      expect(await versionIds(store)).toEqual(before);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("costs the GESTURE path none either (persistEdit shares the rule)", async () => {
+    const slot = "dashboard.header";
+    const { runtime, store, arm } = stand({
+      pinBaselines: [{
+        slot,
+        source: "export default function Header() {\n  return <h1>Maple</h1>;\n}",
+        hash: "sha256:host-old",
+        exportable: false,
+        capturedAt: "2026-08-03T00:00:00.000Z",
+      }],
+    });
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    const stored = (await rowOf(store))!.doc!;
+    const before = await fillToCap(store);
+    arm(async () => {
+      await seedAppRow(store, { ...stored, description: "the person's own edit" }, "u1");
+    }, 2);
+
+    await expect(runtime.pins.fork({ appId: APP_ID, slot }, ctx())).rejects.toMatchObject({
+      code: "conflict",
+    });
+
+    expect(await versionIds(store)).toEqual(before);
+  });
+});
+
 describe("a save computed over a row that changed under it", () => {
   it("is refused rather than reverting the edit that landed", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -600,7 +690,7 @@ describe("a save computed over a row that changed under it", () => {
         await seedAppRow(store, { ...stored, description: "the person's own edit" }, "u1");
       });
 
-      const data = await runtime.authored(
+      const result = await runtime.authored(
         { appId: APP_ID, compiled: compiled(SPEND.replace("Spending", "Money")) },
         ctx(),
       );
@@ -614,7 +704,7 @@ describe("a save computed over a row that changed under it", () => {
       // Never silent…
       expect(errors.mock.calls.map(String).join(" ")).toContain("app not saved");
       // …and never a reason to withhold the view the person is already looking at.
-      expect(data).toEqual({ spend: { total: 4210, currency: "USD" } });
+      expect(result).toEqual({ data: { spend: { total: 4210, currency: "USD" } } });
     } finally {
       errors.mockRestore();
     }

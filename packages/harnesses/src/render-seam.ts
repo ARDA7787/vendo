@@ -111,7 +111,10 @@ export interface RenderSeamOptions {
    * (so a D4 files-first app lists, opens and shares like an engine-built one) and
    * resolves the tree's queries through the guard-bound registry with this turn's
    * ctx — the same call path, the same risk and consent rules, as any tool call.
-   * Its answer is this app's `data`.
+   * Its answer is this app's `data` — plus `dataUnavailable` when one of those
+   * queries FAILED to resolve (errored, or was refused by the guard), which is
+   * the same honest marker a thrown app half sets below. Without it a failed
+   * query is indistinguishable from real empty data on screen.
    *
    * ASYNC on purpose: it runs real host queries, which is also why the skeleton is
    * emitted BEFORE it is awaited (below) — §1.6 is a promise about seconds.
@@ -120,7 +123,10 @@ export interface RenderSeamOptions {
    * anywhere. That was the shipped state until 2026-08-03, and it is exactly what
    * an app full of "—" looks like.
    */
-  authoredApp?: (input: { appId: AppId; compiled: WireCompileResult }) => Promise<Record<string, Json> | undefined>;
+  authoredApp?: (input: { appId: AppId; compiled: WireCompileResult }) => Promise<{
+    data: Record<string, Json>;
+    dataUnavailable?: boolean;
+  } | undefined>;
 }
 
 /** The view part for a payload, or undefined when the renderer's own gate would
@@ -217,7 +223,12 @@ export async function viewForWrite(
    */
   let dataUnavailable = false;
   try {
-    data = await options.authoredApp?.({ appId, compiled: compiledApp });
+    const authored = await options.authoredApp?.({ appId, compiled: compiledApp });
+    data = authored?.data;
+    // The app half RAN and one of its queries failed — the common case, where a
+    // throw is the rare one: same marker, because on screen they are the same
+    // failure (a view that cannot show the person their data).
+    if (authored?.dataUnavailable === true) dataUnavailable = true;
   } catch (error) {
     // The streaming skeleton is ALREADY on screen. Rethrowing here would leave it
     // there forever — the card stuck on "Building your view…", which is the exact

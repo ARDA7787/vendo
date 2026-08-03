@@ -20,6 +20,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { exportJWK, generateKeyPair, jwtVerify, SignJWT, type KeyLike } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -2594,7 +2595,16 @@ describe("createMcpDoor announces a connector search that grew the surface", () 
 
     const dead = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
     expect(dead.status).toBe(200);
-    // The socket dies here, and THIS announcement is the queued unread frame.
+    // The socket dies here. TWO announcements, and the second one is the whole
+    // test: the door's relay reads one frame AHEAD (a `ReadableStream`'s `pull`
+    // runs the moment the body exists), so a single announcement is drained out
+    // of the transport's controller — closing that controller then leaves nothing
+    // queued, the abandoned stream ends up "closed", its late cancel is a no-op,
+    // and the round-6 bug this test exists to reproduce cannot happen at all
+    // (mutation-proven worthless round 8: reverting the fix kept the suite green).
+    // The SECOND frame is the one that stays queued, which is what keeps the
+    // abandoned stream "readable" and makes its late cancel reach the transport.
+    await searchOnce();
     await searchOnce();
 
     const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
@@ -2609,6 +2619,63 @@ describe("createMcpDoor announces a connector search that grew the surface", () 
     await spendTheFlag();
     await searchOnce();
     expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+  });
+
+  it("a LIVE client's hang-up frees the slot, so the reconnect needs no 409 recovery", async () => {
+    // The relay body's `cancel` used to be inert, which swallowed a real client's
+    // disconnect: the transport's registration and the door's reader stayed held
+    // for a client that is GONE, announcements kept being written into a socket
+    // nobody reads, and the only ways out were a later GET's 409 recovery or the
+    // idle sweep — which runs on another request, never on a timer. Recorded
+    // through the transport, because the door hides the 409 by retrying: what
+    // this pins is that there was nothing to recover FROM.
+    const statuses: number[] = [];
+    const handleRequest = WebStandardStreamableHTTPServerTransport.prototype.handleRequest;
+    const spy = vi
+      .spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest")
+      .mockImplementation(async function (
+        this: WebStandardStreamableHTTPServerTransport,
+        req: Request,
+      ) {
+        const response = await handleRequest.call(this, req);
+        if (req.method === "GET") statuses.push(response.status);
+        return response;
+      });
+    try {
+      let expanded = false;
+      const harness = makeHarness({
+        extraDescriptors: () => (expanded ? [search, late] : [search]),
+        getOutcome: (call) => {
+          if (call.tool === "search_connectors") expanded = !expanded;
+          return { status: "ok", output: { tools: ["gmail_send"] } };
+        },
+      });
+      const registration = await register(harness.door);
+      const tokens = await issue(harness.door, registration.body.client_id);
+      const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+      const sessionId = initialized.headers.get("mcp-session-id")!;
+
+      const live = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+      expect(live.status).toBe(200);
+      // The client hangs up. A cancel, not an abandonment — this is the disconnect
+      // the runtime DOES tell the door about.
+      await live.body!.cancel();
+
+      statuses.length = 0;
+      const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+      expect(reconnected.status).toBe(200);
+      // Exactly one attempt, served straight away. Pre-fix: [409, 200].
+      expect(statuses).toEqual([200]);
+
+      // …and the fresh stream is the session's channel, so the release above gave
+      // the slot back rather than merely dodging the conflict check.
+      await harness.door.handler(
+        mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+      );
+      expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("a GET the transport REJECTS costs the session nothing", async () => {
