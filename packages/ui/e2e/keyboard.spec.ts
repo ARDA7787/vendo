@@ -8,7 +8,16 @@ import { expectFocusIndicator, expectKeyboardReachability, openScenario, tabTo }
 test("thread is keyboard-complete with visible focus", async ({ page }) => {
   test.fixme(
     true,
-    "expectKeyboardReachability walks every visible interactive in the thread and demands an outline/box-shadow on each; at least one chrome control has no :focus-visible ring. A real (pre-existing) a11y defect, but the fix is in chrome-css.ts, which this lane may not edit — owner: the S1 foundation/card lanes.",
+    "ROOT-CAUSED at integration (2026-08-03): the one element without an "
+      + "element-level ring is the composer TEXTAREA, and that is deliberate — "
+      + "Chromium matches :focus-visible on a text input for pointer focus too, so "
+      + "chrome-css suppresses its outline and draws the keyboard ring on the "
+      + "composer CARD instead (.fl-composer:has(:focus-visible), a 3px accent "
+      + "halo). Every other fl-* interactive in thread/overlay/page/approval/"
+      + "automations/activity/waiting/affordances DOES ring (probed, all eight "
+      + "scenarios). Spec §9 freezes the composer's furniture, so the fix is in "
+      + "expectFocusIndicator — accept a ring drawn by the control's own container "
+      + "— not in the CSS. Needs a design call, so it stays quarantined.",
   );
   await openScenario(page, "thread");
   await expect(page.getByLabel("Approval for Email send")).toBeVisible();
@@ -28,7 +37,9 @@ test("thread is keyboard-complete with visible focus", async ({ page }) => {
 test("overlay focus trap and Escape are keyboard-complete", async ({ page }) => {
   test.fixme(
     true,
-    "same missing :focus-visible ring as the thread case, inside the panel — chrome-css.ts fix, not this lane's. The trap + Escape half of this contract is covered by chrome-behavior.spec.ts and smoke.spec.ts.",
+    "same composer-textarea case as the thread test above (see its root-cause "
+      + "note), inside the panel. The trap + Escape half of this contract is "
+      + "covered by chrome-behavior.spec.ts and smoke.spec.ts.",
   );
   await openScenario(page, "overlay");
   await expect(page.getByRole("dialog", { name: "Vendo assistant" })).toBeVisible();
