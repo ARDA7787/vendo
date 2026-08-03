@@ -1,25 +1,36 @@
-# 20260803T214112Z — branch redesign/postcheck2-gate @ 4f8b310633866419d9b825cacff85aae339e16f7
+# 20260803T221242Z — branch redesign/postcheck2-gate @ c2a444fe1c3c46f5d695b1a59969d9f6d358c01a
 # cwd: /Users/yousefh/orca/workspaces/flowlet/ui-s1-fixdefects
-# argv: pnpm exec turbo run lint --force
+# argv: zsh -c node scripts/dependency-guard.mjs && node scripts/portability-gate.mjs && pnpm exec turbo run lint --force
 
+dependency-guard: OK (15 packages checked)
+portability-gate: ok — server entry bundles for a Worker target with zero unresolved imports
+portability-gate: ok — no Node-only leg in the worker server graph (609 modules checked)
+portability-gate: ok — store postgres entry stays PGlite-free under node resolution (144 modules checked)
+portability-gate: ok — @vendoai/harnesses bundles for a Worker target (286 modules checked)
+portability-gate: ok — no raw hazard patterns in package sources
+[vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
+[vendo] smoke-render gate skipped: react/jsdom did not resolve to filesystem paths in this environment (bundled server); islands ship without the crash gate
+[vendo] Vendo Cloud is the hosted store for this deployment: schedule and external-trigger automations are Cloud's job (its scheduler and Composio delivery already fire them for this deployment) — the local automations engine will not fire them itself, to avoid double-running them. Host-event automations (vendo.emit) are unaffected.
+portability-gate: ok — fixture worker constructed createVendo at module scope and served /status 200 under workerd
+portability-gate: all legs green
 • turbo 2.10.1
 
    • Packages in scope: @vendoai-corpus/express-host, @vendoai-examples/ai-sdk-agent, @vendoai-examples/mastra-agent, @vendoai-fixtures/automations-e2e, @vendoai-fixtures/chat-e2e, @vendoai-fixtures/existing-agents-e2e, @vendoai-fixtures/host-app, @vendoai-fixtures/integration, @vendoai-fixtures/integration-browser, @vendoai-fixtures/mcp-e2e, @vendoai/actions, @vendoai/agent, @vendoai/apps, @vendoai/automations, @vendoai/bench, @vendoai/core, @vendoai/corpus-harness, @vendoai/engine, @vendoai/guard, @vendoai/harnesses, @vendoai/knowledge, @vendoai/mcp, @vendoai/redteam-e2e, @vendoai/store, @vendoai/telemetry, @vendoai/ui, @vendoai/vendo, demo-accounting, demo-bank, demo-template, genui-bench, vendoai, video-studio
    • Running lint in 33 packages
    • Remote caching disabled, using shared worktree cache
 
-demo-bank:lint: cache bypass, force executing 13cf1e2fdfaf9d1f
-genui-bench:lint: cache bypass, force executing bb954350c8bc0353
+demo-accounting:lint: cache bypass, force executing cbdacb0a3ed790e6
+demo-template:lint: cache bypass, force executing e650b50018bb07d8
 @vendoai-examples/ai-sdk-agent:lint: cache bypass, force executing dfc4b5f1343765a7
 @vendoai-examples/mastra-agent:lint: cache bypass, force executing 14dcb58a459e81c0
-demo-template:lint: cache bypass, force executing e650b50018bb07d8
-demo-accounting:lint: cache bypass, force executing cbdacb0a3ed790e6
-demo-template:lint: $ eslint
-@vendoai-examples/mastra-agent:lint: $ eslint
-demo-accounting:lint: $ eslint
-genui-bench:lint: $ eslint
+genui-bench:lint: cache bypass, force executing bb954350c8bc0353
+demo-bank:lint: cache bypass, force executing 13cf1e2fdfaf9d1f
 @vendoai-examples/ai-sdk-agent:lint: $ eslint
 demo-bank:lint: $ eslint
+genui-bench:lint: $ eslint
+@vendoai-examples/mastra-agent:lint: $ eslint
+demo-accounting:lint: $ eslint
+demo-template:lint: $ eslint
 demo-bank:lint: 
 demo-bank:lint: /Users/yousefh/orca/workspaces/flowlet/ui-s1-fixdefects/examples/demo-bank/src/app/logout/route.ts
 demo-bank:lint:   13:28  warning  'request' is defined but never used  @typescript-eslint/no-unused-vars
@@ -29,7 +40,7 @@ demo-bank:lint:
 
  Tasks:    6 successful, 6 total
 Cached:    0 cached, 6 total
-  Time:    3.942s 
+  Time:    5.401s 
 
 
 EXIT=0
