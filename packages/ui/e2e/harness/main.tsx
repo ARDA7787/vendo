@@ -1124,6 +1124,59 @@ function DescriptorHoleScenario() {
   );
 }
 
+/** C5 (post-check) — the two-money-field ask, in a real browser: a fee BESIDE
+ *  the amount. The old rule took the first numeric field whose display changed,
+ *  so this card read "Sends $1.99 to Acme Utilities" and folded the true rows
+ *  behind Details. With no single declared amount there is no sentence, and
+ *  nothing folds. */
+const twoMoneyApproval: ApprovalRequest = {
+  id: "apr_two_money",
+  call: {
+    id: "call_two_money",
+    tool: "host_transferMoney",
+    args: { fee_cents: 199, amount_cents: 4750, recipient_name: "Acme Utilities", memo: "July water bill" },
+  },
+  descriptor: {
+    name: "host_transferMoney",
+    title: "Send money",
+    description: "Amounts are integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once.",
+    inputSchema: { type: "object", properties: { amount_cents: { type: "integer" }, fee_cents: { type: "integer" } } },
+    risk: "write",
+  },
+  inputPreview: 'host_transferMoney {"amount_cents":4750,"fee_cents":199}',
+  ctx: {
+    principal: { kind: "user", subject: "browser-user", display: "Browser User" },
+    venue: "chat",
+    presence: "present",
+  },
+  createdAt: NOW,
+};
+
+function TwoMoneyScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <ApprovalCard approval={twoMoneyApproval} onDecide={async () => undefined} />
+    </VendoProvider>
+  );
+}
+
+/** C1 (post-check) — every surface a person reaches, under the UNCONFIGURED
+ *  guard posture. The developer banner ("Vendo is running without a policy ·
+ *  Configure .vendo/policy.json") used to auto-prepend itself inside every one
+ *  of these chrome boundaries; the host's own `NoPolicyNotice` is the only place
+ *  it may appear, and it is deliberately NOT mounted here. */
+function UnconfiguredPostureScenario() {
+  return (
+    <VendoProvider client={unconfiguredClient} components={components} theme={mapleTheme}>
+      <div style={{ display: "grid", gap: 18 }}>
+        <div style={{ height: 420, display: "flex" }}><VendoThread threadId="thr_1" /></div>
+        <WaitingQueue pollMs={0} />
+        <ActivityPanel />
+      </div>
+    </VendoProvider>
+  );
+}
+
 function TreeThemeBoundary({ children }: { children: ReactNode }) {
   const theme = useVendoTheme();
   return <div className="tree-theme-boundary" style={themeCssVariables(theme) as CSSProperties}>{children}</div>;
@@ -2000,6 +2053,8 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/palette-host": return { title: "Palette — host input collision", content: <PaletteHostInputScenario /> };
     case "/approval": return { title: "Destructive approval", content: <ApprovalScenario /> };
     case "/approval-descriptor": return { title: "Approval — model-instruction descriptor", content: <DescriptorHoleScenario />, ownProvider: true };
+    case "/approval-two-money": return { title: "Approval — a fee beside the amount (C5)", content: <TwoMoneyScenario />, ownProvider: true };
+    case "/unconfigured-posture": return { title: "Unconfigured posture — every consumer surface (C1)", content: <UnconfiguredPostureScenario />, ownProvider: true };
     case "/activity": return { title: "Activity", content: <ActivityPanel /> };
     case "/activity-dark": return { title: "Activity — dark", theme: darkTheme, content: <ActivityPanel /> };
     case "/automations": return { title: "Automations", content: <AutomationsPanel /> };

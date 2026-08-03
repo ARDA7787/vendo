@@ -214,6 +214,11 @@ describe("ConnectCard and ConnectedAccountsPanel", () => {
 
   it("hides connect-ahead entirely when the host configured no connectors", async () => {
     wire.state.connections = [];
+    // The AUTO catalog is what feeds connect-ahead, and the fixture's is
+    // non-empty — so this test could only pass by beating the in-flight fetch to
+    // the assertion, which it lost about one run in three under load. Emptying
+    // the catalog is what its own name describes, and makes it deterministic.
+    wire.state.catalog = [];
     render(<VendoProvider client={client}><ConnectedAccountsPanel /></VendoProvider>);
     expect(await screen.findByText(/No connected accounts yet/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Connect / })).toBeNull();
