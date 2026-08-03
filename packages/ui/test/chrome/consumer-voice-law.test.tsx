@@ -303,11 +303,32 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
     expect(cardLine()).toBe("This reads your data, as you.");
   });
 
-  it("still shows a clean host-authored descriptor, on the card and on the row", async () => {
+  // ⚠️ TEST EDIT (ruling 14 reverses ruling 11): this asserted that a "clean"
+  // DESCRIPTOR sentence still occupied the card's plain-words line — the exact
+  // behaviour ruling 14 removes. A descriptor is authored for the model or minted
+  // by extraction, and whether it "reads clean" was decided by a regex set that
+  // admitted raw JSON and exceptions. There is no rung for it now: the same
+  // sentence in the HOST's own ToolMeta (the human-authored channel) is shown,
+  // and from the wire it is dropped.
+  it("drops even a CLEAN-READING descriptor sentence — the wire is not an authoring channel", async () => {
     showCard(HOST_AUTHORED);
-    expect(cardLine()).toBe(HOST_AUTHORED);
+    expect(cardLine()).toBe("This reads your data, as you.");
     cleanup();
     const row = await showQueue(HOST_AUTHORED);
+    expect(row.textContent).not.toContain(HOST_AUTHORED);
+    expect(cardLine()).toBe("This reads your data, as you.");
+  });
+
+  it("shows that same sentence when the HOST authored it in its own ToolMeta", async () => {
+    const tools = { host_getSpendingInsights: { description: HOST_AUTHORED } };
+    render(
+      <VendoProvider client={client} tools={tools}>
+        <ApprovalCard approval={ask("")} onDecide={() => undefined} />
+      </VendoProvider>,
+    );
+    expect(cardLine()).toBe(HOST_AUTHORED);
+    cleanup();
+    const row = await showQueueAsk(ask(""), tools);
     expect(row.textContent).toContain(HOST_AUTHORED);
   });
 
