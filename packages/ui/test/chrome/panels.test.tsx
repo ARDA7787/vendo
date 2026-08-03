@@ -297,7 +297,11 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Activity unavailable");
+    // Contained and SHOWN, in the consumer's voice: "Activity unavailable" is
+    // our store's own words (spec §16 law 3, the widened audit).
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("We couldn’t load more just now — try again.");
+    expect(alert.textContent).not.toContain("Activity unavailable");
     await new Promise(resolve => globalThis.setTimeout(resolve, 0));
     expect(unhandled).not.toHaveBeenCalled();
     window.removeEventListener("unhandledrejection", unhandled);
