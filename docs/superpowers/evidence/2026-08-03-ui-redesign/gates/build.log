@@ -1,4 +1,4 @@
-# 20260803T214112Z — branch redesign/postcheck2-gate @ 4f8b310633866419d9b825cacff85aae339e16f7
+# 20260803T221242Z — branch redesign/postcheck2-gate @ c2a444fe1c3c46f5d695b1a59969d9f6d358c01a
 # cwd: /Users/yousefh/orca/workspaces/flowlet/ui-s1-fixdefects
 # argv: pnpm build --force
 
@@ -9,28 +9,28 @@ $ turbo run build --force
    • Running build in 33 packages
    • Remote caching disabled, using shared worktree cache
 
+@vendoai/telemetry:build: cache bypass, force executing 7fd2b01d77b979ce
 @vendoai/core:build: cache bypass, force executing 2b85423dcaaec712
 @vendoai/engine:build: cache bypass, force executing 1e237a6e87c5dc2a
-@vendoai/telemetry:build: cache bypass, force executing 7fd2b01d77b979ce
+@vendoai/core:build: $ tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e "require('node:fs').writeFileSync('dist/cjs/package.json', JSON.stringify({ type: 'commonjs' }) + '\n')"
 @vendoai/engine:build: $ tsc -p tsconfig.json
 @vendoai/telemetry:build: $ tsc -p tsconfig.json
-@vendoai/core:build: $ tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node -e "require('node:fs').writeFileSync('dist/cjs/package.json', JSON.stringify({ type: 'commonjs' }) + '\n')"
-@vendoai/knowledge:build: cache bypass, force executing f133183660581f80
-@vendoai/actions:build: cache bypass, force executing 22f5c251c264bc75
+@vendoai/ui:build: cache bypass, force executing 6ea6c6c98444646a
+@vendoai/mcp:build: cache bypass, force executing e0fe9c6ad9e7210b
+@vendoai/agent:build: cache bypass, force executing a0989080e71da76c
 @vendoai/store:build: cache bypass, force executing dbc97e6927f3c8d8
 @vendoai/apps:build: cache bypass, force executing ec25321081d5882f
-@vendoai/ui:build: cache bypass, force executing 6ea6c6c98444646a
+@vendoai/actions:build: cache bypass, force executing 22f5c251c264bc75
+@vendoai/knowledge:build: cache bypass, force executing f133183660581f80
 @vendoai/guard:build: cache bypass, force executing 16bdd6a87e3c07e0
-@vendoai/agent:build: cache bypass, force executing a0989080e71da76c
-@vendoai/mcp:build: cache bypass, force executing e0fe9c6ad9e7210b
-@vendoai/apps:build: $ tsc -p tsconfig.json
-@vendoai/ui:build: $ pnpm run build:jail
-@vendoai/actions:build: $ tsc -p tsconfig.json
-@vendoai/knowledge:build: $ tsc -p tsconfig.json
 @vendoai/agent:build: $ tsc -p tsconfig.json
-@vendoai/store:build: $ tsc -p tsconfig.json
-@vendoai/guard:build: $ tsc -p tsconfig.json
+@vendoai/knowledge:build: $ tsc -p tsconfig.json
 @vendoai/mcp:build: $ tsc -p tsconfig.json
+@vendoai/actions:build: $ tsc -p tsconfig.json
+@vendoai/apps:build: $ tsc -p tsconfig.json
+@vendoai/guard:build: $ tsc -p tsconfig.json
+@vendoai/ui:build: $ pnpm run build:jail
+@vendoai/store:build: $ tsc -p tsconfig.json
 @vendoai/ui:build: $ node scripts/build-jail-runtime.mjs
 @vendoai/ui:build: vite v6.4.3 building for production...
 @vendoai/ui:build: transforming...
@@ -40,14 +40,14 @@ $ turbo run build --force
 @vendoai/automations:build: $ tsc -p tsconfig.json
 @vendoai/harnesses:build: $ tsc -p tsconfig.json
 @vendoai/ui:build: rendering chunks...
-@vendoai/ui:build: ✓ built in 1.66s
+@vendoai/ui:build: ✓ built in 2.06s
 @vendoai/ui:build: [ui] generated jail runtime (909444 bytes)
 @vendoai/ui:build: $ tsc -p tsconfig.json
 @vendoai/ui:build: $ node scripts/build-eject-templates.mjs
 @vendoai/ui:build: [ui] assembled eject templates v0.7.0: thread (10 files), activities (1 files)
+@vendoai-fixtures/host-app:build: cache bypass, force executing 960b6977fc86d1a7
 @vendoai/vendo:build: cache bypass, force executing 6e3fd6061d6bfc20
 genui-bench:build: cache bypass, force executing 2f1f0575278c1d26
-@vendoai-fixtures/host-app:build: cache bypass, force executing 960b6977fc86d1a7
 genui-bench:build: $ next build
 @vendoai-fixtures/host-app:build: $ next build
 @vendoai/vendo:build: $ pnpm run build:playground
@@ -58,15 +58,16 @@ genui-bench:build: $ next build
 genui-bench:build: ▲ Next.js 16.2.11 (Turbopack)
 genui-bench:build: 
 genui-bench:build:   Creating an optimized production build ...
-@vendoai-fixtures/host-app:build: ✓ Compiled successfully in 1210ms
+@vendoai-fixtures/host-app:build: ✓ Compiled successfully in 1446ms
 @vendoai-fixtures/host-app:build:   Running TypeScript ...
-@vendoai-fixtures/host-app:build:   Finished TypeScript in 989ms ...
+@vendoai-fixtures/host-app:build:   Finished TypeScript in 1004ms ...
 @vendoai-fixtures/host-app:build:   Collecting page data using 11 workers ...
+@vendoai/vendo:build: [vendo] generated playground bundle (2875613 bytes)
 @vendoai-fixtures/host-app:build:   Generating static pages using 11 workers (0/11) ...
 @vendoai-fixtures/host-app:build:   Generating static pages using 11 workers (2/11) 
 @vendoai-fixtures/host-app:build:   Generating static pages using 11 workers (5/11) 
 @vendoai-fixtures/host-app:build:   Generating static pages using 11 workers (8/11) 
-@vendoai-fixtures/host-app:build: ✓ Generating static pages using 11 workers (11/11) in 113ms
+@vendoai-fixtures/host-app:build: ✓ Generating static pages using 11 workers (11/11) in 90ms
 @vendoai-fixtures/host-app:build:   Finalizing page optimization ...
 @vendoai-fixtures/host-app:build: 
 @vendoai-fixtures/host-app:build: Route (app)
@@ -90,29 +91,28 @@ genui-bench:build:   Creating an optimized production build ...
 @vendoai-fixtures/host-app:build: ○  (Static)   prerendered as static content
 @vendoai-fixtures/host-app:build: ƒ  (Dynamic)  server-rendered on demand
 @vendoai-fixtures/host-app:build: 
-@vendoai/vendo:build: [vendo] generated playground bundle (2875613 bytes)
 @vendoai/vendo:build: [vendo] generated embed bundle (2828880 bytes)
 @vendoai/vendo:build: $ tsc -p tsconfig.json
-@vendoai-examples/ai-sdk-agent:build: cache bypass, force executing ab531ee660063966
-demo-bank:build: cache bypass, force executing e582bbea3d0a3d83
-demo-template:build: cache bypass, force executing 06134367d7b0c02e
-vendoai:build: cache bypass, force executing 67a6ad9783c41d08
-@vendoai-corpus/express-host:build: cache bypass, force executing 6e14184f5d05c947
-@vendoai-examples/mastra-agent:build: cache bypass, force executing 7f5a41c528ce92ee
 demo-accounting:build: cache bypass, force executing a02a40bedd4e3e06
-demo-template:build: $ vendo sync . --no-ai
+vendoai:build: cache bypass, force executing 67a6ad9783c41d08
+@vendoai-examples/ai-sdk-agent:build: cache bypass, force executing ab531ee660063966
+demo-template:build: cache bypass, force executing 06134367d7b0c02e
+@vendoai-corpus/express-host:build: cache bypass, force executing 6e14184f5d05c947
+demo-bank:build: cache bypass, force executing e582bbea3d0a3d83
+@vendoai-examples/mastra-agent:build: cache bypass, force executing 7f5a41c528ce92ee
 demo-bank:build: $ vendo sync . --no-ai
+demo-template:build: $ vendo sync . --no-ai
+@vendoai-examples/mastra-agent:build: $ next build
 @vendoai-examples/ai-sdk-agent:build: $ next build
 vendoai:build: $ tsc -p tsconfig.json
 @vendoai-corpus/express-host:build: $ tsc -p tsconfig.server.json && vite build
-@vendoai-examples/mastra-agent:build: $ next build
 demo-accounting:build: $ vendo sync . --no-ai
-@vendoai-examples/ai-sdk-agent:build: ▲ Next.js 16.2.11 (Turbopack)
-@vendoai-examples/ai-sdk-agent:build: 
 @vendoai-examples/mastra-agent:build: ▲ Next.js 16.2.11 (Turbopack)
 @vendoai-examples/mastra-agent:build: 
-@vendoai-examples/ai-sdk-agent:build:   Creating an optimized production build ...
+@vendoai-examples/ai-sdk-agent:build: ▲ Next.js 16.2.11 (Turbopack)
+@vendoai-examples/ai-sdk-agent:build: 
 @vendoai-examples/mastra-agent:build:   Creating an optimized production build ...
+@vendoai-examples/ai-sdk-agent:build:   Creating an optimized production build ...
 @vendoai-corpus/express-host:build: vite v6.4.3 building for production...
 @vendoai-corpus/express-host:build: transforming...
 demo-template:build: tools: +0 -0 ~0
@@ -141,18 +141,18 @@ demo-bank:build:   Creating an optimized production build ...
 @vendoai-corpus/express-host:build: ✓ 1623 modules transformed.
 @vendoai-corpus/express-host:build: rendering chunks...
 @vendoai-corpus/express-host:build: computing gzip size...
-genui-bench:build: ✓ Compiled successfully in 13.2s
+genui-bench:build: ✓ Compiled successfully in 13.7s
 genui-bench:build:   Running TypeScript ...
-@vendoai-corpus/express-host:build: 
-@vendoai-corpus/express-host:build: (!) Some chunks are larger than 500 kB after minification. Consider:
 @vendoai-corpus/express-host:build: dist/client/index.html                     0.46 kB │ gzip:   0.30 kB
-@vendoai-corpus/express-host:build: - Using dynamic import() to code-split the application
 @vendoai-corpus/express-host:build: dist/client/assets/index-Ccr2FEoR.css      4.75 kB │ gzip:   1.54 kB
-@vendoai-corpus/express-host:build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
-@vendoai-corpus/express-host:build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
 @vendoai-corpus/express-host:build: dist/client/assets/index-4xNiy72F.js     226.85 kB │ gzip:  75.57 kB
 @vendoai-corpus/express-host:build: dist/client/assets/index-CMNMTnUa.js   2,603.11 kB │ gzip: 760.28 kB
-@vendoai-corpus/express-host:build: ✓ built in 4.53s
+@vendoai-corpus/express-host:build: 
+@vendoai-corpus/express-host:build: (!) Some chunks are larger than 500 kB after minification. Consider:
+@vendoai-corpus/express-host:build: - Using dynamic import() to code-split the application
+@vendoai-corpus/express-host:build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+@vendoai-corpus/express-host:build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+@vendoai-corpus/express-host:build: ✓ built in 4.46s
 @vendoai-examples/ai-sdk-agent:build: Turbopack build encountered 1 warnings:
 @vendoai-examples/ai-sdk-agent:build: ./examples/ai-sdk-agent/next.config.ts
 @vendoai-examples/ai-sdk-agent:build: Encountered unexpected file in NFT list
@@ -176,20 +176,15 @@ genui-bench:build:   Running TypeScript ...
 @vendoai-examples/ai-sdk-agent:build: 
 @vendoai-examples/ai-sdk-agent:build: ✓ Compiled successfully in 7.9s
 @vendoai-examples/ai-sdk-agent:build:   Running TypeScript ...
-genui-bench:build:   Finished TypeScript in 4.0s ...
+genui-bench:build:   Finished TypeScript in 3.8s ...
 genui-bench:build:   Collecting page data using 11 workers ...
 genui-bench:build:   Generating static pages using 11 workers (0/5) ...
 genui-bench:build:   Generating static pages using 11 workers (1/5) 
 genui-bench:build:   Generating static pages using 11 workers (2/5) 
-@vendoai-examples/ai-sdk-agent:build:   Finished TypeScript in 2.3s ...
+@vendoai-examples/ai-sdk-agent:build:   Finished TypeScript in 2.5s ...
 @vendoai-examples/ai-sdk-agent:build:   Collecting page data using 6 workers ...
-@vendoai-examples/ai-sdk-agent:build: [vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
-@vendoai-examples/ai-sdk-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
-@vendoai-examples/ai-sdk-agent:build: [vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
-@vendoai-examples/ai-sdk-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
-@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (0/4) ...
 genui-bench:build:   Generating static pages using 11 workers (3/5) 
-genui-bench:build: ✓ Generating static pages using 11 workers (5/5) in 1418ms
+genui-bench:build: ✓ Generating static pages using 11 workers (5/5) in 923ms
 genui-bench:build:   Finalizing page optimization ...
 genui-bench:build: 
 genui-bench:build: Route (app)
@@ -212,22 +207,9 @@ genui-bench:build: ƒ  (Dynamic)  server-rendered on demand
 genui-bench:build: 
 @vendoai-examples/ai-sdk-agent:build: [vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
 @vendoai-examples/ai-sdk-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
-@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (1/4) 
-@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (2/4) 
-@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (3/4) 
-@vendoai-examples/ai-sdk-agent:build: ✓ Generating static pages using 6 workers (4/4) in 549ms
-@vendoai-examples/ai-sdk-agent:build:   Finalizing page optimization ...
-@vendoai-examples/ai-sdk-agent:build: 
-@vendoai-examples/ai-sdk-agent:build: Route (app)
-@vendoai-examples/ai-sdk-agent:build: ┌ ○ /
-@vendoai-examples/ai-sdk-agent:build: ├ ○ /_not-found
-@vendoai-examples/ai-sdk-agent:build: ├ ƒ /api/chat
-@vendoai-examples/ai-sdk-agent:build: └ ƒ /api/vendo/[...vendo]
-@vendoai-examples/ai-sdk-agent:build: 
-@vendoai-examples/ai-sdk-agent:build: 
-@vendoai-examples/ai-sdk-agent:build: ○  (Static)   prerendered as static content
-@vendoai-examples/ai-sdk-agent:build: ƒ  (Dynamic)  server-rendered on demand
-@vendoai-examples/ai-sdk-agent:build: 
+@vendoai-examples/ai-sdk-agent:build: [vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
+@vendoai-examples/ai-sdk-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
+@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (0/4) ...
 @vendoai-examples/mastra-agent:build: Turbopack build encountered 1 warnings:
 @vendoai-examples/mastra-agent:build: ./examples/mastra-agent/next.config.ts
 @vendoai-examples/mastra-agent:build: Encountered unexpected file in NFT list
@@ -249,8 +231,26 @@ genui-bench:build:
 @vendoai-examples/mastra-agent:build:     ./examples/mastra-agent/src/app/api/vendo/[...vendo]/route.ts
 @vendoai-examples/mastra-agent:build: 
 @vendoai-examples/mastra-agent:build: 
-@vendoai-examples/mastra-agent:build: ✓ Compiled successfully in 11.7s
+@vendoai-examples/mastra-agent:build: ✓ Compiled successfully in 11.1s
 @vendoai-examples/mastra-agent:build:   Running TypeScript ...
+@vendoai-examples/ai-sdk-agent:build: [vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
+@vendoai-examples/ai-sdk-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
+@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (1/4) 
+@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (2/4) 
+@vendoai-examples/ai-sdk-agent:build:   Generating static pages using 6 workers (3/4) 
+@vendoai-examples/ai-sdk-agent:build: ✓ Generating static pages using 6 workers (4/4) in 461ms
+@vendoai-examples/ai-sdk-agent:build:   Finalizing page optimization ...
+@vendoai-examples/ai-sdk-agent:build: 
+@vendoai-examples/ai-sdk-agent:build: Route (app)
+@vendoai-examples/ai-sdk-agent:build: ┌ ○ /
+@vendoai-examples/ai-sdk-agent:build: ├ ○ /_not-found
+@vendoai-examples/ai-sdk-agent:build: ├ ƒ /api/chat
+@vendoai-examples/ai-sdk-agent:build: └ ƒ /api/vendo/[...vendo]
+@vendoai-examples/ai-sdk-agent:build: 
+@vendoai-examples/ai-sdk-agent:build: 
+@vendoai-examples/ai-sdk-agent:build: ○  (Static)   prerendered as static content
+@vendoai-examples/ai-sdk-agent:build: ƒ  (Dynamic)  server-rendered on demand
+@vendoai-examples/ai-sdk-agent:build: 
 demo-template:build: Turbopack build encountered 1 warnings:
 demo-template:build: ./examples/demo-template/next.config.ts
 demo-template:build: Encountered unexpected file in NFT list
@@ -272,17 +272,20 @@ demo-template:build:     ./packages/vendo/dist/server.js
 demo-template:build:     ./examples/demo-template/src/app/api/vendo/[...vendo]/route.ts
 demo-template:build: 
 demo-template:build: 
-demo-template:build: ✓ Compiled successfully in 10.1s
+demo-template:build: ✓ Compiled successfully in 10.2s
 demo-template:build:   Running TypeScript ...
-demo-template:build:   Finished TypeScript in 1406ms ...
+@vendoai-examples/mastra-agent:build:   Finished TypeScript in 2.6s ...
+@vendoai-examples/mastra-agent:build:   Collecting page data using 7 workers ...
+@vendoai-examples/mastra-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
+demo-template:build:   Finished TypeScript in 1648ms ...
 demo-template:build:   Collecting page data using 9 workers ...
 demo-template:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
 demo-template:build: [vendo] model: no model credential found
 demo-template:build: [vendo] Vendo found no model key. Set ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY in .env.local (with the matching @ai-sdk provider installed), or run `vendo login` for a free dev key. Production always needs a real server-side key.
 demo-template:build:   Generating static pages using 9 workers (0/3) ...
-@vendoai-examples/mastra-agent:build:   Finished TypeScript in 2.7s ...
-@vendoai-examples/mastra-agent:build:   Collecting page data using 7 workers ...
-demo-template:build: ✓ Generating static pages using 9 workers (3/3) in 233ms
+@vendoai-examples/mastra-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
+@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (0/5) ...
+demo-template:build: ✓ Generating static pages using 9 workers (3/3) in 244ms
 demo-template:build:   Finalizing page optimization ...
 demo-template:build: 
 demo-template:build: Route (app)
@@ -298,11 +301,25 @@ demo-template:build:
 demo-template:build: ○  (Static)   prerendered as static content
 demo-template:build: ƒ  (Dynamic)  server-rendered on demand
 demo-template:build: 
-@vendoai-examples/mastra-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
 @vendoai/bench:build: cache bypass, force executing 9ed3c5b0bc0d17a1
+@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (1/5) 
 @vendoai-examples/mastra-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
-@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (0/5) ...
 @vendoai/bench:build: $ tsc -p tsconfig.json
+@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (2/5) 
+@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (3/5) 
+@vendoai-examples/mastra-agent:build: ✓ Generating static pages using 7 workers (5/5) in 1235ms
+@vendoai-examples/mastra-agent:build:   Finalizing page optimization ...
+@vendoai-examples/mastra-agent:build: 
+@vendoai-examples/mastra-agent:build: Route (app)
+@vendoai-examples/mastra-agent:build: ┌ ○ /
+@vendoai-examples/mastra-agent:build: ├ ○ /_not-found
+@vendoai-examples/mastra-agent:build: ├ ƒ /api/chat
+@vendoai-examples/mastra-agent:build: └ ƒ /api/vendo/[...vendo]
+@vendoai-examples/mastra-agent:build: 
+@vendoai-examples/mastra-agent:build: 
+@vendoai-examples/mastra-agent:build: ○  (Static)   prerendered as static content
+@vendoai-examples/mastra-agent:build: ƒ  (Dynamic)  server-rendered on demand
+@vendoai-examples/mastra-agent:build: 
 demo-accounting:build: Turbopack build encountered 1 warnings:
 demo-accounting:build: ./examples/demo-accounting/next.config.ts
 demo-accounting:build: Encountered unexpected file in NFT list
@@ -325,26 +342,9 @@ demo-accounting:build:     ./examples/demo-accounting/src/vendo/server.ts
 demo-accounting:build:     ./examples/demo-accounting/src/app/api/demo/reset/route.ts
 demo-accounting:build: 
 demo-accounting:build: 
-demo-accounting:build: ✓ Compiled successfully in 12.1s
+demo-accounting:build: ✓ Compiled successfully in 12.9s
 demo-accounting:build:   Running TypeScript ...
-@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (1/5) 
-@vendoai-examples/mastra-agent:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
-@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (2/5) 
-@vendoai-examples/mastra-agent:build:   Generating static pages using 7 workers (3/5) 
-@vendoai-examples/mastra-agent:build: ✓ Generating static pages using 7 workers (5/5) in 1133ms
-@vendoai-examples/mastra-agent:build:   Finalizing page optimization ...
-@vendoai-examples/mastra-agent:build: 
-@vendoai-examples/mastra-agent:build: Route (app)
-@vendoai-examples/mastra-agent:build: ┌ ○ /
-@vendoai-examples/mastra-agent:build: ├ ○ /_not-found
-@vendoai-examples/mastra-agent:build: ├ ƒ /api/chat
-@vendoai-examples/mastra-agent:build: └ ƒ /api/vendo/[...vendo]
-@vendoai-examples/mastra-agent:build: 
-@vendoai-examples/mastra-agent:build: 
-@vendoai-examples/mastra-agent:build: ○  (Static)   prerendered as static content
-@vendoai-examples/mastra-agent:build: ƒ  (Dynamic)  server-rendered on demand
-@vendoai-examples/mastra-agent:build: 
-demo-bank:build: Turbopack build encountered 1 warnings:
+demo-bank:build: Turbopack build encountered 2 warnings:
 demo-bank:build: ./examples/demo-bank/next.config.ts
 demo-bank:build: Encountered unexpected file in NFT list
 demo-bank:build: A file was traced that indicates that the whole project was traced unintentionally. Somewhere in the import trace below, there are:
@@ -365,9 +365,33 @@ demo-bank:build:     ./packages/vendo/dist/server.js
 demo-bank:build:     ./examples/demo-bank/src/app/api/vendo/[...vendo]/route.ts
 demo-bank:build: 
 demo-bank:build: 
-demo-bank:build: ✓ Compiled successfully in 13.2s
+demo-bank:build: ./examples/demo-bank/next.config.ts
+demo-bank:build: Encountered unexpected file in NFT list
+demo-bank:build: A file was traced that indicates that the whole project was traced unintentionally. Somewhere in the import trace below, there are:
+demo-bank:build: - filesystem operations (like path.join, path.resolve or fs.readFile), or
+demo-bank:build: - very dynamic requires (like require('./' + foo)).
+demo-bank:build: To resolve this, you can
+demo-bank:build: - remove them if possible, or
+demo-bank:build: - only use them in development, or
+demo-bank:build: - make sure they are statically scoped to some subfolder: path.join(process.cwd(), 'data', bar), or
+demo-bank:build: - add ignore comments: path.join(/*turbopackIgnore: true*/ process.cwd(), bar)
+demo-bank:build: 
+demo-bank:build: Output asset trace:
+demo-bank:build:   [output]/examples/demo-bank/.next/server/instrumentation.js
+demo-bank:build:   [output]/examples/demo-bank/.next/server/chunks/examples_demo-bank_src_203qa30._.js
+demo-bank:build: 
+demo-bank:build: Import trace:
+demo-bank:build:   App Route:
+demo-bank:build:     ./examples/demo-bank/next.config.ts
+demo-bank:build:     ./packages/guard/dist/policy.js
+demo-bank:build:     ./packages/guard/dist/guard.js
+demo-bank:build:     ./packages/vendo/dist/server.js
+demo-bank:build:     ./examples/demo-bank/src/app/api/vendo/[...vendo]/route.ts
+demo-bank:build: 
+demo-bank:build: 
+demo-bank:build: ✓ Compiled successfully in 14.2s
 demo-bank:build:   Running TypeScript ...
-demo-accounting:build:   Finished TypeScript in 2.3s ...
+demo-accounting:build:   Finished TypeScript in 2.7s ...
 demo-accounting:build:   Collecting page data using 11 workers ...
 demo-accounting:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
 demo-accounting:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
@@ -377,7 +401,7 @@ demo-accounting:build:   Generating static pages using 11 workers (5/22)
 demo-accounting:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
 demo-accounting:build:   Generating static pages using 11 workers (10/22) 
 demo-accounting:build:   Generating static pages using 11 workers (16/22) 
-demo-accounting:build: ✓ Generating static pages using 11 workers (22/22) in 321ms
+demo-accounting:build: ✓ Generating static pages using 11 workers (22/22) in 352ms
 demo-accounting:build:   Finalizing page optimization ...
 demo-accounting:build: 
 demo-accounting:build: Route (app)
@@ -418,7 +442,7 @@ demo-accounting:build:
 demo-accounting:build: ○  (Static)   prerendered as static content
 demo-accounting:build: ƒ  (Dynamic)  server-rendered on demand
 demo-accounting:build: 
-demo-bank:build:   Finished TypeScript in 2.3s ...
+demo-bank:build:   Finished TypeScript in 2.7s ...
 demo-bank:build:   Collecting page data using 11 workers ...
 demo-bank:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
 demo-bank:build: [vendo] VENDO_BASE_URL is not set in production. Present-mode host tool calls that need to forward the caller's credentials will fail instead of running unauthenticated. Set VENDO_BASE_URL to this deployment's public origin and restart the server.
@@ -430,7 +454,7 @@ demo-bank:build:   Generating static pages using 11 workers (0/26) ...
 demo-bank:build:   Generating static pages using 11 workers (6/26) 
 demo-bank:build:   Generating static pages using 11 workers (12/26) 
 demo-bank:build:   Generating static pages using 11 workers (19/26) 
-demo-bank:build: ✓ Generating static pages using 11 workers (26/26) in 239ms
+demo-bank:build: ✓ Generating static pages using 11 workers (26/26) in 259ms
 demo-bank:build:   Finalizing page optimization ...
 demo-bank:build: 
 demo-bank:build: Route (app)
@@ -488,7 +512,7 @@ demo-bank:build:
 
  Tasks:    24 successful, 24 total
 Cached:    0 cached, 24 total
-  Time:    38.058s 
+  Time:    41.303s 
 
 
 EXIT=0
