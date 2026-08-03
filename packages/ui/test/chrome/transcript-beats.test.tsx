@@ -330,6 +330,50 @@ describe("the V4 display hint", () => {
   // registers its FIRST streaming snapshot — otherwise the auto-open lands on an
   // empty stage and hides the skeleton the hint exists to show. An unhinted
   // build still registers only once it settles (today's behavior).
+  it("M28 — a staged view keeps the stage up to date as the build fills in", () => {
+    // The stage the hint opened froze on the FIRST snapshot for the whole
+    // build, while the small rail card streamed live beside it.
+    const value = split();
+    const growing = (count: number): UIMessage["parts"][number] => ({
+      type: "data-vendo-view",
+      data: {
+        appId: "app_big",
+        payload: {
+          formatVersion: "vendo-genui/v2",
+          name: "Cash flow",
+          root: "root",
+          display: "stage",
+          streaming: true,
+          nodes: Array.from({ length: count }, (unused, index) => ({
+            id: `n${index}`,
+            component: "Text",
+            props: { text: `line ${index}` },
+          })),
+        },
+      },
+    } as unknown as UIMessage["parts"][number]);
+    const view = render(
+      <VendoProvider>
+        <SplitViewContext.Provider value={value}>
+          <ThreadPart part={growing(1)} partKey="p0" role="assistant" restored={false} risks={new Map()} />
+        </SplitViewContext.Provider>
+      </VendoProvider>,
+    );
+    expect(value.registerEmbed).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <VendoProvider>
+        <SplitViewContext.Provider value={value}>
+          <ThreadPart part={growing(4)} partKey="p0" role="assistant" restored={false} risks={new Map()} />
+        </SplitViewContext.Provider>
+      </VendoProvider>,
+    );
+    expect(value.registerEmbed).toHaveBeenCalledTimes(2);
+    expect(value.registerEmbed).toHaveBeenLastCalledWith(
+      "app_big",
+      expect.objectContaining({ nodes: expect.arrayContaining([expect.objectContaining({ id: "n3" })]) }),
+    );
+  });
+
   it("registers a staged view's skeleton at build start, an inline one only at settle", () => {
     const staged = split();
     mountCard(viewPart("stage", true), staged);

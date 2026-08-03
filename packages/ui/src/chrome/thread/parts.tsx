@@ -436,14 +436,21 @@ function ThreadAppCard({ appId, payload, restored, buildKey }: { appId: string; 
   // dispatch a fresh state object every render.
   const registerEmbed = split?.registerEmbed;
   const removeEmbed = split?.removeEmbed;
+  // M28 — a STAGED build has to keep up. The effect keyed on the streaming FLIP
+  // alone, so the stage the hint opened froze on the first snapshot (usually the
+  // bare skeleton) and stayed there for the whole build, while the small rail
+  // card streamed live beside it — the big surface, the stale one. The dep is
+  // the partial view's own PROGRESS rather than the payload object: the payload
+  // is a fresh object every render, so keying on it would dispatch per render.
+  // Known limit: progress is counted in NODES, so a stretch of the build that
+  // only fills props in already-emitted nodes does not move the stage.
+  const nodes = (payload as { nodes?: unknown }).nodes;
+  const progress = Array.isArray(nodes) ? nodes.length : 0;
   useEffect(() => {
     if (!registerEmbed || (streaming && !staged)) return;
     registerEmbed(appId, payload);
-    // payload is a fresh object every render (destructured from the part);
-    // keying the effect on it would re-register per render. appId + the
-    // streaming flip are the real identity edges.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registerEmbed, appId, streaming, staged]);
+  }, [registerEmbed, appId, streaming, staged, progress]);
   useEffect(() => {
     if (!removeEmbed) return;
     return () => removeEmbed(appId);
