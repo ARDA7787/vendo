@@ -7,6 +7,7 @@ import {
   type AgentRunner,
   type Json,
   type ToolDescriptor,
+  type ToolRegistry,
   type VendoViewStreamingToolCall,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
@@ -314,6 +315,31 @@ describe("vendo_delegate", () => {
     expect(output.refs).toHaveLength(2);
     expect(vendoAppRefSchema.parse(output.refs[0])).toMatchObject({ appId: "app_delegated", title: "Report app" });
     expect(vendoApprovalRefSchema.parse(output.refs[1]).approvalId).toBe("apr_call_d2");
+  });
+
+  it("the delegated run can still release a listing scope", async () => {
+    // The sub-run's registry is REBUILT (`capturing`), and a rebuilt surface drops
+    // optional methods silently — so the delegated run had no way to say a listing
+    // scope was finished, and the actions registry's per-scope expansion sets
+    // could then shed only by their process-global capacity cap.
+    const released: string[] = [];
+    const registry: ToolRegistry = {
+      descriptors: async () => [descriptor("host_lookup")],
+      execute: async () => ({ status: "ok", output: {} }),
+      releaseListingScope: (scope) => { released.push(scope); },
+    };
+    const runner: AgentRunner = async (task) => {
+      task.tools.releaseListingScope?.("mcps_delegated");
+      return { status: "ok", summary: "released", toolCalls: [] };
+    };
+    const tools = await buildVendoToolPack({ registry, runner });
+
+    await tools.find((tool) => tool.name === VENDO_DELEGATE_TOOL)!.execute(
+      { task: "anything" },
+      { ctx: ctx() },
+    );
+
+    expect(released).toEqual(["mcps_delegated"]);
   });
 
   it("a runner failure returns an error-status result instead of throwing", async () => {

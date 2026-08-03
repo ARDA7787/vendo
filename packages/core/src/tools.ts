@@ -62,6 +62,8 @@ export const VENDO_TOOL_TITLES: Readonly<Record<string, string>> = {
   search_components: "Look up available components",
   schedule: "Set when this runs",
   ask_user: "Ask you a question",
+  search_connectors: "Look for an outside service",
+  list_connections: "Check your connected services",
   // Meta-tools: ai-SDK `dynamicTool`s with no descriptor at all, so the table is
   // their ONLY title. The reporter fires on the honest-refusal path — the very
   // turn the §3 leak was photographed on — and read "Vendo report capability
@@ -171,6 +173,11 @@ export interface ToolDescriptor {
   name: string;
   description: string;
   inputSchema: JsonSchema;
+  /** The tool's DECLARED result shape — extraction captures it from the host's
+   *  own contract (an OpenAPI 2xx `application/json` schema today) and never
+   *  invents one. Surfaces hand it to the model so a query's data fields are
+   *  known before any call, instead of learned by calling once and reading rows. */
+  outputSchema?: JsonSchema;
   risk: RiskLabel;
   /** Governance, not severity: this call needs a PERSON, every time. Checked
    *  before rules, grants, and the judge, and none of them can suppress it —
@@ -225,6 +232,7 @@ export const toolDescriptorSchema = z.object({
   name: z.string().regex(TOOL_NAME_PATTERN),
   description: z.string(),
   inputSchema: jsonSchemaSchema,
+  outputSchema: jsonSchemaSchema.optional(),
   risk: riskLabelSchema,
   confirmEach: z.boolean().optional(),
   title: z.string().optional(),
@@ -285,15 +293,40 @@ export const toolOutcomeSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("connect-required"), connect: connectRequiredSchema }).passthrough(),
 ]) satisfies z.ZodType<ToolOutcome>;
 
+/** The run a listing is asked FOR (01-core §4) — a `RunContext` is one.
+ *
+ *  `venue`/`presence` are what design §12's projection reads: the guard
+ *  withholds destructive and external tools from an unattended run.
+ *
+ *  The run also has to be IDENTIFIABLE, because a registry may narrow a listing
+ *  by it: `@vendoai/actions` scopes lazily expanded connector toolkits to the run
+ *  that expanded them. A caller says which run this is either with
+ *  {@link listingScope} or — absent one — with the context OBJECT's own identity.
+ *  An unidentified run fails toward "search again", never toward another run's
+ *  set: a rebuilt object with no scope reads as a fresh listing. */
+export type ToolListingContext = Pick<RunContext, "venue" | "presence"> & {
+  /** Opaque run/session key. Same string ⇒ same listing, whatever the object;
+   *  absent ⇒ the object's identity is the key. Never parsed, never a
+   *  permission — a listing is not an authorization (the guard and the
+   *  per-user connect check decide what may RUN). */
+  listingScope?: string;
+};
+
 /** 01-core §4 */
 export interface ToolRegistry {
-  /** The tools available. Passing a run's venue/presence asks for the set that
-   *  may be PROJECTED into that run — the guard withholds destructive and
-   *  external tools from an unattended one (design §12's law, `projectableForRun`).
+  /** The tools available. Passing a run's context asks for the set that may be
+   *  PROJECTED into that run — see {@link ToolListingContext}.
    *
    *  Optional so every existing registry stays a valid implementation: a
    *  zero-parameter `descriptors()` is assignable here and simply ignores the
    *  hint, which means only the guard-bound registry has to know the law. */
-  descriptors(ctx?: Pick<RunContext, "venue" | "presence">): Promise<ToolDescriptor[]>;
+  descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]>;
   execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome>;
+  /** This {@link ToolListingContext.listingScope} is finished — forget whatever
+   *  the registry remembers for it. Scope-keyed state is keyed by a STRING, so
+   *  nothing collects it: without this the sets could only shed by capacity,
+   *  which makes a process-global cap into a cross-tenant interference channel.
+   *  Optional, and never required for correctness — a released scope simply reads
+   *  as a fresh listing. */
+  releaseListingScope?(scope: string): void;
 }

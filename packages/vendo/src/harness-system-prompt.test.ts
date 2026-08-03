@@ -14,9 +14,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Principal, RunContext, ToolDescriptor, ToolRegistry } from "@vendoai/core";
+import type { Connector } from "@vendoai/actions";
+import type { Harness, Principal, RunContext, ToolDescriptor, ToolRegistry } from "@vendoai/core";
 import { createStore, type VendoStore } from "@vendoai/store";
-import { vendo as vendoHarness } from "@vendoai/harnesses";
+import { defineHarness, vendo as vendoHarness } from "@vendoai/harnesses";
 import type { LanguageModel, UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
 import * as serverExports from "./server.js";
@@ -159,6 +160,56 @@ describe("the assembled system prompt reaches every composition", () => {
 
     expect(prompts.namedHarness).toBe(prompts.legacyWire);
     expect(prompts.composedDoor).toBe(prompts.legacyWire);
+  });
+
+  /**
+   * D8: which discovery section a turn may promise is decided by what is actually
+   * on ITS listing. Teaching a tool that is not there is the same lie either way —
+   * `find_tools` on an uncurated surface, or `search_connectors` in a deployment
+   * with no connectors at all (D3 projects the pair only when they exist).
+   */
+  it("promises only the discovery rail this harness and this deployment actually have", async () => {
+    const told: Record<string, string> = {};
+    /** A scripted harness that reports the brief it was handed, nothing else. */
+    const probe = (name: string, toolSurface?: Harness["toolSurface"]) =>
+      defineHarness({
+        name,
+        ...(toolSurface === undefined ? {} : { toolSurface }),
+        async *run(turn) {
+          told[name] = turn.system ?? "";
+          yield { type: "text", delta: "ok" };
+        },
+      }) as never;
+    /** Enough of a connector to make the deployment a connector deployment. */
+    const connector: Connector = {
+      name: "composio",
+      descriptors: async () => [],
+      execute: async () => ({ status: "ok", output: {} }),
+    };
+
+    const curated = await compose({ harness: probe("curated") });
+    await (await post(curated.vendo, { threadId: "thr_d1", message: userMessage("m1", "hi") })).text();
+
+    const bare = await compose({ harness: probe("uncurated-bare", { curated: false }) });
+    await (await post(bare.vendo, { threadId: "thr_d2", message: userMessage("m2", "hi") })).text();
+
+    const wired = await compose({
+      harness: probe("uncurated-connectors", { curated: false }),
+      connectors: [connector],
+    });
+    await (await post(wired.vendo, { threadId: "thr_d3", message: userMessage("m3", "hi") })).text();
+
+    // A curated surface has `find_tools`, so it is taught the search budget.
+    expect(told["curated"]).toContain("find_tools");
+    expect(told["curated"]).not.toContain("search_connectors");
+    // Uncurated with no connectors: neither rail exists, so neither is promised.
+    expect(told["uncurated-bare"]).not.toContain("find_tools");
+    expect(told["uncurated-bare"]).not.toContain("search_connectors");
+    // Uncurated WITH connectors: the pair is projected, so the connectors
+    // section rides — and `find_tools`, which is not on this listing, does not.
+    expect(told["uncurated-connectors"]).toContain("search_connectors");
+    expect(told["uncurated-connectors"]).toContain("list_connections");
+    expect(told["uncurated-connectors"]).not.toContain("find_tools");
   });
 
   it("names the default harness from the umbrella alone — §10's one-liner needs one dependency", () => {

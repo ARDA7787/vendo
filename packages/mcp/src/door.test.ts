@@ -4,11 +4,14 @@ import {
   type AuditEvent,
   type BlobStore,
   type Guard,
+  type Json,
   type Membership,
   type Principal,
   type RecordQuery,
   type RecordStore,
   type StoreAdapter,
+  type ToolCall,
+  type ToolListingContext,
   type ToolOutcome,
   type ToolRegistry,
   type VendoTheme,
@@ -16,6 +19,9 @@ import {
 } from "@vendoai/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { exportJWK, generateKeyPair, jwtVerify, SignJWT, type KeyLike } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMcpDoorWithState } from "./door.js";
@@ -24,6 +30,7 @@ import {
   type AppsPort,
   type HostOAuthAdapter,
   type McpDoor,
+  type TurnCredentialPort,
 } from "./index.js";
 import type {
   McpDoorState,
@@ -1956,17 +1963,984 @@ describe("createMcpDoor tool menu, titles, and annotations", () => {
   });
 });
 
+/**
+ * D5's declared result shape, measured against what the OFFICIAL client actually
+ * does with it: `tools/list` is parsed with the SDK's own `ToolSchema` (one bad
+ * schema rejects the WHOLE listing) and `tools/call` THROWS on any non-`isError`
+ * result whose `structuredContent` is missing or fails the advertised schema.
+ * Every assertion here therefore goes through the real SDK client.
+ */
+describe("createMcpDoor declared output schemas on the wire", () => {
+  /** The shape a generated tools.json really carries: named fields, plus a
+   *  `required` and a closed `additionalProperties` the door cannot honour. */
+  const declared = {
+    type: "object",
+    properties: {
+      rows: { type: "array", items: { type: "object", properties: { id: { type: "string" } } } },
+      total: { type: "integer" },
+    },
+    required: ["rows", "total"],
+    additionalProperties: false,
+  };
+
+  /** A marker no other schema in this file carries, so the door's compile cache
+   *  (module-level, and warm from the tests above) is guaranteed to miss it. */
+  const COMPILE_PROBE = "compile-cache probe";
+
+  const declaring = (name: string, outputSchema: Record<string, unknown>) => ({
+    name,
+    description: `the ${name} tool`,
+    inputSchema: { type: "object", properties: {} },
+    outputSchema,
+    risk: "read" as const,
+  });
+
+  async function open(options: HarnessOptions) {
+    const harness = makeHarness(options);
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    return { harness, connected: await connect(harness.door, tokens.access_token) };
+  }
+
+  it("keeps the declared fields and types, and drops only what it cannot enforce", async () => {
+    const { connected } = await open({ extraDescriptors: [declaring("host_report", declared)] });
+    const listed = await connected.client.listTools();
+    expect(listed.tools.find((tool) => tool.name === "host_report")?.outputSchema).toEqual({
+      // The field names and types are the whole of D5's value to the model, and
+      // they survive verbatim...
+      type: "object",
+      properties: declared.properties,
+      // ...while `required` and a closed `additionalProperties` do not: the
+      // client validates EVERY ok result against this, and the door has to be
+      // able to return results the host never declared.
+      additionalProperties: true,
+    });
+    await connected.client.close();
+  });
+
+  it("drops every top-level keyword that could REJECT a result the door has no choice about", async () => {
+    // Each of these was measured against the official client's own validator: a
+    // required nested in `allOf`, a `maxProperties` and a `not` each turned a
+    // served result into a client throw. `properties` and `type` survive; the
+    // power to reject does not.
+    const hostile = {
+      type: "object",
+      properties: { rows: { type: "array" }, nested: { type: "object", required: ["id"] } },
+      allOf: [{ required: ["rows"] }],
+      anyOf: [{ required: ["rows"] }],
+      maxProperties: 2,
+      minProperties: 2,
+      not: { properties: { rows: { const: null } } },
+      if: { required: ["rows"] },
+      then: { required: ["total"] },
+      propertyNames: { pattern: "^[a-z]+$" },
+      dependentRequired: { rows: ["total"] },
+      unevaluatedProperties: false,
+    };
+    const { connected } = await open({ extraDescriptors: [declaring("host_report", hostile)] });
+    const listed = await connected.client.listTools();
+    expect(listed.tools.find((tool) => tool.name === "host_report")?.outputSchema).toEqual({
+      type: "object",
+      // A NESTED `required` survives deliberately: it constrains the value of a
+      // field the host declared, so it can only reject the host's own result —
+      // never a reserved-key envelope, whose keys no host schema mentions.
+      properties: hostile.properties,
+      additionalProperties: true,
+    });
+    await connected.client.close();
+  });
+
+  it("drops the two keywords that reject a key without ever NAMING one", async () => {
+    // Round 5, both proven against the SDK's own validator before the fix.
+    // `patternProperties` types keys by REGEX, so "^vendo" type-rejected
+    // `vendo_truncated: true` (and "^.*$" would have taken `vendo_value` too) —
+    // no reserved-name check could see it, because the name is never written.
+    const patterned = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      patternProperties: { "^vendo": { type: "string" } },
+    };
+    // A top-level `$ref` reaches AROUND the strip: the `required` and the closed
+    // `additionalProperties` live in `$defs`, where deleting top-level keywords
+    // never looks, and both envelopes failed. Not reachable from the shipped
+    // OpenAPI extractor (it inlines refs) — a hand-written outputSchema is.
+    const referencing = {
+      type: "object",
+      $ref: "#/$defs/Row",
+      $defs: { Row: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string" } } } },
+    };
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_patterned", patterned), declaring("host_referencing", referencing)],
+      getOutcome: (call) => call.tool === "host_patterned"
+        ? { status: "ok", output: { vendo_truncated: true, vendo_chars: 91_000, vendo_preview: "{\"answer\"" } }
+        : { status: "ok", output: "just text" },
+    });
+
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    expect(byName.get("host_patterned")?.outputSchema).toEqual({
+      type: "object",
+      properties: { answer: { type: "string" } },
+      additionalProperties: true,
+    });
+    // `$defs` stays: an unreferenced definition constrains nothing, and the door
+    // only removes what can reject.
+    expect(byName.get("host_referencing")?.outputSchema).toEqual({
+      type: "object",
+      $defs: referencing.$defs,
+      additionalProperties: true,
+    });
+
+    // The proof: the client compiled both advertised schemas and validates every
+    // ok result against them, so a kept keyword would throw right here.
+    const truncated = await connected.client.callTool({ name: "host_patterned", arguments: {} });
+    expect(truncated.isError).toBeFalsy();
+    expect(truncated.structuredContent).toMatchObject({ vendo_truncated: true });
+    const wrapped = await connected.client.callTool({ name: "host_referencing", arguments: {} });
+    expect(wrapped.isError).toBeFalsy();
+    expect(wrapped.structuredContent).toEqual({ vendo_value: "just text" });
+    await connected.client.close();
+  });
+
+  it("drops the two keywords that pin the WHOLE object, which the strip above them cannot reach", async () => {
+    // Round 6: `const` and `enum` do not reject a KEY, they reject the object,
+    // so deleting `required`/`additionalProperties` around them changed nothing —
+    // both envelopes came back "must be equal to constant"/"one of the allowed
+    // values" from the client's own validator. The last two of this family: a
+    // swept Ajv run cleared bare `$defs`, `definitions`, `$recursiveRef` and a
+    // nested `required`.
+    const pinned = {
+      type: "object",
+      properties: { id: { type: "string" } },
+      const: { id: "x" },
+    };
+    const listed_ = {
+      type: "object",
+      properties: { id: { type: "string" } },
+      enum: [{ id: "x" }, { id: "y" }],
+    };
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_pinned", pinned), declaring("host_listed", listed_)],
+      getOutcome: (call) => call.tool === "host_pinned"
+        ? { status: "ok", output: { vendo_truncated: true, vendo_chars: 91_000, vendo_preview: "{\"id\"" } }
+        : { status: "ok", output: "just text" },
+    });
+
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    for (const name of ["host_pinned", "host_listed"]) {
+      expect(byName.get(name)?.outputSchema, name).toEqual({
+        type: "object",
+        properties: { id: { type: "string" } },
+        additionalProperties: true,
+      });
+    }
+
+    // The proof: the client compiled both advertised schemas and validates every
+    // ok result against them, so a kept keyword throws right here.
+    const truncated = await connected.client.callTool({ name: "host_pinned", arguments: {} });
+    expect(truncated.isError).toBeFalsy();
+    expect(truncated.structuredContent).toMatchObject({ vendo_truncated: true });
+    const wrapped = await connected.client.callTool({ name: "host_listed", arguments: {} });
+    expect(wrapped.isError).toBeFalsy();
+    expect(wrapped.structuredContent).toEqual({ vendo_value: "just text" });
+    await connected.client.close();
+  });
+
+  it("a TRUNCATED ok output validates even against a schema built to reject it", async () => {
+    // Exactly what `toolOutputCap` substitutes for a large output (agent/tools.ts
+    // capOutcome) — a shape no host schema mentions. Against the unsanitized
+    // schema the client threw "Structured content does not match the tool's
+    // output schema" and the model never saw its answer. Every rejecting path the
+    // AI review PROVED, in one schema: allOf-required, maxProperties, not, and a
+    // declared property whose name collides with a reserved envelope key.
+    const envelope = {
+      vendo_truncated: true,
+      vendo_chars: 91_000,
+      vendo_preview: '{"rows":[{"id":"a"}',
+    };
+    const hostile = {
+      type: "object",
+      properties: { rows: { type: "array" }, vendo_preview: { type: "object" } },
+      allOf: [{ required: ["rows"] }],
+      maxProperties: 1,
+      not: { properties: { vendo_truncated: { const: true } } },
+    };
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_report", hostile)],
+      getOutcome: () => ({ status: "ok", output: envelope }),
+    });
+    const listed = await connected.client.listTools();
+    // The colliding declaration is gone from the wire, so the reserved key falls
+    // under the open `additionalProperties` instead of being type-checked.
+    expect(listed.tools.find((tool) => tool.name === "host_report")?.outputSchema).toEqual({
+      type: "object",
+      properties: { rows: { type: "array" } },
+      additionalProperties: true,
+    });
+
+    const result = await connected.client.callTool({ name: "host_report", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual(envelope);
+    await connected.client.close();
+  });
+
+  it("wraps EVERY non-record ok output under the reserved key, declared or not", async () => {
+    // A declaring tool that answered with a bare string carried no
+    // structuredContent at all, and the client threw on the RESULT: "has an
+    // output schema but did not return structured content". The door no longer
+    // asks WHETHER the tool declared one — the client compiles no validator for an
+    // undeclared tool, so the extra key is invisible there, and asking cost a
+    // `tools/list` after the write had already executed.
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_report", declared)],
+      getOutcome: (call) => ({
+        status: "ok",
+        output: call.tool === "host_report" ? "just text" : ["a", "b"],
+      }),
+    });
+    await connected.client.listTools();
+
+    const declaringCall = await connected.client.callTool({ name: "host_report", arguments: {} });
+    expect(declaringCall.isError).toBeFalsy();
+    expect(declaringCall.structuredContent).toEqual({ vendo_value: "just text" });
+    expect(textOf(declaringCall)).toBe('"just text"');
+
+    // host_lookup declares no output shape; the same wrapper rides anyway, and
+    // the client accepts it because it has no schema to check it against.
+    const undeclared = await connected.client.callTool({ name: "host_lookup", arguments: {} });
+    expect(undeclared.isError).toBeFalsy();
+    expect(undeclared.structuredContent).toEqual({ vendo_value: ["a", "b"] });
+    expect(textOf(undeclared)).toBe('["a","b"]');
+    await connected.client.close();
+  });
+
+  it("an unstatable host schema costs that ONE tool its schema, never the whole listing", async () => {
+    const { connected } = await open({
+      extraDescriptors: [
+        declaring("host_report", declared),
+        // A boolean subschema is LEGAL JSON Schema 2020-12 and still unstatable:
+        // the client asserts every `properties` value is an object.
+        declaring("host_bool_property", { type: "object", properties: { anything: true } }),
+        // A top-level array — ordinary in an OpenAPI response spec.
+        declaring("host_array", { type: "array", items: { type: "string" } }),
+        // Past the serialized-size cap.
+        declaring("host_huge", { type: "object", properties: hugeProperties() }),
+        // WELL-SHAPED and still fatal: the client COMPILES every advertised
+        // schema (`cacheToolMetadata`, run on each successful listTools), and a
+        // compile throw rejects the whole listing. A dangling $ref is what
+        // extraction leaves for a recursive response model with no $defs on the
+        // wire; `type: "bogus"` and Swagger 2.0's boolean exclusiveMinimum are
+        // the other two the AI review proved.
+        declaring("host_dangling_ref", {
+          type: "object",
+          properties: { id: { type: "string" }, parent: { $ref: "#/components/schemas/Account" } },
+        }),
+        declaring("host_bogus_type", { type: "object", properties: { x: { type: "bogus" } } }),
+        // Why the door asks the VALIDATOR rather than eyeballing the shape: a
+        // Python-style named group is ordinary in a generated OpenAPI spec and is
+        // a compile throw no hand-written check would ever have listed.
+        declaring("host_bad_pattern", {
+          type: "object",
+          properties: { id: { type: "string", pattern: "(?P<year>\\d{4})" } },
+        }),
+        declaring("host_draft4_bounds", {
+          type: "object",
+          properties: { n: { type: "number", minimum: 0, exclusiveMinimum: true } },
+        }),
+        // A schema that cannot even be serialized: an OpenAPI model inlined into
+        // itself. `JSON.stringify` threw inside the listing map.
+        declaring("host_cyclic", cyclicSchema()),
+      ],
+    });
+
+    // The listing PARSES — which is the finding: any one of these used to reject
+    // the whole tools/list result and leave the client with no tools at all.
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    expect([...byName.keys()]).toEqual([
+      "host_lookup",
+      "host_report",
+      "host_bool_property",
+      "host_array",
+      "host_huge",
+      "host_dangling_ref",
+      "host_bogus_type",
+      "host_bad_pattern",
+      "host_draft4_bounds",
+      "host_cyclic",
+    ]);
+    expect(byName.get("host_report")?.outputSchema).toBeDefined();
+    for (const name of [
+      "host_bool_property",
+      "host_array",
+      "host_huge",
+      "host_dangling_ref",
+      "host_bogus_type",
+      "host_bad_pattern",
+      "host_draft4_bounds",
+      "host_cyclic",
+    ]) {
+      expect(byName.get(name), name).not.toHaveProperty("outputSchema");
+    }
+    await connected.client.close();
+  });
+
+  it("caps the schema by BYTES on the wire, not by UTF-16 units", async () => {
+    // 20k CJK characters is 20k `.length` and ~60KB on the wire — the cap read
+    // `.length` and shipped it, ~3x over. Its ASCII twin of the same `.length`
+    // is genuinely small and keeps its schema, so this measures the COUNTING,
+    // not the cap.
+    const label = (character: string) => ({
+      type: "object",
+      properties: { note: { type: "string", description: character.repeat(20_000) } },
+    });
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_cjk", label("経")), declaring("host_ascii", label("a"))],
+    });
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    expect(byName.get("host_cjk")).not.toHaveProperty("outputSchema");
+    expect(byName.get("host_ascii")?.outputSchema).toBeDefined();
+    await connected.client.close();
+  });
+
+  it("compiles a given schema ONCE, however many listings advertise it", async () => {
+    // Compiling is the expensive half of a listing and it is pure: 244ms for 35
+    // schemas, 1370ms for 301 (measured 2026-08-03), paid AGAIN on every
+    // `tools/list` — and this redesign re-lists on every `list_changed`. The
+    // verdict is cached on the serialized schema the pass already computes.
+    //
+    // Driven over raw JSON-RPC on purpose: the SDK client compiles every
+    // advertised schema too (`cacheToolMetadata`), and a counter that saw both
+    // sides could not say which one recompiled.
+    const probe = { type: "object", properties: { note: { type: "string", description: COMPILE_PROBE } } };
+    const harness = makeHarness({ extraDescriptors: [declaring("host_probe", probe)] });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const getValidator = vi.spyOn(AjvJsonSchemaValidator.prototype, "getValidator");
+    const compiles = () => getValidator.mock.calls
+      .filter(([schema]) => JSON.stringify(schema).includes(COMPILE_PROBE)).length;
+    try {
+      const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+      const sessionId = initialized.headers.get("mcp-session-id")!;
+      const list = async () => {
+        const response = await harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+        expect(response.status).toBe(200);
+        return await response.text();
+      };
+
+      expect(await list()).toContain(COMPILE_PROBE);
+      expect(compiles()).toBe(1);
+      // The second listing still ADVERTISES the schema — the cached verdict is an
+      // answer, not a skip — and costs no compile.
+      expect(await list()).toContain(COMPILE_PROBE);
+      expect(compiles()).toBe(1);
+    } finally {
+      getValidator.mockRestore();
+    }
+  });
+
+  it("a malformed `required` no longer costs the tool its fields — it is dropped either way", async () => {
+    // `required: "id"` used to reject the whole schema, because the wire carried
+    // `required` and the client's ToolSchema wants an array. Nothing enforceable
+    // reaches the wire now, so the model still learns the field names.
+    const { connected } = await open({
+      extraDescriptors: [
+        declaring("host_bad_required", { type: "object", properties: { id: { type: "string" } }, required: "id" }),
+      ],
+    });
+    const listed = await connected.client.listTools();
+    expect(listed.tools.find((tool) => tool.name === "host_bad_required")?.outputSchema).toEqual({
+      type: "object",
+      properties: { id: { type: "string" } },
+      additionalProperties: true,
+    });
+    await connected.client.close();
+  });
+});
+
+/**
+ * `search_connectors` MATERIALIZES tools — it expands a matching connector
+ * toolkit — so the tools it just named to the model are only on the NEXT
+ * listing. An SDK client lists once and caches, so without a list-changed
+ * notification the found tool refuses to run for the rest of the session.
+ */
+describe("createMcpDoor announces a connector search that grew the surface", () => {
+  const search = {
+    name: "search_connectors",
+    description: "Search the connector catalog",
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    risk: "read" as const,
+  };
+  const late = { name: "gmail_send", description: "Send mail", inputSchema: { type: "object" }, risk: "write" as const };
+
+  async function open(options: HarnessOptions & { holdSse?: Promise<void> }) {
+    const harness = makeHarness(options);
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const connected = await connect(harness.door, tokens.access_token, options.holdSse);
+    const seen: string[] = [];
+    let announced!: () => void;
+    const notification = new Promise<void>((resolve) => { announced = resolve; });
+    connected.client.setNotificationHandler(ToolListChangedNotificationSchema, (message) => {
+      seen.push(message.method);
+      announced();
+    });
+    // A notification sent before the client's standalone stream exists is
+    // dropped by the transport, so nothing is asserted until it is up — unless
+    // the test is deliberately measuring that case.
+    if (options.holdSse === undefined) await connected.sseReady;
+    return { harness, connected, seen, notification };
+  }
+
+  it("advertises listChanged and notifies, so the expanded tool is callable in-session", async () => {
+    let expanded = false;
+    const { connected, seen, notification } = await open({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = true;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+
+    expect(connected.client.getServerCapabilities()?.tools).toEqual({ listChanged: true });
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).not.toContain("gmail_send");
+
+    const searched = await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } });
+    expect(searched.isError).toBeFalsy();
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+
+    // ...and the re-list the notification exists to provoke finds the tool the
+    // search reported, on the same session.
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).toContain("gmail_send");
+    await connected.client.close();
+  });
+
+  it("announces the EXPANSION, not the call: an ordinary tool and a search that grew nothing say nothing", async () => {
+    let expanded = false;
+    const { connected, seen, notification } = await open({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        // Only "gmail" matches a lazy toolkit; the other query expands nothing.
+        if (call.tool === "search_connectors" && (call.args as { query?: string }).query === "gmail") expanded = true;
+        return { status: "ok", output: { tools: [] } };
+      },
+    });
+
+    await connected.client.callTool({ name: "host_lookup", arguments: {} });
+    // A search that expanded nothing is a bare re-list request: the client pays a
+    // round trip and finds the same tools it already had.
+    await connected.client.callTool({ name: "search_connectors", arguments: { query: "nothing here" } });
+    // The expanding search is also the flush: once ITS notification has arrived,
+    // the two calls before it are proven to have sent nothing.
+    await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } });
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+    await connected.client.close();
+  });
+
+  it("announces an expansion the search then FAILED on — the tools are callable either way", async () => {
+    // The order in the composed host: the search EXPANDS the matching toolkit
+    // first, then annotates the rows from the connections lookup. A throw in that
+    // second half leaves a grown registry behind an error outcome, and keying the
+    // notification off the call's status lost the expansion for the session.
+    let expanded = false;
+    const { connected, seen, notification } = await open({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool !== "search_connectors") return { status: "ok", output: { answer: 42 } };
+        expanded = true;
+        return { status: "error", error: { code: "upstream", message: "broker down" } };
+      },
+    });
+
+    const failed = await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } });
+    expect(failed.isError).toBe(true);
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).toContain("gmail_send");
+    await connected.client.close();
+  });
+
+  it("the expanded tool survives the RE-LIST, though the door rebuilt its context in between", async () => {
+    // The regression this exists for (round 5, 2026-08-03): the registry scopes
+    // lazily expanded toolkits to the run that expanded them, and the door mints
+    // a BRAND-NEW context object per authenticated request (consent and
+    // memberships are per-request facts). Keyed on object identity alone, every
+    // request was a different run: the search expanded, the door announced
+    // `list_changed`, and a client that ACTED on it — re-listing, as this real SDK
+    // client does — got a listing without the tool it had just been told about.
+    // Permanently. The notification was a guaranteed lie to any client that
+    // re-lists. (A client that never re-lists is a separate problem and not this
+    // one: agent-sdk 0.3.215 registers no list-changed handler for an HTTP MCP
+    // server, so the boxed harness listed once per session in the live run.)
+    //
+    // Invisible to the harness above, whose registry ignores `ctx` entirely, so
+    // this one scopes the way the real registry does: by `ctx.listingScope` when
+    // the caller supplies one, by the context object otherwise.
+    const expandedScopes = new Set<unknown>();
+    const contexts = new Set<object>();
+    const scopeOf = (ctx?: ToolListingContext): unknown =>
+      ctx === undefined ? undefined : ctx.listingScope ?? ctx;
+
+    const { connected, seen, notification } = await open({
+      extraDescriptors: (ctx) => {
+        if (ctx !== undefined) contexts.add(ctx);
+        return expandedScopes.has(scopeOf(ctx)) ? [search, late] : [search];
+      },
+      getOutcome: (call, ctx) => {
+        if (call.tool === "search_connectors") expandedScopes.add(scopeOf(ctx));
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).not.toContain("gmail_send");
+    expect((await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } })).isError)
+      .toBeFalsy();
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+
+    // The promise kept: the re-list the door asked for finds the tool.
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).toContain("gmail_send");
+
+    // …and it was a real re-list across rebuilt contexts, not one object reused:
+    // several distinct context objects, ONE listing scope between them. Without
+    // this pair the assertion above would pass on a door that never rebuilt.
+    expect(contexts.size).toBeGreaterThan(1);
+    expect(new Set([...contexts].map((ctx) => (ctx as ToolListingContext).listingScope)).size).toBe(1);
+    expect(expandedScopes).toEqual(new Set([connected.transport.sessionId]));
+    await connected.client.close();
+  });
+
+  it("a dropped SSE stream is released, so the reconnect is served and the pending announcement rides it", async () => {
+    // Measured live 2026-08-03 (box client, ~138s uptime): the standalone stream
+    // died, the client's two reconnect attempts came back 409 "Only one SSE
+    // stream is allowed per session", it gave up — and the session had no
+    // notification channel left, so nothing could ever be announced on it again.
+    // The transport releases a stream only through the ReadableStream's `cancel`
+    // callback, and a socket that just dies does not fire it. Abandoning the
+    // response body below, unread and uncancelled, is exactly that state.
+    //
+    // Raw HTTP, not the SDK client: the client owns its own reconnect policy and
+    // would never let a test hold a session in this state.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+    const searchOnce = () => harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+
+    // A search before any stream exists: the notification is dropped by the
+    // transport, and the flag it left behind is what the GET below flushes.
+    await searchOnce();
+    const first = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(first.headers.get("content-type")).toContain("text/event-stream");
+    expect(await firstFrame(first)).toContain("notifications/tools/list_changed");
+
+    // SPEND the flag. Sending never clears it, so without this `tools/list` the
+    // frame asserted after the reconnect could be the FIRST search's staleness
+    // replayed, and this test would pass on a door whose second announcement
+    // went nowhere at all.
+    await harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+
+    // The socket dies. Nothing cancels the body, so the transport still believes
+    // this session has a stream — and the announcement raised now goes nowhere.
+    await searchOnce();
+
+    const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    // Used to be 409, twice, and then the client stopped asking.
+    expect(reconnected.status).toBe(200);
+    expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+  });
+
+  it("the reconnect stays reachable when the DEAD stream's body is discarded LATER", async () => {
+    // Round 6, the round-5 fix eating its own stream. Releasing the standalone
+    // slot through the transport closes its controller with the queued frame
+    // still unread, which leaves that ReadableStream in state "readable" — so
+    // the abandoned body's `cancel` fires whenever the runtime finally discards
+    // it, and the transport's cancel callback deletes whatever is registered as
+    // the standalone stream AT THAT MOMENT: the RECONNECTED one. Strictly worse
+    // than the 409 it replaced — the client holds a healthy-looking stream, never
+    // retries, and every later `list_changed` is silently dropped.
+    //
+    // A queued-but-unread frame is not an exotic state: it is exactly what
+    // `#announceExpansion` creates when it writes onto a socket that has died.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+    const searchOnce = () => harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+    const spendTheFlag = () => harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+
+    const dead = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(dead.status).toBe(200);
+    // The socket dies here. TWO announcements, and the second one is the whole
+    // test: the door's relay reads one frame AHEAD (a `ReadableStream`'s `pull`
+    // runs the moment the body exists), so a single announcement is drained out
+    // of the transport's controller — closing that controller then leaves nothing
+    // queued, the abandoned stream ends up "closed", its late cancel is a no-op,
+    // and the round-6 bug this test exists to reproduce cannot happen at all
+    // (mutation-proven worthless round 8: reverting the fix kept the suite green).
+    // The SECOND frame is the one that stays queued, which is what keeps the
+    // abandoned stream "readable" and makes its late cancel reach the transport.
+    await searchOnce();
+    await searchOnce();
+
+    const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(reconnected.status).toBe(200);
+    expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+
+    // The runtime lets go of the abandoned body — AFTER the swap. The door owns
+    // this body now, so the cancel stops at the door and never reaches the
+    // transport's registration.
+    await dead.body!.cancel();
+
+    await spendTheFlag();
+    await searchOnce();
+    expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+  });
+
+  it("keeps the SLOT through a dead stream's late cancel, so the stream after it is still recoverable", async () => {
+    // What the relay cancel's identity check actually protects. Not the
+    // transport's registration: a reader the door already cancelled ignores a
+    // second cancel, so forwarding it is a no-op (verified — removing the check
+    // keeps the test above green). It protects the door's own SLOT. Clearing it
+    // on a stream that has been REPLACED leaves the door holding no reader for
+    // the stream it is actually serving, and `releaseStandalone` is the only
+    // thing that can free a 409 — so the next silent death is permanent: 409 on
+    // every reconnect for the rest of the session, which is the live symptom of
+    // 2026-08-03 that all of this exists to prevent.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+    const searchOnce = () => harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+    const spendTheFlag = () => harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+
+    // First stream: dies silently, is released by the reconnect's 409 recovery.
+    const dead = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(dead.status).toBe(200);
+    await searchOnce();
+    await searchOnce();
+    const second = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(second.status).toBe(200);
+
+    // The runtime finally discards the first body, long after the swap.
+    await dead.body!.cancel();
+
+    // The second stream dies the same silent way — nothing cancels it either —
+    // and the client reconnects again. The door can only serve this if it still
+    // holds the second stream's reader.
+    await spendTheFlag();
+    await searchOnce();
+    const third = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(third.status).toBe(200);
+    expect(await frameOrNone(third)).toContain("notifications/tools/list_changed");
+  });
+
+  it("a LIVE client's hang-up frees the slot, so the reconnect needs no 409 recovery", async () => {
+    // The relay body's `cancel` used to be inert, which swallowed a real client's
+    // disconnect: the transport's registration and the door's reader stayed held
+    // for a client that is GONE, announcements kept being written into a socket
+    // nobody reads, and the only ways out were a later GET's 409 recovery or the
+    // idle sweep — which runs on another request, never on a timer. Recorded
+    // through the transport, because the door hides the 409 by retrying: what
+    // this pins is that there was nothing to recover FROM.
+    const statuses: number[] = [];
+    const handleRequest = WebStandardStreamableHTTPServerTransport.prototype.handleRequest;
+    const spy = vi
+      .spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest")
+      .mockImplementation(async function (
+        this: WebStandardStreamableHTTPServerTransport,
+        req: Request,
+      ) {
+        const response = await handleRequest.call(this, req);
+        if (req.method === "GET") statuses.push(response.status);
+        return response;
+      });
+    try {
+      let expanded = false;
+      const harness = makeHarness({
+        extraDescriptors: () => (expanded ? [search, late] : [search]),
+        getOutcome: (call) => {
+          if (call.tool === "search_connectors") expanded = !expanded;
+          return { status: "ok", output: { tools: ["gmail_send"] } };
+        },
+      });
+      const registration = await register(harness.door);
+      const tokens = await issue(harness.door, registration.body.client_id);
+      const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+      const sessionId = initialized.headers.get("mcp-session-id")!;
+
+      const live = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+      expect(live.status).toBe(200);
+      // The client hangs up. A cancel, not an abandonment — this is the disconnect
+      // the runtime DOES tell the door about.
+      await live.body!.cancel();
+
+      statuses.length = 0;
+      const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+      expect(reconnected.status).toBe(200);
+      // Exactly one attempt, served straight away. Pre-fix: [409, 200].
+      expect(statuses).toEqual([200]);
+
+      // …and the fresh stream is the session's channel, so the release above gave
+      // the slot back rather than merely dodging the conflict check.
+      await harness.door.handler(
+        mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+      );
+      expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a GET the transport REJECTS costs the session nothing", async () => {
+    // Round 6: the release ran before every GET, but the transport then rejects a
+    // GET with no `Accept: text/event-stream` (406), a bad `mcp-protocol-version`,
+    // or a DNS-rebinding failure — so one malformed request destroyed a HEALTHY
+    // stream and nothing replaced it. The conflict check is the transport's LAST
+    // gate, which is why the release now waits for its 409.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+
+    const live = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(live.status).toBe(200);
+
+    const rejected = await harness.door.handler(
+      sseRequest(tokens.access_token, sessionId, "application/json"),
+    );
+    expect(rejected.status).toBe(406);
+
+    // The stream the client is still holding is still the session's channel.
+    await harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+    expect(await frameOrNone(live)).toContain("notifications/tools/list_changed");
+  });
+
+  it("releases the listing scope when the session ends, by DELETE and by sweep", async () => {
+    // The registry keys a session's expansions by this opaque string and nothing
+    // collects them: with no release they shed only when the registry hits its
+    // capacity cap, and that cap is process-global across tenants — one principal
+    // opening enough sessions evicts another principal's expansions and their
+    // expanded tools vanish from their next listing (round 6 2026-08-03).
+    const harness = makeHarness({ extraDescriptors: [search] });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+
+    const deleted = await harness.door.handler(mcpRequest(tokens.access_token));
+    const deletedSession = deleted.headers.get("mcp-session-id")!;
+    await harness.door.handler(new Request(BASE, {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${tokens.access_token}`,
+        "mcp-session-id": deletedSession,
+        "mcp-protocol-version": "2025-11-25",
+      },
+    }));
+    expect(harness.released).toEqual([deletedSession]);
+
+    vi.useFakeTimers();
+    try {
+      const abandoned = await harness.door.handler(mcpRequest(tokens.access_token));
+      const abandonedSession = abandoned.headers.get("mcp-session-id")!;
+      vi.setSystemTime(Date.now() + 61 * 60 * 1000);
+      const revived = await issue(harness.door, registration.body.client_id);
+      // Any authenticated request sweeps; the swept session's scope goes with it.
+      await harness.door.handler(mcpRequest(revived.access_token));
+      expect(harness.released).toContain(abandonedSession);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a search as the session's FIRST call survives a stream that attaches later", async () => {
+    // The transport DROPS a notification sent with no standalone SSE stream open
+    // — silently, `send()` returns — and the SDK client opens that stream without
+    // awaiting it. Fire-and-forget therefore lost the expansion permanently for
+    // exactly the client that searched first. Held here on purpose.
+    let attach!: () => void;
+    const holdSse = new Promise<void>((resolve) => { attach = resolve; });
+    let expanded = false;
+    const { connected, seen, notification } = await open({
+      holdSse,
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = true;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+
+    const searched = await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } });
+    expect(searched.isError).toBeFalsy();
+    expect(seen).toEqual([]);
+
+    attach();
+    await connected.sseReady;
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+    await connected.client.close();
+  });
+});
+
+/**
+ * 10-mcp §3b — the TURN path's results, measured through the real client.
+ *
+ * The door used to re-fetch the turn's listing after execution to decide whether
+ * to attach `structuredContent`. That question is now answered without asking:
+ * the wrapper rides unconditionally, so an already-committed write can never be
+ * turned into an error by a listing that throws.
+ */
+describe("createMcpDoor turn-credential results", () => {
+  const TOKEN = "vtk_live_turn";
+
+  function liveTurn(output: Json, onList: () => void) {
+    return {
+      ctx: { principal: { kind: "user" as const, subject: "user_1" }, venue: "chat" as const, presence: "present" as const },
+      tools: {
+        async call() {
+          return { status: "ok" as const, output };
+        },
+        async list() {
+          onList();
+          return [{
+            name: "host_lookup",
+            title: "Look something up",
+            description: "Look something up",
+            risk: "read" as const,
+            inputSchema: { type: "object", properties: {} },
+            outputSchema: { type: "object", properties: { rows: { type: "array" } }, required: ["rows"] },
+          }];
+        },
+      },
+    };
+  }
+
+  it("wraps a non-record ok output with NO tools/list in the call path", async () => {
+    const lists: number[] = [];
+    const harness = makeHarness({
+      turnCredentials: {
+        async resolve(token) {
+          return token === TOKEN ? liveTurn("just text", () => lists.push(1)) : null;
+        },
+      },
+    });
+    const connected = await connect(harness.door, TOKEN);
+
+    const listed = await connected.client.listTools();
+    expect(listed.tools[0]?.outputSchema).toEqual({
+      type: "object",
+      properties: { rows: { type: "array" } },
+      additionalProperties: true,
+    });
+    expect(lists.length).toBe(1);
+
+    // The tool declared a schema and answered with a bare string: without a
+    // wrapper the client throws "did not return structured content", and the
+    // model reads a completed call as a broken server.
+    const result = await connected.client.callTool({ name: "host_lookup", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ vendo_value: "just text" });
+    // The listing is not consulted by the call path at all — which is the fix:
+    // it ran AFTER the write, unguarded.
+    expect(lists.length).toBe(1);
+    await connected.client.close();
+  });
+
+  it("still answers when the turn's listing THROWS after the write", async () => {
+    const harness = makeHarness({
+      turnCredentials: {
+        async resolve(token) {
+          if (token !== TOKEN) return null;
+          const turn = liveTurn(["a", "b"], () => {});
+          return { ...turn, tools: { ...turn.tools, list: async () => { throw new Error("turn closed"); } } };
+        },
+      },
+    });
+    const connected = await connect(harness.door, TOKEN);
+    const result = await connected.client.callTool({ name: "host_lookup", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ vendo_value: ["a", "b"] });
+    await connected.client.close();
+  });
+});
+
+/** A host response model that references itself by OBJECT — what an inliner
+ *  produces for a recursive OpenAPI model. `JSON.stringify` throws on it. */
+function cyclicSchema(): Record<string, unknown> {
+  const schema: Record<string, unknown> = { type: "object", properties: {} };
+  (schema.properties as Record<string, unknown>).parent = schema;
+  return schema;
+}
+
+/** Comfortably past the door's ~32KiB serialized-schema cap. */
+function hugeProperties(): Record<string, unknown> {
+  return Object.fromEntries(Array.from({ length: 800 }, (_, index) => [
+    `field_${index}`,
+    { type: "string", description: "x".repeat(64) },
+  ]));
+}
+
 interface HarnessOptions {
   store?: MemoryStore;
   menuTools?: string[] | (() => string[] | undefined | Promise<string[] | undefined>);
   productName?: string;
   state?: McpDoorState;
-  getOutcome?: () => ToolOutcome;
+  /** The call is passed so one harness can answer several tools differently; the
+   *  context so a registry can record WHICH run just expanded a toolkit. */
+  getOutcome?: (call: ToolCall, ctx: ToolListingContext) => ToolOutcome;
   principal?: (subject: string) => Principal | null;
   apps?: AppsPort;
   /** A function form lets a test GROW the surface mid-session (lazy connector
-   *  expansion), which is exactly what a memoized door menu would miss. */
-  extraDescriptors?: Awaited<ReturnType<ToolRegistry["descriptors"]>> | (() => Awaited<ReturnType<ToolRegistry["descriptors"]>>);
+   *  expansion), which is exactly what a memoized door menu would miss. It is
+   *  handed the LISTING CONTEXT, so a test can also answer per run the way the
+   *  real registry does — scoped by `ctx.listingScope`, falling back to the
+   *  context object's identity. */
+  extraDescriptors?:
+    | Awaited<ReturnType<ToolRegistry["descriptors"]>>
+    | ((ctx?: ToolListingContext) => Awaited<ReturnType<ToolRegistry["descriptors"]>>);
   check?: Guard["check"];
   mount?: string;
   baseUrl?: string;
@@ -1984,6 +2958,8 @@ interface HarnessOptions {
   report?: Guard["report"];
   /** Build contract §9.1 — the host's org query, keyed on Principal. */
   memberships?: (principal: Principal) => Promise<Membership[]>;
+  /** 10-mcp §3b — a live turn behind a per-turn bearer. */
+  turnCredentials?: TurnCredentialPort;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -1992,6 +2968,9 @@ function makeHarness(options: HarnessOptions = {}) {
   const authorizeContexts: Array<{ clientName: string; scopes: string[] }> = [];
   const principalSubjects: string[] = [];
   const executions: Array<{ id: string; ctx: Parameters<ToolRegistry["execute"]>[1] }> = [];
+  /** Listing scopes the door said were finished — the registry keys expansions by
+   *  them and nothing else can collect them. */
+  const released: string[] = [];
   const guard: Guard = {
     check: options.check ?? (async () => ({ action: "run", decidedBy: "default" })),
     report: options.report ?? (async (event) => { audits.push(event); }),
@@ -1999,18 +2978,19 @@ function makeHarness(options: HarnessOptions = {}) {
     onApprovalDecision() { return () => undefined; },
   };
   const tools: ToolRegistry = {
-    async descriptors() {
+    async descriptors(ctx) {
       return [{
         name: "host_lookup",
         description: "Look something up",
         inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
         risk: "read",
-      }, ...(typeof options.extraDescriptors === "function" ? options.extraDescriptors() : options.extraDescriptors ?? [])];
+      }, ...(typeof options.extraDescriptors === "function" ? options.extraDescriptors(ctx) : options.extraDescriptors ?? [])];
     },
     async execute(call, ctx) {
       executions.push({ id: call.id, ctx });
-      return options.getOutcome?.() ?? { status: "ok", output: { answer: 42 } };
+      return options.getOutcome?.(call, ctx) ?? { status: "ok", output: { answer: 42 } };
     },
+    releaseListingScope(scope) { released.push(scope); },
   };
   const config = {
     tools,
@@ -2026,6 +3006,7 @@ function makeHarness(options: HarnessOptions = {}) {
     ...(options.theme === undefined ? {} : { theme: options.theme }),
     ...(options.memberships === undefined ? {} : { memberships: options.memberships }),
     ...(options.internal === undefined ? {} : { internal: options.internal }),
+    ...(options.turnCredentials === undefined ? {} : { turnCredentials: options.turnCredentials }),
     oauth: options.oauth ?? {
       async authorize(_req, ctx) {
         authorizeContexts.push(ctx);
@@ -2041,7 +3022,7 @@ function makeHarness(options: HarnessOptions = {}) {
   const door = options.state === undefined
     ? createMcpDoor(config)
     : createMcpDoorWithState(config, options.state);
-  return { door, store, audits, authorizeContexts, principalSubjects, executions };
+  return { door, store, audits, authorizeContexts, principalSubjects, executions, released };
 }
 
 async function register(door: McpDoor, metadata: Record<string, unknown> = {}, base = BASE) {
@@ -2162,18 +3143,34 @@ async function revoke(door: McpDoor, token: string, clientId: string, tokenTypeH
   }));
 }
 
-async function connect(door: McpDoor, accessToken: string) {
+async function connect(
+  door: McpDoor,
+  accessToken: string,
+  /** Delay serving the standalone GET stream until this resolves — the client
+   *  fires it off without awaiting, so a test can put real work before it. */
+  holdSse?: Promise<void>,
+) {
+  // The SDK client opens the standalone GET SSE stream after `initialized` and
+  // does NOT await it; a server-initiated notification sent before that stream
+  // exists is dropped by the transport. Anything asserting one has to wait for
+  // the GET to be served, so record it here rather than sleeping in the test.
+  let sseServed!: () => void;
+  const sseReady = new Promise<void>((resolve) => { sseServed = resolve; });
   const transport = new StreamableHTTPClientTransport(new URL(BASE), {
     requestInit: { headers: { authorization: `Bearer ${accessToken}` } },
     fetch: async (input, init) => {
       const headers = new Headers(init?.headers);
       headers.set("authorization", `Bearer ${accessToken}`);
-      return door.handler(new Request(input, { ...init, headers }));
+      const request = new Request(input, { ...init, headers });
+      if (request.method === "GET" && holdSse !== undefined) await holdSse;
+      const response = await door.handler(request);
+      if (request.method === "GET" && response.ok) sseServed();
+      return response;
     },
   });
   const client = new Client({ name: "door-test", version: "1.0.0" });
   await client.connect(transport);
-  return { client, transport };
+  return { client, transport, sseReady };
 }
 
 function mcpRequest(accessToken: string, sessionId?: string, resource = BASE) {
@@ -2194,6 +3191,68 @@ function mcpRequest(accessToken: string, sessionId?: string, resource = BASE) {
         : { method: "tools/list", params: {} }),
     }),
   });
+}
+
+/** `mcpRequest` covers initialize and tools/list; this is any other method on a
+ *  live session, over raw HTTP. */
+function mcpCall(accessToken: string, sessionId: string, name: string, args: Record<string, unknown>) {
+  return new Request(BASE, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-session-id": sessionId,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "tools/call", params: { name, arguments: args } }),
+  });
+}
+
+/** The standalone SSE stream a client opens for server-initiated notifications.
+ *  `accept` is a parameter so a test can send the GET the transport REJECTS. */
+function sseRequest(accessToken: string, sessionId: string, accept = "text/event-stream") {
+  return new Request(BASE, {
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept,
+      "mcp-session-id": sessionId,
+      "mcp-protocol-version": "2025-11-25",
+    },
+  });
+}
+
+/** The first SSE frame already buffered on a stream. Reading does NOT cancel the
+ *  body, which is what lets a test hold a stream the server still believes in. */
+async function firstFrame(response: Response): Promise<string> {
+  const reader = response.body!.getReader();
+  const { value } = await reader.read();
+  reader.releaseLock();
+  return new TextDecoder().decode(value);
+}
+
+/** The next frame on a stream that is supposed to still be REACHABLE, or `""`.
+ *  The wait never costs a passing run anything: the frame is already buffered by
+ *  the time the assertion reads, so only a deaf stream ever reaches the deadline. */
+async function frameOrNone(response: Response, ms = 5_000): Promise<string> {
+  const reader = response.body!.getReader();
+  let arrived = false;
+  const read = reader.read()
+    .then(({ value }) => { arrived = true; return value === undefined ? "" : new TextDecoder().decode(value); })
+    .catch(() => { arrived = true; return ""; });
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<string>((resolve) => { timer = setTimeout(() => resolve(""), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+    // Released only when the read actually finished, so a test may read the same
+    // stream again: releasing under a PENDING read rejects it, and nothing would
+    // be left to observe that rejection.
+    if (arrived) reader.releaseLock();
+  }
 }
 
 async function pkceChallenge(verifier: string): Promise<string> {

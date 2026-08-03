@@ -34,6 +34,13 @@ export interface Harness<Options = unknown> {
    * composition for a door, and composition always answers.
    */
   readonly requires?: { sandbox?: boolean; toolDoor?: boolean };
+  /**
+   * Amendment 2026-08-03: how this harness wants the equipped-tool surface
+   * shaped. `curated: false` = skip the discovery loadout (the ctx safety
+   * projection still applies); `withhold` = names never listed to and never
+   * callable by this harness.
+   */
+  readonly toolSurface?: { curated?: false; withhold?: readonly string[] };
   run(turn: Turn<Options>): AsyncGenerator<HarnessEvent, void, void>;
 }
 
@@ -119,6 +126,10 @@ export interface ToolListing {
    *  populated this since the amendment landed; the field was missing from the
    *  type, so the contract held at runtime and not at compile time. */
   inputSchema?: JsonSchema;
+  /** The tool's DECLARED result shape — extraction captures it from the host's
+   *  own contract; surfaces hand it to the model so data fields are known before
+   *  any call. Absent when the host's source declares none (never invented). */
+  outputSchema?: JsonSchema;
 }
 
 /** Build contract §1.2 */

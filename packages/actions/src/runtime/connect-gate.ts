@@ -105,6 +105,9 @@ export function createConnectGate(options: ConnectGateOptions): ConnectGate {
       // opinion about projection — its whole job is execution — so it must pass
       // the argument straight through rather than re-declaring a narrower shape.
       descriptors: (ctx) => tools.descriptors(ctx),
+      // Same reason as `ctx` above, one method along: a decorator that swallowed
+      // this would leave the wrapped registry unable to hear that a scope ended.
+      releaseListingScope: (scope) => tools.releaseListingScope?.(scope),
       execute: async (call, ctx) => {
         const gated = await check(call, ctx);
         if (gated === undefined) return tools.execute(call, ctx);
