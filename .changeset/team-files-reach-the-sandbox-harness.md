@@ -1,5 +1,6 @@
 ---
 "@vendoai/harnesses": minor
+"@vendoai/apps": minor
 "@vendoai/store": minor
 "@vendoai/core": minor
 ---
@@ -28,6 +29,13 @@ Permission on the sandbox path is now the workspace's, per file:
   never take the caller's own work down with it.
 - A team app's `plan.vendo`/`app.vendo` are watched mid-turn like a personal
   app's, so its skeleton paints during the turn instead of at the end.
+
+`@vendoai/apps` is in this bump because the box door it publishes
+(`box/turn-routes.mjs`, the `./box-door` export, shipped in the machine image)
+carries the other half: its whole-tree and by-shape walks used to answer about
+`/user/` only, so a team file's edit was left on the box's disk. A new
+`@vendoai/harnesses` against an old `@vendoai/apps` is this bug again — the two
+must move together.
 
 For hosts this is additive: `WorkspaceFs` is produced by
 `workspaceStore(store).open(...)` and consumed, never implemented — the new

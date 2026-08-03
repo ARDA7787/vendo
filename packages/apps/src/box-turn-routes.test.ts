@@ -179,12 +179,60 @@ describe("materialize + collect", () => {
     ]);
   });
 
-  test("D5 · a walking collect answers about /user only, `*` included", async () => {
+  test("D5 · a walking collect never answers about /host, `*` included", async () => {
     const root = newRoot();
     const door = routes(root);
     mkdirSync(path.join(root, "host/skills/refund"), { recursive: true });
     writeFileSync(path.join(root, "host/skills/refund/SKILL.md"), "# refund");
     const answer = await door.handle("POST", "/session/collect", auth, { paths: ["/host/*/*"] });
+    expect(answer.body.files).toEqual([]);
+  });
+
+  test("§9.7 · a whole-tree collect carries an /orgs mount home beside /user", async () => {
+    // The mount a team's shared app lives in. A walk pinned to `/user/` left the
+    // edit on the box's disk and reported nothing, so the host's diff saw an
+    // unchanged file and the agent's "done" was a lie.
+    const root = newRoot();
+    const door = routes(root);
+    await door.handle("POST", "/session/workspace", auth, {
+      reset: true,
+      files: [
+        { path: "/orgs/acme/apps/app_1/app.vendo", base64: b64("team app") },
+        { path: "/orgs/acme/files/plan.md", base64: b64("team plan") },
+        { path: "/user/memory/mine.md", base64: b64("mine") },
+        { path: "/host/skills/refund/SKILL.md", base64: b64("# refund"), readOnly: true },
+      ],
+    });
+    const answer = await door.handle("POST", "/session/collect", auth, {});
+    expect(answer.body.files.map((file: { path: string }) => file.path).sort()).toEqual([
+      "/orgs/acme/apps/app_1/app.vendo",
+      "/orgs/acme/files/plan.md",
+      "/user/memory/mine.md",
+    ]);
+  });
+
+  test("§9.7 · a `*` collect finds a TEAM app's hot path — the skeleton paints either way", async () => {
+    const root = newRoot();
+    const door = routes(root);
+    mkdirSync(path.join(root, "orgs/acme/apps/app_invented"), { recursive: true });
+    writeFileSync(path.join(root, "orgs/acme/apps/app_invented/plan.vendo"), "team plan");
+    const answer = await door.handle("POST", "/session/collect", auth, {
+      paths: ["/orgs/*/apps/*/plan.vendo"],
+    });
+    expect(answer.body.files).toEqual([
+      { path: "/orgs/acme/apps/app_invented/plan.vendo", base64: b64("team plan") },
+    ]);
+  });
+
+  test("a path in NO mount is not carried home, however it got onto the disk", async () => {
+    const root = newRoot();
+    const door = routes(root);
+    mkdirSync(path.join(root, "etc"), { recursive: true });
+    writeFileSync(path.join(root, "etc/passwd"), "root");
+    // `/orgs` with no org segment is not a mount either — the mount is the org.
+    mkdirSync(path.join(root, "orgs"), { recursive: true });
+    writeFileSync(path.join(root, "orgs/stray.md"), "stray");
+    const answer = await door.handle("POST", "/session/collect", auth, {});
     expect(answer.body.files).toEqual([]);
   });
 

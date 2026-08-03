@@ -29,6 +29,17 @@ describe("inWritableMount — the mounts a machine's walk carries home", () => {
     expect(inWritableMount("/user/../etc/passwd")).toBe(false);
     expect(inWritableMount("/orgs/acme/../../etc/passwd")).toBe(false);
   });
+
+  test("a bare mount ROOT is not a file a walk carries home", () => {
+    // The retired `pathAccess` answered "rw" for a bare `/user` and "ro" for a
+    // bare `/host`, because it graded MOUNTS. This grades what a disk walk
+    // found, and a walk only ever yields files — a mount root is a directory.
+    // Checkout reaches the same answer from the other side: the root matches the
+    // mount shape, and `readFileBuffer` on a directory throws, so it is skipped.
+    expect(inWritableMount("/user")).toBe(false);
+    expect(inWritableMount("/host")).toBe(false);
+    expect(inWritableMount("/orgs/acme")).toBe(false);
+  });
 });
 
 describe("checkout — the box is born filtered (design §8)", () => {

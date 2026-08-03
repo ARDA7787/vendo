@@ -228,9 +228,13 @@ describe("a team file reaches the claudeCode() sandbox", () => {
     // Wave 3's whole point: the team's file is the same file, and the box is
     // born filtered — it is THERE, not absent.
     expect(onDisk).toBe("page: quarterly");
-    // Editor level ⇒ writable. A read-only mount here is the "work done and
-    // thrown away" failure the per-file flag exists to prevent.
-    expect(mode).toBe(0o644);
+    // Editor level ⇒ WRITABLE. Asserted as the owner-write bit rather than an
+    // exact `0o644`, because the door only ever chmods the read-only case: a
+    // writable file keeps whatever `writeFileSync` produced under the running
+    // umask, and pinning 644 would fail for anyone with a different one.
+    // Read-only IS pinned exactly (0o444), because there the door sets it.
+    expect(mode).toBeDefined();
+    expect(mode! & 0o200).toBe(0o200);
   });
 
   it("gate ② — the edit the box makes to a team file LANDS in the store", async () => {

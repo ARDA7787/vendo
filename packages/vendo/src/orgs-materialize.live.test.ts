@@ -14,6 +14,15 @@
  * workspace, and a box reaching a door needs a public origin this test has no
  * business minting. The harness warns once and runs with its own hands, which
  * is exactly the deployment shape a workspace-only host has.
+ *
+ * **The template matters here**, because this lane changes the box IMAGE (the
+ * `/session/collect` walk in `packages/apps/box/turn-routes.mjs`): a run against
+ * an image baked before the change collects `/user/` paths only and the team
+ * file's edit never leaves the box. Proven on `vendo-box-orgs`
+ * (`cnbt9dwz9ktvlplqhlq1`), a LANE-named template — never the shared `vendo-box`
+ * id that production and every other consumer boot from, which is re-baked once
+ * from the merged head. The id stays in the environment rather than in this
+ * file so the same test runs against the shared image after the merge.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,9 +42,12 @@ import { appAccess, createStore, type VendoStore } from "@vendoai/store";
 import { afterEach, describe, expect, it } from "vitest";
 import { createVendo, type Vendo } from "./server.js";
 
-const ready = process.env["E2B_API_KEY"] !== undefined
-  && process.env["ANTHROPIC_API_KEY"] !== undefined
-  && process.env["VENDO_BOX_TEMPLATE"] !== undefined;
+// A named secret can EXIST and be empty (`infisical secrets get` exits 0 either
+// way), and an empty template id fails the provider with
+// `400: Invalid template reference` long after the gate has let the test run.
+// So the gate checks for content, not for presence.
+const set = (name: string): boolean => (process.env[name] ?? "") !== "";
+const ready = set("E2B_API_KEY") && set("ANTHROPIC_API_KEY") && set("VENDO_BOX_TEMPLATE");
 const live = ready ? describe : describe.skip;
 const MODEL = process.env["VENDO_LIVE_MODEL"] ?? "claude-sonnet-4-5";
 
@@ -64,6 +76,54 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
+
+/** The sandbox seam the harness actually consumes. Declared here rather than
+ *  imported because `box.ts` keeps it STRUCTURAL on purpose — the subpath does
+ *  not publish it, so naming the shape locally is the intended use. */
+interface SandboxMachineLike {
+  id: string;
+  request(req: Record<string, unknown>): Promise<{ status: number; headers: Record<string, string>; body: Uint8Array }>;
+  destroy(): Promise<void>;
+}
+interface SandboxAdapterLike {
+  create(spec: { template?: string; env: Record<string, string>; allowedDomains?: string[] }): Promise<SandboxMachineLike>;
+  destroy(snapshotRef: string): Promise<void>;
+}
+
+/**
+ * The e2b adapter, plus a reap.
+ *
+ * A conversation box is destroyed by an IDLE TIMER armed at `release()`
+ * (`BOX_IDLE_TTL_MS`, 5 min) — and that timer is `unref()`'d, so a vitest
+ * process that exits first never fires it and the machine is left running on
+ * the provider's side until its own `timeoutMs` catches it. A test must not
+ * leave real infrastructure behind, so every machine this adapter hands out is
+ * destroyed in `afterEach`.
+ *
+ * Safe against the pool: `boxMachine` PROBES a pooled entry with `hello` before
+ * reusing it and boots a fresh box when the probe fails, so a reaped machine can
+ * never be handed to a later turn as a corpse.
+ */
+function reapingSandbox(): SandboxAdapterLike {
+  const inner = e2bSandbox({
+    apiKey: process.env["E2B_API_KEY"]!,
+    timeoutMs: 10 * 60_000,
+  }) as unknown as SandboxAdapterLike;
+  const taken: SandboxMachineLike[] = [];
+  cleanups.push(async () => {
+    for (const machine of taken.splice(0)) {
+      await machine.destroy().catch(() => undefined);
+    }
+  });
+  return {
+    async create(spec) {
+      const machine = await inner.create(spec);
+      taken.push(machine);
+      return machine;
+    },
+    destroy: (ref) => inner.destroy(ref),
+  };
+}
 
 async function tempStore(): Promise<VendoStore> {
   const dataDir = await mkdtemp(join(tmpdir(), "vendo-orgs-live-"));
@@ -100,7 +160,7 @@ live("a real box reaches a real team's app", () => {
     const vendo = createVendo({
       model: {} as LanguageModel,
       store,
-      sandbox: e2bSandbox({ apiKey: process.env["E2B_API_KEY"]!, timeoutMs: 10 * 60_000 }),
+      sandbox: reapingSandbox(),
       harness: claudeCode({ model: MODEL, maxTurns: 14 }),
       auth: {
         principal: async () => acting,
@@ -144,6 +204,17 @@ live("a real box reaches a real team's app", () => {
     console.log("[live org edit]", JSON.stringify({ wire: wire.slice(0, 1500), after }));
     expect(wire).not.toContain("missing its workspace machine");
     expect(after).toContain("Q3 revenue");
+
+    // The MID-TURN paint, asserted rather than admired: a `data-vendo-view` for
+    // this app on the wire is the only proof `HOT_PATH_WATCH` covers `/orgs`.
+    // Without it a regression there costs the user ~50s of blank pane and this
+    // test would still pass, because turn-end sync lands the file either way.
+    const views = wire
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice("data: ".length)) as { type?: string; data?: { appId?: string } })
+      .filter((event) => event.type === "data-vendo-view");
+    expect(views.map((view) => view.data?.appId)).toContain(APP);
 
     // And it edited the team's file rather than inventing a personal duplicate,
     // which is the OTHER shape the old bug produced.
