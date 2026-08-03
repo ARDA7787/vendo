@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   createClaudeSession,
@@ -179,9 +182,12 @@ describe("permissions — the box is the permission, the door is the permission 
   });
 
   test("the deny-list is the whole of the local tool law — these names, exactly", async () => {
-    // Two groups: nothing a headless turn cannot do (no user, no egress), and the
+    // Three groups: nothing a headless turn cannot do (no user, no egress); the
     // SDK's provider-side tools, which reach the vendor's surfaces over the
-    // inference channel and so pass neither the box nor the door.
+    // inference channel and so pass neither the box nor the door; and the
+    // scheduling family, which leaves execution running after the turn that asked
+    // for it has ended — no turn left to be accountable to, so no guard, no audit
+    // row, no egress filter.
     const { options } = await run([]);
     expect(options.disallowedTools).toEqual([
       "WebSearch",
@@ -189,10 +195,116 @@ describe("permissions — the box is the permission, the door is the permission 
       "AskUserQuestion",
       "Projects",
       "Artifact",
-      "RemoteTrigger",
       "PushNotification",
       "SendFeedback",
+      "ClaudeDesign",
+      "RemoteTrigger",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "ScheduleWakeup",
     ]);
+  });
+});
+
+/**
+ * Every tool name the SDK's own generated schemas enumerate, read out of the
+ * INSTALLED package rather than restated here.
+ *
+ * `sdk-tools.d.ts` is generated from the CLI's JSON Schemas, which makes it the
+ * closest thing to a machine-readable tool list the SDK ships. It is TYPES only —
+ * there is no runtime constant, and TypeScript cannot recover an alias name from a
+ * union member, so no `satisfies` trick reaches these — hence reading the union as
+ * TEXT. Its members are SCHEMA names, which are not always tool names
+ * (`FileReadInput` belongs to the `Read` tool), so the ledger below classifies
+ * schema names; every name the deny-list carries happens to be spelled the same in
+ * both.
+ */
+function sdkToolSchemaNames(): string[] {
+  const resolve = createRequire(import.meta.url).resolve;
+  const declarations = readFileSync(
+    join(dirname(resolve("@anthropic-ai/claude-agent-sdk")), "sdk-tools.d.ts"),
+    "utf8",
+  );
+  const names = new Set<string>();
+  for (const union of ["ToolInputSchemas", "ToolOutputSchemas"]) {
+    const body = new RegExp(`export type ${union} =([^;]*);`).exec(declarations)?.[1];
+    if (body === undefined) {
+      throw new Error(
+        `the installed SDK no longer declares \`${union}\` in sdk-tools.d.ts — the ledger in claude-turn.test.ts has to be re-derived from whatever enumerates the tools now.`,
+      );
+    }
+    for (const member of body.split("|")) {
+      const name = /^(\w+)(?:Input|Output)$/.exec(member.trim())?.[1];
+      if (name !== undefined) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * The tools that RUN, classified by hand once against the shipped CLI's own
+ * constants (2.1.220).
+ *
+ * Every one of these acts inside the box or through the door, so it lands under
+ * something that decides: the box is the permission for its own hands, the guard is
+ * the permission for host tools. The task family is the SESSION's own task list
+ * ("Create a new task in the task list"), not a provider-side store;
+ * `ShowOnboardingRolePicker` is interactive-only and inert in a headless turn; and
+ * `ProposeSkills` is in the SDK's schemas with ZERO occurrences in the shipped CLI
+ * binary, so it is schema-only and denying it would deny nothing.
+ */
+const RUNS_UNDER_SOMETHING_THAT_DECIDES = [
+  "Agent", "Bash", "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree",
+  "FileEdit", "FileRead", "FileWrite", "Glob", "Grep", "ListMcpResources", "Mcp",
+  "Monitor", "NotebookEdit", "ProposeSkills", "REPL", "ReadMcpResource",
+  "ReadMcpResourceDir", "RefreshMcpTools", "ReportFindings",
+  "ShowOnboardingRolePicker", "TaskCreate", "TaskGet", "TaskList", "TaskOutput",
+  "TaskStop", "TaskUpdate", "TodoWrite", "Workflow",
+];
+
+describe("the deny-list is read against the SDK's own tool schemas", () => {
+  /**
+   * The defect this closes: `disallowedTools` names the tools we refuse, and an SDK
+   * bump that ships a new one is silently ADMITTED — nothing fails, nothing warns,
+   * and the tool is simply in the model's hands. That is how the whole scheduling
+   * family (`CronCreate`, `ScheduleWakeup`, …) got in: it shipped, the eight-name
+   * list did not move, and a review a version later found it.
+   *
+   * So every name the SDK's schemas enumerate must be classified — refused, or
+   * reviewed and allowed. A thirteenth-hour SDK addition lands in neither and fails
+   * here, by name.
+   */
+  test("a tool a future SDK adds cannot be admitted in silence", async () => {
+    const { options } = await run([]);
+    const classified = new Set<string>([
+      ...(options.disallowedTools as string[]),
+      ...RUNS_UNDER_SOMETHING_THAT_DECIDES,
+    ]);
+    const unclassified = sdkToolSchemaNames().filter((name) => !classified.has(name));
+    expect(
+      unclassified,
+      `the installed SDK ships tool schemas this deny-list has never been read against: ${unclassified.join(", ")}. `
+      + "Read the name out of the shipped CLI's own constants (~/.local/share/claude/versions/, not the SDK's type names) and either "
+      + "add it to DISALLOWED_TOOLS in claude-turn.ts or classify it in RUNS_UNDER_SOMETHING_THAT_DECIDES here.",
+    ).toEqual([]);
+  });
+
+  /**
+   * The other direction, which the forward check cannot see: a RENAME. If
+   * `CronCreate` becomes `ScheduleCreate`, the forward check catches the arrival but
+   * the deny-list keeps a dead string, and the door is open again. A refused name
+   * that no longer exists in the SDK's schemas is that signal.
+   */
+  test("every refused name still exists in the SDK's schemas — a rename reopens the door", async () => {
+    const { options } = await run([]);
+    const shipped = new Set(sdkToolSchemaNames());
+    const vanished = (options.disallowedTools as string[]).filter((name) => !shipped.has(name));
+    expect(
+      vanished,
+      `these names are refused but the installed SDK no longer enumerates them: ${vanished.join(", ")}. `
+      + "Either the tool is gone (drop the name) or it was RENAMED, in which case the replacement is now allowed.",
+    ).toEqual([]);
   });
 });
 

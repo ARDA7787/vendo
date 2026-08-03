@@ -25,6 +25,12 @@ const GOOD_APP = `<App name="Invoices">
   </Stack>
 </App>`;
 
+const GOOD_PLAN = `<Plan name="Invoices">
+  <Group title="Unpaid">
+    <Leaf component="Table" />
+  </Group>
+</Plan>`;
+
 function seam(files: Record<string, string> = {}) {
   const inner = testWorkspace(files);
   const emitted: Array<{ id: string; part: VendoViewPart }> = [];
@@ -149,6 +155,15 @@ describe("a parsing save to app.vendo", () => {
     expect(emitted.every((entry) => entry.id === vendoViewStreamId(APP))).toBe(true);
   });
 
+  it("SETTLES the paint — a finished app must leave \"Building your view…\"", async () => {
+    const { emitted, save } = seam();
+    await save(APP_VENDO, GOOD_APP);
+    // Stamped streaming, the renderer holds the forming skeleton forever: no
+    // verdict, no settle-scroll, no pin affordance. The app half not being
+    // wired changes nothing — this is still the last paint of this commit.
+    expect((emitted[0]!.part.payload as { streaming?: boolean }).streaming).toBe(false);
+  });
+
   it("emits for appendFile too — the seam is the commit, not the write method", async () => {
     const { workspace, emitted } = seam({ [APP_VENDO]: "" });
     await workspace.appendFile(APP_VENDO, GOOD_APP);
@@ -196,18 +211,14 @@ describe("a non-parsing save", () => {
 describe("a save to plan.vendo", () => {
   it("emits the skeleton so it renders the moment the plan file exists", async () => {
     const { emitted, save } = seam();
-    await save(
-      PLAN_VENDO,
-      `<Plan name="Invoices">
-  <Group title="Unpaid">
-    <Leaf component="Table" />
-  </Group>
-</Plan>`,
-    );
+    await save(PLAN_VENDO, GOOD_PLAN);
     expect(emitted).toHaveLength(1);
     expect(emitted[0]!.id).toBe(vendoViewStreamId(APP));
     const payload = emitted[0]!.part.payload as { nodes: unknown[] };
     expect(payload.nodes.length).toBeGreaterThan(0);
+    // A plan IS the mid-build state: this one stays streaming, which is what
+    // holds the forming skeleton instead of judging a tree still being written.
+    expect((emitted[0]!.part.payload as { streaming?: boolean }).streaming).toBe(true);
   });
 
   it("emits nothing for a plan that does not parse", async () => {
@@ -245,7 +256,7 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
       await workspace.writeFile(path, content);
       await workspace.commit();
     };
-    return { calls, emitted, save };
+    return { calls, emitted, save, workspace };
   }
 
   it("hands the compiled document over, so the row and the queries are the runtime's to resolve", async () => {
@@ -269,6 +280,13 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
     // The first write is on screen before any host query has run.
     expect((emitted[0]!.part.payload as { data?: unknown }).data).toBeUndefined();
     expect((emitted[0]!.part.payload as { streaming?: boolean }).streaming).toBe(true);
+  });
+
+  it("streams the skeleton and SETTLES the paint that carries the data", async () => {
+    const { emitted, save } = appSeam({ spend: { total: 4210 } });
+    await save(APP_VENDO, WITH_QUERY);
+    expect(emitted.map((entry) => (entry.part.payload as { streaming?: boolean }).streaming))
+      .toEqual([true, false]);
   });
 
   it("never mutates the part it already emitted when the data lands", async () => {
@@ -312,6 +330,41 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
     await expect(workspace.commit()).resolves.toMatchObject({ status: "ok" });
     expect(emitted).toHaveLength(1);
     expect((emitted[0]!.part.payload as { data?: unknown }).data).toBeUndefined();
+  });
+
+  it("never lets the plan overwrite the app when ONE commit carries both files", async () => {
+    // Both hot-path files write the SAME stream id, so whichever emits last is
+    // what the person is left looking at — and `changed` order belongs to the
+    // store (sorted, so `app.vendo` first), not to the harness. Pin both orders:
+    // the app's data must survive either way.
+    for (const staged of [[PLAN_VENDO, APP_VENDO], [APP_VENDO, PLAN_VENDO]]) {
+      const { emitted, workspace } = appSeam({ spend: { total: 4210 } });
+      for (const path of staged) {
+        await workspace.writeFile(path, path === APP_VENDO ? WITH_QUERY : GOOD_PLAN);
+      }
+      await workspace.commit();
+      // Exactly the app's own two paints — the plan yields rather than adding a
+      // third, data-less one.
+      expect(emitted.map((entry) => entry.id))
+        .toEqual([vendoViewStreamId(APP), vendoViewStreamId(APP)]);
+      expect((emitted.at(-1)!.part.payload as { data?: unknown }).data)
+        .toEqual({ spend: { total: 4210 } });
+      expect((emitted.at(-1)!.part.payload as { streaming?: boolean }).streaming).toBe(false);
+    }
+  });
+
+  it("yields only for the app in the SAME commit — another app's plan still paints", async () => {
+    const other = "app_2";
+    const { emitted, workspace } = appSeam({ spend: { total: 4210 } });
+    await workspace.writeFile(APP_VENDO, WITH_QUERY);
+    await workspace.writeFile(PLAN_VENDO, GOOD_PLAN);
+    await workspace.writeFile(`/user/apps/${other}/plan.vendo`, GOOD_PLAN);
+    await workspace.commit();
+    const forOther = emitted.filter((entry) => entry.id === vendoViewStreamId(other));
+    expect(forOther).toHaveLength(1);
+    expect((forOther[0]!.part.payload as { streaming?: boolean }).streaming).toBe(true);
+    expect((emitted.filter((entry) => entry.id === vendoViewStreamId(APP)).at(-1)!
+      .part.payload as { data?: unknown }).data).toEqual({ spend: { total: 4210 } });
   });
 });
 

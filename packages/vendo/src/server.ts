@@ -2043,7 +2043,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const catalog = mergeRuntimeCatalog(
     mergeRuntimeCatalog(
       config.profile?.catalog !== undefined
-        ? runtimeCatalogFromFile(config.profile.catalog)
+        ? runtimeCatalogFromFile(config.profile.catalog, "createVendo({ profile: { catalog } })")
         : runtimeCatalogFromJson(dotVendoFile("catalog.json", config.profileDir)),
       normalizeCatalogConfig(packs.components),
     ),
@@ -2358,7 +2358,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       // makes their tools callable on the door's next listing. Composio is
       // never named here — a connector fills the slot or nothing does.
       search: async (query, limit, searchCtx) => {
-        const matches = await toolSearch.search(query, limit === undefined ? undefined : { limit });
+        // `searchCtx` reaches the registry: the toolkits this search expands
+        // become callable for THIS caller's listing, not for every later one.
+        const matches = await toolSearch.search(query, limit === undefined ? undefined : { limit }, searchCtx);
         const connected = new Set(await connectedToolkitsFor(searchCtx));
         const rows = await Promise.all(matches.map(async (match) => {
           const toolkit = (await actions.connectorToolkit(match.name))?.toolkit;
@@ -2492,11 +2494,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // its way back to an off-menu tool. The expansion cap (discovery
     // discipline) rides the same call: it bounds how many lazy toolkits one
     // query may pull in before the menu filter runs.
-    search: async (query, options) => onAgentMenu(
+    search: async (query, options, searchCtx) => onAgentMenu(
       await actions.search(query, {
         ...options,
         ...(config.agent?.maxSearchExpansions === undefined ? {} : { maxExpansions: config.agent.maxSearchExpansions }),
-      }),
+      }, searchCtx),
       (match) => match.name,
     ),
     // Connection-scoped loadout seed (spec 2026-07-20): each turn starts
@@ -2798,7 +2800,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   }
   async function loadoutSeedFor(ctx: RunContext): Promise<string[]> {
     const toolkits = await connectedToolkitsFor(ctx);
-    return onAgentMenu(await actions.loadoutSeed(toolkits), (name) => name);
+    // `ctx` rides through: the seed expands this subject's connected toolkits,
+    // and the listing that gets them is theirs (fix 2026-08-03 — lazy expansion
+    // used to inflate every listing in the process).
+    return onAgentMenu(await actions.loadoutSeed(toolkits, ctx), (name) => name);
   }
   // 02-store §4 (kill-list B3) TTL sweep: erase every idle ephemeral session's
   // disk rows, then cascade each swept subject into the agent's in-memory

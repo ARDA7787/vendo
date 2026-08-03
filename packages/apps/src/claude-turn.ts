@@ -63,28 +63,48 @@
 /** The MCP server name our projected tools live under (`mcp__vendo__<tool>`). */
 export const VENDO_MCP_SERVER = "vendo";
 
-/** The whole of the local tool law, in two groups.
+/** The whole of the local tool law, in three groups.
  *
  *  A headless box turn has no user to ask and no egress to spend, so `WebSearch`,
- *  `WebFetch` and `AskUserQuestion` can never be available. And the SDK's
- *  PROVIDER-SIDE tools act on the vendor's own surfaces over the inference
- *  channel rather than through this host, which puts them outside the box and the
- *  door both — no guard, no audit row, no egress filter (`Projects`' own
- *  `project_write` uploads a workspace file's contents provider-side, and the
- *  tool's schema says the contents "never enter your context", so not even the
- *  transcript records what left).
+ *  `WebFetch` and `AskUserQuestion` can never be available.
  *
- *  `disallowedTools` removes them from the model's view entirely, so it never
- *  plans around them. Everything else the SDK ships, now or later, runs. */
+ *  The SDK's PROVIDER-SIDE tools act on the vendor's own surfaces over the
+ *  inference channel rather than through this host, which puts them outside the
+ *  box and the door both — no guard, no audit row, no egress filter (`Projects`'
+ *  own `project_write` uploads a workspace file's contents provider-side, and the
+ *  tool's schema says the contents "never enter your context", so not even the
+ *  transcript records what left; `ClaudeDesign` drives write operations against a
+ *  design server behind its own separate login).
+ *
+ *  And the SCHEDULING family leaves execution BEHIND. A cron job, a remote trigger
+ *  or a wakeup outlives the turn that created it and fires later with no turn to be
+ *  accountable to — so whatever it then does passes no guard, lands no audit row
+ *  and meets no egress filter, and the box keeps working after the user closed the
+ *  tab. `CronDelete` and `CronList` are here for the other direction too: under
+ *  `machine: "local"` the schedules on that disk are the OPERATOR's, and a tenant's
+ *  turn may neither enumerate them nor destroy them.
+ *
+ *  `disallowedTools` removes them from the model's view entirely, so it never plans
+ *  around them. Everything else the SDK ships runs — and `claude-turn.test.ts`
+ *  holds a ledger of every tool the SDK's own generated schemas enumerate, so a
+ *  name a future SDK adds fails a test instead of being admitted in silence. */
 const DISALLOWED_TOOLS = [
+  // No user to ask, no egress to spend.
   "WebSearch",
   "WebFetch",
   "AskUserQuestion",
+  // Provider-side: the vendor's surfaces, over the inference channel.
   "Projects",
   "Artifact",
-  "RemoteTrigger",
   "PushNotification",
   "SendFeedback",
+  "ClaudeDesign",
+  // Scheduling: execution that outlives the turn that asked for it.
+  "RemoteTrigger",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "ScheduleWakeup",
 ];
 
 export type ClaudeTurnEvent =

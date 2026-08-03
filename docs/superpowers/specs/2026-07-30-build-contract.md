@@ -204,11 +204,21 @@ caller may write it — an unscoped read let one subject's file land under anoth
 subject's appId and execute a `fn:` query on their machine. Known gaps at
 landing: island admission (`prepareIslands`) does not run on this path, so
 `validate` is the review floor; a deleted `app.vendo` leaves a listable row
-(`vendo_apps_delete` is the real verb); no per-save history entry; a served
-(`ui: "http"`) app would be demoted if a file were written for its id
-(experimental, off by default); `authored()` bypasses `persistEdit`, so
-`assertCurrent` and the sponsor's own re-bind do not run (sponsorship still
-fails closed at fire time via the intent-hash check).
+(`vendo_apps_delete` is the real verb); a served (`ui: "http"`) app would be
+demoted if a file were written for its id (experimental, off by default).
+`authored()` does not call `persistEdit`, but it now takes the three things
+`persistEdit` does that a save owes (checker round 3, same day, all on the
+mayWrite branch so no foreign row is read or announced): §9.9's
+`onDocumentEdit` announcement on every save that lands — a rewrite leaves
+`trigger` verbatim, so the intent hash does NOT move and this hook is the only
+thing that can invalidate a third party's rewrite or re-bind the sponsor's own;
+a `history.append` undo point per changing save (skipped when the save changed
+nothing); and `assertCurrent`'s baseline re-check before the put, which refuses
+a save whose document carries a stale history forward rather than reverting an
+`edit()` that landed in the window. The residual TOCTOU is persistEdit's own
+(no revision on the store seam). Pinned component sources now survive a save
+whose text omits them — `pins` carries on naming them, and a pin with no source
+is not a pin.
 
 ## 2. Layering (dependency-guard rows)
 

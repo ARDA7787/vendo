@@ -31,6 +31,7 @@ import type {
   StoreAdapter,
   ToolCall,
   ToolDescriptor,
+  ToolListingContext,
   ToolOutcome,
   ToolRegistry,
   VendoRecord,
@@ -537,8 +538,12 @@ class GuardImplementation implements VendoGuard {
       // see is one it cannot be talked into using; a tool it can see but is
       // refused becomes something it retries and works around. Callers that pass
       // no context get the full set, exactly as before.
-      descriptors: async (ctx?: Pick<RunContext, "venue" | "presence">) => {
-        const all = await tools.descriptors();
+      // The context is forwarded INWARD as well as read here: the registry
+      // narrows a lazily expanded connector toolkit to the listing that
+      // searched it (ToolListingContext), and a wrapper that answered from the
+      // unscoped set would hand every reader another conversation's expansion.
+      descriptors: async (ctx?: ToolListingContext) => {
+        const all = await tools.descriptors(ctx);
         return ctx === undefined ? all : projectableForRun(all, ctx);
       },
       execute: async (call, ctx) => {

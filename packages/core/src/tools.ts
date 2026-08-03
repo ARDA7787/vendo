@@ -293,15 +293,29 @@ export const toolOutcomeSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("connect-required"), connect: connectRequiredSchema }).passthrough(),
 ]) satisfies z.ZodType<ToolOutcome>;
 
+/** The run a listing is asked FOR (01-core §4) — a `RunContext` is one.
+ *
+ *  `venue`/`presence` are what design §12's projection reads: the guard
+ *  withholds destructive and external tools from an unattended run.
+ *
+ *  The OBJECT ITSELF also identifies the run, and a registry may narrow a
+ *  listing by it: `@vendoai/actions` scopes lazily expanded connector toolkits
+ *  to the run that expanded them, keyed by this object's identity (fix
+ *  2026-08-03 — expansion was process-wide and permanent, so one conversation's
+ *  `search_connectors` answered an unrelated conversation's first `tools/list`
+ *  with 301 tools instead of 35). Pass a run's OWN context object through, do
+ *  not rebuild an equivalent one per call: a fresh object reads as a fresh run,
+ *  which costs a re-search rather than another run's set. */
+export type ToolListingContext = Pick<RunContext, "venue" | "presence">;
+
 /** 01-core §4 */
 export interface ToolRegistry {
-  /** The tools available. Passing a run's venue/presence asks for the set that
-   *  may be PROJECTED into that run — the guard withholds destructive and
-   *  external tools from an unattended one (design §12's law, `projectableForRun`).
+  /** The tools available. Passing a run's context asks for the set that may be
+   *  PROJECTED into that run — see {@link ToolListingContext}.
    *
    *  Optional so every existing registry stays a valid implementation: a
    *  zero-parameter `descriptors()` is assignable here and simply ignores the
    *  hint, which means only the guard-bound registry has to know the law. */
-  descriptors(ctx?: Pick<RunContext, "venue" | "presence">): Promise<ToolDescriptor[]>;
+  descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]>;
   execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome>;
 }

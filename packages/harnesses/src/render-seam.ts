@@ -126,20 +126,24 @@ export interface RenderSeamOptions {
  *  reject it — a payload it would not render is not a view, and a half-rendered
  *  app is worse than the last good one.
  *
- *  `streaming: true`, exactly as the shipped emitter stamps its partial trees
- *  (packages/apps runtime.ts). Without it the renderer treats a mid-build tree as
- *  a FINISHED one and shows "Invalid UI tree" while the app is still growing —
- *  the skeleton experience depends on this flag, not just on the payload. */
+ *  `streaming` is the mid-build flag the shipped emitter stamps on its partial
+ *  trees (packages/apps runtime.ts), and it has to FLIP OFF for the last paint,
+ *  exactly as that emitter's final view does. While it is on, the renderer holds
+ *  the forming skeleton instead of ever reaching a verdict, the card's bar stays
+ *  on "Building your view…" and its settle-scroll, stage registration and pin
+ *  affordance never arm. Stamped on a finished app it is not caution, it is an
+ *  app that never finishes. */
 const viewPart = (
   appId: AppId,
   payload: UIPayload,
+  streaming: boolean,
 ): { streamId: string; part: VendoViewPart } | undefined => {
   const parsed = vendoViewPartSchema.safeParse({
     type: "data-vendo-view",
     appId,
     // Spread, never mutated in place: the emitted part must not change under the
     // consumer when this function's caller fills the data in afterwards.
-    payload: { ...payload, streaming: true },
+    payload: { ...payload, streaming },
   });
   if (!parsed.success) return undefined;
   return { streamId: vendoViewStreamId(appId), part: parsed.data };
@@ -186,18 +190,21 @@ export async function viewForWrite(
     ) as unknown as UIPayload;
   }
 
-  if (compiledApp === undefined) return viewPart(appId, payload);
+  // A plan IS the mid-build state: its skeleton stays streaming until the app
+  // document itself lands.
+  if (compiledApp === undefined) return viewPart(appId, payload, true);
   // "The skeleton renders the moment the plan file exists" is a promise about
   // SECONDS, and the app half runs real host queries. So the skeleton goes out
   // first and the same stream id is written again when the data lands — the
   // engine's own progressive behavior, and the reason successive views reconcile
   // in place instead of stacking.
   if (options.authoredApp !== undefined) {
-    const skeleton = viewPart(appId, payload);
+    const skeleton = viewPart(appId, payload, true);
     if (skeleton !== undefined) options.emit(skeleton.streamId, skeleton.part);
   }
   const data = await options.authoredApp?.({ appId, compiled: compiledApp });
-  return viewPart(appId, data === undefined ? payload : { ...payload, data });
+  // The app half has run: this is the finished paint, so it SETTLES.
+  return viewPart(appId, data === undefined ? payload : { ...payload, data }, false);
 }
 
 /**
@@ -238,7 +245,23 @@ export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSe
         // A conflict means nothing landed — the harness re-reads and re-applies,
         // and the last good view stays on screen until something actually does.
         if (result.status !== "ok") return result;
-        for (const path of result.changed) await emitFor(path);
+        // Both hot-path files of one app write the SAME stream id, so a commit
+        // carrying both would have the plan's data-less skeleton land as one of
+        // the two views — and since `changed` is sorted, `app.vendo` sorts first
+        // and the plan would overwrite the finished app with a picture of it.
+        // The app document is the better view by definition, so the plan yields
+        // to it. A commit with only the plan still paints its skeleton: that is
+        // the seconds-to-skeleton promise, and it is the case that made the
+        // ordering here look harmless before the app half carried data.
+        const authored = new Set(
+          result.changed
+            .filter((path) => hotPathFile(path) === "app.vendo")
+            .map((path) => hotPathAppId(path)),
+        );
+        for (const path of result.changed) {
+          if (hotPathFile(path) === "plan.vendo" && authored.has(hotPathAppId(path))) continue;
+          await emitFor(path);
+        }
         return result;
       };
     },

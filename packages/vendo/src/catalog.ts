@@ -85,12 +85,32 @@ function parseIssue(error: unknown): string {
  * source it came from. CALLING it, rather than restating its pattern here, is what
  * stops the two ends from disagreeing again — the same posture `packs/merge.ts`
  * takes for a pack's components, where the error can name the pack.
+ *
+ * What a failure DOES depends on who wrote the name, and the two answers are not
+ * a compromise:
+ *
+ *   - a name in `createVendo({ catalog })` was typed by the host developer at that
+ *     call site, so it THROWS — loud, immediate, and pointing at the line to fix;
+ *   - a name in a catalog@1 document was written by `vendo sync` off the host's own
+ *     source, and `catalogEntrySchema` is looser than core's grammar in two ways
+ *     (`$` is legal in it, and it has no length cap). Throwing there lands inside
+ *     `runtimeCatalogFromJson`'s catch, which logs, returns `[]`, and boots the
+ *     host with ZERO components while advising a `vendo sync` that regenerates the
+ *     same file. So the ENTRY is dropped with a named warning and the rest of the
+ *     catalog loads.
+ *
+ * The residue, stated because it is a real cost: a host that never mounts `/host`
+ * could use `Card$Legacy` end to end, and now loses that one component. Keeping it
+ * would mean knowing at catalog-build time whether a harness will project the
+ * mount, which this module cannot see. One component versus the whole catalog is
+ * the trade, and the warning names exactly which one and why.
  */
-const requireProjectableName = (name: string, source: string): void => {
+const projectionRefusal = (name: string, source: string): VendoError | undefined => {
   try {
     componentPath(name);
+    return undefined;
   } catch (cause) {
-    throw new VendoError(
+    return new VendoError(
       "validation",
       `${source} declares the component name ${JSON.stringify(name)}, which cannot be projected onto the read-only /host mount: ${cause instanceof Error ? cause.message : String(cause)}`,
       { cause },
@@ -98,25 +118,36 @@ const requireProjectableName = (name: string, source: string): void => {
   }
 };
 
+const requireProjectableName = (name: string, source: string): void => {
+  const refusal = projectionRefusal(name, source);
+  if (refusal !== undefined) throw refusal;
+};
+
 /** Task 15a: the parsed-catalog leg of runtimeCatalogFromJson, exported so an
  * in-memory `profile.catalog` (already the catalog@1 file shape) normalizes
  * through the SAME validator-building path as the disk read. */
 export function runtimeCatalogFromFile(
   parsed: CatalogFile,
-  /** What a bad entry's error names as its origin — the file by default, because
+  /** What a bad entry's warning names as its origin — the file by default, because
    *  that is where all but the in-memory `profile.catalog` caller reads from. */
   source = ".vendo/catalog.json",
 ): NormalizedCatalog {
-  return parsed.entries.map((entry) => {
-    requireProjectableName(entry.name, source);
-    return {
+  const catalog: NormalizedCatalogEntry[] = [];
+  for (const entry of parsed.entries) {
+    const refusal = projectionRefusal(entry.name, source);
+    if (refusal !== undefined) {
+      console.warn(`[vendo] ${refusal.message} Skipping that entry; the rest of the catalog loads. Rename the component to recover it.`);
+      continue;
+    }
+    catalog.push({
       name: entry.name,
       description: entry.description,
       propsSchema: diskPropsValidator(entry.propsSchema, entry.name),
       propsJsonSchema: entry.propsSchema,
       ...(entry.examples === undefined ? {} : { examples: entry.examples }),
-    };
-  });
+    });
+  }
+  return catalog;
 }
 
 /**

@@ -14,6 +14,7 @@ import type {
 } from "@vendoai/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -73,6 +74,17 @@ interface SessionState extends McpStateSession {
    *  the token that created it — the turn-path analogue of the OAuth path's
    *  subject + clientId binding. */
   turnToken?: string;
+  /**
+   * This session's cached listing is STALE: the callable surface grew (a
+   * connector search expanded a lazy toolkit) after the client last listed.
+   *
+   * A flag rather than a fire-and-forget notification because the transport
+   * DROPS a `list_changed` sent before the client's standalone SSE stream
+   * exists — silently, with no throw to catch — and a `search_connectors` as
+   * the session's first call is exactly that case. The flag is replayed when
+   * the stream attaches and cleared by the `tools/list` it exists to provoke.
+   */
+  toolsChanged?: boolean;
 }
 
 /** The `clientId` a turn session records in door state. Not a secret and not an
@@ -603,7 +615,16 @@ class Door {
         : bearing.turn.ctx,
       ...(bearing === undefined ? {} : { turn: bearing.turn, turnToken: bearing.token }),
       server,
-      handleRequest: (req) => transport.handleRequest(req),
+      handleRequest: async (req) => {
+        const response = await transport.handleRequest(req);
+        // The client's standalone SSE stream just attached. Everything the door
+        // tried to announce before it existed was dropped by the transport, so
+        // this is where a pending `list_changed` gets its only other chance.
+        if (req.method === "GET" && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+          await this.#flushToolsChanged(state);
+        }
+        return response;
+      },
       close: () => transport.close(),
     };
     this.#registerHandlers(state, identity);
@@ -612,11 +633,15 @@ class Door {
   }
 
   #registerHandlers(state: SessionState, identity: HostIdentity): void {
-    state.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: state.turn === undefined
+    state.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const tools = state.turn === undefined
         ? await this.#listedTools(state)
-        : await turnTools(state.turn),
-    }));
+        : await turnTools(state.turn);
+      // The client is holding a fresh listing now, which is the whole point of
+      // the notification — so the staleness this session was tracking is spent.
+      state.toolsChanged = false;
+      return { tools };
+    });
     state.server.setRequestHandler(CallToolRequestSchema, async (request) =>
       this.#callTool(request.params.name, request.params.arguments ?? {}, state, identity));
 
@@ -663,6 +688,7 @@ class Door {
     const descriptors = (await this.#config.tools.descriptors(state.context))
       .filter((descriptor) => offeredAtDoor(menu, descriptor.name));
     const appsConfigured = this.#config.apps !== undefined;
+    const compiles = wireSchemaCompiler();
     // The bound registry's descriptors are served VERBATIM — name, description,
     // and inputSchema are the registry's, never the door's (10-mcp §2/§4). But a
     // registry that owns an app-viewer name (e.g. vendo_apps_open from
@@ -680,7 +706,7 @@ class Door {
         name,
         description,
         inputSchema: inputSchema as Tool["inputSchema"],
-        ...wireOutputSchema(outputSchema),
+        ...wireOutputSchema(outputSchema, compiles),
         ...(label === undefined ? {} : { title: label }),
         annotations: toolAnnotations(risk, label),
       };
@@ -712,9 +738,10 @@ class Door {
     // what is callable, and an unknown name comes back as its own error.
     if (state.turn !== undefined) {
       const turn = state.turn;
+      const offered = await this.#offeredNames(state, name);
       const result = await turn.tools.call(name, args as Json);
-      await this.#announceExpansion(state, name, result.status === "ok");
-      return turnResult(result, await this.#turnDeclaresWireOutput(turn, name, result));
+      await this.#announceExpansion(state, name, offered);
+      return turnResult(result);
     }
     const descriptors = await this.#config.tools.descriptors(state.context);
     const called = descriptors.find((descriptor) => descriptor.name === name);
@@ -727,57 +754,84 @@ class Door {
       }
       return inBandError(`not-found: Tool ${name} was not found`);
     }
-    // Asked with the SAME sanitizer the listing used, so what the door promised
-    // and what the door keeps cannot drift.
-    const declaredOutput = declaresWireOutput(called.outputSchema);
+    const offered = await this.#offeredNames(state, name);
     const id = await this.#replayId(state, name, args);
     const outcome = await this.#config.tools.execute({ id, tool: name, args }, state.context);
     await this.#recordReplay(state, name, args, id, outcome.status);
-    await this.#announceExpansion(state, name, outcome.status === "ok");
+    await this.#announceExpansion(state, name, offered);
     // FIX E: a bound registry that owns an app-viewer name (vendo_apps_open via
     // apps.agentTools()) returns an OpenSurface envelope ({kind,payload}); the
     // MCP Apps shim renders a bare format-tagged UIPayload (core §8), so unwrap
     // it exactly as the door's own apps path does before mapping the result.
     if (name === "vendo_apps_open" && this.#config.apps !== undefined && outcome.status === "ok") {
       const output = await this.#mcpAppsOpenOutput(outcome.output, args, state.context, identity);
-      return mapOutcome({ status: "ok", output: output as Json }, identity.name, declaredOutput);
+      return mapOutcome({ status: "ok", output: output as Json }, identity.name);
     }
-    return mapOutcome(outcome, identity.name, declaredOutput);
+    return mapOutcome(outcome, identity.name);
   }
 
   /**
-   * Did the door's turn listing advertise an `outputSchema` for `name`?
+   * The names this session's `tools/list` would OFFER right now — the before/after
+   * pair `#announceExpansion` compares.
    *
-   * Asked only when the answer changes the wire. A record output rides as
-   * `structuredContent` verbatim whether a schema was advertised or not, so the
-   * equipped listing is never re-fetched for one; a NON-record ok output is the
-   * single case that would otherwise carry no structured content at all and make
-   * the official client throw, and that is the case this pays a `list()` for.
+   * `undefined` when the answer is not needed (this call is not the one that can
+   * expand) or cannot be read: the surface is read AROUND an already-executed
+   * write, so a listing that throws must never become the model's answer.
    */
-  async #turnDeclaresWireOutput(turn: LiveTurn, name: string, result: ToolResult): Promise<boolean> {
-    if (result.status !== "ok" || isRecord(result.output)) return false;
-    const listing = (await turn.tools.list()).find((candidate) => candidate.name === name);
-    return declaresWireOutput(listing?.outputSchema);
+  async #offeredNames(state: SessionState, name: string): Promise<Set<string> | undefined> {
+    if (name !== CONNECTOR_SEARCH_TOOL) return undefined;
+    try {
+      if (state.turn !== undefined) {
+        return new Set((await state.turn.tools.list()).map((listing) => listing.name));
+      }
+      const menu = await this.#menu();
+      const descriptors = await this.#config.tools.descriptors(state.context);
+      return new Set(descriptors.filter(({ name: tool }) => offeredAtDoor(menu, tool)).map(({ name: tool }) => tool));
+    } catch {
+      return undefined;
+    }
   }
 
   /**
-   * `search_connectors` is the one tool whose SUCCESS grows the callable surface:
-   * it expands a matching connector toolkit, so the tools it just reported exist
+   * `search_connectors` is the one tool that can grow the callable surface: it
+   * expands a matching connector toolkit, so the tools it just reported exist
    * only from the NEXT listing onward. An SDK client lists once and caches, so
    * without this notification the found tool is named to the model and then
    * refuses to run for the rest of the session.
    *
-   * Tied to that one trigger by NAME, because the door already knows the name of
-   * the call it just served — no generic broadcast, no per-call diffing.
+   * Keyed off the EXPANSION, not off the call's status, which is the same
+   * distinction twice over: a search that expanded nothing announces nothing
+   * (bare noise a client answers with a re-list), and a search that expanded a
+   * toolkit and THEN failed downstream — the registry has already grown by then
+   * — announces anyway, because the tools are callable and would otherwise be
+   * invisible for the rest of the session.
    */
-  async #announceExpansion(state: SessionState, name: string, ok: boolean): Promise<void> {
-    if (!ok || name !== CONNECTOR_SEARCH_TOOL) return;
+  async #announceExpansion(
+    state: SessionState,
+    name: string,
+    before: Set<string> | undefined,
+  ): Promise<void> {
+    if (name !== CONNECTOR_SEARCH_TOOL) return;
+    const after = await this.#offeredNames(state, name);
+    // An unreadable surface on either side says nothing about growth. Announce:
+    // a spurious re-list costs one request, a missed one costs the session.
+    if (before !== undefined && after !== undefined && sameNames(before, after)) return;
+    state.toolsChanged = true;
+    await this.#flushToolsChanged(state);
+  }
+
+  /** Send the pending `list_changed`, if this session has one. Never clears the
+   *  flag: the transport drops a notification with no standalone stream open and
+   *  reports success either way, so only the client's next `tools/list` proves it
+   *  landed. Called after every expansion AND when a stream attaches. */
+  async #flushToolsChanged(state: SessionState): Promise<void> {
+    if (state.toolsChanged !== true) return;
     try {
       await state.server.sendToolListChanged();
     } catch (error) {
-      // The tool already ran. A notification the transport could not place (no
-      // standalone SSE stream open, a session already closing) must not turn a
-      // completed call into a JSON-RPC error the client would retry.
+      // The tool already ran. A notification the transport could not place (a
+      // session already closing) must not turn a completed call into a JSON-RPC
+      // error the client would retry; the flag survives for the next stream.
       console.error("[vendo] mcp door: tools/list_changed notification failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1150,6 +1204,26 @@ const VENDO_TOOL_PREFIX = "vendo_";
  *  Duplicated as a literal for the same layering reason as the prefix above. */
 const CONNECTOR_SEARCH_TOOL = "search_connectors";
 
+/**
+ * Vendo's reserved namespace for keys the RUNTIME adds to a tool result — the
+ * `toolOutputCap` truncation envelope (`vendo_truncated`/`vendo_chars`/
+ * `vendo_preview`, minted in `packages/agent/src/tools.ts`) and
+ * {@link VENDO_RESULT_VALUE} here.
+ *
+ * Reserved because the official client validates every result against the
+ * advertised schema: a host that happens to declare a field of the same name and
+ * a different type would make its own tool throw on a truncated answer. The
+ * prefix is what makes that collision impossible to hit by accident, and it is
+ * why the sanitizer drops declared `vendo_*` result properties.
+ */
+const VENDO_RESULT_PREFIX = "vendo_";
+
+/** The one key a NON-record ok output rides under. `structuredContent` must be an
+ *  object, so a string, a number or a bare array needs a wrapper or it travels
+ *  as text only — which the client reads as a broken server whenever the tool
+ *  advertised a schema. */
+const VENDO_RESULT_VALUE = `${VENDO_RESULT_PREFIX}value`;
+
 /** Whether a curated door offers `name`. Asked by BOTH the listing and the call
  *  path, so a curated door cannot advertise one surface and answer to another. */
 function offeredAtDoor(menu: Set<string> | undefined, name: string): boolean {
@@ -1173,65 +1247,156 @@ function toolAnnotations(risk: RiskLabel, title?: string): NonNullable<Tool["ann
   };
 }
 
-/** ~32KB of serialized JSON Schema. A generated response schema can be an entire
- *  inlined OpenAPI response model, and every `tools/list` pays for it — the
- *  model's context first. Past the cap the door says nothing rather than
- *  everything, exactly as it does for a shape it cannot state. */
+/** ~32KiB of serialized JSON Schema, in BYTES on the wire (a CJK-labelled schema
+ *  is ~3x its `.length`). A generated response schema can be an entire inlined
+ *  OpenAPI response model, and every `tools/list` pays for it — the model's
+ *  context first. Past the cap the door says nothing rather than everything,
+ *  exactly as it does for a shape it cannot state. */
 const OUTPUT_SCHEMA_CAP = 32 * 1024;
+
+const utf8 = new TextEncoder();
+
+/**
+ * Keywords dropped from the TOP level of a sanitized output schema: every one of
+ * them can reject an object over keys the schema never mentions, which is
+ * exactly what the door substitutes when it cannot return what the host
+ * declared (the `toolOutputCap` truncation envelope, the `vendo_value` wrapper).
+ * Measured against the official client's own validator: `allOf: [{required}]`,
+ * `maxProperties`, and `not` each turned a served result into a client throw.
+ *
+ * Top level ONLY. A nested constraint applies to the value of a field the host
+ * declared, so it can only ever reject the host's own result — never a
+ * reserved-key envelope, whose keys no host schema mentions.
+ */
+const UNKEEPABLE_KEYWORDS = [
+  "required",
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "not",
+  "if",
+  "then",
+  "else",
+  "dependencies",
+  "dependentRequired",
+  "dependentSchemas",
+  "minProperties",
+  "maxProperties",
+  "propertyNames",
+  "unevaluatedProperties",
+] as const;
 
 /**
  * The tool's declared result shape on the wire (design 2026-08-03 D5) so the
  * model knows a query's fields before calling it — SANITIZED, because the
- * official MCP client turns the declaration into two hard promises and the door
- * has to be able to keep both.
+ * official MCP client turns the declaration into three hard promises and the
+ * door has to be able to keep all three.
  *
  * 1. `tools/list` is parsed with the SDK's `ToolSchema`, whose `outputSchema` is
  *    `{ type: "object", properties?: Record<string, object>, required?: string[] }`.
- *    A top-level `{"type":"array"}` (ordinary in an OpenAPI spec), a boolean
- *    property subschema (`{"x": true}` — LEGAL JSON Schema 2020-12), or a
- *    malformed `required: "id"` all fail that parse and take the WHOLE listing
- *    down, every other tool with it. So the shape is checked here, and a schema
- *    that cannot be stated is omitted rather than shipped.
- * 2. `tools/call` THROWS on any non-`isError` result whose `structuredContent`
+ *    A top-level `{"type":"array"}` (ordinary in an OpenAPI spec) or a boolean
+ *    property subschema (`{"x": true}` — LEGAL JSON Schema 2020-12) fails that
+ *    parse and takes the WHOLE listing down, every other tool with it. So the
+ *    shape is checked here, and a schema that cannot be stated is omitted.
+ * 2. `cacheToolMetadata` (run on every successful `listTools()`) COMPILES every
+ *    advertised schema with Ajv, and a compile throw likewise kills the entire
+ *    listing. A shape check cannot see that: a dangling `$ref` (extraction
+ *    deliberately leaves one for recursive response models — see
+ *    `packages/actions/src/sync/openapi.ts`), `{"type":"bogus"}` and Swagger
+ *    2.0's boolean `exclusiveMinimum` are all well-shaped and all throw. So the
+ *    door asks the client's own validator, and omits what will not compile.
+ * 3. `tools/call` THROWS on any non-`isError` result whose `structuredContent`
  *    is missing or does not validate against the advertised schema. The door
  *    cannot promise the host's declaration describes every result it must
- *    return: `toolOutputCap` replaces a large output with
- *    `{truncated, chars, preview}`, which matches no host schema. So `required`
- *    is dropped and `additionalProperties` is forced open. Field names and types
- *    survive, which is the whole of D5's value to the model; what dies is the
- *    schema's power to REJECT a result the door has no choice about.
+ *    return: `toolOutputCap` replaces a large output with a `vendo_*` truncation
+ *    envelope and a non-record output rides under `vendo_value`, neither of
+ *    which any host schema mentions. So `additionalProperties` is forced open,
+ *    every top-level keyword that can reject an unmentioned key is dropped
+ *    ({@link UNKEEPABLE_KEYWORDS}), and a declared property in Vendo's own
+ *    reserved `vendo_` namespace — the one way a host could type-reject a
+ *    reserved key — is dropped with them. Field names and types survive, which
+ *    is the whole of D5's value to the model; what dies is the schema's power to
+ *    REJECT a result the door has no choice about.
  *
  * The descriptor still carries the original for the in-process surfaces, which
  * have no wire constraint.
  */
-function wireOutputSchema(schema?: Record<string, unknown>): { outputSchema?: Tool["outputSchema"] } {
+function wireOutputSchema(
+  schema: Record<string, unknown> | undefined,
+  compiles: (wire: Record<string, unknown>) => boolean,
+): { outputSchema?: Tool["outputSchema"] } {
   if (!isRecord(schema) || schema.type !== "object") return {};
   if (schema.properties !== undefined && !isObjectValued(schema.properties)) return {};
-  if (schema.required !== undefined && !isStringArray(schema.required)) return {};
-  const { required: _unenforceable, ...rest } = schema;
   // `type` is respelled (not re-ordered — the key keeps its place) so the wire
   // shape is the literal the SDK's schema demands without a cast.
-  const wire: Tool["outputSchema"] = { ...rest, type: "object", additionalProperties: true };
-  if (stringify(wire).length > OUTPUT_SCHEMA_CAP) return {};
-  return { outputSchema: wire };
+  const wire: Record<string, unknown> = { ...schema, type: "object", additionalProperties: true };
+  for (const keyword of UNKEEPABLE_KEYWORDS) delete wire[keyword];
+  if (isRecord(wire.properties)) {
+    wire.properties = Object.fromEntries(
+      Object.entries(wire.properties).filter(([field]) => !field.startsWith(VENDO_RESULT_PREFIX)),
+    );
+  }
+  // A host schema can be cyclic (an OpenAPI model inlined into itself), which
+  // throws inside the listing map — one tool's schema is never worth the listing.
+  const serialized = tryStringify(wire);
+  if (serialized === undefined) return {};
+  // `.length` is UTF-16 units and can only UNDER-count bytes, so it is a free
+  // pre-reject before the encode.
+  if (serialized.length > OUTPUT_SCHEMA_CAP || utf8.encode(serialized).length > OUTPUT_SCHEMA_CAP) return {};
+  if (!compiles(wire)) return {};
+  return { outputSchema: wire as Tool["outputSchema"] };
 }
 
-/** Did the door ADVERTISE a result shape for this descriptor? The call path asks
- *  with the listing's own sanitizer, so the promise and the kept promise are one
- *  decision made twice, never two decisions. */
-function declaresWireOutput(schema?: Record<string, unknown>): boolean {
-  return wireOutputSchema(schema).outputSchema !== undefined;
+/**
+ * "Would the official client compile this?", asked with the client's own
+ * validator — `Client` defaults to `AjvJsonSchemaValidator`, and the door already
+ * carries it: `@modelcontextprotocol/sdk/server` imports the same module and the
+ * `Server` the door runs constructs one per session.
+ *
+ * It earns its keep beyond the hand-listable throwers: a `pattern` carrying a
+ * Python-style named group — ordinary in a generated OpenAPI spec — is a compile
+ * throw no shape check would ever catch.
+ *
+ * ONE instance per listing pass, then discarded. Ajv memoizes every compiled
+ * schema in a Map keyed by the schema OBJECT, and the door builds a fresh wire
+ * object per listing, so a door-lifetime instance would grow without bound.
+ *
+ * On a runtime that forbids code generation (Workers et al) Ajv cannot compile
+ * ANYTHING, so no schema is advertised there and the door says so once. That is
+ * the same rule as the size cap — say nothing rather than everything — and it is
+ * the safe direction: an unaskable schema is exactly the one that took a client's
+ * whole listing down.
+ */
+function wireSchemaCompiler(): (wire: Record<string, unknown>) => boolean {
+  let validator: AjvJsonSchemaValidator | undefined;
+  return (wire) => {
+    try {
+      validator ??= new AjvJsonSchemaValidator();
+      validator.getValidator(wire as Parameters<AjvJsonSchemaValidator["getValidator"]>[0]);
+      return true;
+    } catch (error) {
+      if (error instanceof EvalError && !codegenWarned) {
+        codegenWarned = true;
+        console.warn(
+          "[vendo] mcp door: this runtime forbids code generation, so declared tool output schemas "
+          + "cannot be validated before they are advertised and are omitted from tools/list. "
+          + "Tools still list and still run; the model just loses the declared result fields.",
+        );
+      }
+      return false;
+    }
+  };
 }
+
+/** Once per process: a runtime without code generation is a deployment fact, not
+ *  a per-listing event. */
+let codegenWarned = false;
 
 /** The client's `ToolSchema` asserts every `properties` value is an OBJECT, so a
  *  boolean subschema is legal JSON Schema the wire cannot carry. */
 function isObjectValued(value: unknown): boolean {
   return isRecord(value)
     && Object.values(value).every((entry) => typeof entry === "object" && entry !== null);
-}
-
-function isStringArray(value: unknown): boolean {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
 /** 10-mcp §4 — the MCP Apps `_meta` that advertises the shim resource so a host
@@ -1279,13 +1444,14 @@ function bearerOf(req: Request): string | undefined {
  */
 async function turnTools(turn: LiveTurn): Promise<Tool[]> {
   const listings = await turn.tools.list();
+  const compiles = wireSchemaCompiler();
   return listings.map((listing) => {
     const label = listing.title === undefined || listing.title.trim() === "" ? undefined : listing.title;
     return {
       name: listing.name,
       description: listing.description,
       inputSchema: (listing.inputSchema ?? { type: "object", properties: {} }) as Tool["inputSchema"],
-      ...wireOutputSchema(listing.outputSchema),
+      ...wireOutputSchema(listing.outputSchema, compiles),
       ...(label === undefined ? {} : { title: label }),
       annotations: toolAnnotations(listing.risk, label),
     };
@@ -1297,8 +1463,8 @@ async function turnTools(turn: LiveTurn): Promise<Tool[]> {
  * in-process projection uses (`guardedProjection` in `apps/src/claude-turn.ts`):
  * a denial is text the model narrates, never a protocol error it reads as a bug.
  */
-function turnResult(result: ToolResult, declaredOutput = false): CallToolResult {
-  if (result.status === "ok") return textResult(result.output, declaredOutput);
+function turnResult(result: ToolResult): CallToolResult {
+  if (result.status === "ok") return textResult(result.output);
   if (result.status === "denied") return inBandError(result.reason);
   return inBandError(`${result.error.code}: ${result.error.message}`);
 }
@@ -1367,10 +1533,10 @@ function appToolPreview(name: string, args: Record<string, unknown>): string {
   return preview.length > 500 ? `${preview.slice(0, 499)}…` : preview;
 }
 
-function mapOutcome(outcome: ToolOutcome, productName: string, declaredOutput = false): CallToolResult {
+function mapOutcome(outcome: ToolOutcome, productName: string): CallToolResult {
   switch (outcome.status) {
     case "ok":
-      return textResult(outcome.output, declaredOutput);
+      return textResult(outcome.output);
     case "error":
       return inBandError(`${outcome.error.code}: ${outcome.error.message}`);
     case "pending-approval":
@@ -1389,24 +1555,29 @@ function mapOutcome(outcome: ToolOutcome, productName: string, declaredOutput = 
 }
 
 /**
- * `declaredOutput` says the LISTING advertised an outputSchema for this tool,
- * which the official client reads as a guarantee: an ok result without
- * conforming `structuredContent` makes `callTool` THROW rather than return, so
- * the model sees a broken server instead of its answer. Records already ride
- * verbatim (the truncation envelope included — the sanitized schema accepts any
- * object); a non-record output — a string, a number, a bare array — carried
- * nothing at all, so it rides under one added key, which a sanitized schema's
- * open `additionalProperties` accepts. Undeclared tools keep the previous wire
- * exactly.
+ * An ok result on the wire. A record rides as `structuredContent` verbatim; a
+ * non-record output — a string, a number, a bare array — rides under
+ * {@link VENDO_RESULT_VALUE}, because `structuredContent` must be an object.
+ *
+ * UNCONDITIONALLY, without asking whether this tool advertised a schema. The
+ * official client reads an advertised `outputSchema` as a guarantee (an ok result
+ * with no conforming `structuredContent` makes `callTool` THROW, so the model
+ * sees a broken server instead of its answer) and permits `structuredContent`
+ * with no schema advertised at all — it compiles no validator, so it never looks.
+ * Asking cost a `tools/list` AFTER the write had already executed, where a throw
+ * turned a committed call into an error the model reads as failure, and it could
+ * only ever answer for the listing as it is NOW rather than the one the client
+ * cached. Always wrapping is the same wire for a declaring tool, one key more for
+ * the rest, and no second question to get wrong.
  */
-function textResult(output: unknown, declaredOutput = false): CallToolResult {
+function textResult(output: unknown): CallToolResult {
   const text = isOpenInProductPayload(output)
     ? `Open ${output.appName ?? "this app"} in ${output.productName}: ${output.url}`
     : stringify(output);
-  const result: CallToolResult = { content: [{ type: "text", text }] };
-  if (isRecord(output)) result.structuredContent = output;
-  else if (declaredOutput) result.structuredContent = { value: output };
-  return result;
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: isRecord(output) ? output : { [VENDO_RESULT_VALUE]: output },
+  };
 }
 
 function inBandError(text: string): CallToolResult {
@@ -1427,6 +1598,20 @@ function isOpenInProductPayload(value: unknown): value is OpenInProductPayload {
 
 function stringify(value: unknown): string {
   return JSON.stringify(value) ?? "null";
+}
+
+/** JSON, or undefined for a value that cannot be serialized at all — a cyclic
+ *  host schema, a BigInt. The caller decides what an unstateable value means. */
+function tryStringify(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameNames(before: Set<string>, after: Set<string>): boolean {
+  return before.size === after.size && [...after].every((name) => before.has(name));
 }
 
 function mcpContext(

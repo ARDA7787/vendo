@@ -21,9 +21,10 @@ import {
   type ToolDescriptor,
   type ToolRegistry,
 } from "@vendoai/core";
-import { describe, expect, it } from "vitest";
-import { createApps, type AppsRuntime } from "./index.js";
+import { describe, expect, it, vi } from "vitest";
+import { createApps, pinComponentName, type AppsRuntime } from "./index.js";
 import type { SandboxAdapter, SandboxMachine } from "./sandbox.js";
+import { seedGrantRows, storeAccessFixture } from "./testing/app-access-fixture.js";
 import { bindTools, guardFixture, memoryStore, seedAppRow, type GuardFixture } from "./testing/index.js";
 
 const APP_ID = "app_authored";
@@ -34,6 +35,23 @@ const SPEND = `<App name="Spending">
     <Text text={spend.total} />
   </Stack>
 </App>`;
+
+/** The same app, one section further along: a different tree under the SAME name,
+ *  which is what a rewrite of a sponsored app looks like to the intent hash. */
+const SPEND_MORE = `<App name="Spending">
+  <Query id="spend" tool="maple_spend_summary" />
+  <Stack>
+    <Text text={spend.total} />
+    <Text text={spend.currency} />
+  </Stack>
+</App>`;
+
+/** A save caught mid-write: `compileWire` is valid-while-partial, so the seam
+ *  paints it and this door stores it. */
+const PARTIAL = `<App name="Spending">
+  <Query id="spend" tool="maple_spend_summary" />
+  <Stack>
+    <Text text={spend.total} /`;
 
 /** A file whose only query is an `fn:` ref — the one query kind that resolves
  *  against the DOCUMENT's machine rather than the guard-bound registry. */
@@ -66,6 +84,15 @@ interface Stand {
   calls: RunContext[];
   /** Every request that reached a machine. Empty unless `box: true`. */
   seen: Array<{ method: string; path: string }>;
+  /** §9.9 — every announcement the runtime made through `onDocumentEdit`. */
+  edits: Array<{ previous: AppDocument; next: AppDocument; editor: string }>;
+  /**
+   * Land something in the window a save brackets: `run` fires ONCE, right after
+   * the next save reads its baseline row and before it writes. This is the only
+   * way to be inside that window from outside, and it is exactly the race a
+   * concurrent `edit()` is.
+   */
+  arm: (run: () => Promise<void>) => void;
 }
 
 /** A machine that answers any `fn:` with a secret, and records being asked. */
@@ -91,11 +118,38 @@ const fnBox = (seen: Stand["seen"]) => {
   } satisfies SandboxAdapter;
 };
 
-const stand = (options: { rules?: Record<string, "run" | "ask" | "block">; box?: boolean } = {}): Stand => {
+const stand = (options: {
+  rules?: Record<string, "run" | "ask" | "block">;
+  box?: boolean;
+  /** Wire the multi-party half, so a grant row can make a THIRD PARTY an editor. */
+  shared?: boolean;
+} = {}): Stand => {
   const store = memoryStore();
   const guard = guardFixture(options.rules === undefined ? {} : { rules: options.rules });
   const calls: RunContext[] = [];
   const seen: Stand["seen"] = [];
+  const edits: Stand["edits"] = [];
+  let armed: (() => Promise<void>) | undefined;
+  // The runtime captures its `vendo_apps` collection once; this wrapper hands it
+  // an instrumented one so a test can land a write between a save's baseline read
+  // and its put.
+  const wrapped = {
+    ...store,
+    records: (collection: string) => {
+      const records = store.records(collection);
+      if (collection !== "vendo_apps") return records;
+      return {
+        ...records,
+        async get(id: string) {
+          const record = await records.get(id);
+          const run = armed;
+          armed = undefined;
+          await run?.();
+          return record;
+        },
+      };
+    },
+  };
   const host: ToolRegistry = {
     async descriptors() {
       return [descriptor];
@@ -108,13 +162,29 @@ const stand = (options: { rules?: Record<string, "run" | "ask" | "block">; box?:
   // THE choke point: the runtime is handed the guard-BOUND registry, exactly as
   // composition hands it one.
   const runtime = createApps({
-    store,
+    store: wrapped,
     guard,
     tools: bindTools(guard, host),
     catalog: [],
+    // §9.9's listener, as composition wires it (server.ts → the automations
+    // engine's `onDocumentEdit`, which invalidates or re-binds sponsorship).
+    onDocumentEdit: async (previous, next, editor) => {
+      edits.push({ previous, next, editor });
+    },
+    ...(options.shared === true ? { appAccess: storeAccessFixture(store), multiParty: true } : {}),
     ...(options.box === true ? { machine: { sandbox: fnBox(seen) } } : {}),
   });
-  return { runtime, store, guard, calls, seen };
+  return {
+    runtime,
+    store,
+    guard,
+    calls,
+    seen,
+    edits,
+    arm: (run) => {
+      armed = run;
+    },
+  };
 };
 
 /** What the render seam hands over: the compile it already did for the paint. */
@@ -200,7 +270,7 @@ describe("an app.vendo the harness wrote", () => {
   });
 
   it("never rewrites an app the caller may not edit", async () => {
-    const { runtime, store } = stand();
+    const { runtime, store, edits } = stand();
     const theirs: AppDocument = { format: "vendo/app@1", id: APP_ID, name: "Theirs" };
     await seedAppRow(store, theirs, "u2");
 
@@ -211,6 +281,11 @@ describe("an app.vendo the harness wrote", () => {
 
     expect((await rowOf(store))?.doc).toEqual(theirs);
     expect((await rowOf(store))?.subject).toBe("u2");
+    // Nothing about the other person's app is read, written, versioned or
+    // ANNOUNCED: an announcement over a foreign row would invalidate a
+    // sponsorship u2 holds, on a file u1 wrote in their own mount.
+    expect(edits).toEqual([]);
+    expect((await store.records(`vendo:app-history:${APP_ID}`).list()).records).toEqual([]);
     // The person still sees their own file painted, with their own data.
     expect(data).toEqual({ spend: { total: 4210, currency: "USD" } });
   });
@@ -256,5 +331,195 @@ describe("an app.vendo the harness wrote", () => {
     await expect(runtime.create({ prompt: "anything" }, ctx())).rejects.toThrow(/requires a model/);
     await expect(runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx()))
       .resolves.toEqual({ spend: { total: 4210, currency: "USD" } } as Record<string, Json>);
+  });
+});
+
+/**
+ * Build contract §9.9 — a files-first rewrite is a change to what the app IS, so
+ * it passes through the SAME announcement `persistEdit` and `undo` make. It has
+ * to: `authoredDocument` keeps `trigger` verbatim, so the intent hash a
+ * sponsorship was minted over does not move when a third party rewrites the file
+ * — the fire-time hash check cannot see this change, and this hook is the only
+ * thing that can.
+ */
+describe("§9.9 — the announcement a files-first save owes", () => {
+  const trigger = {
+    on: { kind: "schedule" as const, cron: "0 9 * * *" },
+    run: { kind: "agentic" as const, prompt: "send the weekly digest" },
+  };
+
+  it("announces a third party's rewrite of a sponsored app, under THEIR subject", async () => {
+    const { runtime, store, edits } = stand({ shared: true });
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx("u1"));
+    await seedAppRow(store, { ...(await rowOf(store))!.doc!, trigger }, "u1", true);
+    // u2 holds editor on u1's app (a shared automation) and rewrites the file.
+    await seedGrantRows(store, APP_ID, { "user:u2": "editor" });
+
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND_MORE) }, ctx("u2"));
+
+    expect(edits).toHaveLength(1);
+    // The invalidation keys on exactly this: the editor is not the sponsor.
+    expect(edits[0]?.editor).toBe("u2");
+    // And it could key on nothing else — every input to the intent hash (name,
+    // trigger, declared tools) came through the rewrite unchanged.
+    expect(edits[0]?.next.name).toBe(edits[0]?.previous.name);
+    expect(edits[0]?.next.trigger).toEqual(trigger);
+    // §9.5 — the row keeps its owner.
+    expect((await rowOf(store))?.subject).toBe("u1");
+  });
+
+  it("announces the sponsor's OWN rename, so their automation is re-bound not killed", async () => {
+    const { runtime, store, edits } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    await seedAppRow(store, { ...(await rowOf(store))!.doc!, trigger }, "u1", true);
+
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND.replace("Spending", "Money")) }, ctx());
+
+    // A rename DOES move the hash — without the announcement the automation would
+    // stop at its next fire for an edit its own sponsor made.
+    expect(edits).toHaveLength(1);
+    expect(edits[0]?.editor).toBe("u1");
+    expect(edits[0]?.next.name).toBe("Money");
+  });
+
+  it("announces a PARTIAL mid-turn save too — what the store holds is what fires", async () => {
+    const { runtime, edits } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+
+    // A truncated save, mid-build: the seam stores it because refusing to store
+    // what the person can already see is the worse failure — and a stored
+    // half-app is what an automation would fire on.
+    await runtime.authored({ appId: APP_ID, compiled: compiled(PARTIAL) }, ctx());
+
+    expect(edits).toHaveLength(1);
+  });
+
+  it("announces nothing for the FIRST save — that is a create, and it says so", async () => {
+    const { runtime, edits, guard } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+
+    expect(edits).toEqual([]);
+    expect(guard.audit.filter((event) => event.kind === "app-lifecycle")).toHaveLength(1);
+  });
+});
+
+describe("a save whose text left a pinned component out", () => {
+  const slot = "dashboard.header";
+  const name = pinComponentName(slot);
+
+  it("keeps the pinned source — a pin whose source is gone is not a pin", async () => {
+    const { runtime, store } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    // A remixed host component: `pins` names the slot, `components` holds the
+    // captured host source. `Extra` is the model's own island, next to it.
+    await seedAppRow(store, {
+      ...(await rowOf(store))!.doc!,
+      pins: [{ slot, base: "sha256:hostsource" }],
+      components: { [name]: "export default () => null;", Extra: "export default () => 1;" },
+    }, "u1");
+
+    // The compile carries NO islands at all (a rewrite from scratch, or a save
+    // that has not got to them yet).
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+
+    const doc = (await rowOf(store))?.doc;
+    expect(doc?.pins).toEqual([{ slot, base: "sha256:hostsource" }]);
+    expect(doc?.components?.[name]).toBe("export default () => null;");
+    // The model's island is the model's to drop; only the pinned source is the
+    // app's own history.
+    expect(doc?.components?.Extra).toBeUndefined();
+  });
+
+  it("still lets the file EDIT a pinned component, exactly as an engine edit may", async () => {
+    const { runtime, store } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    await seedAppRow(store, {
+      ...(await rowOf(store))!.doc!,
+      pins: [{ slot, base: "sha256:hostsource" }],
+      components: { [name]: "export default () => null;" },
+    }, "u1");
+
+    const island = `<App name="Spending">
+  <${name} />
+  <Island name="${name}">export default () =&gt; 2;</Island>
+</App>`;
+    await runtime.authored({ appId: APP_ID, compiled: compiled(island) }, ctx());
+
+    expect((await rowOf(store))?.doc?.components?.[name]).toContain("2");
+  });
+});
+
+describe("the undo point a files-first save leaves", () => {
+  it("records the state a rewrite replaced, and restores it", async () => {
+    const { runtime } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    // The first save is a create: there is no earlier state to keep.
+    expect(await runtime.history(APP_ID, ctx()).list()).toEqual([]);
+
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND.replace("Spending", "Money")) }, ctx());
+
+    const versions = await runtime.history(APP_ID, ctx()).list();
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.intent).toBe("Saved app.vendo");
+    // The point of the entry: a truncated or wrong save is recoverable.
+    expect((await runtime.history(APP_ID, ctx()).undo()).name).toBe("Spending");
+  });
+
+  it("spends no version on a re-save that changed nothing", async () => {
+    const { runtime } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+
+    // The history is capped at 50: an undo point to the state the app is already
+    // in would push a real one out.
+    expect(await runtime.history(APP_ID, ctx()).list()).toEqual([]);
+  });
+});
+
+describe("a save computed over a row that changed under it", () => {
+  it("is refused rather than reverting the edit that landed", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { runtime, store, edits, arm } = stand();
+      await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+      const stored = (await rowOf(store))!.doc!;
+      // What a UI `edit()` lands in the window: this save's baseline is now stale,
+      // and the document it computed carries the PRE-edit description forward.
+      arm(async () => {
+        await seedAppRow(store, { ...stored, description: "the person's own edit" }, "u1");
+      });
+
+      const data = await runtime.authored(
+        { appId: APP_ID, compiled: compiled(SPEND.replace("Spending", "Money")) },
+        ctx(),
+      );
+
+      const row = await rowOf(store);
+      expect(row?.doc?.description).toBe("the person's own edit");
+      expect(row?.doc?.name).toBe("Spending");
+      // Nothing announced and no version minted for a write that never landed.
+      expect(edits).toEqual([]);
+      expect(await runtime.history(APP_ID, ctx()).list()).toEqual([]);
+      // Never silent…
+      expect(errors.mock.calls.map(String).join(" ")).toContain("app not saved");
+      // …and never a reason to withhold the view the person is already looking at.
+      expect(data).toEqual({ spend: { total: 4210, currency: "USD" } });
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("does not conflict with a run of saves in the same turn", async () => {
+    const { runtime, store, edits } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    // The skill saves once per group: each save re-reads its own baseline, so a
+    // rapid sequence never conflicts with itself.
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND_MORE) }, ctx());
+    await runtime.authored({ appId: APP_ID, compiled: compiled(PARTIAL) }, ctx());
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND.replace("Spending", "Money")) }, ctx());
+
+    expect((await rowOf(store))?.doc?.name).toBe("Money");
+    expect(edits).toHaveLength(3);
+    expect(await runtime.history(APP_ID, ctx()).list()).toHaveLength(3);
   });
 });

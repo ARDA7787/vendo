@@ -160,6 +160,31 @@ describe("search_connectors", () => {
     expect(await names(vendo)).toContain(TOOLS.slack!.name);
   });
 
+  /** The other half of the same promise, measured live 2026-08-03: the
+   * expansion belongs to the run that asked. A second conversation — same
+   * subject, same `sessionId` (the wire hands host-resolved principals one per
+   * PROCESS), its own context — used to open with the whole slack catalog
+   * already on its first listing (301 tools instead of 35). */
+  it("does not put its expansion on another run's listing", async () => {
+    const vendo = await compose([lazyBroker()]);
+    await vendo.guardedTools.execute(
+      { id: "d1b", tool: "search_connectors", args: { query: "post a message to slack channels" } },
+      ctx,
+    );
+    expect(await names(vendo)).toContain(TOOLS.slack!.name);
+
+    const nextConversation: RunContext = { ...ctx };
+    expect((await vendo.guardedTools.descriptors(nextConversation)).map((descriptor) => descriptor.name))
+      .not.toContain(TOOLS.slack!.name);
+    // …and its own search brings it back, with no second broker fetch behind it.
+    await vendo.guardedTools.execute(
+      { id: "d1c", tool: "search_connectors", args: { query: "post a message to slack channels" } },
+      nextConversation,
+    );
+    expect((await vendo.guardedTools.descriptors(nextConversation)).map((descriptor) => descriptor.name))
+      .toContain(TOOLS.slack!.name);
+  });
+
   it("says which hits this user cannot run yet", async () => {
     // Without it the model burns a turn calling an unconnected service and
     // reads the connect card as a failure.

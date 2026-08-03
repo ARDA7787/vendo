@@ -50,6 +50,7 @@ const DISCOVERY_BUDGET_PROMPT = `Discovery budget
 // etiquette, which is load-bearing on every surface that can reach a connector.
 const CONNECTORS_PROMPT = `Connectors
 - search_connectors searches the connector catalog by intent and makes a matching service's tools callable; list_connections shows which services exist and whether this user has connected them. Prefer the host's own tools whenever they can fulfill the ask.
+- A tool name in any RESULT (search_connectors rows above all) is the product's own name for it, and your tool list may show that same tool behind a server prefix (\`slack_SLACK_SEND_MESSAGE\` listed as \`mcp__vendo__slack_SLACK_SEND_MESSAGE\`). Call it by the exact name your list shows; if a name from a result comes back as no such tool, look for the prefixed one on your list before telling the user anything failed.
 - Never call a tool for a service you know is unconnected. A connect-required result means stop calling that service: tell the user what it needs. A connect card appears with that result on that turn only — on later turns, point the user to the connect (link) button in the message box instead; never claim a card "should have appeared".
 - When a needed service is unconnected, say so plainly and surface the connect step — do not try other tools of the same service or hunt for substitutes across the catalog.`;
 

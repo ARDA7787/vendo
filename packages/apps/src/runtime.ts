@@ -1010,10 +1010,22 @@ const authoredDocument = (
     ui: "tree",
     tree: asPayload(structuredClone(compiled.tree)),
   };
-  if (Object.keys(compiled.components).length === 0) {
+  // documentFromEdit's pinned/model split, same file: a PINNED component's source
+  // is host source captured on the furnishing trust path, backing a `pins` row
+  // that is the app's own history — not the model's to author, and not a file
+  // save's to drop. The compile still wins for a name it does carry (a pinned
+  // island IS editable through the wire, exactly as an engine edit may edit it);
+  // a save whose text omits it keeps the stored source, because `pins` carries
+  // on naming it and a pin whose source is gone is not a pin — the next
+  // classifying read demotes it to a bare placement (pins.ts).
+  const pinned = new Set((previous?.pins ?? []).map((pin) => pinComponentName(pin.slot)));
+  const carried = Object.entries(previous?.components ?? {})
+    .filter(([name]) => pinned.has(name) && compiled.components[name] === undefined);
+  const components = { ...Object.fromEntries(carried), ...compiled.components };
+  if (Object.keys(components).length === 0) {
     delete document.components;
   } else {
-    document.components = structuredClone(compiled.components);
+    document.components = structuredClone(components);
   }
   delete document.componentTools;
   // The same rule at rest as at serve time (create's own line): a model-forged
@@ -2487,7 +2499,40 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       const document = authoredDocument(input.appId, input.compiled, previous);
       if (mayWrite) {
         try {
-          await apps.put(appRecordInput(
+          if (previous !== undefined) {
+            // `persistEdit`'s `assertCurrent` bracket, in the shape a files-first
+            // save can take it. `document` carries the baseline's own history
+            // forward (trigger, pins, storage, machine, description), so a put
+            // computed over a row that changed in the window would silently REVERT
+            // an `edit()` that landed there rather than merely ordering after it.
+            // Best-effort for the same reason persistEdit's is (no revision on the
+            // store seam), and it cannot conflict with a run of same-turn saves:
+            // every save re-reads its own baseline. Re-reads only a row this
+            // caller was already authorized to read — a fresh id is never
+            // re-fetched, so the cross-tenant rule above stands.
+            const current = await apps.get(input.appId);
+            const stored = current === null ? null : rowFromRecord(current);
+            if (stored === null
+              // The subject too, for persistEdit's reason: a promote that landed
+              // in the window moved the row to an org, and re-writing the stale
+              // owner would lose the app out of it.
+              || stored.subject !== row?.subject
+              || JSON.stringify(classifyLegacyPlacements(stored.doc, config.pinBaselines)) !== JSON.stringify(previous)) {
+              throw new VendoError("conflict", `app changed under this save: ${input.appId}`);
+            }
+            // The undo point this path had none of: the state the save replaces,
+            // appended before the write lands, exactly as persistEdit does it. A
+            // re-save that changed nothing is not a version — it would spend one
+            // of the 50 capped slots to undo to the state it is already in.
+            if (JSON.stringify(previous) !== JSON.stringify(document)) {
+              await history.append(input.appId, previous, {
+                at: new Date().toISOString(),
+                intent: "Saved app.vendo",
+                rung: rungFor(document),
+              });
+            }
+          }
+          const appRow = appRecordInput(
             document,
             // §9.5 — a promoted app's row subject is the ORG id; the editor check
             // above is what authorized this write, and the row keeps its owner.
@@ -2496,13 +2541,29 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
               ? false
               : enabledAfterDocumentEdit(previous, document, row?.enabled ?? false),
             previous === undefined ? undefined : sessionOf(previous),
-          ));
-          if (previous === undefined) await reportLifecycle("create", document.id, ctx);
+          );
+          await apps.put(appRow);
+          if (previous === undefined) {
+            await reportLifecycle("create", document.id, ctx);
+          } else {
+            // §9.9 — the ONE announcement every change to what an app IS passes
+            // through (see reportDocumentEdit). A files-first rewrite changes what
+            // the app is while leaving `trigger` verbatim, so the intent hash a
+            // sponsorship was minted over is unchanged: without this, a third
+            // party's rewrite leaves sponsorship ACTIVE and the automation keeps
+            // firing on the sponsor's authority against code the sponsor never
+            // saw — and a sponsor's own rename changes the hash with no re-bind,
+            // killing their own automation at the next fire. Announced on EVERY
+            // save that lands, partial ones included: what the store holds is
+            // what fires, and both halves of the hook converge (invalidation is
+            // terminal; a re-bind binds the currently stored intent).
+            await reportDocumentEdit(previous, appRow.data.doc, ctx.principal.subject);
+          }
         } catch (error) {
           // The same degradation create takes on a refused write: the app is on
           // screen, it just is not in the list. Never silent — and never a reason
           // to withhold the data the person can already see.
-          console.error(`[vendo] app not saved (${input.appId}): the harness wrote it as a file but the store rejected it — ${safeErrorMessage(error)}`);
+          console.error(`[vendo] app not saved (${input.appId}): the harness wrote it as a file but it did not land — ${safeErrorMessage(error)}`);
         }
       }
       // The queries, through the SAME guard-bound caller `open()` resolves with:
