@@ -1,7 +1,7 @@
 import type { RiskLabel } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
-import { toolPresentation } from "./build-beat.js";
+import { toolPresentation, verbWord } from "./build-beat.js";
 import {
   CardActions,
   CardHead,
@@ -42,11 +42,32 @@ export interface GrantSetPermission {
  *  plain-words line — and the only sentence allowed under it is one the HOST
  *  wrote for people (`ToolMeta.description`). Shared with the adoption card so
  *  both consent surfaces speak one vocabulary. */
-export const RISK_WORD: Record<RiskLabel, string> = {
+const RISK_WORD: Record<RiskLabel, string> = {
   read: "Reads",
   write: "Changes",
-  destructive: "Changes",
+  // Ruling 15 — an irreversible permission may NEVER share a word with an
+  // ordinary write. This is the approval card's own chip vocabulary, so one
+  // grade reads the same on every consent surface.
+  destructive: "Irreversible",
 };
+
+/**
+ * RULING 15 — the word a permission row leads with, from the ASK ITSELF.
+ *
+ * THE DEFECT: the word came from the risk GRADE alone, so
+ *   · a send tool graded `read` rendered "Reads: Email send" — a false statement
+ *     about what the automation is being allowed to do, on the highest-stakes
+ *     card in the product; and
+ *   · `destructive` flattened to "Changes", the same word as an ordinary write,
+ *     erasing the one distinction that matters on it.
+ *
+ * The ask's own verb (its humanized words) decides, and an irreversible grade
+ * overrides everything — never quietly softened by a verb class.
+ */
+export function grantRowWord(tool: string, risk: RiskLabel): string {
+  if (risk === "destructive") return RISK_WORD.destructive;
+  return verbWord(tool) ?? RISK_WORD[risk];
+}
 
 export interface GrantSetCardProps {
   /** The automation's display name. */
@@ -127,7 +148,7 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
               <li className="fl-grant" key={permission.approvalId}>
                 <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
-                  <b>{RISK_WORD[permission.risk]}: {presentation.title}</b>
+                  <b>{grantRowWord(permission.tool, permission.risk)}: {presentation.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
                 </span>
                 {state === "approved" ? (

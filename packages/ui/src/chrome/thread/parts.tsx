@@ -610,7 +610,9 @@ export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, re
   return (
     <>
       {approvals.map((part, index) => {
-        const risk = risks.get(part.toolCallId) ?? "read";
+        // Ruling 15 — no `data-vendo-approval` part means UNGRADED, not read:
+        // the builder owns the cautious display default (approval-wire.ts).
+        const risk = risks.get(part.toolCallId);
         const input = "input" in part ? part.input : undefined;
         const guardApproval = guardApprovals.get(part.toolCallId);
         const name = toolName(part);
@@ -624,7 +626,7 @@ export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, re
           toolCallId: part.toolCallId,
           tool: name,
           args: input,
-          risk,
+          ...(risk === undefined ? {} : { risk }),
           ...(guardApproval?.invalidatedGrant === undefined
             ? {} : { invalidatedGrant: guardApproval.invalidatedGrant }),
           ...(guardApproval?.descriptor === undefined

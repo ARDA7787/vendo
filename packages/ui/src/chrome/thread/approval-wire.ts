@@ -44,7 +44,10 @@ export interface ApprovalWirePart {
   tool: string;
   /** The REAL inputs the model passed. */
   args?: unknown;
-  /** From the `data-vendo-approval` part; read-only asks are the safe default. */
+  /**
+   * From the `data-vendo-approval` part. ABSENT means ungraded — never
+   * read-only (ruling 15): see the default in the builder below.
+   */
   risk?: RiskLabel;
   invalidatedGrant?: ApprovalRequest["invalidatedGrant"];
   /** Descriptor fields the wire part carries when the server has them. */
@@ -69,7 +72,14 @@ export function buildApprovalRequest(part: ApprovalWirePart, tools: ToolDescript
       // The whole point: the declared schema when the wire has one, so money
       // formats as money on every surface — `{}` only when there is none.
       inputSchema: authored?.inputSchema ?? {},
-      risk: part.risk ?? "read",
+      // RULING 15 — an absent risk is UNGRADED, and defaulting it to "read" made
+      // every ungraded ask claim "Read-only" on its chip and "This reads your
+      // data, as you." as its plain-words line: the safest-sounding thing we
+      // could have said about a call we know nothing about. The cautious display
+      // grade is a write — it never understates, and it does not invent the
+      // irreversibility that `destructive` would claim (with its ceremony edge)
+      // on an ask that may well be harmless.
+      risk: part.risk ?? "write",
       ...(title === undefined || title.length === 0 ? {} : { title }),
     },
     // Client-side humanized, never the server's `tool slug + canonical JSON`.

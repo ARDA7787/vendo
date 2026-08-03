@@ -15,7 +15,7 @@ import {
   ToolkitLogo,
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
-import { GrantSetCard, RISK_WORD } from "./grant-set-card.js";
+import { GrantSetCard, grantRowWord } from "./grant-set-card.js";
 
 /** Build contract §9.9 / design §13 — the adoption card.
  *
@@ -127,7 +127,7 @@ export function AdoptionCard({ card, state = "waiting", onAdopt }: AdoptionCardP
               <li className="fl-grant" key={`${need.tool}-${index}`}>
                 <ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} />
                 <span className="fl-grant-copy">
-                  <b>{RISK_WORD[need.risk]}: {presentation.title || need.title}</b>
+                  <b>{grantRowWord(need.tool, need.risk)}: {presentation.title || need.title}</b>
                   {description.length > 0 ? <span>{description}</span> : null}
                   {args === undefined ? null : <span>{args}</span>}
                 </span>

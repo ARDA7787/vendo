@@ -73,18 +73,34 @@ const TARGET_FIELDS = ["recipient_name", "recipient", "payee", "to", "destinatio
 
 /** The verb CLASS a tool belongs to, read off its humanized words. A class is a
     category ("moves money"), never the tool's own label — that distinction is
-    the whole point of {@link consentClassLine}. */
-const VERB_CLASSES: [RegExp, string][] = [
-  [/\b(delete|remove|destroy|archive|revoke|cancel)\b/, "deletes something"],
-  [/\b(transfer|pay|payment|refund|charge|order|withdraw|deposit)\b/, "moves money"],
-  [/\b(email|mail|message|notify|post|reply|share|send)\b/, "sends a message"],
-  [/\b(create|add|draft|schedule|book)\b/, "creates something"],
-  [/\b(update|edit|set|change|rename|move)\b/, "changes something"],
+    the whole point of {@link consentClassLine}.
+
+    `does` completes "This ‹does›, as you."; `word` leads a permission row
+    ("‹word›: Send money") — the same class, in the two cadences the consent
+    surfaces need. */
+const VERB_CLASSES: [RegExp, { does: string; word: string }][] = [
+  [/\b(delete|remove|destroy|archive|revoke|cancel)\b/, { does: "deletes something", word: "Deletes" }],
+  [/\b(transfer|pay|payment|refund|charge|order|withdraw|deposit)\b/, { does: "moves money", word: "Moves money" }],
+  [/\b(email|mail|message|notify|post|reply|share|send)\b/, { does: "sends a message", word: "Sends" }],
+  [/\b(create|add|draft|schedule|book)\b/, { does: "creates something", word: "Creates" }],
+  [/\b(update|edit|set|change|rename|move)\b/, { does: "changes something", word: "Changes" }],
 ];
 
-function verbClass(name: string): string | undefined {
+function verbClassOf(name: string): { does: string; word: string } | undefined {
   const words = humanizeToolName(name).toLowerCase();
   return VERB_CLASSES.find(([pattern]) => pattern.test(words))?.[1];
+}
+
+function verbClass(name: string): string | undefined {
+  return verbClassOf(name)?.does;
+}
+
+/** Ruling 15 — the word a permission row leads with, taken from the ASK's own
+    verb. A grant row read "Reads: Email send" for a SEND tool because the row's
+    word came from the ask's RISK grade alone, and a mis-graded (or ungraded)
+    ask made the row a false statement about what it lets an automation do. */
+export function verbWord(name: string): string | undefined {
+  return verbClassOf(name)?.word;
 }
 
 /**
