@@ -526,6 +526,9 @@ export function AutomationsPanel() {
               {plans[appId] ? (
                 <div
                   className="fl-auto-flow"
+                  // role="group": a bare <div> may not carry aria-label
+                  // (aria-prohibited-attr) — same fix as the flow block above.
+                  role="group"
                   aria-label={`Dry run for ${entry.app.name}`}
                   style={{ alignItems: "stretch", flexDirection: "column", gap: 10 }}
                 >

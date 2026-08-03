@@ -68,7 +68,9 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     }));
 
     fireEvent.click(screen.getByRole("button", { name: "Dry run" }));
-    expect((await screen.findByLabelText("Dry run for Invoice watcher")).textContent).toContain("host_invoices_list — ready");
+    // M30 — the dry-run block is a real group; a bare <div> may not be labelled.
+    const dry = await screen.findByRole("group", { name: "Dry run for Invoice watcher" });
+    expect(dry.textContent).toContain("host_invoices_list — ready");
 
     fireEvent.click(screen.getByRole("button", { name: "Run history" }));
     const stop = await screen.findByRole("button", { name: "Stop" });

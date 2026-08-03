@@ -137,8 +137,11 @@ export function AutomationCard({ name, enabled, trigger, description, pendingGra
         {/* Law 3 — what this automation DOES, in the user's words. */}
         <CardLine>{description ?? (flow ? `${flow.trigger.title} → ${flow.action.title}` : name)}</CardLine>
         {runsAs === null ? null : <CardByline>{runsAs}</CardByline>}
+        {/* role="group": a bare <div> may not carry aria-label
+            (aria-prohibited-attr). The panel's copy of this node was fixed at
+            integration; the thread's copy was not. */}
         {flow ? (
-          <div className="fl-auto-flow" aria-label={`Automation flow for ${name}`}>
+          <div className="fl-auto-flow" role="group" aria-label={`Automation flow for ${name}`}>
             <span className="fl-auto-node" style={{ flex: 1 }}>
               <span className="fl-auto-node-ic" aria-hidden="true">↳</span>
               <span>
