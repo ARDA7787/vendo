@@ -281,11 +281,32 @@ export function narratedByAppCard(
   return siblingParts.some(sibling => sibling.type === "data-vendo-view");
 }
 
+/**
+ * LEAK 4's grounding carrier (spec §16 law 3): a text part the MODEL reads and
+ * the person never sees. An affordance that opens the conversation about a
+ * specific thing (the ✦ remix popover) has to tell the agent WHICH thing, and
+ * the identifier for it is an app id — our plumbing, not something a person
+ * types or reads. So it rides the sent message as its own text part, marked
+ * here; the transcript skips it and `userText` (which seeds "edit last
+ * message") leaves it out, so it stays out of every surface a person touches.
+ *
+ * A text part is the carrier because it is the ONLY channel that reaches the
+ * model: `convertToModelMessages` keeps text and drops metadata and data parts.
+ */
+export const AGENT_CONTEXT_METADATA = { vendo: { agentContext: true } } as const;
+
+export function isAgentContext(part: UIMessage["parts"][number]): boolean {
+  if (part.type !== "text") return false;
+  const vendo = (part.providerMetadata as { vendo?: { agentContext?: unknown } } | undefined)?.vendo;
+  return vendo?.agentContext === true;
+}
+
 /** The plain text a user turn carried, joined across its text parts — the seed
     for "edit last message" (ENG-215). */
 export function userText(message: UIMessage): string {
   return message.parts
-    .filter((part): part is Extract<UIMessage["parts"][number], { type: "text" }> => part.type === "text")
+    .filter((part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
+      part.type === "text" && !isAgentContext(part))
     .map(part => part.text)
     .join("");
 }

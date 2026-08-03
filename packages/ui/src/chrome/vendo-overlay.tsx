@@ -522,7 +522,13 @@ export function VendoOverlay({
     const prompt = typeof options?.prompt === "string" ? options.prompt : "";
     if (prompt.length > 0) {
       deliverPrefill(
-        { prompt, send: options?.send === true },
+        {
+          prompt,
+          send: options?.send === true,
+          ...(typeof options?.context === "string" && options.context.length > 0
+            ? { context: options.context }
+            : {}),
+        },
         { scope: prefillScope.current, defer: fresh },
       );
     }

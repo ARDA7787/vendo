@@ -21,6 +21,7 @@ import { buildApprovalRequest } from "./approval-wire.js";
 import {
   appTitle,
   BUILD_FAILURE_COPY,
+  isAgentContext,
   narratedByAppCard,
   partData,
   toolCallIsContent,
@@ -93,6 +94,8 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
   respond?: (response: { id: string; approved: boolean }) => void;
 }) {
   if (part.type === "text") {
+    // The agent's grounding carrier is a text part nobody reads (message-data).
+    if (isAgentContext(part)) return null;
     if (role === "user") return <UserText text={part.text} restored={restored} />;
     // ENG-217 — lone caret while the streamed turn is still empty (stable
     // line box); once text flows, Markdown's .fl-md--streaming trailing

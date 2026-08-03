@@ -310,6 +310,35 @@ describe("Remixable — the wrapper fork gesture + in-place jailed mount", () =>
     expect(wire.requests.filter(r => r.method === "POST" && r.path === "/threads")).toHaveLength(0);
   });
 
+  it("hands the agent its grounding out of sight — the app id reaches the turn, never the screen", async () => {
+    mount();
+    fireEvent.click(forkPill());
+    await waitFor(() => expect(forkIframe()).toBeTruthy());
+    const appId = wire.state.apps.find(app => app.pins?.some(pin => pin.slot === SLOT))!.id;
+    fireEvent.click(managePill());
+    fireEvent.click(screen.getByRole("button", { name: "Open in panel" }));
+    const panel = await screen.findByRole("dialog", { name: "Vendo assistant" });
+    const composer = () => within(panel).getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(composer().value).toBe(`Update my ${SLOT} remix: `));
+
+    fireEvent.change(composer(), { target: { value: `Update my ${SLOT} remix: make it blue` } });
+    fireEvent.keyDown(composer(), { key: "Enter" });
+
+    // It REACHES the agent: the turn's own message carries it.
+    const sent = await waitFor(() => {
+      const post = wire.requests.find(r => r.method === "POST" && r.path === "/threads");
+      expect(post).toBeTruthy();
+      return JSON.stringify(post!.body);
+    });
+    expect(sent).toContain(appId);
+    expect(sent).toContain("make it blue");
+
+    // And it is nowhere a person looks — not the textarea, not the transcript.
+    await waitFor(() => expect(panel.textContent).toContain("make it blue"));
+    expect(document.body.textContent).not.toContain(appId);
+    expect(composer().value).toBe("");
+  });
+
   it("discovers an existing fork on mount, so a remix survives a reload", async () => {
     await client.apps.forkPin({ slot: SLOT, props: { title: "Persisted" } });
     mount();

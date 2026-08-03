@@ -1,11 +1,17 @@
+import type { UIMessage } from "ai";
 import { useContext, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ConnectDockButton, ConnectTray } from "../connect-dock.js";
 import { PrefillScopeContext, registerPrefillConsumer } from "../overlay-registry.js";
 import { fileExt, fileToPart, formatBytes } from "./attachments.js";
+import { AGENT_CONTEXT_METADATA } from "./message-data.js";
 
-/** The message shape the composer commits — mirrors useVendoThread.sendMessage. */
-type OutgoingMessage = { text: string; files?: Awaited<ReturnType<typeof fileToPart>>[] };
+/** The message shape the composer commits — mirrors useVendoThread.sendMessage.
+    The explicit `parts` form is only for a turn carrying agent grounding, which
+    needs a marked part the `text`/`files` shorthand cannot express. */
+type OutgoingMessage =
+  | { text: string; files?: Awaited<ReturnType<typeof fileToPart>>[] }
+  | { parts: UIMessage["parts"] };
 
 /** Lane pick 2F — one attachment's eager-read lifecycle (drives the chip ring). */
 type AttachmentRead = {
@@ -121,13 +127,18 @@ export function useComposer({ busy, sendMessage }: {
   // pill) and auto-sends the instant the turn finishes. A single slot — a second
   // send while one is parked replaces it — because there is only ever one "next"
   // turn. Stop stays the explicit interrupt; queueing never cancels the stream.
-  const [queued, setQueued] = useState<{ text: string; files: File[] } | null>(null);
+  const [queued, setQueued] = useState<{ text: string; files: File[]; context?: string } | null>(null);
   const [attachError, setAttachError] = useState<string>();
+  // The grounding a prefill handed over (an app id behind a ✦ remix): held in a
+  // ref, not state, because it must never influence a render — it rides the
+  // NEXT message this composer sends and is spent there. Once sent, the thread's
+  // own history carries it, so a follow-up needs no second copy.
+  const contextRef = useRef<string | undefined>(undefined);
 
   // ENG-215 — commit a turn to the transport (attachment parts come from the
   // eager-read cache when ready, else a fresh read). Used both by an immediate
   // send and by the deferred flush of a queued message.
-  const dispatch = (text: string, pending: File[]) => {
+  const dispatch = (text: string, pending: File[], context?: string) => {
     void (async () => {
       let parts: Awaited<ReturnType<typeof fileToPart>>[];
       try {
@@ -153,7 +164,20 @@ export function useComposer({ busy, sendMessage }: {
         return;
       }
       setAttachError(undefined);
-      void sendMessage(parts.length > 0 ? { text, files: parts } : { text });
+      if (context === undefined) {
+        void sendMessage(parts.length > 0 ? { text, files: parts } : { text });
+        return;
+      }
+      // The grounding travels as its own text part, marked so no surface renders
+      // it (AGENT_CONTEXT_METADATA). Spelling the parts out is the price of the
+      // marker — the `{ text, files }` shorthand cannot carry one.
+      void sendMessage({
+        parts: [
+          { type: "text", text },
+          ...parts,
+          { type: "text", text: context, providerMetadata: AGENT_CONTEXT_METADATA },
+        ],
+      });
     })();
   };
 
@@ -161,15 +185,17 @@ export function useComposer({ busy, sendMessage }: {
     const text = (override ?? draft).trim();
     const pending = files;
     if (!text && pending.length === 0) return;
+    const context = contextRef.current;
+    contextRef.current = undefined;
     // The message leaves the input immediately (whether it sends now or parks).
     setDraft("");
     setFiles([]);
     if (fileRef.current) fileRef.current.value = "";
     if (busy) {
-      setQueued({ text, files: pending });
+      setQueued({ text, files: pending, ...(context === undefined ? {} : { context }) });
       return;
     }
-    dispatch(text, pending);
+    dispatch(text, pending, context);
   };
 
   // The enclosing overlay's prefill scope (null for embedded threads/pages):
@@ -188,19 +214,21 @@ export function useComposer({ busy, sendMessage }: {
   // prompt parked while this composer was still mounting (overlay first open /
   // fresh conversation).
   useEffect(() => {
-    const prefill = (prompt: string, sendNow: boolean) => {
+    const prefill = (prompt: string, sendNow: boolean, context?: string) => {
       // An empty hand-off must not wipe a draft in progress.
       if (prompt.length > 0) setDraft(prompt);
+      // Never into the textarea: the grounding is for the model only.
+      if (context !== undefined && context.length > 0) contextRef.current = context;
       if (sendNow) queueMicrotask(() => sendRef.current(prompt));
     };
     const onPrefill = (event: Event) => {
-      const detail = (event as CustomEvent<{ prompt?: string; send?: boolean }>).detail;
+      const detail = (event as CustomEvent<{ prompt?: string; send?: boolean; context?: string }>).detail;
       if (typeof detail?.prompt !== "string") return;
-      prefill(detail.prompt, detail.send === true);
+      prefill(detail.prompt, detail.send === true, detail.context);
     };
     window.addEventListener("vendo:prefill", onPrefill);
     const unregister = registerPrefillConsumer(parked => {
-      prefill(parked.prompt, parked.send);
+      prefill(parked.prompt, parked.send, parked.context);
     }, prefillScope);
     return () => {
       window.removeEventListener("vendo:prefill", onPrefill);
@@ -216,7 +244,7 @@ export function useComposer({ busy, sendMessage }: {
     if (wasBusyRef.current && !busy && queued) {
       const pending = queued;
       setQueued(null);
-      dispatch(pending.text, pending.files);
+      dispatch(pending.text, pending.files, pending.context);
     }
     wasBusyRef.current = busy;
     // dispatch is recreated each render but closes only over stable setters and

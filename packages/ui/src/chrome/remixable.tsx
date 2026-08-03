@@ -270,11 +270,13 @@ function RemixedFork({ appId, slot, review, liveProps, menuOpen, onMenuToggle, o
                   // it used to read "Update my <slot> remix (app app_…): " and
                   // an app id is our plumbing, not something a person types.
                   // The agent's app tools are appId-keyed with no list tool, so
-                  // the grounding still has to reach it — through a NON-VISIBLE
-                  // payload, which needs the composer's prefill consumer to
-                  // carry one (owned elsewhere in this wave; until then the
-                  // agent may ask which view is meant).
-                  const opened = openVendoConversation({ prompt: `Update my ${slot} remix: `, send: false });
+                  // the grounding rides `context` — a marked text part on the
+                  // sent message that no surface renders.
+                  const opened = openVendoConversation({
+                    prompt: `Update my ${slot} remix: `,
+                    context: `The view being remixed is the "${slot}" slot, app ${appId}.`,
+                    send: false,
+                  });
                   if (!opened && developmentMode()) {
                     console.warn(`[vendo] Remixable "${slot}": "Open in panel" opens the conversation surface — mount a VendoOverlay for it to land in.`);
                   }
