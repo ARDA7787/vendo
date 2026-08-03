@@ -148,7 +148,10 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     // Visible failure: the card keeps its actions (retry is one click) and
     // NOTHING was decided — asks still pending, automation state untouched.
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Store briefly unavailable");
+    // The wire's sentence names our store; the card says what happened to the
+    // person and that nothing was granted (spec §16 law 3, LEAK 2).
+    expect(alert.textContent).toBe("That didn’t go through — nothing was granted. Try again in a moment.");
+    expect(alert.textContent).not.toContain("Store");
     const card = screen.getByLabelText("Standing access — Invoice watcher");
     expect(card.contains(alert)).toBe(true);
     expect((screen.getByRole("button", { name: "Deny" }) as HTMLButtonElement).disabled).toBe(false);

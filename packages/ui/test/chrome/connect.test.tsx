@@ -139,7 +139,12 @@ describe("ConnectCard and ConnectedAccountsPanel", () => {
       </VendoProvider>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Connect Gmail" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("requires a signed-in user");
+    // The wire's sentence is the DEVELOPER's ("connecting external accounts
+    // requires a signed-in user; sign in first"); the card says what it means
+    // for the person (spec §16 law 3, LEAK 2).
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Sign in first, then connect Gmail.");
+    expect(alert.textContent).not.toContain("external accounts");
     expect(screen.getByRole("button", { name: "Connect Gmail" }).hasAttribute("disabled")).toBe(false);
   });
 
