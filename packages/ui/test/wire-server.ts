@@ -172,6 +172,11 @@ function audit(id: string): AuditEvent {
     venue: "chat",
     presence: "present",
     tool: "host_invoices_list",
+    // Ruling 17a — the fixture was BLIND here: it left `inputPreview` unset, so
+    // no audit sweep could see that the ledger printed it. This is the guard's
+    // real shape (guard.ts `inputPreview`: `<tool slug> <canonical JSON>`),
+    // including a declared-cents amount, which is what a person must never read.
+    inputPreview: 'host_invoices_list {"amount_cents":4750,"limit":10,"status":"open"}',
     outcome: "ok",
   };
 }

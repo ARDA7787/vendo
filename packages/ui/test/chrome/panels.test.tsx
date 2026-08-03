@@ -30,6 +30,31 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
     expect(wire.requests).toContainEqual(expect.objectContaining({ method: "GET", path: "/activity?cursor=eyJjIjoiMjAyNi0wNy0xMVQxMjowMDowMC4wMDBaIiwiaSI6ImF1ZF8yIn0" }));
   });
 
+  it("humanizes a row's inputs and never prints the guard's raw preview (C2)", async () => {
+    render(<VendoProvider client={client}><ActivityPanel /></VendoProvider>);
+    await waitFor(() => expect(screen.getAllByText("Invoices list")).toHaveLength(2));
+    const row = document.querySelector(".fl-act-led-row")!;
+    // The guard mints `<tool slug> <canonical JSON>`; this row used to print it.
+    expect(row.textContent).not.toContain("host_invoices_list {");
+    expect(row.textContent).not.toContain('"limit"');
+    // The consent surfaces' own humanization, money seam included.
+    expect(row.querySelector(".fl-act-led-det")?.textContent)
+      .toBe(" — Amount cents $47.50 · Limit 10 · Status open");
+  });
+
+  it("keeps the raw preview for developers — dev mode only", async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    try {
+      render(<VendoProvider client={client}><ActivityPanel /></VendoProvider>);
+      await waitFor(() => expect(screen.getAllByText("Invoices list")).toHaveLength(2));
+      expect(document.querySelector(".fl-act-led-det")?.textContent)
+        .toContain('host_invoices_list {"amount_cents":4750');
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+  });
+
   it("retires Load more and shows an end-of-list marker once the history is exhausted", async () => {
     render(<VendoProvider client={client}><ActivityPanel /></VendoProvider>);
     await waitFor(() => expect(screen.getAllByText("Invoices list")).toHaveLength(2));
