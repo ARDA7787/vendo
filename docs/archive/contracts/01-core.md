@@ -81,14 +81,20 @@ export interface ToolDescriptor {
                                 // Namespaced by underscore: "host_invoices_list", "gmail_send", "vendo_apps_create"
   description: string;
   inputSchema: JsonSchema;      // the MCP/Anthropic field name; "input" would collide with TreeQuery.input (values)
+  outputSchema?: JsonSchema;    // amended 2026-08-03 (harness redesign D5): the host's DECLARED result shape, when
+                                // extraction found one (an OpenAPI 2xx application/json schema) — never invented,
+                                // carried verbatim to ToolListing and the door so the model knows a query's fields
+                                // before calling it. NOT in the descriptorHash preimage: no person approved it.
   risk: RiskLabel;
-  critical?: boolean;           // always asks the running user; no grant, rule, or judge may suppress
+  confirmEach?: boolean;        // always asks the running user; no grant, rule, or judge may suppress
+                                // (renamed from `critical` by #747, 2026-08-03; a `critical` field is
+                                //  still read as an alias so stored descriptors keep working)
 }
 // provenance is carried by the name prefix (host_*, <connector>_*, vendo_*) — no separate source field
 
 /** Canonical descriptor fingerprint, algorithm-prefixed like every other ref in the system
  *  ("sha256:<hex>", cf. Pin.base and snapshot refs): SHA-256 over the RFC 8785 (JCS) canonicalization
- *  of { name, description, inputSchema, risk, critical }, absent optional fields omitted — so independent
+ *  of { name, description, inputSchema, risk, confirmEach }, absent optional fields omitted — so independent
  *  implementations always agree, and the algorithm can rotate without a flag-day. */
 export function descriptorHash(d: ToolDescriptor): string;   // "sha256:ab12..."
 export function canonicalJson(value: unknown): string;        // RFC 8785 canonical JSON
@@ -172,7 +178,7 @@ The choke point interface. guard implements it (05); every other block only cons
 ```ts
 export type GuardDecision =
   | { action: "run"; decidedBy: "grant" | "rule" | "judge" | "default"; grantId?: GrantId }
-  | { action: "ask"; approval: ApprovalRequest; decidedBy: "critical" | "rule" | "judge" | "breaker" | "default" }
+  | { action: "ask"; approval: ApprovalRequest; decidedBy: "confirmEach" | "rule" | "judge" | "breaker" | "default" }
   | { action: "block"; reason: string; decidedBy: "rule" | "judge" | "breaker" };
 
 export interface Guard {
@@ -637,3 +643,11 @@ Persistence and transport are normative:
   pick V4).
 - **Authorized by:** the Yousef-decided agentic-UI redesign design
   (`docs/superpowers/specs/2026-08-02-agentic-ui-redesign-design.md`, §5).
+### 2026-08-03 — a listing belongs to ONE run (lazy connector expansion is no longer process-wide)
+
+- **Changed:** §4's `ToolRegistry.descriptors(ctx?)` parameter is named: `ToolListingContext = Pick<RunContext, "venue" | "presence">`, which every `RunContext` already satisfies. No field is added and no caller changes shape. What is now normative is that the context object also IDENTIFIES the run, and a registry may narrow a listing by it — so a caller must pass a run's OWN context object through rather than rebuilding an equivalent one per call.
+- **Changed:** `@vendoai/actions` scopes lazily expanded connector toolkits (connection-scoped tool loading, spec 2026-07-20) to the run that expanded them, keyed by that object's identity; `ActionsRegistry.expandToolkits`, `loadoutSeed` and `search` take the same optional context. The FETCH stays process-wide and cached — one network walk per toolkit, never one per listing — and dispatch stays global, so what a run can SEE never decides what may RUN (the guard and the per-user connect check do). A contextless `descriptors()` still answers with the whole loaded surface (the guard's own descriptor lookup, `@vendoai/core/conformance`).
+- **Changed:** `guard.bind`'s `descriptors` forwards its context INWARD instead of asking the wrapped registry for the unscoped set.
+- **Why:** measured live 2026-08-03 in a boxed claude-code run — one conversation's `search_connectors` expanded slack, and the NEXT conversation's very first `tools/list`, before any search, answered 301 tools instead of 35, carrying the whole slack + slackbot catalogs. Expansion was instance-level state on the connector adapter, so "lazy" was a one-way process-lifetime ratchet: every later conversation and every other user paid someone else's expansion in context cost, and in-session reachability was never what made an expanded tool callable later.
+- **Why the object and not its fields:** `RunContext` carries no conversation id, and `sessionId` is the wire's PROCESS-WIDE fallback for host-resolved principals, so a key built from fields would still have put every conversation of one user in one bucket — the exact leak. The door projects a live turn's context verbatim, the wire mints one per request, and the agent threads the same object through descriptors, seed, search and execute, so identity is the finest correct grain available without a new contract field.
+- **Known limits:** the scope is the RUN, so a lazy toolkit found by search in one turn is not on the next turn's listing unless it is searched again or its toolkit is connected (`loadoutSeed` re-expands connected toolkits every turn). A rebuilt or cloned context reads as a fresh run — it fails toward re-search, never toward another run's set — which also means an app-venue or automation run does not inherit a chat turn's expansions (an automation over a connector tool must still be enabled where that toolkit is visible, as before). A lazy connector that reports neither `ToolDescriptor.toolkit` nor `toolkitOf(name)` cannot be scoped and stays visible to every listing rather than becoming unreachable.

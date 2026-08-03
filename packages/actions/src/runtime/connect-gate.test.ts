@@ -32,6 +32,21 @@ describe("createConnectGate (criterion 11 — connect check before any guard dec
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("passes the END of a listing scope through — the gate has no opinion about listings", async () => {
+    // Same law as the `ctx` forwarding beside it: a decorator that rebuilt the
+    // registry shape and swallowed this left the wrapped registry's per-scope
+    // expansions shedding by capacity alone (round 6 2026-08-03).
+    const released: string[] = [];
+    const { registry } = innerRegistry();
+    const gate = createConnectGate({
+      toolkitOf: async () => undefined,
+      isConnected: async () => true,
+    });
+    gate.bind({ ...registry, releaseListingScope: (scope) => { released.push(scope); } })
+      .releaseListingScope?.("mcps_gone");
+    expect(released).toEqual(["mcps_gone"]);
+  });
+
   it("delegates connected calls untouched", async () => {
     const { registry, execute } = innerRegistry();
     const gate = createConnectGate({

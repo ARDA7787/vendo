@@ -13,6 +13,7 @@ export * from "./grant-sets.js";
 export * from "./guard.js";
 export * from "./fetch.js";
 export * from "./heartbeat.js";
+export * from "./host-components.js";
 export * from "./host-seams.js";
 export * from "./ids.js";
 export * from "./island-ambient.js";

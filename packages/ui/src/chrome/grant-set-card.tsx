@@ -49,6 +49,8 @@ const RISK_WORD: Record<string, string> = {
   // ordinary write. This is the approval card's own chip vocabulary, so one
   // grade reads the same on every consent surface.
   destructive: "Irreversible",
+  // #747's word for the state, taken verbatim from the approval card's chip.
+  ungraded: "Not reviewed",
 };
 
 /**
@@ -66,7 +68,7 @@ const RISK_WORD: Record<string, string> = {
  * safest-sounding word available and the one thing nobody has established.
  */
 export function grantRowWord(risk: RiskLabel | string): string {
-  return RISK_WORD[risk] ?? "Unchecked";
+  return RISK_WORD[risk] ?? RISK_WORD.ungraded!;
 }
 
 export interface GrantSetCardProps {

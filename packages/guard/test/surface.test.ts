@@ -34,6 +34,21 @@ describe("public guard surface", () => {
     await expect(bound.descriptors()).resolves.toBe(tools.available);
   });
 
+  it("passes the END of a listing scope through, so per-scope state can be released", async () => {
+    // The bound registry is what the MCP door actually holds, so a wrapper that
+    // rebuilt `{descriptors, execute}` and dropped this left the registry's
+    // per-scope expansions shedding by capacity alone — a process-global map, so
+    // one principal's sessions evicted another's (round 6 2026-08-03).
+    const released: string[] = [];
+    const tools: ToolRegistry = {
+      descriptors: async () => [],
+      execute: async () => ({ status: "ok", output: {} }),
+      releaseListingScope(scope) { released.push(scope); },
+    };
+    createGuard({ store: createMemoryStore() }).bind(tools).releaseListingScope?.("mcps_gone");
+    expect(released).toEqual(["mcps_gone"]);
+  });
+
   it("returns and audits not-found for an unknown tool", async () => {
     const guard = createGuard({ store: createMemoryStore() });
     const result = await guard.bind(new FixtureTools()).execute(call("host_missing"), context());
@@ -109,9 +124,9 @@ describe("public guard surface", () => {
   });
 
   it("shows real inputs and truncates approval previews to 500 characters", async () => {
-    const critical = descriptor("destructive", { name: "host_critical", critical: true });
+    const confirmEach = descriptor("destructive", { name: "host_confirm_each", confirmEach: true });
     const guard = createGuard({ store: createMemoryStore() });
-    const decision = await guard.check(call(critical.name, { secret: "x".repeat(600) }), critical, context());
+    const decision = await guard.check(call(confirmEach.name, { secret: "x".repeat(600) }), confirmEach, context());
     expect(decision.action).toBe("ask");
     if (decision.action !== "ask") throw new Error("expected approval");
     expect(decision.approval.inputPreview).toHaveLength(500);

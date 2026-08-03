@@ -1,4 +1,4 @@
-import { riskLabelSchema, type RiskLabel, type UIPayload, type VendoAutomationPart, type VendoBuildFailedPart, type VendoGrantSetPart, type VendoTurnErrorPart, type VendoViewPart } from "@vendoai/core";
+import { riskLabelSchema, type ApprovalRequest, type Json, type RiskLabel, type UIPayload, type VendoAutomationPart, type VendoBuildFailedPart, type VendoConnectPart, type VendoGrantSetPart, type VendoTurnErrorPart, type VendoViewPart } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoContext } from "../../context.js";
@@ -62,6 +62,53 @@ function UserText({ text: rawText, restored }: { text: string; restored?: boolea
   );
 }
 
+/** The renderable half of a connect ask — the fields ConnectCard needs. */
+type ConnectAsk = { connector: string; toolkit: string; message: string };
+
+/** Read a connect ask off the flat `data-vendo-connect` shape (01 §16). */
+function connectAsk(candidate: unknown): ConnectAsk | undefined {
+  const fields = candidate as { connector?: unknown; toolkit?: unknown; message?: unknown } | null | undefined;
+  if (typeof fields?.connector !== "string" || typeof fields.toolkit !== "string") return undefined;
+  return {
+    connector: fields.connector,
+    toolkit: fields.toolkit,
+    message: typeof fields.message === "string" ? fields.message : `Connect ${fields.toolkit} to continue.`,
+  };
+}
+
+/** Read a connect ask off a NATIVE tool part's typed outcome — the engine
+    path's shape, where the `connect-required` outcome IS the tool output.
+    Undefined for any other result. */
+function nativeConnectAsk(output: unknown): ConnectAsk | undefined {
+  const result = output as { status?: unknown; connect?: unknown } | null | undefined;
+  if (result?.status !== "connect-required") return undefined;
+  return connectAsk(result.connect);
+}
+
+/** The in-thread connect card, shared by both wire shapes (see ThreadPart). */
+function ThreadConnect({ ask, live, sendMessage }: {
+  ask: ConnectAsk;
+  live: boolean;
+  sendMessage?: ((message: { text: string }) => unknown) | undefined;
+}) {
+  return (
+    <ConnectCard
+      connector={ask.connector}
+      toolkit={ask.toolkit}
+      message={ask.message}
+      live={live}
+      onConnected={() => {
+        // The continuation: the account is live, so resume the turn.
+        // A NATURAL user line, not tool plumbing — the parked turn's
+        // context (the connect-required call directly above) tells the
+        // agent what to retry (2026-07 demo feedback; the old line
+        // read "retry gmail_send_email" in the transcript).
+        void sendMessage?.({ text: `Connected ${toolkitDisplayName(ask.toolkit)}.` });
+      }}
+    />
+  );
+}
+
 /** One stream part in a turn: text (user verbatim / assistant markdown with the
     ENG-217 caret choreography), assistant files, tool build beats, and the
     jailed generated-view app card (06-apps §§8–9). */
@@ -116,32 +163,12 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     // its ConnectCard IN PLACE (2026-07 demo feedback: the card used to hang
     // off the bottom of the list and vanish after the continuation; now it
     // lives at its transcript position and settles into a Connected record).
-    // The typed outcome on the native tool part is the source of truth; the
-    // data-vendo-connect part mirrors it for streaming consumers.
+    // The typed outcome on the native tool part is the source of truth WHEN the
+    // wire carries one; the data-vendo-connect branch below covers the harness
+    // wire, which does not.
     if (part.state === "output-available") {
-      const output = part.output as { status?: unknown; connect?: unknown } | undefined;
-      const connect = output?.status === "connect-required"
-        ? output.connect as { connector?: unknown; toolkit?: unknown; message?: unknown } | undefined
-        : undefined;
-      if (typeof connect?.connector === "string" && typeof connect.toolkit === "string") {
-        const toolkit = connect.toolkit;
-        return (
-          <ConnectCard
-            connector={connect.connector}
-            toolkit={toolkit}
-            message={typeof connect.message === "string" ? connect.message : `Connect ${toolkit} to continue.`}
-            live={connectLive}
-            onConnected={() => {
-              // The continuation: the account is live, so resume the turn.
-              // A NATURAL user line, not tool plumbing — the parked turn's
-              // context (the connect-required call directly above) tells the
-              // agent what to retry (2026-07 demo feedback; the old line
-              // read "retry gmail_send_email" in the transcript).
-              void sendMessage?.({ text: `Connected ${toolkitDisplayName(toolkit)}.` });
-            }}
-          />
-        );
-      }
+      const ask = nativeConnectAsk(part.output);
+      if (ask !== undefined) return <ThreadConnect ask={ask} live={connectLive} sendMessage={sendMessage} />;
     }
     // Spec §1 — THE TRANSCRIPT SHOWS THE WORK: every tool call leaves a beat at
     // its position in the conversation (this reverses lane pick C1, which sent
@@ -159,6 +186,25 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     if (toolCallIsContent(part)) return <BuildBeat part={part} risk={risk} count={count} />;
     if (hideBeats) return null;
     return <BuildBeat part={part} risk={risk} count={count} />;
+  }
+  if (part.type === "data-vendo-connect") {
+    // The connect ask's OTHER shape, and the ONLY one a harness turn produces: the
+    // runtime maps `connect-required` to a `denied` ToolResult and the wire mirror
+    // writes a bare `tool-output-denied` (harnesses/src/wire.ts), so the native part
+    // above carries no outcome to read — without this branch every unconnected
+    // service on a harness turn is a silent denial with no card.
+    const data = partData(part) as Partial<VendoConnectPart>;
+    const ask = connectAsk(data);
+    if (ask === undefined) return null;
+    // The engine path writes BOTH shapes for one call (the bridge's part plus
+    // the typed tool output). The native part stays the source of truth, so
+    // when it already renders the card this one stands down — one card per call.
+    const rendered = (siblingParts ?? []).filter(isToolUIPart).some(candidate =>
+      candidate.toolCallId === data.toolCallId
+      && candidate.state === "output-available"
+      && nativeConnectAsk(candidate.output) !== undefined);
+    if (rendered) return null;
+    return <ThreadConnect ask={ask} live={connectLive} sendMessage={sendMessage} />;
   }
   if (part.type === "data-vendo-build-failed") {
     // 0.4.4 cert defect B — a terminally failed app build is content, not

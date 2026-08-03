@@ -86,10 +86,10 @@ export const guardFixture = (options: GuardFixtureOptions = {}): GuardFixture =>
     approvals,
     audit,
     async check(call, descriptor, ctx): Promise<GuardDecision> {
-      if (descriptor.critical === true) {
+      if (descriptor.confirmEach === true) {
         const approval = approvalFor(call, descriptor, ctx);
         approvals.push(approval);
-        return { action: "ask", approval, decidedBy: "critical" };
+        return { action: "ask", approval, decidedBy: "confirmEach" };
       }
 
       const grant = grants.find((candidate) => grantMatches(candidate, descriptor, ctx, now()));
@@ -132,6 +132,8 @@ export const bindTools = (guard: Guard, registry: ToolRegistry): ToolRegistry =>
 
   return {
     descriptors: () => registry.descriptors(),
+    // A rebuilt surface drops optional methods silently, fixtures included.
+    releaseListingScope: (scope) => registry.releaseListingScope?.(scope),
     async execute(call, ctx): Promise<ToolOutcome> {
       const descriptors = await registry.descriptors();
       const descriptor = descriptors.find((candidate) => candidate.name === call.tool);

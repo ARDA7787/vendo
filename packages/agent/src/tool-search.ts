@@ -20,7 +20,9 @@ export const FIND_TOOLS_TOOL_NAME = "find_tools";
  * stay reachable through {@link FIND_TOOLS_TOOL_NAME}. */
 export const DEFAULT_MAX_INITIAL_TOOLS = 128;
 
-const RISK_ORDER: Record<RiskLabel, number> = { read: 0, write: 1, destructive: 2 };
+/** Seed order for the capped loadout: safest first, ungraded last — an
+ *  uncapped tool nobody has graded is the weakest claim on the budget. */
+const RISK_ORDER: Record<RiskLabel, number> = { read: 0, write: 1, destructive: 2, ungraded: 3 };
 
 /** A hit from the injected search seam — the structural twin of actions'
  * `ToolSearchMatch` (the agent block depends on core only, so it cannot import
@@ -33,8 +35,17 @@ export interface ToolSearchMatch {
 }
 
 /** Ranks the merged, enabled, guard-bound tool surface against a free-text
- * intent. The umbrella wires this to `ActionsRegistry.search`. */
-export type ToolSearchFn = (query: string, options?: { limit?: number }) => Promise<ToolSearchMatch[]>;
+ * intent. The umbrella wires this to `ActionsRegistry.search`.
+ *
+ * `ctx` is the CALLER's, handed down from the run — a search may EXPAND a lazy
+ * connector toolkit, and that expansion belongs to the conversation that asked
+ * for it rather than to every later listing in the process. Without it the
+ * matches can name tools this run's own listing will not contain. */
+export type ToolSearchFn = (
+  query: string,
+  options?: { limit?: number },
+  ctx?: RunContext,
+) => Promise<ToolSearchMatch[]>;
 
 export interface ToolSearchConfig {
   /** The registry query seam (umbrella wires it to the guard-bound registry). */
@@ -218,7 +229,11 @@ export function createToolSearchSession(options: ToolSearchSessionOptions): Tool
           const limit = typeof parsed?.limit === "number" ? parsed.limit : undefined;
           let matches: ToolSearchMatch[];
           try {
-            matches = await options.config.search(query, limit === undefined ? undefined : { limit });
+            matches = await options.config.search(
+              query,
+              limit === undefined ? undefined : { limit },
+              options.ctx,
+            );
           } catch {
             return { status: "error", error: { code: "execution", message: "Tool search failed." } };
           }

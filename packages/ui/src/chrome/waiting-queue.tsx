@@ -51,7 +51,11 @@ function WaitingRow({ approval, onDecide }: {
     approval.descriptor.inputSchema,
   );
   // A destructive ask reads as ceremony — the amber edge, same as in-thread.
-  const ceremony = approval.descriptor.risk === "destructive" || approval.descriptor.critical === true;
+  // #747: `critical` is `confirmEach` now, and `ungraded` earns the ceremony
+  // too (an ask nobody graded never quietly folds). Same condition as the card.
+  const ceremony = approval.descriptor.risk === "destructive"
+    || approval.descriptor.risk === "ungraded"
+    || approval.descriptor.confirmEach === true;
   const title = presentation.title;
   // The SAME plain-words ladder the card uses, from the same function (ruling
   // 14): host sentence → consequence from the real inputs → our own synthesized

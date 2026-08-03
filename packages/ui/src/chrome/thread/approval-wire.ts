@@ -45,8 +45,8 @@ export interface ApprovalWirePart {
   /** The REAL inputs the model passed. */
   args?: unknown;
   /**
-   * From the `data-vendo-approval` part. ABSENT means ungraded — never
-   * read-only (ruling 15): see the default in the builder below.
+   * From the `data-vendo-approval` part. ABSENT means `ungraded` — never
+   * read-only: see the default in the builder below.
    */
   risk?: RiskLabel;
   invalidatedGrant?: ApprovalRequest["invalidatedGrant"];
@@ -72,22 +72,19 @@ export function buildApprovalRequest(part: ApprovalWirePart, tools: ToolDescript
       // The whole point: the declared schema when the wire has one, so money
       // formats as money on every surface — `{}` only when there is none.
       inputSchema: authored?.inputSchema ?? {},
-      // RULING 15 — an absent risk is UNGRADED, and defaulting it to "read" made
-      // every ungraded ask claim "Read-only" on its chip and "This reads your
-      // data, as you." as its plain-words line: the safest-sounding thing we
-      // could have said about a call we know nothing about. The cautious display
-      // grade is a write — it never understates, and it does not invent the
-      // irreversibility that `destructive` would claim (with its ceremony edge)
-      // on an ask that may well be harmless.
-      risk: part.risk ?? "write",
-      // …and UNGRADED is carried, not just approximated. Defaulting the display
-      // grade to `write` still let the card treat the ask as ordinary: `critical`
-      // was false, so the consequence sentence FOLDED the real inputs behind
-      // Details and the ceremony edge was dropped — scrutiny reduced on the
-      // strength of a grade nobody supplied. `critical` is the existing
-      // maximum-scrutiny flag (never fold, keep the ceremony), and unlike
-      // `risk: "destructive"` it claims no irreversibility on the chip.
-      ...(part.risk === undefined ? { critical: true } : {}),
+      // An absent risk is UNGRADED, and #747 made that a FIRST-CLASS grade, so
+      // it is carried as itself.
+      //
+      // Two approximations died here. Defaulting to "read" made every ungraded
+      // ask claim "Read-only" on its chip and "This reads your data, as you."
+      // as its line — the safest-sounding thing we could say about a call we
+      // know nothing about. Defaulting to `write` + `critical: true` was the
+      // wave's own patch: honest about scrutiny, but it still displayed a grade
+      // nobody assigned, and it duplicated in the client a state the contract
+      // now has a word for. The chip reads "Not reviewed", the line says so in
+      // plain words, and the ceremony (never fold, keep the edge) is derived
+      // from the grade at each card rather than smuggled in on a second flag.
+      risk: part.risk ?? "ungraded",
       ...(title === undefined || title.length === 0 ? {} : { title }),
     },
     // Client-side humanized, never the server's `tool slug + canonical JSON`.

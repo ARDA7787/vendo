@@ -16,7 +16,7 @@ import { approvalTitle, type VoiceApprovalReceipt } from "./use-voice-approvals.
 /** spec §16 — the voice consent used to be a hand-rolled strip PLUS a
     hand-rolled article for automation asks: two more re-implementations of "the
     approval". Both are the one card shell now; `.fl-voice-consent` rides on the
-    shell itself so the stage's listening/critical/automation registers (and the
+    shell itself so the stage's listening/ceremony/automation registers (and the
     CSS that animates them) keep working while the geometry comes from the shell. */
 export interface VoiceConsentProps {
   request?: ApprovalRequest;
@@ -43,17 +43,28 @@ export function VoiceConsent({ request, receipt, listening, busy, error, intent,
   }
   if (!request) return null;
 
-  const critical = request.descriptor.risk === "destructive" || request.descriptor.critical === true;
+  // #747 renamed `critical` → `confirmEach` (a GOVERNANCE flag — who must be
+  // present — not a risk rung); host files may still spell it the old way and
+  // core accepts that alias, so reading the new name here is enough.
+  //
+  // UNGRADED joins the condition, and does NOT duplicate main's semantics:
+  // main makes the GUARD ask on ungraded; this makes the CARD keep its
+  // ceremony — never fold the real inputs behind Details on an ask nobody has
+  // graded. The chip still reads "Not reviewed", so the card claims none of
+  // the irreversibility `destructive` would.
+  const ceremony = request.descriptor.risk === "destructive"
+    || request.descriptor.risk === "ungraded"
+    || request.descriptor.confirmEach === true;
   const automation = isAutomation(request);
   const title = approvalTitle(request);
   const fact = approvalFact(request);
-  const register = automation ? " is-automation" : critical ? " is-critical" : listening ? " is-listening" : "";
+  const register = automation ? " is-automation" : ceremony ? " is-critical" : listening ? " is-listening" : "";
 
   return (
     <CardShell
       label={`Approval for ${title}`}
       className={`fl-approval fl-voice-consent${register}`}
-      ceremony={critical}
+      ceremony={ceremony}
       role="status"
       aria-live="polite"
     >
@@ -72,8 +83,8 @@ export function VoiceConsent({ request, receipt, listening, busy, error, intent,
       {automation ? (
         <CardFields rows={fieldRows(request.call.args, request.descriptor.inputSchema)} />
       ) : null}
-      {critical ? <div className="fl-voice-consent-warn">Confirm this action by hand</div> : null}
-      {!critical && !automation && listening ? (
+      {ceremony ? <div className="fl-voice-consent-warn">Confirm this action by hand</div> : null}
+      {!ceremony && !automation && listening ? (
         intent === "approve" ? (
           <div className="fl-voice-consent-hint is-heard" role="status">&ldquo;Approve&rdquo; heard ✓</div>
         ) : intent === "decline" ? (
@@ -90,11 +101,11 @@ export function VoiceConsent({ request, receipt, listening, busy, error, intent,
         <button type="button" className="fl-btn" disabled={busy} onClick={() => onDecide(request, false)}>Decline</button>
         <button
           type="button"
-          className={`fl-btn ${critical ? "fl-btn-ceremony" : "fl-btn-primary"}`}
+          className={`fl-btn ${ceremony ? "fl-btn-ceremony" : "fl-btn-primary"}`}
           disabled={busy}
           onClick={() => onDecide(request, true)}
         >
-          {critical ? `Confirm — ${title}` : "Approve"}
+          {ceremony ? `Confirm — ${title}` : "Approve"}
         </button>
       </CardActions>
     </CardShell>

@@ -11,6 +11,7 @@ import {
   type RunContext,
   type ToolCall,
   type ToolDescriptor,
+  type ToolListingContext,
   type ToolOutcome,
   type ToolRegistry,
 } from "@vendoai/core";
@@ -50,14 +51,17 @@ export interface ActionsRegistry extends ToolRegistry {
    * a free-text intent. Disabled tools are excluded (they never enter the loaded
    * descriptor set), so a hit is always a loadable, guard-bound tool.
    */
-  search(query: string, options?: ToolSearchOptions): Promise<ToolSearchMatch[]>;
-  /** Fetch + register the named lazy toolkits' tools (idempotent, global —
-   * descriptors are the same for every principal; per-USER scoping lives in
-   * the agent's loadout, spec 2026-07-20). */
-  expandToolkits(toolkits: string[]): Promise<void>;
+  search(query: string, options?: ToolSearchOptions, ctx?: ToolListingContext): Promise<ToolSearchMatch[]>;
+  /** Fetch + register the named lazy toolkits' tools (idempotent). The FETCH is
+   * process-wide and cached; what `ctx` decides is whose LISTING the result
+   * joins — a toolkit expanded for one conversation is not on another's
+   * `descriptors(ctx)` (fix 2026-08-03; spec 2026-07-20 originally scoped this
+   * only through the agent's loadout, which left every door listing global). */
+  expandToolkits(toolkits: string[], ctx?: ToolListingContext): Promise<void>;
   /** The per-turn initial loadout: host/eager tools first, then the given
-   * (connected) toolkits' tools — never an alphabetical slice of the catalog. */
-  loadoutSeed(connectedToolkits: string[]): Promise<string[]>;
+   * (connected) toolkits' tools — never an alphabetical slice of the catalog.
+   * Pass the turn's `ctx` so the toolkits it expands are visible to it. */
+  loadoutSeed(connectedToolkits: string[], ctx?: ToolListingContext): Promise<string[]>;
   /**
    * The tool menu one SURFACE offers, resolved from `.vendo/overrides.json`'s
    * `surfaces` block. `undefined` means unrestricted — the surface offers
@@ -242,7 +246,8 @@ function descriptorOf(tool: ToolDescriptor & { binding?: ToolBinding }): ToolDes
     description: tool.description,
     inputSchema: tool.inputSchema,
     risk: tool.risk,
-    ...(tool.critical !== undefined ? { critical: tool.critical } : {}),
+    ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
+    ...(tool.confirmEach !== undefined ? { confirmEach: tool.confirmEach } : {}),
     ...(tool.title !== undefined ? { title: tool.title } : {}),
     ...(bindingRisk !== undefined ? { bindingRisk } : {}),
   };
@@ -256,7 +261,7 @@ function mergeOverride<T extends ToolDescriptor & Pick<ExtractedTool, "audience"
   return {
     ...descriptor,
     ...(override.risk !== undefined ? { risk: override.risk } : {}),
-    ...(override.critical !== undefined ? { critical: override.critical } : {}),
+    ...(override.confirmEach !== undefined ? { confirmEach: override.confirmEach } : {}),
     ...(override.description !== undefined ? { description: override.description } : {}),
     ...(override.title !== undefined ? { title: override.title } : {}),
     ...(override.disabled !== undefined ? { disabled: override.disabled } : {}),
@@ -1098,11 +1103,101 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
    * broad intent matches many index blurbs. Hosts tune it per query via
    * ToolSearchOptions.maxExpansions. */
   const MAX_SEARCH_EXPANSIONS = 3;
+
+  /** Backstop cap on {@link expandedByScope}, NOT the release path — owners call
+   * `releaseListingScope`. It cannot be the only mechanism: the map is
+   * process-global across tenants, so with capacity as the sole way out one
+   * principal opening 1025 scopes evicts another's expansions and their expanded
+   * tools vanish from their next listing. */
+  const MAX_LISTING_SCOPES = 1024;
   let indexPromise: Promise<Array<{ toolkit: string; label?: string; description?: string }>> | undefined;
-  /** Discovery discipline (spec 2026-07-25): identical queries answer from a process-lifetime memo — repeat
+  /** Discovery discipline (spec 2026-07-25): identical queries answer from a memo — repeat
    * discovery costs zero index reads, zero expansions, zero schema fetches.
-   * add() invalidates it (the searchable surface changed). */
-  const searchMemo = new Map<string, Promise<ToolSearchMatch[]>>();
+   * add() invalidates it (the searchable surface changed). It memoizes the
+   * EXPANSION DECISION — which toolkits a query pulls in — which is scope-free
+   * because the fetch behind it is process-wide. Ranking is NOT memoized: what a
+   * run may rank depends on what that run may see. */
+  const expansionMemo = new Map<string, Promise<string[]>>();
+
+  /**
+   * Which lazily-expanded toolkits ONE RUN may see. Expansion used to be
+   * process-wide and permanent, so the first conversation to search "slack" put
+   * all ~266 slack tools on every later listing in the process, for every user
+   * (measured live 2026-08-03: an unrelated conversation's first `tools/list`
+   * answered 301 tools instead of 35). The FETCH stays process-wide and cached,
+   * and so does dispatch — what a run can SEE never decides what may RUN.
+   *
+   * Identity is the default key because nothing else identifies an in-process
+   * run: `RunContext` carries no conversation id, and `sessionId` is the wire's
+   * process-wide fallback for host-resolved principals, so keying on fields would
+   * put every conversation of one user on one listing — the leak that was
+   * measured. A caller that cannot keep one object says which run it is with
+   * `ctx.listingScope` ({@link expandedByScope}); either way an unidentified run
+   * fails toward "search again", never toward another run's set.
+   */
+  const expandedByRun = new WeakMap<object, Set<string>>();
+
+  /** The same sets for runs identified by an opaque `listingScope` string. The MCP
+   * door needs it: it mints a brand-new context per authenticated request (consent
+   * and memberships are per-request facts), so keyed on identity its own
+   * `list_changed` was a guaranteed lie — the client re-listed on a new object and
+   * the expanded tool was gone. A Map, not a WeakMap, so the lifetime is stated:
+   * the owner calls {@link ToolRegistry.releaseListingScope}, with
+   * {@link MAX_LISTING_SCOPES} as the LRU backstop for owners that never do. */
+  const expandedByScope = new Map<string, Set<string>>();
+
+  function expansionsOf(ctx: ToolListingContext): Set<string> | undefined {
+    const scope = ctx.listingScope;
+    if (scope === undefined) return expandedByRun.get(ctx);
+    const seen = expandedByScope.get(scope);
+    // Re-insert to move this scope to the end: eviction takes the oldest
+    // insertion, so a live session must never age out under an idle one.
+    if (seen !== undefined) {
+      expandedByScope.delete(scope);
+      expandedByScope.set(scope, seen);
+    }
+    return seen;
+  }
+
+  function rememberExpansion(ctx: ToolListingContext | undefined, toolkits: string[]): boolean {
+    if (ctx === undefined) return false;
+    let seen = expansionsOf(ctx);
+    if (seen === undefined) {
+      seen = new Set<string>();
+      if (ctx.listingScope === undefined) expandedByRun.set(ctx, seen);
+      else {
+        expandedByScope.set(ctx.listingScope, seen);
+        while (expandedByScope.size > MAX_LISTING_SCOPES) {
+          expandedByScope.delete(expandedByScope.keys().next().value as string);
+        }
+      }
+    }
+    let grew = false;
+    for (const toolkit of toolkits) {
+      if (seen.has(toolkit)) continue;
+      seen.add(toolkit);
+      grew = true;
+    }
+    return grew;
+  }
+
+  /** The loaded surface as ONE run sees it: everything, minus the lazy connector
+   * tools whose toolkit this run never expanded. No context — an internal read,
+   * a conformance probe, the guard's own descriptor lookup — is not a run, and
+   * gets the whole surface exactly as before. */
+  async function scopedDescriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]> {
+    const { descriptors, dispatch } = await load();
+    if (ctx === undefined) return descriptors;
+    const seen = expansionsOf(ctx);
+    return descriptors.filter((descriptor) => {
+      const entry = dispatch.get(descriptor.name);
+      if (entry?.kind !== "connector" || entry.connector.expandToolkits === undefined) return true;
+      // A lazy connector that reports no toolkit for its own tool cannot be
+      // scoped by one: leave it visible rather than make it unreachable.
+      const toolkit = descriptor.toolkit ?? entry.connector.toolkitOf?.(descriptor.name);
+      return toolkit === undefined || (seen?.has(toolkit) ?? false);
+    });
+  }
 
   function discoveryEntries() {
     if (indexPromise === undefined) {
@@ -1124,8 +1219,13 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
    * registry — never a full load-memo bust, so the host/compound merge
    * and every other source's schemas stay done. A failed append degrades to
    * the full rebuild rather than a poisoned load memo. */
-  async function expand(toolkits: string[]): Promise<boolean> {
+  async function expand(toolkits: string[], ctx?: ToolListingContext): Promise<boolean> {
     if (toolkits.length === 0) return false;
+    // The asking run sees these toolkits from here on. Recorded even when the
+    // fetch was already done for someone else: "already loaded in this process"
+    // is not "already visible to this conversation", and the growth this returns
+    // is what tells a door its menu changed.
+    const grew = rememberExpansion(ctx, toolkits);
     const changed: Connector[] = [];
     for (const connector of connectors) {
       if (connector.expandToolkits === undefined) continue;
@@ -1134,7 +1234,7 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
         changed.push(connector);
       }
     }
-    if (changed.length === 0) return false;
+    if (changed.length === 0) return grew;
     const current = loadedPromise;
     if (current !== undefined) {
       loadedPromise = appendExpanded(current, changed).catch(() => buildRegistry());
@@ -1142,40 +1242,76 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
     return true;
   }
 
-  async function runSearch(query: string, options?: ToolSearchOptions): Promise<ToolSearchMatch[]> {
+  /** Which toolkits ONE query pulls in from the discovery index, and the fetch
+   * that materializes them. Memoized per query+cap ({@link expansionMemo}):
+   * process-wide, because the fetch is. */
+  async function queryExpansions(query: string, options?: ToolSearchOptions): Promise<string[]> {
     // Rank the discovery index FIRST (toolkit-level pseudo-descriptors for
     // lazily-loaded connectors) and expand the top matches, so an unloaded
     // toolkit's tools are findable by intent ("send email" → gmail).
     const index = await discoveryEntries();
     const maxExpansions = Math.max(Math.trunc(options?.maxExpansions ?? MAX_SEARCH_EXPANSIONS), 0);
-    const expandedNames = new Set<string>();
-    if (index.length > 0 && maxExpansions > 0) {
-      // Whole-word overlap scoring: the tool scorer's substring matching
-      // lets stopwords ("an" ⊂ "channels") expand unrelated toolkits, so the
-      // index ranks on exact word tokens only, ignoring 1–2 char tokens.
-      const queryTokens = tokenize(query).filter((token) => token.length >= 3);
-      const scored = index
-        .map((entry) => {
-          const words = new Set(tokenize(`${entry.label ?? ""} ${entry.description ?? ""}`));
-          let score = 0;
-          for (const token of queryTokens) {
-            if (token === entry.toolkit.toLowerCase()) score += 8;
-            else if (words.has(token)) score += 2;
-          }
-          return { toolkit: entry.toolkit, score };
-        })
-        .filter((hit) => hit.score > 0)
-        .sort((a, b) => (b.score - a.score) || (a.toolkit < b.toolkit ? -1 : 1))
-        .slice(0, maxExpansions);
-      await expand(scored.map((hit) => hit.toolkit));
-      for (const hit of scored) expandedNames.add(hit.toolkit);
+    if (index.length === 0 || maxExpansions === 0) return [];
+    // Whole-word overlap scoring: the tool scorer's substring matching
+    // lets stopwords ("an" ⊂ "channels") expand unrelated toolkits, so the
+    // index ranks on exact word tokens only, ignoring 1–2 char tokens.
+    const queryTokens = tokenize(query).filter((token) => token.length >= 3);
+    const scored = index
+      .map((entry) => {
+        const words = new Set(tokenize(`${entry.label ?? ""} ${entry.description ?? ""}`));
+        let score = 0;
+        for (const token of queryTokens) {
+          if (token === entry.toolkit.toLowerCase()) score += 8;
+          else if (words.has(token)) score += 2;
+        }
+        return { toolkit: entry.toolkit, score };
+      })
+      .filter((hit) => hit.score > 0)
+      .sort((a, b) => (b.score - a.score) || (a.toolkit < b.toolkit ? -1 : 1))
+      .slice(0, maxExpansions);
+    const toolkits = scored.map((hit) => hit.toolkit);
+    // No ctx here on purpose: this leg is the shared FETCH. Which run may see
+    // the result is recorded by the caller, so a memo hit scopes correctly too.
+    await expand(toolkits);
+    return toolkits;
+  }
+
+  async function runSearch(
+    query: string,
+    options?: ToolSearchOptions,
+    ctx?: ToolListingContext,
+  ): Promise<ToolSearchMatch[]> {
+    const memoKey = [
+      query.trim().toLowerCase().replace(/\s+/g, " "),
+      options?.maxExpansions ?? "",
+    ].join("\u0000");
+    let expanding = expansionMemo.get(memoKey);
+    if (expanding === undefined) {
+      if (expansionMemo.size > 500) expansionMemo.clear();
+      expanding = queryExpansions(query, options);
+      expansionMemo.set(memoKey, expanding);
+      // A failed search must not pin its failure for the process lifetime.
+      expanding.catch(() => expansionMemo.delete(memoKey));
     }
-    // load().descriptors is the post-override, enabled-only surface — disabled
-    // tools never reach it, so they can never be returned as loadable.
-    const matches = searchToolDescriptors((await load()).descriptors, query, options);
-    if (expandedNames.size === 0) return matches;
+    const scope = ctx?.listingScope;
+    // CLAIM the scope before the await, because remembering CREATES the entry it
+    // records into: a scope released mid-search would otherwise be resurrected
+    // below with no owner left to release it. Claimed empty, which is what an
+    // unexpanded scope is.
+    if (scope !== undefined) rememberExpansion(ctx, []);
+    const expanded = await expanding;
+    // The asking run may see whatever this query expanded, including on a memo
+    // hit where another run paid for the fetch — otherwise the rows name tools
+    // this caller's own next listing does not contain. Unless the claim is gone
+    // (released or evicted): that listing is over, and a scope that comes back
+    // reads as a fresh one.
+    if (scope === undefined || expandedByScope.has(scope)) rememberExpansion(ctx, expanded);
+    // Post-override and enabled-only, so a disabled tool can never come back as
+    // loadable; scoped, so a hit is never a name this caller cannot then call.
+    const matches = searchToolDescriptors(await scopedDescriptors(ctx), query, options);
+    if (expanded.length === 0) return matches;
     return matches.map((match) => {
-      const toolkit = [...expandedNames].find((name) => match.name.startsWith(`${name}_`));
+      const toolkit = expanded.find((name) => match.name.startsWith(`${name}_`));
       // A plain fact, not an invitation (discovery-discipline criterion 12):
       // the old suffix told the model calling unconnected tools was the way
       // to prompt a connect, which turned catalogs into call sprees.
@@ -1198,19 +1334,23 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
     add(tools: ToolRegistry): void {
       added.push(tools);
       loadedPromise = undefined;
-      searchMemo.clear();
+      expansionMemo.clear();
     },
 
-    async descriptors(): Promise<ToolDescriptor[]> {
-      return (await load()).descriptors;
+    async descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]> {
+      return scopedDescriptors(ctx);
+    },
+
+    releaseListingScope(scope: string): void {
+      expandedByScope.delete(scope);
     },
 
     async briefs(): Promise<CapabilityBrief[]> {
       return (await loadHost()).briefs;
     },
 
-    async expandToolkits(toolkits: string[]): Promise<void> {
-      await expand(toolkits);
+    async expandToolkits(toolkits: string[], ctx?: ToolListingContext): Promise<void> {
+      await expand(toolkits, ctx);
     },
 
     async connectorToolkit(tool: string): Promise<{ connector: string; toolkit: string } | undefined> {
@@ -1220,8 +1360,11 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
       return toolkit === undefined ? undefined : { connector: entry.connector.name, toolkit };
     },
 
-    async loadoutSeed(connectedToolkits: string[]): Promise<string[]> {
-      await expand(connectedToolkits);
+    async loadoutSeed(connectedToolkits: string[], ctx?: ToolListingContext): Promise<string[]> {
+      // The seed EXPANDS for this listing: without the context the turn's own
+      // connected toolkits would be fetched and then filtered straight back out
+      // of the listing that asked for them.
+      await expand(connectedToolkits, ctx);
       const { descriptors: all, dispatch } = await load();
       const eager: string[] = [];
       const connected: string[] = [];
@@ -1272,20 +1415,8 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
       });
     },
 
-    async search(query: string, options?: ToolSearchOptions): Promise<ToolSearchMatch[]> {
-      const memoKey = [
-        query.trim().toLowerCase().replace(/\s+/g, " "),
-        options?.limit ?? "",
-        options?.maxExpansions ?? "",
-      ].join("\u0000");
-      const memoized = searchMemo.get(memoKey);
-      if (memoized !== undefined) return memoized;
-      if (searchMemo.size > 500) searchMemo.clear();
-      const promise = runSearch(query, options);
-      searchMemo.set(memoKey, promise);
-      // A failed search must not pin its failure for the process lifetime.
-      promise.catch(() => searchMemo.delete(memoKey));
-      return promise;
+    async search(query: string, options?: ToolSearchOptions, ctx?: ToolListingContext): Promise<ToolSearchMatch[]> {
+      return runSearch(query, options, ctx);
     },
 
     async execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome> {

@@ -16,7 +16,7 @@
         ],
         "additionalProperties": true
       },
-      "risk": "write",
+      "risk": "ungraded",
       "binding": {
         "kind": "route",
         "method": "POST",
@@ -40,7 +40,7 @@
         ],
         "additionalProperties": true
       },
-      "risk": "write",
+      "risk": "ungraded",
       "binding": {
         "kind": "route",
         "method": "GET",
@@ -89,7 +89,7 @@
           "body"
         ]
       },
-      "risk": "write",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "createOrder",
@@ -106,7 +106,7 @@
         "properties": {},
         "additionalProperties": true
       },
-      "risk": "write",
+      "risk": "ungraded",
       "binding": {
         "kind": "route",
         "method": "GET",
@@ -126,7 +126,7 @@
         },
         "additionalProperties": false
       },
-      "risk": "write",
+      "risk": "ungraded",
       "binding": {
         "kind": "route",
         "method": "POST",
@@ -144,7 +144,7 @@
         "properties": {},
         "additionalProperties": true
       },
-      "risk": "destructive",
+      "risk": "ungraded",
       "binding": {
         "kind": "route",
         "method": "POST",
@@ -168,7 +168,7 @@
           "id"
         ]
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "getAccount",
@@ -184,7 +184,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "getBudgets",
@@ -199,13 +199,6 @@
       "inputSchema": {
         "type": "object",
         "properties": {}
-      },
-      "risk": "read",
-      "binding": {
-        "kind": "openapi",
-        "operationId": "getCashflowInsights",
-        "method": "GET",
-        "path": "/maple/api/insights/cashflow"
       },
       "outputSchema": {
         "type": "object",
@@ -241,6 +234,13 @@
           "data"
         ]
       },
+      "risk": "ungraded",
+      "binding": {
+        "kind": "openapi",
+        "operationId": "getCashflowInsights",
+        "method": "GET",
+        "path": "/maple/api/insights/cashflow"
+      },
       "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
@@ -250,7 +250,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "getProfile",
@@ -266,7 +266,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "getRecurringInsights",
@@ -281,13 +281,6 @@
       "inputSchema": {
         "type": "object",
         "properties": {}
-      },
-      "risk": "read",
-      "binding": {
-        "kind": "openapi",
-        "operationId": "getSpendingInsights",
-        "method": "GET",
-        "path": "/maple/api/insights/spending"
       },
       "outputSchema": {
         "type": "object",
@@ -330,6 +323,13 @@
           "data"
         ]
       },
+      "risk": "ungraded",
+      "binding": {
+        "kind": "openapi",
+        "operationId": "getSpendingInsights",
+        "method": "GET",
+        "path": "/maple/api/insights/spending"
+      },
       "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
@@ -346,7 +346,7 @@
           "id"
         ]
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "getTransaction",
@@ -362,7 +362,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listAccounts",
@@ -386,7 +386,7 @@
           "id"
         ]
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listAccountTransactions",
@@ -402,7 +402,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listCards",
@@ -426,7 +426,7 @@
           "id"
         ]
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listCardTransactions",
@@ -442,7 +442,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listGoals",
@@ -458,7 +458,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listNotifications",
@@ -474,7 +474,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listPayees",
@@ -490,7 +490,7 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listScheduledPayments",
@@ -548,7 +548,7 @@
           }
         }
       },
-      "risk": "read",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "listTransactions",
@@ -565,7 +565,7 @@
         "properties": {},
         "additionalProperties": true
       },
-      "risk": "write",
+      "risk": "ungraded",
       "binding": {
         "kind": "route",
         "method": "GET",
@@ -599,7 +599,7 @@
           "recipient_name"
         ]
       },
-      "risk": "destructive",
+      "risk": "ungraded",
       "binding": {
         "kind": "openapi",
         "operationId": "transferMoney",
@@ -616,7 +616,7 @@
         "properties": {},
         "additionalProperties": true
       },
-      "risk": "write",
+      "risk": "ungraded",
       "binding": {
         "kind": "route",
         "method": "POST",

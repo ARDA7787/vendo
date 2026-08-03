@@ -3,6 +3,15 @@ import { createRoot, type Root } from "react-dom/client";
 import { createPortal, flushSync } from "react-dom";
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { transform } from "sucrase";
+// The bundled third-party packages (core's JAIL_BUNDLED_PACKAGES). Imported
+// here — not lazily, not from a CDN — because the jail realm has NO network:
+// they must already be inside the runtime bundle to be requirable at all.
+// clsx + tailwind-merge are real (~8 KB together). zod is a SHIM: real zod cost
+// ~23 KB gzip in every host's production bundle, and measured against the real
+// captures nothing in the jail ever parses — see zod-shim.ts for the evidence.
+import { clsx } from "clsx";
+import * as tailwindMerge from "tailwind-merge";
+import { zodShim } from "./zod-shim.js";
 import { ISLAND_AMBIENT_NAMES, type IslandResolvableModule } from "@vendoai/core";
 import { normalizeViewportBlockCss } from "./viewport-css.js";
 import {
@@ -203,16 +212,24 @@ const KIT_MODULE_EXPORTS = {
 
 /**
  * The ONLY modules generated code can reach. Sucrase's `imports` transform
- * rewrites every static AND dynamic `import` into a call to this `require`,
- * so no module-loader network fetch can ever be expressed — the browser-
- * verified escape (a blob-ESM `import("https://…")` initiating a request
- * despite `script-src`) is closed at the loader itself, and `script-src`
- * carries no `blob:`/host sources as the second wall.
+ * rewrites every static AND dynamic `import` in the SOURCE into a call to this
+ * `require`, so no import form a component writes can express a network fetch.
+ *
+ * That rewrite is a source-level gate, not a security boundary: code the
+ * transform cannot see — `new Function("u", "return import(u)")`, or an
+ * injected `<script src>` — walks straight past it. The boundary is
+ * `script-src`, which names no source expression (no host, no `blob:`, no
+ * `data:`), so nothing here can fetch a script from anywhere. It only became
+ * one when the nonce came out of that directive: a nonce is readable from the
+ * DOM by the very code it is meant to constrain, so generated code could stamp
+ * its own remote `<script>` with it (browser-verified — see
+ * e2e/exfil-probe.spec.ts).
  *
  * Keyed by `IslandResolvableModule` (the shared allowlist in @vendoai/core —
- * react plus the kit-ish specifiers the engine strips) so this table, the
- * engine's strip pass, and the import gate cannot drift: a missing or extra
- * key is a compile error.
+ * react, the kit-ish specifiers the engine strips, and the bundled third-party
+ * packages) so this table, the engine's import gate, and `vendo sync`'s capture
+ * cannot drift: a missing or extra key is a compile error. That check is the
+ * reason a specifier can never be PERMITTED without also being PROVIDED here.
  */
 const JAIL_MODULES: Record<IslandResolvableModule, unknown> = {
   react: { ...React, default: React },
@@ -226,6 +243,17 @@ const JAIL_MODULES: Record<IslandResolvableModule, unknown> = {
   "@vendoai/vendo": KIT_MODULE_EXPORTS,
   "@vendo/kit": KIT_MODULE_EXPORTS,
   "vendo/kit": KIT_MODULE_EXPORTS,
+  // Bundled packages. `__esModule: true` is REQUIRED on every entry: without it
+  // sucrase's `_interopRequireDefault` wraps the entry a second time, so
+  // `import clsx from "clsx"` binds `{ clsx, default }` instead of the function
+  // and calling it throws. Default import is the common style for clsx, so
+  // omitting this breaks essentially every real host — permitted, but not
+  // usable. Both the named and default shapes are provided for each.
+  clsx: { __esModule: true, clsx, default: clsx },
+  "tailwind-merge": { __esModule: true, ...tailwindMerge, default: tailwindMerge },
+  // The shim IS the `z` namespace (see zod-shim.ts), which is what makes
+  // `import * as z from "zod"` — Zod 4's documented style — resolve.
+  zod: zodShim,
 };
 
 function jailRequire(specifier: string): unknown {

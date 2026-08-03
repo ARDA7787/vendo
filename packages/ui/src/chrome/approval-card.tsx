@@ -30,6 +30,7 @@ const RISK_LABEL: Record<string, string> = {
   read: "Read-only",
   write: "Makes changes",
   destructive: "Irreversible",
+  ungraded: "Not reviewed",
 };
 
 const VENUE_LABEL: Record<string, string> = {
@@ -125,7 +126,18 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   const [duration, setDuration] = useState<"session" | "standing">("session");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const critical = approval.descriptor.risk === "destructive" || approval.descriptor.critical === true;
+  // #747 renamed `critical` → `confirmEach` (a GOVERNANCE flag — who must be
+  // present — not a risk rung); host files may still spell it the old way and
+  // core accepts that alias, so reading the new name here is enough.
+  //
+  // UNGRADED joins the condition, and does NOT duplicate main's semantics:
+  // main makes the GUARD ask on ungraded; this makes the CARD keep its
+  // ceremony — never fold the real inputs behind Details on an ask nobody has
+  // graded. The chip still reads "Not reviewed", so the card claims none of
+  // the irreversibility `destructive` would.
+  const ceremony = approval.descriptor.risk === "destructive"
+    || approval.descriptor.risk === "ungraded"
+    || approval.descriptor.confirmEach === true;
   // ENG-216 humanization (host ToolMeta wins, else the prettified id — never
   // the raw slug) layered with the consent presentation: toolkit mark,
   // automation eyebrow, and a plain-language description synthesized from the
@@ -157,7 +169,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   // disclosure only on an ordinary ask. Critical/destructive keeps every input
   // in plain sight — maximum scrutiny — and still gets the sentence (a money
   // ask is exactly where "Vendo will run Send money as you." used to land).
-  const foldFields = consequence !== undefined && !critical;
+  const foldFields = consequence !== undefined && !ceremony;
 
   const decide = async (approve: boolean) => {
     const decision: ApprovalDecision = { approve };
@@ -187,7 +199,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   const inputs = <CardFields rows={rows} />;
   return (
     <ChromeRoot>
-      <CardShell label={`Approval for ${title}`} className="fl-approval fl-item-in" ceremony={critical}>
+      <CardShell label={`Approval for ${title}`} className="fl-approval fl-item-in" ceremony={ceremony}>
         <CardHead
           icon={<ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} fallback={SHIELD_GLYPH} />}
           eyebrow={presentation.eyebrow}
@@ -271,7 +283,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
         ) : null}
         {error ? <div role="alert" className="fl-error">{error}</div> : null}
         <CardActions>
-          <button className={`fl-btn ${critical ? "fl-btn-ceremony" : "fl-btn-primary"}`} type="button" disabled={busy} onClick={() => void decide(true)}>Approve</button>
+          <button className={`fl-btn ${ceremony ? "fl-btn-ceremony" : "fl-btn-primary"}`} type="button" disabled={busy} onClick={() => void decide(true)}>Approve</button>
           <button className="fl-btn" type="button" disabled={busy} onClick={() => void decide(false)}>Deny</button>
         </CardActions>
       </CardShell>
