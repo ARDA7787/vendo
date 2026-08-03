@@ -21,13 +21,19 @@ describe("VendoPage, VendoPalette, and VendoSlot exports", () => {
     await wire.close();
   });
 
-  it("uses roving automatic tabs, swaps panels, and lists and opens fixture apps", async () => {
+  // Roving tabindex with APG MANUAL activation: arrows move focus, Enter/Space
+  // activate. (This case used to assert that ArrowRight activated the row it
+  // landed on — see H18: arrowing onto "New chat" ACTS, discarding the open
+  // conversation and its draft.)
+  it("uses roving manual tabs, swaps panels, and lists and opens fixture apps", async () => {
     render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
     const chat = screen.getByRole("tab", { name: "New chat" });
     chat.focus();
     fireEvent.keyDown(chat, { key: "ArrowRight" });
     const apps = screen.getByRole("tab", { name: "Apps" });
     expect(document.activeElement).toBe(apps);
+    expect(apps.getAttribute("aria-selected")).toBe("false");
+    fireEvent.click(apps);
     expect(apps.getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByText("Invoices")).toBeTruthy();
     expect(screen.getByText("Invoice watcher")).toBeTruthy();
