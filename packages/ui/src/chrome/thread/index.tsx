@@ -10,7 +10,7 @@ import { MorphToast, type MorphToastProps } from "../morph-toast.js";
 import { Composer, dragHasFiles, useComposer } from "./composer.js";
 import { MessageList } from "./message-list.js";
 import { useMessageWindow, useStickToBottom } from "./scrolling.js";
-import { approvalByCall, grantSetByCall, riskByCall, turnErrorSentence, userText } from "./message-data.js";
+import { approvalByCall, grantSetByCall, riskByCall, toolCallPending, turnErrorSentence, userText } from "./message-data.js";
 
 /** Lane pick 4B — a rich landing suggestion: two-line starter card. */
 export interface VendoSuggestionCard {
@@ -343,8 +343,10 @@ export function VendoThread({
   // twice (the D1 ruling: the card IS the step). A parked turn is not in
   // progress either, so the pulsing orb was a lie.
   const narratable = activeToolParts.filter(part => part.state !== "approval-requested");
-  const liveToolPart = [...narratable].reverse()
-    .find(part => part.state !== "output-available" && part.state !== "output-error");
+  // M22 — "live" is the SAME terminal set the transcript uses (`toolCallPending`):
+  // this list left out `output-denied`, so a refused ask counted as a live step
+  // forever and the between-steps ribbon never came back for the rest of the turn.
+  const liveToolPart = [...narratable].reverse().find(part => toolCallPending(part));
   // 2026-07 loading-state audit — the between-steps gap: a busy turn whose
   // prose has already streamed and whose tool parts have all settled had NO
   // indicator anywhere (no live beat, the caret needs streaming text,

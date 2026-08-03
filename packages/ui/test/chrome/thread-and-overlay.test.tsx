@@ -139,6 +139,30 @@ describe("VendoThread and VendoOverlay exports", () => {
     await waitFor(() => expect(document.querySelector(".fl-ribbon--working")).toBeNull());
   });
 
+  // M22 — a REFUSED ask is terminal. It used to count as a live step forever, so
+  // the between-steps ribbon never returned for the rest of the turn.
+  it("brings the Working ribbon back after a denial — a refused ask is not live", { timeout: 20_000 }, async () => {
+    let release = () => undefined;
+    wire.state.threadReplyGate = new Promise<void>(resolve => { release = resolve; });
+    render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
+    expect(await screen.findByText("Existing thread")).toBeTruthy();
+
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(composer, { target: { value: "[denied-gap] send it" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+
+    // The refusal is settled in the transcript…
+    await waitFor(() => expect(document.querySelector("[data-vendo-tool='host_transferMoney']")?.className)
+      .toContain("fl-beat-done"));
+    expect(document.body.textContent).toContain("you declined it");
+    // …and the still-busy turn narrates its gap again.
+    await waitFor(() => expect(document.querySelector(".fl-ribbon--working")).toBeTruthy());
+
+    await act(async () => release());
+    expect(await screen.findByText("Nothing was sent.")).toBeTruthy();
+    await waitFor(() => expect(document.querySelector(".fl-ribbon--working")).toBeNull());
+  });
+
   it("opens as a modal, traps focus, closes on Escape, and restores launcher focus", async () => {
     render(<VendoProvider client={client}><VendoOverlay /></VendoProvider>);
     const launcher = screen.getByRole("button", { name: "AI agent" });

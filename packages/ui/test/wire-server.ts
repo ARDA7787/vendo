@@ -544,6 +544,40 @@ export async function createWireServer(options: WireServerOptions = {}) {
           await sendFetchResponse(settledGapResponse, response);
           return;
         }
+        if (sentText.includes("[denied-gap]")) {
+          // M22/M23 — the turn's ask was REFUSED and the turn keeps going. A
+          // denial is terminal: the pill must stop narrating that step and the
+          // between-steps ribbon must come back for the rest of the turn.
+          const deniedGapChunks = createUIMessageStream<UIMessage>({
+            originalMessages: [input.message],
+            generateId: () => "msg_assistant_denied_gap",
+            execute: async ({ writer }) => {
+              writer.write({ type: "text-start", id: "text_ask" });
+              writer.write({ type: "text-delta", id: "text_ask", delta: "I'll move the money once you approve." });
+              writer.write({ type: "text-end", id: "text_ask" });
+              writer.write({
+                type: "tool-input-available",
+                toolCallId: "call_denied_gap",
+                toolName: "host_transferMoney",
+                input: { amount_cents: 4750, recipient_name: "Acme Utilities" },
+                dynamic: true,
+              });
+              // The denial chunk is a STRICT { type, toolCallId } object.
+              writer.write({
+                type: "tool-output-denied",
+                toolCallId: "call_denied_gap",
+              } as UIMessageChunk);
+              await state.threadReplyGate;
+              writer.write({ type: "text-start", id: "text_done" });
+              writer.write({ type: "text-delta", id: "text_done", delta: "Nothing was sent." });
+              writer.write({ type: "text-end", id: "text_done" });
+            },
+          });
+          const deniedGapResponse = createUIMessageStreamResponse({ stream: deniedGapChunks });
+          deniedGapResponse.headers.set("x-vendo-thread-id", threadId);
+          await sendFetchResponse(deniedGapResponse, response);
+          return;
+        }
         if (sentText.includes("[stream-long]")) {
           const longChunks = createUIMessageStream<UIMessage>({
             originalMessages: [input.message],
