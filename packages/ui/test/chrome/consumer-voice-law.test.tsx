@@ -409,7 +409,9 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
         </VendoProvider>,
       );
       const onCard = cardLine();
-      expect(onCard).toBe("This moves money, as you.");
+      // Grade-driven (Yousef's D1): `money()` is graded `write`. The old
+      // string came from the tool id's "transfer" token, which no longer votes.
+      expect(onCard).toBe("This changes something in your account, as you.");
       cleanup();
       await showQueueAsk(bare());
       expect(cardLine()).toBe(onCard);

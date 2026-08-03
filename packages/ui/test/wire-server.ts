@@ -10,6 +10,7 @@ import {
   type ApprovalRequest,
   type AuditEvent,
   type PermissionGrant,
+  type RiskLabel,
 } from "@vendoai/core";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -154,11 +155,21 @@ function approval(): ApprovalRequest {
  *  engine's enable() capture. Idempotent: pending asks are reused (T2 dedupe). */
 const GRANT_SET_ID = "gset_1";
 
-function grantAsk(id: string, tool: string, description: string): ApprovalRequest {
+/** ⚠️ FIXTURE EDIT — the grade is now a PARAMETER, and it is truthful.
+ *
+ *  Both asks were hardcoded `risk: "read"`, including `host_email_send`. That
+ *  made the fixture itself carry the lie ruling 15 was written about, and the
+ *  grant-set tests then pinned a NAME-derived word ("Sends: Email send") as the
+ *  fix. Yousef's grading ruling deletes name inference, so the card is an
+ *  honest mirror of the grade and a mis-graded fixture produces a mis-worded
+ *  card — correctly. The fixture stops lying: a send tool is a `write`.
+ *
+ *  The honest-mirror tradeoff itself is pinned in grant-set-thread.test.tsx. */
+function grantAsk(id: string, tool: string, description: string, risk: RiskLabel = "read"): ApprovalRequest {
   return {
     id,
     call: { id: `call_${id}`, tool, args: {} },
-    descriptor: { name: tool, description, inputSchema: { type: "object" }, risk: "read" },
+    descriptor: { name: tool, description, inputSchema: { type: "object" }, risk },
     inputPreview: `Allow "Invoice watcher" to use ${tool} while you're away (standing, this app only)`,
     ctx: {
       principal: { kind: "user", subject: "user_1" },
@@ -174,7 +185,7 @@ function mintGrantSet(approvals: ApprovalRequest[]): ApprovalRequest[] {
   const pending = approvals.filter(item => item.ctx.appId === "app_auto");
   if (pending.length > 0) return pending;
   const minted = [
-    grantAsk("apr_set_1", "host_email_send", "Send email digests as you."),
+    grantAsk("apr_set_1", "host_email_send", "Send email digests as you.", "write"),
     grantAsk("apr_set_2", "host_invoices_list", "Read invoices across your account."),
   ];
   approvals.push(...minted);

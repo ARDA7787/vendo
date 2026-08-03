@@ -231,7 +231,9 @@ describe("the plain-words line says what happens, not which tool", () => {
   it("tier 3 — falls back to the consequence CLASS, never the tool name", () => {
     // Nothing to synthesize from: no description, no declared money.
     const bare = show(money({ schema: false }));
-    expect(line(bare)).toBe("This moves money, as you.");
+    // The GRADE says it, not the name (Yousef's D1). This read "This moves
+    // money, as you." only because the tool id contains "transfer".
+    expect(line(bare)).toBe("This makes a change you can’t undo, as you.");
     expect(line(bare)).not.toContain("Send money");
     expect(line(bare)).not.toContain("Vendo will run");
     cleanup();
@@ -256,7 +258,7 @@ describe("the plain-words line says what happens, not which tool", () => {
       descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
     } as Partial<ApprovalRequest>));
     expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
-    expect(line(container)).toBe("This moves money, as you.");
+    expect(line(container)).toBe("This changes something in your account, as you.");
     expect(line(container)).not.toContain("$1.99");
     // Never fold on uncertainty: both amounts stay in plain sight.
     expect(container.querySelector(".fl-approval-details")).toBeNull();
@@ -281,7 +283,7 @@ describe("the plain-words line says what happens, not which tool", () => {
     );
     // "Sends 5% to Acme Utilities" was a real possible sentence here.
     expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
-    expect(line(container)).toBe("This moves money, as you.");
+    expect(line(container)).toBe("This changes something in your account, as you.");
     expect(rowsOf(container)).toEqual([["Rate", "5%"], ["Recipient name", "Acme Utilities"]]);
   });
 
@@ -300,7 +302,7 @@ describe("the plain-words line says what happens, not which tool", () => {
       descriptor: { name: "host_transferMoney", title: "Send money", description: "", inputSchema: {}, risk: "write" },
     } as Partial<ApprovalRequest>));
     expect(container.querySelector(".fl-approval-consequence-line")).toBeNull();
-    expect(line(container)).toBe("This moves money, as you.");
+    expect(line(container)).toBe("This changes something in your account, as you.");
     // Both amounts stay in plain sight, formatted, with nothing folded.
     expect(container.querySelector(".fl-approval-details")).toBeNull();
     expect(rowsOf(container)).toEqual([

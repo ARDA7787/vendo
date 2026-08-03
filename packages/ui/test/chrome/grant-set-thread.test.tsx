@@ -40,13 +40,13 @@ describe("grant-set consent in the thread", () => {
   it("enumerates every permission with exactly one Approve and one Deny (criterion 18)", async () => {
     const card = await parkOnGrantSet();
     expect(card.textContent).toContain("Invoice watcher needs 2 permissions");
-    // Each permission in OUR words — the verb and the thing.
-    // ⚠️ TEST EDIT (ruling 15): this asserted "Reads: Email send" for a SEND
-    // tool. The row's word used to come from the ask's risk GRADE alone, and the
-    // fixture grades this ask `read`, so the card told the user an email-sending
-    // permission only READS. The word now comes from the ask itself.
-    expect(card.textContent).toContain("Sends: Email send");
-    expect(card.textContent).not.toContain("Reads: Email send");
+    // Each permission in OUR words — the GRADE and the thing.
+    // ⚠️ TEST EDIT (Yousef's grading ruling D1): this briefly asserted "Sends:
+    // Email send", a word derived from the TOOL NAME. Name inference is gone;
+    // the row reads the grade. The fixture's send ask is now graded `write`
+    // (it was hardcoded `read`, which is what made the false row possible).
+    expect(card.textContent).toContain("Changes: Email send");
+    expect(card.textContent).not.toContain("Sends: Email send");
     expect(card.textContent).toContain("Reads: Invoices list");
     expect(card.textContent).not.toContain("Send email digests as you.");
     expect(card.querySelectorAll(".fl-grant")).toHaveLength(2);
