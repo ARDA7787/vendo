@@ -257,24 +257,18 @@ export const VENDO_TOOLS_FORMAT = "vendo/tools@3" as const;
 
 export const VENDO_OVERRIDES_FORMAT = "vendo/overrides@3" as const;
 
-/** 04-actions §2: a descriptor plus its execution binding — one entry of `.vendo/tools.json`. */
+/** 04-actions §2: a descriptor plus its execution binding — one entry of `.vendo/tools.json`.
+ *
+ *  `outputSchema` — the host's DECLARED response body, recorded here by sync — is
+ *  a plain `ToolDescriptor` field since the 2026-08-03 harness round (D5): the
+ *  registry carries it and every surface lists it, so it stopped being
+ *  extraction-only provenance. Generation's `toolShapes` still come from runtime
+ *  sampling, which is ground truth. */
 export type ExtractedTool = ToolDescriptor & {
   binding: PrimitiveToolBinding;
   /** Fail-closed extraction (04 §1): a route the scanner can't classify is emitted disabled, never silently auto-allowed. */
   disabled?: boolean;
   note?: string;
-  /** The host's DECLARED response body, when its source says so (an OpenAPI
-   *  2xx `application/json` schema today). Extraction never invents one.
-   *
-   *  RECORDED ONLY — nothing consumes it yet. Generation's `toolShapes` still
-   *  come exclusively from runtime sampling (apps runtime, generationToolContext),
-   *  which is ground truth and covers every no-input read tool. The gap this
-   *  field is here to close is the tools sampling can NEVER reach — ones that
-   *  require input, mutate, or sit behind a policy gate — but feeding declared
-   *  schemas into generation changes the prompt for every OpenAPI host at once
-   *  and wants its own corpus evidence, so it is deliberately a separate
-   *  change. Until then this is committed contract data, not a live input. */
-  outputSchema?: JsonSchema;
   /** Who can legitimately call this through the product's own auth —
    *  extraction's provenance for the default exclusion of non-end-user tools. */
   audience?: "end-user" | "operator" | "internal";
@@ -289,7 +283,6 @@ export const extractedToolSchema = z.preprocess(readCriticalAlias, toolDescripto
   binding: extractedBindingSchema,
   disabled: z.boolean().optional(),
   note: z.string().optional(),
-  outputSchema: jsonSchemaSchema.optional(),
   audience: z.enum(["end-user", "operator", "internal"]).optional(),
   semantics: z.record(fieldSemanticSchema).optional(),
   srcHash: z.string().min(1).optional(),

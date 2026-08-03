@@ -47,6 +47,16 @@ export interface PackSkill {
   name: string;
   description: string;
   body: string;
+  /**
+   * Companion files, keyed by path RELATIVE to the skill's own directory
+   * (`references/format.md`), landing beside its SKILL.md on the `/host` mount.
+   *
+   * The format already allows them — Claude Code reads a skill directory whole —
+   * so depth a body should not carry goes here and the body points at it. Never
+   * listed and never loaded by `TurnSkills`: they are files, read with the
+   * harness's own hands.
+   */
+  files?: Record<string, string>;
 }
 
 /**

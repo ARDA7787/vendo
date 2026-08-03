@@ -666,7 +666,7 @@ class Door {
     // door's `_meta.ui` to those listings (FIX E). Execution still routes through
     // the registry (one guard decision), and #callTool unwraps its OpenSurface
     // output into a shim-renderable payload.
-    const tools: Tool[] = descriptors.map(({ name, description, inputSchema, risk, title }) => {
+    const tools: Tool[] = descriptors.map(({ name, description, inputSchema, outputSchema, risk, title }) => {
       // A generated tools.json can carry title: "" (the authored file's schema
       // forbids it, the machine layer's does not). An empty label is worse than
       // none — a client would render a blank menu row — so it reads as absent.
@@ -675,6 +675,7 @@ class Door {
         name,
         description,
         inputSchema: inputSchema as Tool["inputSchema"],
+        ...wireOutputSchema(outputSchema),
         ...(label === undefined ? {} : { title: label }),
         annotations: toolAnnotations(risk, label),
       };
@@ -1113,6 +1114,22 @@ function toolAnnotations(risk: RiskLabel, title?: string): NonNullable<Tool["ann
   };
 }
 
+/**
+ * The tool's declared result shape on the wire, carried verbatim from the
+ * descriptor (design 2026-08-03 D5) so the model knows a query's fields before
+ * calling it.
+ *
+ * OBJECT-TYPED ONLY, and that is protocol, not taste: MCP's `Tool.outputSchema`
+ * is `{ type: "object", … }` by definition, a client parses `tools/list` with
+ * that schema, and a top-level `{"type":"array"}` response schema — ordinary in
+ * an OpenAPI spec — would fail the parse and take the WHOLE listing down. The
+ * door omits what it cannot state; the descriptor still carries it for the
+ * in-process surfaces, which have no such wire constraint.
+ */
+function wireOutputSchema(schema?: Record<string, unknown>): { outputSchema?: Tool["outputSchema"] } {
+  return schema?.type === "object" ? { outputSchema: schema as Tool["outputSchema"] } : {};
+}
+
 /** 10-mcp §4 — the MCP Apps `_meta` that advertises the shim resource so a host
  * client preloads the tree renderer. A non-renderable result (e.g. a list) is
  * contained gracefully by the shim's core-§8 format dispatch. */
@@ -1164,6 +1181,7 @@ async function turnTools(turn: LiveTurn): Promise<Tool[]> {
       name: listing.name,
       description: listing.description,
       inputSchema: (listing.inputSchema ?? { type: "object", properties: {} }) as Tool["inputSchema"],
+      ...wireOutputSchema(listing.outputSchema),
       ...(label === undefined ? {} : { title: label }),
       annotations: toolAnnotations(listing.risk, label),
     };

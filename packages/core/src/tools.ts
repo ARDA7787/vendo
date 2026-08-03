@@ -62,6 +62,8 @@ export const VENDO_TOOL_TITLES: Readonly<Record<string, string>> = {
   search_components: "Look up available components",
   schedule: "Set when this runs",
   ask_user: "Ask you a question",
+  search_connectors: "Look for an outside service",
+  list_connections: "Check your connected services",
   // Meta-tools: ai-SDK `dynamicTool`s with no descriptor at all, so the table is
   // their ONLY title. The reporter fires on the honest-refusal path — the very
   // turn the §3 leak was photographed on — and read "Vendo report capability
@@ -171,6 +173,11 @@ export interface ToolDescriptor {
   name: string;
   description: string;
   inputSchema: JsonSchema;
+  /** The tool's DECLARED result shape — extraction captures it from the host's
+   *  own contract (an OpenAPI 2xx `application/json` schema today) and never
+   *  invents one. Surfaces hand it to the model so a query's data fields are
+   *  known before any call, instead of learned by calling once and reading rows. */
+  outputSchema?: JsonSchema;
   risk: RiskLabel;
   /** Governance, not severity: this call needs a PERSON, every time. Checked
    *  before rules, grants, and the judge, and none of them can suppress it —
@@ -225,6 +232,7 @@ export const toolDescriptorSchema = z.object({
   name: z.string().regex(TOOL_NAME_PATTERN),
   description: z.string(),
   inputSchema: jsonSchemaSchema,
+  outputSchema: jsonSchemaSchema.optional(),
   risk: riskLabelSchema,
   confirmEach: z.boolean().optional(),
   title: z.string().optional(),

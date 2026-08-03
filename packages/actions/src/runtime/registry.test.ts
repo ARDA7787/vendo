@@ -118,6 +118,22 @@ describe("createActions registry", () => {
     });
   });
 
+  // D5 (2026-08-03): extraction records the host's declared response body, and
+  // the descriptor whitelist used to drop it — so the model learned a query's
+  // fields only by calling it once. Carried verbatim now, still never invented.
+  it("carries an extracted outputSchema onto the descriptor, and omits it when there is none", async () => {
+    const outputSchema = { type: "object", properties: { data: { type: "array" } }, required: ["data"] };
+    const root = await tempVendo({
+      format: VENDO_TOOLS_FORMAT,
+      tools: [routeTool("host_declared", { outputSchema }), routeTool("host_undeclared")],
+    });
+    const actions = createActions({ dir: root, fetch: vi.fn() as unknown as typeof fetch, baseUrl: "http://stub" });
+
+    const [declared, undeclared] = await actions.descriptors();
+    expect(declared?.outputSchema).toEqual(outputSchema);
+    expect(undeclared).not.toHaveProperty("outputSchema");
+  });
+
   describe("hosted-config overrides injection (cse lane 3)", () => {
     const toolsV3 = { format: VENDO_TOOLS_FORMAT, tools: [routeTool("host_a"), routeTool("host_b")] };
     const disable = (name: string) => ({ format: VENDO_OVERRIDES_FORMAT, tools: { [name]: { disabled: true } } });

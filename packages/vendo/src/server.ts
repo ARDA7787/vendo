@@ -12,7 +12,7 @@ import {
   type OverridesFile,
   type ServerActionHandler,
 } from "@vendoai/actions";
-import { askUserRegistry, createAgent, vendoVerbsRegistry, VENDO_TOOL_PACK_PREFIX, type CapabilityMissConfig, type ToolSearchConfig, type VendoAgent } from "@vendoai/agent";
+import { askUserRegistry, connectorDiscoveryRegistry, createAgent, vendoVerbsRegistry, VENDO_TOOL_PACK_PREFIX, type CapabilityMissConfig, type ToolSearchConfig, type VendoAgent } from "@vendoai/agent";
 import { assembleSystemPrompt } from "@vendoai/agent/internal";
 // Architecture §3 — the harness runtime and the default thinker. `vendo()` is
 // composed HERE (not by the host) when `harness:` is unset; its prompt and
@@ -2341,6 +2341,59 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     schedule: async ({ appId, cron }, ctx) =>
       await apps.schedule(appId as AppId, cron, ctx) as unknown as Json,
   }));
+  // Harness-redesign D3's connector-discovery pair, on the SAME registry, and
+  // ONLY when connectors are configured — the same "no adapter, no tool" rule
+  // knowledge follows below. A connector-less host's agent has zero discovery
+  // machinery: no catalog to search, no services to list, so nothing is
+  // projected and neither name is ever offered.
+  //
+  // Both ports read seams declared BELOW this line (`toolSearch`, `connections`,
+  // `connectedToolkitsFor`). That is the established pattern here — a port body
+  // only runs on a real tool call, long after createVendo has returned — and
+  // keeps the registry adds together at one seam.
+  if (resolvedConnectors.length > 0) {
+    actions.add(connectorDiscoveryRegistry({
+      // The SAME search `find_tools` rides: it ranks the connectors' toolkit
+      // index, expands the top matches through the connector adapter, and so
+      // makes their tools callable on the door's next listing. Composio is
+      // never named here — a connector fills the slot or nothing does.
+      search: async (query, limit, searchCtx) => {
+        const matches = await toolSearch.search(query, limit === undefined ? undefined : { limit });
+        const connected = new Set(await connectedToolkitsFor(searchCtx));
+        const rows = await Promise.all(matches.map(async (match) => {
+          const toolkit = (await actions.connectorToolkit(match.name))?.toolkit;
+          return {
+            name: match.name,
+            description: match.description,
+            risk: match.risk,
+            ...(toolkit === undefined ? {} : { toolkit }),
+            // A hit the subject cannot run yet has to say so, or the model
+            // burns a turn calling it and reads the connect card as a failure.
+            connected: toolkit !== undefined && connected.has(toolkit),
+          };
+        }));
+        // Connector hits ONLY, which is what this tool's name and description
+        // promise. A host tool has no connection status to report, is already on
+        // the door's listing, and — on the loadout-bounded `vendo()` surface —
+        // would be a row naming a tool this tool did not make callable.
+        return rows.filter((row) => row.toolkit !== undefined) as unknown as Json;
+      },
+      // The connect dock's catalog (toolkits with an enabled auth config),
+      // annotated per subject from the same cache the connect gate reads.
+      list: async (listCtx) => {
+        const [connectable, connected] = await Promise.all([
+          connections.catalog(),
+          connectedToolkitsFor(listCtx).then((toolkits) => new Set(toolkits)),
+        ]);
+        return connectable.map((entry) => ({
+          toolkit: entry.toolkit,
+          ...(entry.label === undefined ? {} : { label: entry.label }),
+          ...(entry.description === undefined ? {} : { description: entry.description }),
+          connected: connected.has(entry.toolkit),
+        })) as unknown as Json;
+      },
+    }));
+  }
   // Knowledge K1 — the tool exists exactly when an adapter is configured;
   // no adapter, no `vendo_knowledge_search` in any descriptor surface.
   const knowledge = selectKnowledge(config.knowledge, store);
@@ -2573,16 +2626,22 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     guard,
     tools: boundTools,
     packSkills: packs.skills,
+    // The SAME normalized catalog the prompt summary is built from, so the
+    // reference files on the mount and the components the model is told about
+    // can never name different sets.
+    catalog,
     models: inference.seats,
-    system: async (ctx) => assembleSystemPrompt(
+    system: async (ctx, opts) => assembleSystemPrompt(
       guard,
       ctx,
       system,
       // Both rails now reach the harness path (`createDiscoveryRails`), so the
-      // prompt may promise them — and must, or the model is handed `find_tools`
-      // and the miss reporter with no instructions about when to use either.
+      // prompt may promise them — and must, or the model is handed the miss
+      // reporter and a discovery rail with no instructions about either. WHICH
+      // discovery section rides is the turn's to say: an uncurated surface has
+      // no `find_tools`, so teaching it would name a tool that is not there.
       true,
-      true,
+      opts?.discovery ?? "find-tools",
     ),
     // Projected for THIS ctx, so THE LAW's unattended filter (design §12) decides
     // what the model is even shown — not just what it is allowed to run.
@@ -2591,6 +2650,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // cannot diverge on discovery, curation, or honest refusal.
     toolSearch,
     capabilityMiss,
+    // The SAME condition D3's registry add is gated on above: without connectors
+    // neither `search_connectors` nor `list_connections` is projected, so an
+    // uncurated surface must not be taught them.
+    connectorDiscovery: resolvedConnectors.length > 0,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
     // Build contract §9.1/§9.7 — the same host org query the wire resolves per

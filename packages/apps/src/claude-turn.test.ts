@@ -6,31 +6,25 @@ import {
 } from "./claude-turn.js";
 
 /**
- * A faithful stand-in for the CLI's own permission dispatch: for every scripted
- * tool use it consults `canUseTool` exactly as the SDK does, and yields the
- * message shapes the real stream yields. Nothing here mocks OUR code — it
- * simulates the SDK, which is the boundary a unit test cannot run.
+ * A stand-in for the SDK's own stream: it yields the message shapes the real one
+ * yields, one scripted turn per user message pushed in. Nothing here mocks OUR
+ * code — it simulates the SDK, which is the boundary a unit test cannot run.
  *
- * **What this fake no longer needs to do.** It used to also stand in for an
- * in-process MCP server: build the projected handler map, run the handler after
- * the hook allowed, and reproduce zod's key-stripping so the two views of one
- * call could be compared. door-ctx moved the tools to the host's own MCP door,
- * so an `mcp__vendo__*` use is just a use the hook allows and the ENGINE
- * dispatches over HTTP — out of this file's reach, and covered end-to-end by
+ * **What this fake no longer needs to do.** It used to stand in for an in-process
+ * MCP server (build the projected handler map, reproduce zod's key-stripping) and
+ * then for the CLI's permission dispatch (consult `canUseTool` per tool use).
+ * door-ctx moved execution to the host's own MCP door, and D1 deleted the
+ * permission callback — the session runs in `bypassPermissions`, so a tool use is
+ * simply a tool use. The door half is covered end-to-end by
  * `packages/vendo/src/mcp-door-parity.e2e.test.ts` instead.
  */
 interface ScriptStep {
   say?: string;
-  use?: { name: string; input: Record<string, unknown> };
 }
 
-interface Recorded {
-  permissions: Array<{ name: string; verdict: string; message?: string }>;
-}
-
-function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fake") {
+function fakeSdk(script: ScriptStep[], sessionId = "sess_fake") {
   return {
-    query: ({ prompt, options }: { prompt: unknown; options: Record<string, any> }) => ({
+    query: ({ prompt }: { prompt: unknown }) => ({
       async *[Symbol.asyncIterator]() {
         yield { type: "system", subtype: "init", session_id: sessionId };
         // One scripted turn per user message pushed in; the stream stays open
@@ -41,19 +35,6 @@ function fakeSdk(script: ScriptStep[], recorded: Recorded, sessionId = "sess_fak
           if (step.say !== undefined) {
             yield { type: "assistant", message: { content: [{ type: "text", text: step.say }] } };
           }
-          if (step.use === undefined) continue;
-          const preApproved = (options.allowedTools ?? []).includes(step.use.name);
-          let verdict: any = { behavior: "allow", updatedInput: step.use.input };
-          if (!preApproved && options.canUseTool !== undefined) {
-            verdict = await options.canUseTool(step.use.name, step.use.input, {
-              signal: new AbortController().signal,
-            });
-          }
-          recorded.permissions.push({
-            name: step.use.name,
-            verdict: verdict.behavior,
-            ...(verdict.message === undefined ? {} : { message: verdict.message }),
-          });
         }
         yield {
           type: "result",
@@ -72,12 +53,11 @@ const TOOL_DOOR = { url: "https://app.example.com/api/vendo/mcp", token: "vtk_se
 /** ONE message through a live session — the shape every test below wants. */
 async function run(
   script: ScriptStep[],
-  extra: { allowedBoxTools?: string[]; toolDoor?: { url: string; token: string } } = {},
+  extra: { toolDoor?: { url: string; token: string } } = {},
 ) {
   const events: ClaudeTurnEvent[] = [];
-  const recorded: Recorded = { permissions: [] };
   const opened: Array<Record<string, any>> = [];
-  const sdk = fakeSdk(script, recorded);
+  const sdk = fakeSdk(script);
   const session = createClaudeSession({
     cwd: "/box/user",
     env: {},
@@ -92,7 +72,7 @@ async function run(
   });
   await session.send("do the thing");
   await session.end();
-  return { events, recorded, options: opened[0]! };
+  return { events, options: opened[0]! };
 }
 
 describe("the composed brief reaches the SDK — the D2 plumbing question", () => {
@@ -108,8 +88,7 @@ describe("the composed brief reaches the SDK — the D2 plumbing question", () =
    */
   const captureOptions = async (systemPrompt: string | undefined): Promise<Record<string, any>> => {
     let seen: Record<string, any> = {};
-    const recorded: Recorded = { permissions: [] };
-    const inner = fakeSdk([{ say: "ok" }], recorded);
+    const inner = fakeSdk([{ say: "ok" }]);
     const session = createClaudeSession({
       cwd: "/box/user",
       env: {},
@@ -174,45 +153,29 @@ describe("the tools are the HOST's MCP door — the projection is gone", () => {
     expect(options.mcpServers).toBeUndefined();
   });
 
-  test("a door tool is ALLOWED by the hook, because the guard decides at the door", async () => {
-    const { recorded } = await run(
-      [{ use: { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, input: { limit: 2 } } }],
-      { toolDoor: TOOL_DOOR },
-    );
-    expect(recorded.permissions).toEqual([
-      { name: `mcp__${VENDO_MCP_SERVER}__maple_invoices_list`, verdict: "allow" },
-    ]);
+});
+
+describe("permissions — the box is the permission, the door is the permission (D1)", () => {
+  test("the session bypasses the SDK's permission system entirely", async () => {
+    const { options } = await run([], { toolDoor: TOOL_DOOR });
+    expect(options.permissionMode).toBe("bypassPermissions");
   });
 
-  test("the box's own file/bash work is auto-allowed — the box IS the permission", async () => {
-    const { recorded } = await run([
-      { use: { name: "Bash", input: { command: "ls" } } },
-      { use: { name: "Write", input: { file_path: "/box/user/a.txt" } } },
-    ]);
-    expect(recorded.permissions.every((entry) => entry.verdict === "allow")).toBe(true);
+  test("no permission callback — the guard decides at the door, not in this process", async () => {
+    const { options } = await run([], { toolDoor: TOOL_DOOR });
+    expect(options).not.toHaveProperty("canUseTool");
   });
 
-  test("a tool nobody named — a future SDK built-in — is DENIED, never auto-allowed", async () => {
-    const { recorded } = await run(
-      [{ use: { name: "BrandNewEgressTool", input: {} } }],
-      { allowedBoxTools: ["Bash"] },
-    );
-    expect(recorded.permissions).toEqual([
-      { name: "BrandNewEgressTool", verdict: "deny", message: "BrandNewEgressTool isn't available in this workspace." },
-    ]);
+  test("no allow-list — an allow-list here can only subtract capability from a contained box", async () => {
+    // The one it replaced denied SDK tools the file-sync hook below already
+    // expected (`MultiEdit`, `NotebookEdit`), and every tool a future SDK ships.
+    const { options } = await run([], { toolDoor: TOOL_DOOR });
+    expect(options).not.toHaveProperty("allowedTools");
   });
 
-  test("another server's MCP tools are denied — only OUR door's prefix is allowed", async () => {
-    const { recorded } = await run(
-      [{ use: { name: "mcp__somebody_else__exfiltrate", input: {} } }],
-      { toolDoor: TOOL_DOOR },
-    );
-    expect(recorded.permissions[0]?.verdict).toBe("deny");
-  });
-
-  test("the SDK's subagent door stays open — a Task dispatch is allowed", async () => {
-    const { recorded } = await run([{ use: { name: "Task", input: { prompt: "go" } } }]);
-    expect(recorded.permissions).toEqual([{ name: "Task", verdict: "allow" }]);
+  test("the deny-list is the whole of the local tool law — these three names, exactly", async () => {
+    const { options } = await run([]);
+    expect(options.disallowedTools).toEqual(["WebSearch", "WebFetch", "AskUserQuestion"]);
   });
 });
 

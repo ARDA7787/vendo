@@ -81,6 +81,10 @@ export interface ToolDescriptor {
                                 // Namespaced by underscore: "host_invoices_list", "gmail_send", "vendo_apps_create"
   description: string;
   inputSchema: JsonSchema;      // the MCP/Anthropic field name; "input" would collide with TreeQuery.input (values)
+  outputSchema?: JsonSchema;    // amended 2026-08-03 (harness redesign D5): the host's DECLARED result shape, when
+                                // extraction found one (an OpenAPI 2xx application/json schema) — never invented,
+                                // carried verbatim to ToolListing and the door so the model knows a query's fields
+                                // before calling it. NOT in the descriptorHash preimage: no person approved it.
   risk: RiskLabel;
   critical?: boolean;           // always asks the running user; no grant, rule, or judge may suppress
 }

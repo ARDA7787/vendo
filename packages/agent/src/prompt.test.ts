@@ -164,23 +164,56 @@ describe("presentation discipline", () => {
   });
 });
 
-/** Discovery-discipline 2026-07-25 (criterion 12): tool discovery gets a hard
- * budget so a connector catalog can never become an agent side-quest. Rides
- * only when tool search is configured — without the meta-tool there is
- * nothing to budget. */
-describe("discovery budget", () => {
-  it("rides the prompt when tool search is enabled", async () => {
-    const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, true);
+/** Discovery-discipline 2026-07-25 (criterion 12) + harness redesign D8: the
+ * discovery section is the one harness-conditional block. `"find-tools"` is the
+ * loadout path's hard budget; `"connectors"` is the claude-code surface, which
+ * has no `find_tools` to budget; `false` is a surface with no discovery at all. */
+describe("discovery sections", () => {
+  it("find-tools: the budget rides unchanged", async () => {
+    const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, "find-tools");
     expect(prompt).toContain("Discovery budget");
-    expect(prompt).toContain("at most 2");
+    expect(prompt).toContain("Use find_tools at most 2 times per user intent");
     expect(prompt).toMatch(/unconnected/i);
+    expect(prompt).not.toContain("search_connectors");
   });
 
-  it("stays out when tool search is off", async () => {
+  it("connectors: names the two Composio-scoped tools and never find_tools", async () => {
+    const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, "connectors");
+    expect(prompt).toContain("Connectors");
+    expect(prompt).toContain("search_connectors");
+    expect(prompt).toContain("list_connections");
+    expect(prompt).not.toContain("find_tools");
+    expect(prompt).not.toContain("Discovery budget");
+  });
+
+  it("connectors: carries the same connect etiquette the budget section carries", async () => {
+    const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, "connectors");
+    expect(prompt).toContain("A connect-required result means stop calling that service");
+    expect(prompt).toContain("connect (link) button in the message box");
+    expect(prompt).toContain("never claim a card \"should have appeared\"");
+    expect(prompt).toContain("hunt for substitutes across the catalog");
+  });
+
+  it("stays out entirely when there is no discovery rail", async () => {
     const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, false);
     expect(prompt).not.toContain("Discovery budget");
+    expect(prompt).not.toContain("Connectors");
     const defaulted = await assembleSystemPrompt(testGuard({}, []), ctx());
     expect(defaulted).not.toContain("Discovery budget");
+    expect(defaulted).not.toContain("Connectors");
+  });
+});
+
+/** Harness redesign D8: an ask for something to look at, track, or use is an
+ * APP, not a wall of text — the same default on every harness, so a
+ * mid-conversation swap cannot change the answer. */
+describe("app-default", () => {
+  it("rides every discovery variant, and points at the skill", async () => {
+    for (const discovery of ["find-tools", "connectors", false] as const) {
+      const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, discovery);
+      expect(prompt).toContain("look at, track, or use");
+      expect(prompt).toContain("building-apps skill is the manual");
+    }
   });
 });
 

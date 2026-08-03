@@ -9,6 +9,7 @@ If a call is queued for approval, say what is pending and continue where useful.
 Never claim a tool ran unless its result confirms that it did.
 Never invent tool outputs, records, or side effects.
 For away runs, clearly state what completed and what was left pending.
+When someone asks for something to look at, track, or use — a dashboard, a list, a recurring report — build them an app instead of describing the data in text; the building-apps skill is the manual.
 
 Voice (design §3 — you are talking to a customer, not a developer)
 - Never put a tool, function, or file identifier in anything the user reads. Each tool's description leads with its human title before an em dash; say the title ("Send money"), never the identifier ("host_transferMoney") — not even in backticks, not even to explain a limit.
@@ -43,6 +44,15 @@ const DISCOVERY_BUDGET_PROMPT = `Discovery budget
 - Never call a tool for a service you know is unconnected. A connect-required result means stop calling that service: tell the user what it needs. A connect card appears with that result on that turn only — on later turns, point the user to the connect (link) button in the message box instead; never claim a card "should have appeared".
 - When a needed service is unconnected, say so plainly and surface the connect step — do not try other tools of the same service or hunt for substitutes across the catalog.`;
 
+// Harness redesign D8 2026-08-03 (section id: connectors) — the claude-code
+// surface has no loadout and no `find_tools`, so there is no search-budget to
+// keep; what is left is the unexpanded connector catalog and the same connect
+// etiquette, which is load-bearing on every surface that can reach a connector.
+const CONNECTORS_PROMPT = `Connectors
+- search_connectors searches the connector catalog by intent and makes a matching service's tools callable; list_connections shows which services exist and whether this user has connected them. Prefer the host's own tools whenever they can fulfill the ask.
+- Never call a tool for a service you know is unconnected. A connect-required result means stop calling that service: tell the user what it needs. A connect card appears with that result on that turn only — on later turns, point the user to the connect (link) button in the message box instead; never claim a card "should have appeared".
+- When a needed service is unconnected, say so plainly and surface the connect step — do not try other tools of the same service or hunt for substitutes across the catalog.`;
+
 /** 03-agent §3: company directions are mandatory policy context and fail closed. */
 export async function assembleSystemPrompt(
   guard: Guard,
@@ -62,12 +72,18 @@ export async function assembleSystemPrompt(
     instructions?: string;
   },
   capabilityMiss = false,
-  toolSearch = false,
+  // Which discovery machinery this turn's harness actually has (D8): the
+  // `vendo()` loadout's `find_tools` budget, the claude-code surface's two
+  // Composio-scoped tools, or neither. One assembler, never a forked prompt —
+  // the mid-conversation harness swap depends on the shared policy text.
+  discovery: "find-tools" | "connectors" | false = false,
 ): Promise<string> {
   const sections = [OPERATING_PROMPT];
   if (TREE_VENUES.has(ctx.venue)) sections.push(PRESENTATION_PROMPT);
   if (capabilityMiss) sections.push(CAPABILITY_MISS_PROMPT);
-  if (toolSearch) sections.push(DISCOVERY_BUDGET_PROMPT);
+  if (discovery !== false) {
+    sections.push(discovery === "connectors" ? CONNECTORS_PROMPT : DISCOVERY_BUDGET_PROMPT);
+  }
   const product = (typeof system?.product === "function" ? system.product() : system?.product)?.trim();
   if (product) sections.push(`Product\n${product}`);
 

@@ -37,14 +37,26 @@ describe("the building-apps skill is a real SKILL.md", () => {
 });
 
 describe("delegation is advice in the body, never machinery", () => {
-  it("tells the harness to run it in a fresh subagent, in a sentence", () => {
+  it("tells the harness to run it in a fresh subagent, naming the SDK's own door", () => {
     expect(body).toContain("fresh subagent");
+    expect(body).toContain("`Task`");
+  });
+
+  it("staffs one worker per group through that same door", () => {
+    expect(body).toMatch(/one `Task` per group/);
+  });
+
+  it("carries the user's ask into the brief verbatim", () => {
+    expect(body).toContain("verbatim");
+    expect(body).toMatch(/paraphrase/i);
   });
 
   it("carries no property, flag, or key that we would have to interpret", () => {
-    // A pack skill is exactly {name, description, body}. If delegation ever
+    // A pack skill is {name, description, body} plus companion FILES — data the
+    // projection copies to disk, never a directive we read. If delegation ever
     // became a field, this is what would catch it.
-    expect(Object.keys(buildingAppsSkill).sort()).toEqual(["body", "description", "name"]);
+    expect(Object.keys(buildingAppsSkill).sort()).toEqual(["body", "description", "files", "name"]);
+    expect(Object.keys(buildingAppsSkill.files ?? {})).toEqual(["references/format.md"]);
   });
 });
 
@@ -74,16 +86,58 @@ describe("it carries the v2 pattern", () => {
     expect(body).toMatch(/exactly once/);
   });
 
+  it("makes a clean validate the condition for reporting done (D4/D7's review floor)", () => {
+    // With the engine off this surface, this sentence IS the check between a
+    // guess and a shipped app.
+    expect(body).toMatch(/not done until `validate` comes back clean/i);
+  });
+
   it("teaches never inventing data and never doing the arithmetic itself", () => {
-    expect(body).toMatch(/Never do arithmetic yourself/i);
+    expect(body).toMatch(/Never do the arithmetic yourself/i);
     expect(body).toContain("sum(transactions.amount_cents)");
     expect(body).toMatch(/made-up figure/i);
   });
 
+  it("forbids baking in a value it computed or fetched", () => {
+    expect(body).toMatch(/never paste in a value you fetched/i);
+    expect(body).toMatch(/right on the screen you built it on/i);
+  });
+
+  it("forbids specifying fonts, colours, or branding", () => {
+    expect(body).toMatch(/Never specify a font, a colour/i);
+    expect(body).toMatch(/components already carry/i);
+  });
+
+  it("grounds the data in the declared output schema before any call", () => {
+    expect(body).toMatch(/output schema off the tool listing/i);
+    expect(body).toMatch(/Call the query once/);
+  });
+
   it("keeps ask_user as ONE door, asked once", () => {
+    // The tool's real name (core's ASK_USER_TOOL) — a skill body is copied to
+    // disk verbatim, so a name it gets wrong is a tool that does not exist.
     expect(body).toContain("ask_user");
     expect(body).toMatch(/once/);
     expect(body).toMatch(/do not ask twice/i);
+  });
+});
+
+describe("it points at the references instead of inlining them", () => {
+  it("names the companion format reference at its real mounted path", () => {
+    expect(body).toContain("/host/skills/building-apps/references/format.md");
+    expect(Object.keys(hostSkillFiles([buildingAppsSkill])))
+      .toContain("/host/skills/building-apps/references/format.md");
+  });
+
+  it("names the component reference directory", () => {
+    expect(body).toContain("/host/components/");
+  });
+
+  it("names the app directory shape the render seam actually watches", () => {
+    // `/user|orgs/…/apps/app_<id>/{plan,app}.vendo` — an id that does not start
+    // with `app_` paints nothing, which is the failure this line prevents.
+    expect(body).toContain("user/apps/app_");
+    expect(body).toMatch(/must start with `app_`/);
   });
 });
 

@@ -104,8 +104,11 @@ schemas, or when sample values matter.
 
 Same bones, corrected details, all claude-code-native:
 
-- Correct tool names: `vendo_ask_user` (not `ask_user`); `validate` invoked
-  explicitly after every save of `plan.vendo`/`app.vendo`.
+- Correct tool names — build-time correction 2026-08-03: the question tool IS
+  `ask_user` (`ASK_USER_TOOL` in core); the spec's earlier `vendo_ask_user` was
+  wrong and the skill keeps `ask_user`. `validate` invoked explicitly after
+  every save of `plan.vendo`/`app.vendo` (document form — `validate({document})`;
+  the appId form requires a stored app).
 - Validate law: the builder subagent does not report done until `validate`
   returns clean.
 - Staffing: name the SDK's `Task` tool for the fresh-subagent and

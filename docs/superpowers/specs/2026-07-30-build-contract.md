@@ -20,6 +20,12 @@ export interface Harness<Options = unknown> {
   readonly name: string;                     // "vendo" | "instant" | "claude-code" | …
   readonly optionsSchema?: StandardSchemaV1;  // declares per-turn-overridable knobs
   readonly requires?: { sandbox?: boolean };  // boot-time composition check
+  /** Amendment 2026-08-03 (claudeCode() redesign, D2 + D4): how this harness
+   *  wants the equipped-tool surface shaped. `curated: false` skips the
+   *  discovery loadout and `find_tools` with it (the ctx safety projection
+   *  still runs — this is curation, never the law); `withhold` names tools
+   *  never listed to and never callable by this harness. */
+  readonly toolSurface?: { curated?: false; withhold?: readonly string[] };
   run(turn: Turn<Options>): AsyncGenerator<HarnessEvent, void, void>;
 }
 
@@ -85,6 +91,10 @@ export interface ToolListing {
   /** Amendment 2026-07-30: JSON Schema for the tool's input — every in-process
    *  harness must hand schemas to its model; JSON Schema is the interchange. */
   inputSchema?: JsonSchema;
+  /** Amendment 2026-08-03 (harness redesign D5): the host's DECLARED result
+   *  shape, carried verbatim from the descriptor when extraction found one —
+   *  the model learns a query's fields from the listing, not by calling it. */
+  outputSchema?: JsonSchema;
 }
 ```
 

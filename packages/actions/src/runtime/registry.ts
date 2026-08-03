@@ -242,6 +242,7 @@ function descriptorOf(tool: ToolDescriptor & { binding?: ToolBinding }): ToolDes
     description: tool.description,
     inputSchema: tool.inputSchema,
     risk: tool.risk,
+    ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
     ...(tool.confirmEach !== undefined ? { confirmEach: tool.confirmEach } : {}),
     ...(tool.title !== undefined ? { title: tool.title } : {}),
     ...(bindingRisk !== undefined ? { bindingRisk } : {}),

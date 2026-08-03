@@ -16,6 +16,11 @@ export {
   type VendoToolPackOptions,
 } from "./tool-pack.js";
 export { VENDO_VERB_TOOLS, vendoVerbsRegistry, type VendoVerbPorts, type VendoVerbFinding } from "./vendo-verbs.js";
+export {
+  CONNECTOR_DISCOVERY_TOOLS,
+  connectorDiscoveryRegistry,
+  type ConnectorDiscoveryPorts,
+} from "./connector-discovery.js";
 export { ASK_USER_TOOL, askUserRegistry } from "./ask-user.js";
 export { FIND_TOOLS_TOOL_NAME } from "./tool-search.js";
 export type { ToolSearchConfig, ToolSearchFn, ToolSearchMatch } from "./tool-search.js";
