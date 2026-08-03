@@ -942,10 +942,16 @@ export const assembleTree = (source: {
   components?: Record<string, string>;
   /** W4b — the stamped per-island tool manifests ride beside the sources. */
   componentTools?: Record<string, string[]>;
+  /** The plan's arrival posture (redesign spec §5): inline card or opened stage.
+   *  It is assembled HERE rather than at either emitter so the in-process
+   *  generation and the harness render seam cannot disagree about the field.
+   *  Absent stays absent — the client reads that as inline. */
+  display?: "inline" | "stage";
 }): Tree => ({
   ...structuredClone(source.tree),
   ...(source.components === undefined ? {} : { components: structuredClone(source.components) }),
   ...(source.componentTools === undefined ? {} : { componentTools: structuredClone(source.componentTools) }),
+  ...(source.display === undefined ? {} : { display: source.display }),
 } as Tree);
 
 const pinnedSubtree = (app: AppDocument, componentName: string): unknown[] => {
