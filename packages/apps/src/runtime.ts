@@ -454,8 +454,30 @@ const BUILD_WATCHDOG_REASON =
  *  deadline beat. */
 const buildWatchdogMs = effectiveBuildWatchdogMs;
 
-const QUOTA_SIGNAL = /quota|insufficient|payment|billing|\b402\b/i;
+/**
+ * Provider quota/billing language, and ONLY that. A quota claim is a statement
+ * about the host's ACCOUNT and it is non-retryable, so a false positive tells
+ * the person two lies at once — that they owe money, and that waiting helps.
+ * The pattern used to include the bare words "insufficient" and "payment",
+ * which are ordinary app and tool vocabulary: demo-bank's inventory carries
+ * `host_listScheduledPayments`, so every finding that quoted the host tools
+ * (checking/facts.ts) classified as a quota exhaustion (observed live
+ * 2026-08-03, wave E2E). Word boundaries keep tool and field names out —
+ * `host_getBilling` and `billing_id` have no boundary at the match edge —
+ * and `insufficient_quota` (OpenAI's own code, where `_` is a word character)
+ * is named explicitly for the same reason.
+ *
+ * Deliberately NOT here: "rate limit exceeded". A 429 rate limit clears in
+ * seconds, so calling it a non-retryable quota exhaustion would just be a
+ * different lie; it stays a retryable generic failure. OpenAI's quota refusal
+ * also arrives as a 429 but carries `insufficient_quota`, which is matched.
+ */
+const QUOTA_SIGNAL = /\bquota\b|insufficient_quota|\bbilling\b|\b402\b/i;
 const TIMEOUT_SIGNAL = /time?d?\s*out|timeout|abort/i;
+/** The engine's stream-catch marker (generation/engine.ts askModel). It is the
+ *  ONLY thing that distinguishes a provider's own error line from a validation
+ *  finding once both are strings in the terminal throw's `issues`. */
+const MODEL_ERROR_PREFIX = /^model generation failed: /;
 /** The dev-model's own no-usable-credential lines (missing provider package,
  *  no key at all, or a key the provider REFUSED). These are written by Vendo,
  *  not a provider — the ONE failure class whose full message IS the honest
@@ -478,8 +500,9 @@ const MODEL_UNAVAILABLE_SIGNAL = /^(?:[A-Z][A-Z0-9_]* is set but @ai-sdk\/[\w-]+
  * into the `issues` of the terminal `VendoError("validation", "model could not
  * produce a valid app")`, so the raw 402/AbortError rarely propagates intact:
  * classify from a raw error when it does (quota/timeout/cloud-required), and
- * otherwise scan the validation issues for the same signals, defaulting to a
- * generic generation failure the user can retry.
+ * otherwise from the PREFIXED provider lines among the validation issues —
+ * never from the findings beside them — defaulting to a generic generation
+ * failure the user can retry.
  */
 export const buildFailureReason = (
   error: unknown,
@@ -491,19 +514,26 @@ export const buildFailureReason = (
   if (statusCode === 402 || (error instanceof VendoError && error.code === "cloud-required")) {
     return { reason: "quota exhausted", retryable: false };
   }
-  const candidates = [
-    error instanceof Error ? error.message : String(error),
-    ...(error instanceof VendoError && Array.isArray(error.detail)
-      ? error.detail.filter((item): item is string => typeof item === "string")
-      : []),
-  ];
+  // What the PROVIDER (or the dev-model ladder) actually said, and nothing
+  // else. A terminal validation throw's `issues` mix two unrelated kinds of
+  // string: the engine's prefixed stream-catch lines, and the honesty gate's
+  // findings — which quote the app's own content and the whole host tool
+  // inventory. Classifying from the findings is how `host_listScheduledPayments`
+  // became "quota exhausted". Such a throw's `message` is its own first issue
+  // (runtime create, `conducted.issues[0]`), so it adds nothing but that same
+  // leak and is read only when there are no issues to read.
+  const detail = error instanceof VendoError && Array.isArray(error.detail)
+    ? error.detail.filter((item): item is string => typeof item === "string")
+    : undefined;
+  const providerErrors = (detail === undefined
+    ? [error instanceof Error ? error.message : String(error)]
+    : detail.filter((issue) => MODEL_ERROR_PREFIX.test(issue))
+  ).map((line) => line.replace(MODEL_ERROR_PREFIX, ""));
   // Vendo's own dev-model unavailable lines pass through verbatim (they are
   // the actionable fix), stripped of the engine's stream-catch prefix.
-  const unavailable = candidates
-    .map((candidate) => candidate.replace(/^model generation failed: /, ""))
-    .find((candidate) => MODEL_UNAVAILABLE_SIGNAL.test(candidate));
+  const unavailable = providerErrors.find((line) => MODEL_UNAVAILABLE_SIGNAL.test(line));
   if (unavailable !== undefined) return { reason: unavailable, retryable: false };
-  const text = candidates.join(" ");
+  const text = providerErrors.join(" ");
   if (QUOTA_SIGNAL.test(text)) return { reason: "quota exhausted", retryable: false };
   if (TIMEOUT_SIGNAL.test(text)) return { reason: "timed out", retryable: true };
   return { reason: "generation failed", retryable: true };

@@ -2008,6 +2008,11 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/appframe": return { title: "App execution planes", content: <AppFrameScenario /> };
     case "/byo-embed-app": return { title: "BYO chat — inline generated app", content: <ByoEmbedScenario appId="app_island" title="Weather dashboard" />, ownProvider: true };
     case "/byo-embed-building": return { title: "BYO chat — app mid-build", content: <ByoEmbedScenario appId="app_building_lands" title="Trip planner" />, ownProvider: true };
+    // §16 law 3 — the embed's terminal build failure. The wire fixture serves
+    // this app the WORST real reason we have (the wave E2E's own leaked
+    // sentence, seeded in vite.config.ts), so the browser proof is about what
+    // the person actually reads, not about a tidy fixture string.
+    case "/byo-embed-failed": return { title: "BYO chat — build failed", content: <ByoEmbedScenario appId="app_build_failed" title="Spending board" />, ownProvider: true };
     case "/affordances": return { title: "Affordances (Maple) — copy, attach, connect dock", content: <AffordancesScenario theme={mapleTheme} />, ownProvider: true };
     case "/affordances-dark": return { title: "Affordances — dark", content: <AffordancesScenario theme={darkTheme} />, ownProvider: true };
     case "/waiting": return { title: "Waiting on you", content: <WaitingScenario />, ownProvider: true };

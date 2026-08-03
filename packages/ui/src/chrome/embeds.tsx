@@ -29,6 +29,7 @@ import {
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { fieldRows } from "./field-rows.js";
+import { BUILD_FAILURE_COPY } from "./thread/message-data.js";
 
 /**
  * Existing-agents Lane B — the three embeds a BYO chat surface renders from
@@ -364,7 +365,15 @@ export function VendoAppEmbed({ refValue }: VendoAppEmbedProps) {
           ) : failed !== undefined ? (
             <>
               <BeatLine state="error">{title} — couldn't finish</BeatLine>
-              <div className="fl-card-byline">{failed.reason}</div>
+              {/* NOT `failed.reason`: every sentence that reaches here is
+                  written for whoever can FIX the build (the watchdog line says
+                  to check the host server log, the honesty gate's names
+                  components and expressions, the no-key lines name env vars and
+                  npm packages) — and this is a host's own page. Same law and
+                  same constant as the thread's banner; the developer sentence
+                  keeps the home it already has, the server's own
+                  `[vendo] app build failed (app_…)` log line. */}
+              <div className="fl-card-byline">{BUILD_FAILURE_COPY}</div>
               {failed.retryable === true && (
                 <CardActions>
                   <button className="fl-btn fl-btn-primary" type="button" onClick={() => void retry()}>

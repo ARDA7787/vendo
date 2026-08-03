@@ -299,3 +299,72 @@ describe("buildFailureReason", () => {
       .toEqual({ reason: "generation failed", retryable: true });
   });
 });
+
+// A quota exhaustion is a BILLING claim about the host's account and it is
+// non-retryable, so a false one tells the person two lies at once. The
+// classifier used to scan a blob of every candidate string joined together —
+// including the honesty gate's findings, which quote the whole host tool
+// inventory (checking/facts.ts `the host tools are: …`). demo-bank's inventory
+// contains `host_listScheduledPayments`, the pattern contained the bare word
+// "payment", so ordinary generation failures shipped as "quota exhausted ·
+// retryable: false" (observed live 2026-08-03, wave E2E). Both halves are
+// pinned here: the SOURCE is the provider's own error lines only, and the
+// PATTERN needs provider quota language rather than a word that lives in tool
+// and field names.
+describe("buildFailureReason quota classification (fix-quota-lie)", () => {
+  /** The engine's `model generation failed: ` prefix is the ONLY marker of a
+   *  provider line inside the terminal validation throw's issues, so it is what
+   *  the classifier keys on (generation/engine.ts askModel). */
+  const providerFailure = (message: string) =>
+    new VendoError("validation", `model generation failed: ${message}`, [`model generation failed: ${message}`]);
+
+  /** A terminal validation throw: the issues are the gate's own findings, with
+   *  no provider line anywhere. */
+  const validationFailure = (...issues: string[]) =>
+    new VendoError("validation", issues[0]!, issues);
+
+  const hostToolInventory = "host_getAccounts, host_getAccountBalance, host_listTransactions, "
+    + "host_listScheduledPayments, host_schedulePayment, host_listInvoices";
+
+  it("a real provider quota error → quota exhausted, non-retryable", () => {
+    expect(buildFailureReason(providerFailure(
+      "You exceeded your current quota, please check your plan and billing details.",
+    ))).toEqual({ reason: "quota exhausted", retryable: false });
+    // OpenAI's machine code: the underscore means there is no word boundary
+    // before "quota", so the pattern must name this shape itself.
+    expect(buildFailureReason(providerFailure("429 insufficient_quota")))
+      .toEqual({ reason: "quota exhausted", retryable: false });
+  });
+
+  it("a real 402 → quota exhausted, non-retryable", () => {
+    expect(buildFailureReason(providerFailure("Provider returned 402 Payment Required")))
+      .toEqual({ reason: "quota exhausted", retryable: false });
+  });
+
+  it("a validation failure whose findings quote the host tool inventory → generation failed, RETRYABLE", () => {
+    // The live defect, verbatim in shape: `host_listScheduledPayments` inside
+    // the finding's inventory used to be read as the provider saying the
+    // account is out of credit.
+    expect(buildFailureReason(validationFailure(
+      `query "scheduledOut" names unknown tool "spending.data.reduce"; the host tools are: ${hostToolInventory}`,
+    ))).toEqual({ reason: "generation failed", retryable: true });
+    // The same class through the app's own content: a payments view, a billing
+    // identifier, a "payment" label. None of it is a provider signal.
+    expect(buildFailureReason(validationFailure(
+      'binding "$payments.billing_id" does not resolve; the fields are: billing_id, payment_status, amount',
+      "the Payment History table has no rows and no empty state",
+    ))).toEqual({ reason: "generation failed", retryable: true });
+  });
+
+  it("a provider timeout → timed out, retryable", () => {
+    expect(buildFailureReason(providerFailure("Request timed out after 60000ms")))
+      .toEqual({ reason: "timed out", retryable: true });
+  });
+
+  it("a plain unknown failure → generation failed, retryable", () => {
+    expect(buildFailureReason(new Error("boom")))
+      .toEqual({ reason: "generation failed", retryable: true });
+    expect(buildFailureReason(validationFailure("the model answered with no text at all")))
+      .toEqual({ reason: "generation failed", retryable: true });
+  });
+});
