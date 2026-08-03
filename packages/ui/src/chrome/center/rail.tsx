@@ -23,6 +23,13 @@ const PRIMARY: CenterView[] = ["chat", "apps", "automations"];
  *  under the quiet ··· row, opening the same panels unchanged. */
 const SECONDARY: CenterView[] = ["activity", "accounts"];
 
+/** The rows the tablist actually renders. Exported because the column's panel
+ *  has to know whether the view it is showing still HAS a tab: closing the ···
+ *  row while Activity is open removes the tab that labelled it. */
+export function railRows(moreOpen: boolean): CenterView[] {
+  return moreOpen ? [...PRIMARY, ...SECONDARY] : PRIMARY;
+}
+
 const LABEL: Record<CenterView, string> = {
   chat: "New chat",
   apps: "Apps",
@@ -30,6 +37,11 @@ const LABEL: Record<CenterView, string> = {
   activity: "Activity",
   accounts: "Accounts",
 };
+
+/** The view's own words, for a surface that has to name it without a tab. */
+export function centerViewLabel(view: CenterView): string {
+  return LABEL[view];
+}
 
 /** Same cadence as the waiting strip: an ask raised elsewhere (an automation
  *  run, another tab) reaches the badge without a reload. */
@@ -77,7 +89,12 @@ export interface RailNavProps {
  *  tabindex) in ONE vertical tablist — the ··· disclosure sits outside it, and
  *  the rows it reveals join the same list rather than forming a second one. */
 export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: RailNavProps) {
-  const rows = moreOpen ? [...PRIMARY, ...SECONDARY] : PRIMARY;
+  const rows = railRows(moreOpen);
+  // The list's ONE tab stop. Normally the selected row — but the selection can
+  // be a row that is no longer here (Activity, with the ··· row closed again),
+  // and a tablist where every row is tabIndex -1 cannot be reached by keyboard
+  // at all. Fall back to the first row so a stop always exists.
+  const stop = Math.max(0, rows.indexOf(view));
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const move = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next = index;
@@ -104,7 +121,7 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
             role="tab"
             aria-selected={view === row}
             aria-controls={`vendo-panel-${row}`}
-            tabIndex={view === row ? 0 : -1}
+            tabIndex={index === stop ? 0 : -1}
             key={row}
             onClick={() => onView(row)}
             onKeyDown={event => move(event, index)}

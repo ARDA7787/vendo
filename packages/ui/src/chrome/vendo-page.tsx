@@ -6,7 +6,7 @@ import { ActivityPanel } from "./activity-panel.js";
 import { AutomationsPanel } from "./automations-panel.js";
 import { AppsPage } from "./center/apps-page.js";
 import { AppShelf } from "./center/home.js";
-import { CenterChats, CenterHeader, CenterSheet, NeedsYou, RailNav, type CenterView } from "./center/rail.js";
+import { CenterChats, CenterHeader, CenterSheet, NeedsYou, RailNav, centerViewLabel, railRows, type CenterView } from "./center/rail.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { ConnectedAccountsPanel } from "./connected-accounts-panel.js";
 import { ACTIVITY_BUMP_EVENT } from "./morph-toast.js";
@@ -206,7 +206,17 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
           className="fl-center-main"
           {...(takeover.active
             ? {}
-            : { role: "tabpanel", id: `vendo-panel-${view}`, "aria-labelledby": `vendo-tab-${view}` })}
+            : {
+              role: "tabpanel",
+              id: `vendo-panel-${view}`,
+              // The tab that labels the panel has to still BE there: closing the
+              // ··· row while Activity is open takes its tab away, and an
+              // aria-labelledby pointing at a removed id leaves the panel
+              // nameless. Then the panel names itself.
+              ...(railRows(moreOpen).includes(view)
+                ? { "aria-labelledby": `vendo-tab-${view}` }
+                : { "aria-label": centerViewLabel(view) }),
+            })}
         >
           {/* The conversation stays MOUNTED behind the other doors: visiting
               Apps must not abandon a running turn (or lose the transcript). */}

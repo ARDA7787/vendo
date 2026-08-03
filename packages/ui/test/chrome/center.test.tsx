@@ -151,6 +151,25 @@ describe("the center rail", () => {
     expect(panel.getAttribute("aria-labelledby")).toBe(apps.getAttribute("id"));
   });
 
+  it("closing ··· on an open Activity keeps a tab stop and a named panel (H10)", async () => {
+    mount(stubClient());
+    await screen.findByRole("tablist", { name: "Workspace sections" });
+    const more = screen.getByRole("button", { name: "More sections" });
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(await screen.findByRole("heading", { name: "Activity" })).toBeTruthy();
+    // Fold the row away again while Activity is what the column shows.
+    fireEvent.click(more);
+    expect(screen.queryByRole("tab", { name: "Activity" })).toBeNull();
+    // The tablist still has exactly one keyboard entry point…
+    const stops = screen.getAllByRole("tab").filter(tab => tab.getAttribute("tabindex") === "0");
+    expect(stops.length).toBe(1);
+    // …and the panel still has a NAME (its label can no longer be a tab that
+    // does not exist).
+    const panel = screen.getByRole("tabpanel", { name: "Activity" });
+    expect(panel.getAttribute("aria-labelledby")).toBeNull();
+  });
+
   it("groups conversations by recency and titles each row with its opening line", async () => {
     mount(stubClient({
       threads: [
