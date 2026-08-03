@@ -14,6 +14,35 @@ export function partData(part: UIMessage["parts"][number]): unknown {
  * in-thread turn-error part). */
 export const VENDO_ERROR_PREFIX = "Vendo: ";
 
+/**
+ * Spec §15 + §16 law 3 — what a PERSON is told when an app build fails.
+ *
+ * The wire's `reason` is the runtime's classified, provider-safe line, and
+ * provider-safe is not the same as the reader's language: it is written for
+ * whoever can FIX the build. The wave E2E photographed all of it in a real
+ * user's thread — the honesty gate's teaching sentence names components and
+ * expressions (`amount / sum(spending.data.amount)`), the no-model-key lines
+ * name environment variables and npm packages, the watchdog line says to check
+ * the host server log. Same class as the slot's `loadFailureCopy`, so the same
+ * answer: the developer sentence keeps the home it already has (the server logs
+ * it in full with every blocking finding — `[vendo] app build failed (app_…)`,
+ * apps/runtime.ts), and the person gets §15's standing copy law — what happened
+ * · nothing was changed · what happens next.
+ *
+ * ONE sentence for every class, deliberately. Splitting the copy by the
+ * runtime's classification was tried and reverted on live evidence: the
+ * classifier is a substring scan over the concatenated findings
+ * (`buildFailureReason`), and `host_listScheduledPayments` in a finding's tool
+ * inventory contains "payment", so an ordinary validation failure is persisted
+ * as "quota exhausted" (observed 2026-08-03, fix-defects proof). Copy that
+ * branches on an unreliable label just tells a different lie — "try again
+ * later" for a build that will fail identically. Asking again is true and
+ * harmless for every class, so that is what it says.
+ */
+export const BUILD_FAILURE_COPY =
+  "I couldn't finish building that view — nothing was changed."
+  + " Ask again and I'll try a different approach.";
+
 // ENG-216 — a stable placeholder for the in-thread synthesized ApprovalRequest's
 // required `createdAt`. The wire approval part carries no timestamp; this value
 // is never displayed (the card hides the context byline in-thread) and a fixed
