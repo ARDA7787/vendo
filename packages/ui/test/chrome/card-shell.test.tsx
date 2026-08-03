@@ -153,6 +153,9 @@ describe("one card shell, three laws", () => {
     const files = [
       ...readdirSync("src/chrome").filter(name => CARDS.test(name)).map(name => join("src/chrome", name)),
       join("src/voice", "voice-consent.tsx"),
+      // Added at integration: the slot is the most PUBLIC surface we have (it
+      // sits on the host's own page) and it rendered `reason.message` verbatim.
+      join("src/chrome", "vendo-slot.tsx"),
     ];
     const offenders = files.filter(file =>
       /\{\s*(?:\w+\.)*reason\.message\s*\}/.test(readFileSync(file, "utf8")));
