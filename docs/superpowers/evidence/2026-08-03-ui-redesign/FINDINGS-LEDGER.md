@@ -67,3 +67,23 @@ Ruling 21 (fixture law, third strike): a fix is not done until a test FAILS with
 the fix reverted, and the reverting proof is recorded. Fixture blindness hid a
 defect in three consecutive passes — the fix was right every time; the fixture
 could not express the defect class.
+
+## Landing pass — three dispositions changed after both checker passes
+
+These are recorded here because they REVERSE or restructure a disposition
+above. Reading the table alone would otherwise mislead.
+
+| ID | What changed at landing | Why |
+|---|---|---|
+| H14 / CR-1 | **Mechanism DELETED, not re-fixed.** The table says H14 was fixed by taking the row's word from the ask's own verb, and CR-1 narrowed that to the leading verb token. Both are gone: `VERB_CLASSES`, the six `VERBS` word sets, `verbToken`, `verbClassOf`, `understates` and `verbWord` are deleted, and the class sentence and grant-row word now read the RISK GRADE and nothing else. | Yousef's risk-grading ruling (D1, PR #747) is categorical — no code path may conclude anything from a tool's NAME. A word list misses silently and its existence reads as coverage. H14's underlying defect (a `read`-graded send tool renders "Reads") is knowingly ACCEPTED: the fix belongs upstream, in the judge or `overrides.json`. Pinned as a test, with the tradeoff named. |
+| H18 | **Guarantee kept, mechanism replaced.** The table says H18 was fixed with APG manual activation. Manual activation is gone; the tablist activates on arrow again. | Manual activation was only ever needed because an ACT ("New chat") sat inside the tablist. It is a plain button outside the list now, so the arrows cannot reach it and H18 holds structurally. The same change fixed a second defect: the act was exposed as `role="tab"`, so `getByRole("button", …)` — how every other surface exposes this gesture — matched nothing, which is what broke ENG-222's browser proof. |
+| — | **`ungraded` is carried, not approximated.** The wave mapped an absent wire risk to `write` + `critical: true` in the client. | #747 made `ungraded` a first-class `RiskLabel`. The client approximation is deleted; the wire carries the state as itself and each card derives its own ceremony from the grade. Our "ungraded never folds" ruling now composes with main's "the guard asks on ungraded" instead of duplicating it. |
+
+### Reported, NOT changed — open for Yousef
+
+`core/grant-sets.ts`'s `mechanicalRisk` is a NAME-based vote (main's, from
+#747's merge of the rebuild cutover), and it DOES reach consumer card copy on
+one path: `automations/adoption.ts:54` sets each adoption need's risk to
+`resolvedRisk(descriptor)`, which the AdoptionCard renders through
+`grantRowWord`. The approval card is unaffected — it reads the assigned
+`descriptor.risk`. Behaviour left exactly as main has it, per instruction.
