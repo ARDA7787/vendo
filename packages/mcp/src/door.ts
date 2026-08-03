@@ -651,37 +651,41 @@ class Door {
       await held.cancel().catch(() => {});
     };
     /** Hand the client a body the DOOR owns, so the transport's registration is
-     *  reached only by whoever still HOLDS the slot — this body's own cancel or
-     *  EOF, or `releaseStandalone` — and never by a body a reconnect replaced. */
+     *  reached only by whoever still HOLDS the slot — this body's own cancel, or
+     *  `releaseStandalone` — and never by a body a reconnect replaced. */
     const adoptStandalone = (response: Response): Response => {
       if (response.body === null) return response;
       const reader = response.body.getReader();
       standalone = reader;
-      /** This body is finished. Only the slot it still OWNS may be given up: a
-       *  cancel or an EOF that fired after a reconnect must never touch the new
-       *  stream's registration (proven round 6 — the client kept a
-       *  healthy-looking channel that silently dropped every `list_changed`). */
-      const ownsSlot = (): boolean => standalone === reader;
       const relayed = new ReadableStream<Uint8Array>({
+        // EOF and read errors pass straight through and leave the slot alone: the
+        // transport ends this stream only from its `cleanup` (its own `close()`
+        // and `closeStandaloneSSEStream`, which the door never calls), and the
+        // door's `close` releases the slot before closing the transport — so
+        // every reachable end here is a cancel the door already performed, on a
+        // slot it has already given up.
         async pull(controller) {
-          const frame = await reader.read().catch((error: unknown) => {
-            // Over either way, and a slot still pointing at a finished stream
-            // would be released only by a later 409 or the idle sweep.
-            if (ownsSlot()) standalone = undefined;
-            throw error;
-          });
-          if (frame.done) {
-            if (ownsSlot()) standalone = undefined;
-            controller.close();
-          } else controller.enqueue(frame.value);
+          const frame = await reader.read();
+          if (frame.done) controller.close();
+          else controller.enqueue(frame.value);
         },
         // The client hung up — a LIVE one, so the transport's registration and
         // this reader are dead weight until something else clears them, and the
         // idle sweep only runs on another request, never on a timer. Cancelling
-        // is what releases the registration, so the door does exactly that for
-        // the slot it still holds, and nothing when the slot has moved on.
+        // is what releases the registration, so the door does exactly that.
+        //
+        // Guarded on still HOLDING the slot, and it is the slot — not the cancel —
+        // that this protects: forwarding the cancel of a replaced stream is
+        // already a no-op (the transport deletes the registration inside this
+        // stream's own `cancel`, and a stream cancels once), but CLEARING the slot
+        // would drop the door's only handle on the stream it is now serving, and
+        // `releaseStandalone` is the one thing that can free a 409. The next
+        // silent death would then be unrecoverable — 409 on every reconnect for
+        // the rest of the session, the live symptom of 2026-08-03. A dead body is
+        // discarded by the runtime whenever it gets round to it, which is exactly
+        // how that cancel arrives after a reconnect has moved the slot on.
         cancel() {
-          if (!ownsSlot()) return;
+          if (standalone !== reader) return;
           standalone = undefined;
           void reader.cancel();
         },

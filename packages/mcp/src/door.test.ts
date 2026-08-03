@@ -2621,6 +2621,54 @@ describe("createMcpDoor announces a connector search that grew the surface", () 
     expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
   });
 
+  it("keeps the SLOT through a dead stream's late cancel, so the stream after it is still recoverable", async () => {
+    // What the relay cancel's identity check actually protects. Not the
+    // transport's registration: a reader the door already cancelled ignores a
+    // second cancel, so forwarding it is a no-op (verified — removing the check
+    // keeps the test above green). It protects the door's own SLOT. Clearing it
+    // on a stream that has been REPLACED leaves the door holding no reader for
+    // the stream it is actually serving, and `releaseStandalone` is the only
+    // thing that can free a 409 — so the next silent death is permanent: 409 on
+    // every reconnect for the rest of the session, which is the live symptom of
+    // 2026-08-03 that all of this exists to prevent.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+    const searchOnce = () => harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+    const spendTheFlag = () => harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+
+    // First stream: dies silently, is released by the reconnect's 409 recovery.
+    const dead = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(dead.status).toBe(200);
+    await searchOnce();
+    await searchOnce();
+    const second = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(second.status).toBe(200);
+
+    // The runtime finally discards the first body, long after the swap.
+    await dead.body!.cancel();
+
+    // The second stream dies the same silent way — nothing cancels it either —
+    // and the client reconnects again. The door can only serve this if it still
+    // holds the second stream's reader.
+    await spendTheFlag();
+    await searchOnce();
+    const third = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(third.status).toBe(200);
+    expect(await frameOrNone(third)).toContain("notifications/tools/list_changed");
+  });
+
   it("a LIVE client's hang-up frees the slot, so the reconnect needs no 409 recovery", async () => {
     // The relay body's `cancel` used to be inert, which swallowed a real client's
     // disconnect: the transport's registration and the door's reader stayed held

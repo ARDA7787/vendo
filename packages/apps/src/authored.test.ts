@@ -675,6 +675,24 @@ describe("a refused write at the history cap", () => {
 
     expect(await versionIds(store)).toEqual(before);
   });
+
+  it("still charges the cap for a save that LANDS", async () => {
+    // The other half of the same rule, and the half nothing pinned: moving the
+    // prune out of the append must not lose it. Dropping the `pruneHistory` call
+    // this path makes leaves the log growing past 50 forever — the skill saves
+    // `app.vendo` on a timer, so this path is the one that reaches the cap first.
+    const { runtime, store } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    await fillToCap(store);
+
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND_MORE) }, ctx());
+
+    const versions = await runtime.history(APP_ID, ctx()).list();
+    expect(versions).toHaveLength(50);
+    // The newest is this save, and the oldest real undo point paid for it.
+    expect(versions[0]?.intent).toBe("Saved app.vendo");
+    expect(versions.at(-1)?.intent).toBe("Edit 2");
+  });
 });
 
 describe("a save computed over a row that changed under it", () => {
