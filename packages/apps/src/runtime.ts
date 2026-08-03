@@ -2473,7 +2473,15 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       // `/user` mount: a fresh `/orgs/<org>/apps/<id>/` path has no app row to
       // grant on, so `canCommit` refuses it and the file never lands at all.
       const mayWrite = row === null || await holds(input.appId, ctx, "editor", record);
-      const previous = row === null
+      // …and refusing the WRITE is not the whole refusal. The document below is
+      // what this file's queries resolve against, so a foreign app's own history
+      // inside it is reach the caller does not have: `fn:` routes on `app.machine`
+      // ALONE (fn.ts) and the wake takes no ctx, so an inherited machine ref sends
+      // this file's `fn:` queries onto SOMEONE ELSE'S sandbox — their snapshot,
+      // their env, their code — and hands the answer back. A file the caller may
+      // not write is therefore painted from the compile alone: their own tree,
+      // their own authority, none of the other app's anything.
+      const previous = row === null || !mayWrite
         ? undefined
         : classifyLegacyPlacements(row.doc, config.pinBaselines);
       const document = authoredDocument(input.appId, input.compiled, previous);

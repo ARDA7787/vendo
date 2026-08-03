@@ -23,6 +23,7 @@ import {
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { createApps, type AppsRuntime } from "./index.js";
+import type { SandboxAdapter, SandboxMachine } from "./sandbox.js";
 import { bindTools, guardFixture, memoryStore, seedAppRow, type GuardFixture } from "./testing/index.js";
 
 const APP_ID = "app_authored";
@@ -31,6 +32,15 @@ const SPEND = `<App name="Spending">
   <Query id="spend" tool="maple_spend_summary" />
   <Stack>
     <Text text={spend.total} />
+  </Stack>
+</App>`;
+
+/** A file whose only query is an `fn:` ref — the one query kind that resolves
+ *  against the DOCUMENT's machine rather than the guard-bound registry. */
+const LOOT = `<App name="Mine">
+  <Query id="loot" tool="fn:dump" />
+  <Stack>
+    <Text text={loot.secret} />
   </Stack>
 </App>`;
 
@@ -54,12 +64,38 @@ interface Stand {
   store: ReturnType<typeof memoryStore>;
   guard: GuardFixture;
   calls: RunContext[];
+  /** Every request that reached a machine. Empty unless `box: true`. */
+  seen: Array<{ method: string; path: string }>;
 }
 
-const stand = (options: { rules?: Record<string, "run" | "ask" | "block"> } = {}): Stand => {
+/** A machine that answers any `fn:` with a secret, and records being asked. */
+const fnBox = (seen: Stand["seen"]) => {
+  const machine: SandboxMachine = {
+    id: "fake_authored_box",
+    async request(request) {
+      seen.push({ method: request.method, path: request.path });
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: new TextEncoder().encode(JSON.stringify({ result: { secret: "theirs" } })),
+      };
+    },
+    async snapshot() { return "fake:theirs"; },
+    async stop() { /* sleep */ },
+    async destroy() { /* gone */ },
+  };
+  return {
+    async create() { return machine; },
+    async resume() { return machine; },
+    async destroy() { /* released */ },
+  } satisfies SandboxAdapter;
+};
+
+const stand = (options: { rules?: Record<string, "run" | "ask" | "block">; box?: boolean } = {}): Stand => {
   const store = memoryStore();
   const guard = guardFixture(options.rules === undefined ? {} : { rules: options.rules });
   const calls: RunContext[] = [];
+  const seen: Stand["seen"] = [];
   const host: ToolRegistry = {
     async descriptors() {
       return [descriptor];
@@ -71,8 +107,14 @@ const stand = (options: { rules?: Record<string, "run" | "ask" | "block"> } = {}
   };
   // THE choke point: the runtime is handed the guard-BOUND registry, exactly as
   // composition hands it one.
-  const runtime = createApps({ store, guard, tools: bindTools(guard, host), catalog: [] });
-  return { runtime, store, guard, calls };
+  const runtime = createApps({
+    store,
+    guard,
+    tools: bindTools(guard, host),
+    catalog: [],
+    ...(options.box === true ? { machine: { sandbox: fnBox(seen) } } : {}),
+  });
+  return { runtime, store, guard, calls, seen };
 };
 
 /** What the render seam hands over: the compile it already did for the paint. */
@@ -171,6 +213,28 @@ describe("an app.vendo the harness wrote", () => {
     expect((await rowOf(store))?.subject).toBe("u2");
     // The person still sees their own file painted, with their own data.
     expect(data).toEqual({ spend: { total: 4210, currency: "USD" } });
+  });
+
+  it("never reaches an app it may not edit — not even through that app's machine", async () => {
+    const { runtime, store, seen } = stand({ box: true });
+    const theirs: AppDocument = {
+      format: "vendo/app@1",
+      id: APP_ID,
+      name: "Theirs",
+      machine: { snapshotRef: "fake:theirs", provisionedAt: "2026-08-03T00:00:00.000Z" },
+    };
+    await seedAppRow(store, theirs, "u2");
+
+    // u1 writes THEIR OWN file at u2's app id (the workspace lands it — `/user/**`
+    // is its subject's at every level) and asks it for an `fn:` query. The refused
+    // write is not the whole refusal: the document these queries resolve against
+    // must carry none of u2's app, or `fn:` routes onto u2's sandbox (fn.ts routes
+    // on `app.machine` alone, and the wake takes no ctx).
+    const data = await runtime.authored({ appId: APP_ID, compiled: compiled(LOOT) }, ctx("u1"));
+
+    expect(seen).toEqual([]);
+    expect(data).toEqual({});
+    expect((await rowOf(store))?.doc).toEqual(theirs);
   });
 
   it("stores nothing the model forged — inClient, pinDrift, buildFailed", async () => {
