@@ -1,4 +1,4 @@
-import type { RiskLabel, UIPayload, VendoAutomationPart, VendoBuildFailedPart, VendoGrantSetPart, VendoTurnErrorPart, VendoViewPart } from "@vendoai/core";
+import { riskLabelSchema, type RiskLabel, type UIPayload, type VendoAutomationPart, type VendoBuildFailedPart, type VendoGrantSetPart, type VendoTurnErrorPart, type VendoViewPart } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoContext } from "../../context.js";
@@ -219,15 +219,16 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     // granted" / denied) — reload-safe, since the state derives from the
     // persisted sibling tool part, never component state.
     const data = partData(part) as Partial<VendoGrantSetPart>;
+    const permissions = grantSetPermissions(data.permissions);
     if (typeof data.toolCallId !== "string" || typeof data.grantSetId !== "string"
       || typeof data.name !== "string"
-      || !Array.isArray(data.permissions) || data.permissions.length === 0) return null;
+      || permissions.length === 0) return null;
     return (
       <GrantSetConsent
         toolCallId={data.toolCallId}
         grantSetId={data.grantSetId}
         name={data.name}
-        permissions={data.permissions as GrantSetPermission[]}
+        permissions={permissions}
         siblingParts={siblingParts ?? []}
         respond={respond}
       />
@@ -281,6 +282,29 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     return <ThreadAppCard key={`${partKey}-${data.appId}`} appId={data.appId} payload={payload} restored={restored} />;
   }
   return null;
+}
+
+/**
+ * H13 — the wire's grant-set permissions, VALIDATED instead of cast.
+ *
+ * THE DEFECT: the branch checked `Array.isArray` and then cast the whole array
+ * to `GrantSetPermission[]`. A member missing its `risk` rendered a row reading
+ * ": Send money" (`RISK_WORD[undefined]` is undefined), and its `approvalId` —
+ * possibly undefined too — rode into `client.approvals.decide([undefined])` on
+ * Approve, deciding nothing while the card claimed it had. Every field a row and
+ * a decision need is checked here; a malformed member is dropped, and a set with
+ * nothing left renders no card at all (the parked ask then keeps the ordinary
+ * approval path).
+ */
+function grantSetPermissions(value: unknown): GrantSetPermission[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is GrantSetPermission => {
+    const candidate = entry as Partial<GrantSetPermission> | null;
+    return typeof candidate === "object" && candidate !== null
+      && typeof candidate.approvalId === "string" && candidate.approvalId.length > 0
+      && typeof candidate.tool === "string" && candidate.tool.length > 0
+      && riskLabelSchema.options.includes(candidate.risk as RiskLabel);
+  });
 }
 
 /** The grant-set card's wire half: derives parked/approved/denied from the
