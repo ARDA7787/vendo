@@ -30,12 +30,30 @@ function asError(reason: unknown): Error {
   return reason instanceof Error ? reason : new Error(String(reason));
 }
 
-/** A poll that returns the same asks must not re-render four surfaces. */
+/**
+ * A poll that returns the same asks must not re-render four surfaces.
+ *
+ * H-6 — "the same asks" meant the same IDS. An ask is not immutable: `risk` is
+ * resolved per call (`resolveRisk`), so a re-graded ask keeps its "Read-only"
+ * chip, its read-class sentence and its Details fold forever; and
+ * `invalidatedGrant` — "this tool changed since you approved it" — is attached
+ * later and never appeared at all. Both are the most consequential things a
+ * card can say, and the poll that carried them was thrown away as a no-op.
+ *
+ * The whole ask is compared. A key-order difference would cost one extra
+ * render, which is the safe direction; a missed CHANGE is the defect.
+ */
+function sameAsks(a: ApprovalRequest[], b: ApprovalRequest[]): boolean {
+  return a.length === b.length && a.every((ask, index) => {
+    const other = b[index];
+    return other !== undefined && ask.id === other.id && JSON.stringify(ask) === JSON.stringify(other);
+  });
+}
+
 function unchanged(a: ApprovalsSnapshot, b: ApprovalsSnapshot): boolean {
   return a.error === b.error
     && a.isLoading === b.isLoading
-    && a.data.length === b.data.length
-    && a.data.every((ask, index) => ask.id === b.data[index]?.id);
+    && sameAsks(a.data, b.data);
 }
 
 function hidden(): boolean {
