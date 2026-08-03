@@ -23,6 +23,7 @@ import {
   preview,
   producedAppCard,
   SYNTHESIZED_CREATED_AT,
+  toolCallIsContent,
   toolName,
 } from "./message-data.js";
 
@@ -137,12 +138,12 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     // progress to the StatusRibbon and kept the transcript beat-free). Two
     // exceptions:
     //   · the settled turn folds its beats into one summary row (hideBeats) —
-    //     but a FAILED call is content, not progress, so an error beat stays
-    //     visible either way (spec §15: the ✕ stays in the record);
+    //     but a failed or declined call is content, not progress, so its ✕ beat
+    //     stays visible either way (spec §15: the ✕ stays in the record);
     //   · D1 — an app-building call renders no beat, because its card IS that
     //     step (the summary still counts it).
     const risk = risks.get(part.toolCallId) ?? "read";
-    if (part.state === "output-error") return <BuildBeat part={part} risk={risk} count={count} />;
+    if (toolCallIsContent(part)) return <BuildBeat part={part} risk={risk} count={count} />;
     if (hideBeats || producedAppCard(part, siblingParts ?? [])) return null;
     return <BuildBeat part={part} risk={risk} count={count} />;
   }

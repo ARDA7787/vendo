@@ -202,6 +202,27 @@ describe("the transcript's beats", () => {
     expect(screen.queryByText(/Build an app/)).toBeNull();
   });
 
+  // A refused ask settles with a ✕ too, and it never poses as pending work —
+  // the old beat vocabulary had no state for it, so a declined call's line sat
+  // in the finished turn still saying "…".
+  it("settles a declined call as its own line, not a stale heartbeat", { timeout: 20_000 }, async () => {
+    await mount([
+      {
+        type: "dynamic-tool",
+        toolName: "host_send_payment",
+        toolCallId: "call_1",
+        state: "output-denied",
+        input: { amount: 4750 },
+      },
+      doneTool("call_2", { transactions: new Array(3).fill({}) }),
+    ] as unknown as Thread["messages"][number]["parts"]);
+    const declined = document.querySelector("[data-vendo-tool='host_send_payment']");
+    expect(declined?.textContent).toContain("you declined it");
+    expect(declined?.className).toBe("fl-beat fl-beat-done");
+    // …and it isn't counted among the things that happened.
+    expect(document.querySelector(".fl-beatsummary")?.textContent).toBe("Did 1 thing");
+  });
+
   // Spec §15 — failure is conversation. The ✕ beat stays in the record even
   // while the turn is folded, and NOTHING else appears: no retry button, no
   // chip, no card. The recovery is the agent's own next sentence (a text part),
@@ -215,6 +236,9 @@ describe("the transcript's beats", () => {
     const errorBeat = turn.querySelector(".fl-beat-error");
     expect(errorBeat).toBeTruthy();
     expect(errorBeat?.textContent).toContain("couldn't finish");
+    // A failure is not a thing the agent DID: nothing landed, so there is no
+    // summary row at all — just the ✕ and the prose.
+    expect(turn.querySelector(".fl-beatsummary")).toBeNull();
     // The prose recovery streamed as a text part, exactly like any other line.
     expect(turn.textContent).toContain("nothing was changed");
     // Zero failure furniture anywhere in the turn.

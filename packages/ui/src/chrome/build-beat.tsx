@@ -256,9 +256,13 @@ export function BuildBeat({
   const error = part.state === "output-error";
   const done = part.state === "output-available";
   const waiting = part.state === "approval-requested";
+  // A refused ask is a settled outcome with a ✕, not a failure and not a
+  // heartbeat: without this, a declined call's beat sat in the finished turn
+  // still saying "…", as if it were about to happen.
+  const declined = part.state === "output-denied";
   const label = toolTitle(name, tools[name]);
   const result = done ? toolResultSummary(part.output) : undefined;
-  const state = error ? "fl-beat-error" : done ? "fl-beat-done" : "fl-beat-working";
+  const state = error ? "fl-beat-error" : done || declined ? "fl-beat-done" : "fl-beat-working";
   return (
     <div
       className={`fl-beat ${state}`}
@@ -266,8 +270,10 @@ export function BuildBeat({
       data-vendo-tool={name}
       title={name}
     >
-      {error ? (
-        <span className="fl-beat-ic fl-beat-x" aria-hidden="true">
+      {error || declined ? (
+        // Same glyph, different register: the error beat is danger-colored
+        // (.fl-beat-error), a decline quiets to muted like any settled line.
+        <span className={`fl-beat-ic${error ? " fl-beat-x" : ""}`} aria-hidden="true">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>
@@ -278,8 +284,11 @@ export function BuildBeat({
         <span className="fl-beat-orb" aria-hidden="true" />
       )}
       <span className="fl-beat-label">
-        {label}
-        {waiting ? " — waiting for your approval" : error ? " — couldn't finish" : done ? "" : "…"}
+        {waiting ? `${label} — waiting for your approval`
+          : error ? `${label} — couldn't finish`
+          : declined ? `${label} — you declined it`
+          : done ? label
+          : `${label}…`}
       </span>
       {result ? <span className="fl-beat-result">· {result}</span> : null}
       {count > 1 ? <span className="fl-beat-count" aria-label={`repeated ${count} times`}>×{count}</span> : null}

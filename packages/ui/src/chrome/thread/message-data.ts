@@ -195,6 +195,14 @@ export function toolCallPending(part: UIMessage["parts"][number]): boolean {
     && part.state !== "output-denied";
 }
 
+/** Spec §15 — a failed or declined call is CONTENT, not progress: its beat
+    stays visible after the turn folds, and it never counts as a thing the agent
+    did. Everything else is progress, and progress folds into the summary. */
+export function toolCallIsContent(part: UIMessage["parts"][number]): boolean {
+  return isToolUIPart(part)
+    && (part.state === "output-error" || part.state === "output-denied");
+}
+
 /** Spec §8 D1 — the app-building call whose result BECAME this turn's app card.
     The card bar narrates that step ("Building your view…" → the app's name), so
     a beat beside it would narrate the same work twice; the settled summary

@@ -4,7 +4,7 @@ import { Fragment, useRef, useState } from "react";
 import { BeatSummary } from "../build-beat.js";
 import { useCopyFeedback } from "../clipboard.js";
 import { SentAttachment, type FilePart } from "./attachments.js";
-import { assistantText, collapseToolRuns, toolCallPending, userText } from "./message-data.js";
+import { assistantText, collapseToolRuns, toolCallIsContent, toolCallPending, userText } from "./message-data.js";
 import { ThreadPart } from "./parts.js";
 import { TurnCitations } from "./turn-citations.js";
 
@@ -75,8 +75,12 @@ export function ThreadMessage({ message, restored, risks, busy, activeAssistantI
   // every beat stays open, and the fold waits. Restored history arrives folded,
   // which is also what keeps a long thread from a beat entrance stampede.
   const items = collapseToolRuns(message.parts);
-  const steps = items.filter(item => isToolUIPart(item.part));
-  const pending = streamingTurn || steps.some(item => toolCallPending(item.part));
+  const calls = items.filter(item => isToolUIPart(item.part));
+  const pending = streamingTurn || calls.some(item => toolCallPending(item.part));
+  // A failed or declined call is not one of the "things I did", and its ✕ beat
+  // never folds (spec §15) — so the count is the work that actually landed, and
+  // the failure keeps its own line right where it happened.
+  const steps = calls.filter(item => !toolCallIsContent(item.part));
   const [beatsOpen, setBeatsOpen] = useState(false);
   const summarized = steps.length > 0 && !pending;
   const folded = summarized && !beatsOpen;
