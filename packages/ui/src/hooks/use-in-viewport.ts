@@ -22,7 +22,7 @@ export function useInViewport<T extends Element>(rootMargin = AHEAD): {
   seen: boolean;
 } {
   const [seen, setSeen] = useState(false);
-  const observerRef = useRef<IntersectionObserver>();
+  const observerRef = useRef<IntersectionObserver | undefined>(undefined);
 
   const ref = useCallback((node: T | null) => {
     observerRef.current?.disconnect();
