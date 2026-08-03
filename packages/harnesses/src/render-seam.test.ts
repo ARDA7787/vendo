@@ -347,6 +347,43 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
     expect(logs.map((entry) => String(entry[0])).join("\n")).toContain("the store is gone");
   });
 
+  it("marks the settled view as UNABLE TO LOAD its data, so it cannot read as empty data", async () => {
+    // Settling is only half the honesty: every unresolved binding renders "—", so
+    // a silent settle tells the user "you have no spending". The failure rides the
+    // payload as a server-written extra and the renderer says so in the surface.
+    const emitted: Array<{ id: string; part: VendoViewPart }> = [];
+    const workspace = wrapWorkspaceForRender(testWorkspace(), {
+      emit: (id, part) => emitted.push({ id, part }),
+      authoredApp: async () => {
+        throw new Error("the store is gone");
+      },
+    });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await workspace.writeFile(APP_VENDO, WITH_QUERY);
+      await workspace.commit();
+    } finally {
+      spy.mockRestore();
+    }
+    const last = emitted.at(-1)!.part.payload as { streaming?: boolean; dataUnavailable?: boolean };
+    expect(last.dataUnavailable).toBe(true);
+    // …and it still SETTLES: neither symptom ships.
+    expect(last.streaming).toBe(false);
+    // The skeleton already on screen when the app half ran says nothing about a
+    // failure that had not happened yet.
+    expect((emitted[0]!.part.payload as { dataUnavailable?: boolean }).dataUnavailable).toBeUndefined();
+  });
+
+  it("marks nothing when the app half ANSWERS — an empty answer is empty data, not a failure", async () => {
+    const answers: Array<Record<string, Json> | undefined> = [{ spend: { total: 4210 } }, {}, undefined];
+    for (const answer of answers) {
+      const { emitted, save } = appSeam(answer);
+      await save(APP_VENDO, WITH_QUERY);
+      expect((emitted.at(-1)!.part.payload as { dataUnavailable?: boolean }).dataUnavailable)
+        .toBeUndefined();
+    }
+  });
+
   it("never lets the plan overwrite the app when ONE commit carries both files", async () => {
     // Both hot-path files write the SAME stream id, so whichever emits last is
     // what the person is left looking at — and `changed` order belongs to the

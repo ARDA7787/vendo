@@ -546,6 +546,10 @@ class GuardImplementation implements VendoGuard {
         const all = await tools.descriptors(ctx);
         return ctx === undefined ? all : projectableForRun(all, ctx);
       },
+      // Forwarded for the same reason the context is: the registry keeps
+      // per-scope state and a wrapper that swallowed the end of a scope would
+      // leave it shedding by capacity alone.
+      releaseListingScope: (scope: string) => tools.releaseListingScope?.(scope),
       execute: async (call, ctx) => {
         const descriptors = await tools.descriptors();
         const descriptor = descriptors.find((candidate) => candidate.name === call.tool);

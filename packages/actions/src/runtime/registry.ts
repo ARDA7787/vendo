@@ -1105,10 +1105,18 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
   const MAX_SEARCH_EXPANSIONS = 3;
 
   /** How many `listingScope`-identified runs keep their expansion set at once
-   * ({@link expandedByScope}). One live MCP session is one scope, and a door
-   * sweeps idle sessions long before this, so the cap is a leak stop rather
-   * than a working limit — 1024 comfortably exceeds any one host's concurrent
-   * sessions while keeping the map to a few thousand short strings. */
+   * ({@link expandedByScope}).
+   *
+   * A backstop for scopes whose owner never says they are finished, NOT the
+   * normal release path: a caller that can end a scope calls
+   * `releaseListingScope` (the MCP door does, on every close, sweep and
+   * revocation). It has to be a backstop and not the only mechanism, because
+   * this map is process-global across tenants: with capacity as the sole way out,
+   * one principal opening 1025 scopes evicts another principal's expansions and
+   * makes their expanded tools vanish from their next listing (round 6
+   * 2026-08-03 — the comment here used to claim sweeping released these, and
+   * nothing did). 1024 comfortably exceeds any one host's concurrent sessions
+   * while keeping the map to a few thousand short strings. */
   const MAX_LISTING_SCOPES = 1024;
   let indexPromise: Promise<Array<{ toolkit: string; label?: string; description?: string }>> | undefined;
   /** Discovery discipline (spec 2026-07-25): identical queries answer from a memo — repeat
@@ -1157,10 +1165,12 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
    * tool was gone (measured over the real door and the real SDK client, round 5
    * 2026-08-03).
    *
-   * A Map, not a WeakMap, so it is bounded here rather than by the GC: at most
-   * {@link MAX_LISTING_SCOPES} scopes, least-recently-used evicted first. An
-   * evicted scope loses its expansions and has to search again — the same
-   * failure direction as an unidentified run, never another run's set. */
+   * A Map, not a WeakMap, so its lifetime is stated rather than left to the GC:
+   * the owner releases a finished scope ({@link ToolRegistry.releaseListingScope}),
+   * and {@link MAX_LISTING_SCOPES} is the backstop for owners that never do,
+   * least-recently-used evicted first. An evicted scope loses its expansions and
+   * has to search again — the same failure direction as an unidentified run,
+   * never another run's set. */
   const expandedByScope = new Map<string, Set<string>>();
 
   function expansionsOf(ctx: ToolListingContext): Set<string> | undefined {
@@ -1350,6 +1360,10 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
 
     async descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]> {
       return scopedDescriptors(ctx);
+    },
+
+    releaseListingScope(scope: string): void {
+      expandedByScope.delete(scope);
     },
 
     async briefs(): Promise<CapabilityBrief[]> {

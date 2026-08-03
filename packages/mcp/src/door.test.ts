@@ -2101,6 +2101,51 @@ describe("createMcpDoor declared output schemas on the wire", () => {
     await connected.client.close();
   });
 
+  it("drops the two keywords that pin the WHOLE object, which the strip above them cannot reach", async () => {
+    // Round 6: `const` and `enum` do not reject a KEY, they reject the object,
+    // so deleting `required`/`additionalProperties` around them changed nothing —
+    // both envelopes came back "must be equal to constant"/"one of the allowed
+    // values" from the client's own validator. The last two of this family: a
+    // swept Ajv run cleared bare `$defs`, `definitions`, `$recursiveRef` and a
+    // nested `required`.
+    const pinned = {
+      type: "object",
+      properties: { id: { type: "string" } },
+      const: { id: "x" },
+    };
+    const listed_ = {
+      type: "object",
+      properties: { id: { type: "string" } },
+      enum: [{ id: "x" }, { id: "y" }],
+    };
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_pinned", pinned), declaring("host_listed", listed_)],
+      getOutcome: (call) => call.tool === "host_pinned"
+        ? { status: "ok", output: { vendo_truncated: true, vendo_chars: 91_000, vendo_preview: "{\"id\"" } }
+        : { status: "ok", output: "just text" },
+    });
+
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    for (const name of ["host_pinned", "host_listed"]) {
+      expect(byName.get(name)?.outputSchema, name).toEqual({
+        type: "object",
+        properties: { id: { type: "string" } },
+        additionalProperties: true,
+      });
+    }
+
+    // The proof: the client compiled both advertised schemas and validates every
+    // ok result against them, so a kept keyword throws right here.
+    const truncated = await connected.client.callTool({ name: "host_pinned", arguments: {} });
+    expect(truncated.isError).toBeFalsy();
+    expect(truncated.structuredContent).toMatchObject({ vendo_truncated: true });
+    const wrapped = await connected.client.callTool({ name: "host_listed", arguments: {} });
+    expect(wrapped.isError).toBeFalsy();
+    expect(wrapped.structuredContent).toEqual({ vendo_value: "just text" });
+    await connected.client.close();
+  });
+
   it("a TRUNCATED ok output validates even against a schema built to reject it", async () => {
     // Exactly what `toolOutputCap` substitutes for a large output (agent/tools.ts
     // capOutcome) — a shape no host schema mentions. Against the unsanitized
@@ -2502,6 +2547,12 @@ describe("createMcpDoor announces a connector search that grew the surface", () 
     expect(first.headers.get("content-type")).toContain("text/event-stream");
     expect(await firstFrame(first)).toContain("notifications/tools/list_changed");
 
+    // SPEND the flag. Sending never clears it, so without this `tools/list` the
+    // frame asserted after the reconnect could be the FIRST search's staleness
+    // replayed, and this test would pass on a door whose second announcement
+    // went nowhere at all.
+    await harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+
     // The socket dies. Nothing cancels the body, so the transport still believes
     // this session has a stream — and the announcement raised now goes nowhere.
     await searchOnce();
@@ -2509,7 +2560,125 @@ describe("createMcpDoor announces a connector search that grew the surface", () 
     const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
     // Used to be 409, twice, and then the client stopped asking.
     expect(reconnected.status).toBe(200);
-    expect(await firstFrame(reconnected)).toContain("notifications/tools/list_changed");
+    expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+  });
+
+  it("the reconnect stays reachable when the DEAD stream's body is discarded LATER", async () => {
+    // Round 6, the round-5 fix eating its own stream. Releasing the standalone
+    // slot through the transport closes its controller with the queued frame
+    // still unread, which leaves that ReadableStream in state "readable" — so
+    // the abandoned body's `cancel` fires whenever the runtime finally discards
+    // it, and the transport's cancel callback deletes whatever is registered as
+    // the standalone stream AT THAT MOMENT: the RECONNECTED one. Strictly worse
+    // than the 409 it replaced — the client holds a healthy-looking stream, never
+    // retries, and every later `list_changed` is silently dropped.
+    //
+    // A queued-but-unread frame is not an exotic state: it is exactly what
+    // `#announceExpansion` creates when it writes onto a socket that has died.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+    const searchOnce = () => harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+    const spendTheFlag = () => harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+
+    const dead = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(dead.status).toBe(200);
+    // The socket dies here, and THIS announcement is the queued unread frame.
+    await searchOnce();
+
+    const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(reconnected.status).toBe(200);
+    expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+
+    // The runtime lets go of the abandoned body — AFTER the swap. The door owns
+    // this body now, so the cancel stops at the door and never reaches the
+    // transport's registration.
+    await dead.body!.cancel();
+
+    await spendTheFlag();
+    await searchOnce();
+    expect(await frameOrNone(reconnected)).toContain("notifications/tools/list_changed");
+  });
+
+  it("a GET the transport REJECTS costs the session nothing", async () => {
+    // Round 6: the release ran before every GET, but the transport then rejects a
+    // GET with no `Accept: text/event-stream` (406), a bad `mcp-protocol-version`,
+    // or a DNS-rebinding failure — so one malformed request destroyed a HEALTHY
+    // stream and nothing replaced it. The conflict check is the transport's LAST
+    // gate, which is why the release now waits for its 409.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+
+    const live = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(live.status).toBe(200);
+
+    const rejected = await harness.door.handler(
+      sseRequest(tokens.access_token, sessionId, "application/json"),
+    );
+    expect(rejected.status).toBe(406);
+
+    // The stream the client is still holding is still the session's channel.
+    await harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+    expect(await frameOrNone(live)).toContain("notifications/tools/list_changed");
+  });
+
+  it("releases the listing scope when the session ends, by DELETE and by sweep", async () => {
+    // The registry keys a session's expansions by this opaque string and nothing
+    // collects them: with no release they shed only when the registry hits its
+    // capacity cap, and that cap is process-global across tenants — one principal
+    // opening enough sessions evicts another principal's expansions and their
+    // expanded tools vanish from their next listing (round 6 2026-08-03).
+    const harness = makeHarness({ extraDescriptors: [search] });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+
+    const deleted = await harness.door.handler(mcpRequest(tokens.access_token));
+    const deletedSession = deleted.headers.get("mcp-session-id")!;
+    await harness.door.handler(new Request(BASE, {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${tokens.access_token}`,
+        "mcp-session-id": deletedSession,
+        "mcp-protocol-version": "2025-11-25",
+      },
+    }));
+    expect(harness.released).toEqual([deletedSession]);
+
+    vi.useFakeTimers();
+    try {
+      const abandoned = await harness.door.handler(mcpRequest(tokens.access_token));
+      const abandonedSession = abandoned.headers.get("mcp-session-id")!;
+      vi.setSystemTime(Date.now() + 61 * 60 * 1000);
+      const revived = await issue(harness.door, registration.body.client_id);
+      // Any authenticated request sweeps; the swept session's scope goes with it.
+      await harness.door.handler(mcpRequest(revived.access_token));
+      expect(harness.released).toContain(abandonedSession);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a search as the session's FIRST call survives a stream that attaches later", async () => {
@@ -2684,6 +2853,9 @@ function makeHarness(options: HarnessOptions = {}) {
   const authorizeContexts: Array<{ clientName: string; scopes: string[] }> = [];
   const principalSubjects: string[] = [];
   const executions: Array<{ id: string; ctx: Parameters<ToolRegistry["execute"]>[1] }> = [];
+  /** Listing scopes the door said were finished — the registry keys expansions by
+   *  them and nothing else can collect them. */
+  const released: string[] = [];
   const guard: Guard = {
     check: options.check ?? (async () => ({ action: "run", decidedBy: "default" })),
     report: options.report ?? (async (event) => { audits.push(event); }),
@@ -2703,6 +2875,7 @@ function makeHarness(options: HarnessOptions = {}) {
       executions.push({ id: call.id, ctx });
       return options.getOutcome?.(call, ctx) ?? { status: "ok", output: { answer: 42 } };
     },
+    releaseListingScope(scope) { released.push(scope); },
   };
   const config = {
     tools,
@@ -2734,7 +2907,7 @@ function makeHarness(options: HarnessOptions = {}) {
   const door = options.state === undefined
     ? createMcpDoor(config)
     : createMcpDoorWithState(config, options.state);
-  return { door, store, audits, authorizeContexts, principalSubjects, executions };
+  return { door, store, audits, authorizeContexts, principalSubjects, executions, released };
 }
 
 async function register(door: McpDoor, metadata: Record<string, unknown> = {}, base = BASE) {
@@ -2921,12 +3094,13 @@ function mcpCall(accessToken: string, sessionId: string, name: string, args: Rec
   });
 }
 
-/** The standalone SSE stream a client opens for server-initiated notifications. */
-function sseRequest(accessToken: string, sessionId: string) {
+/** The standalone SSE stream a client opens for server-initiated notifications.
+ *  `accept` is a parameter so a test can send the GET the transport REJECTS. */
+function sseRequest(accessToken: string, sessionId: string, accept = "text/event-stream") {
   return new Request(BASE, {
     headers: {
       authorization: `Bearer ${accessToken}`,
-      accept: "text/event-stream",
+      accept,
       "mcp-session-id": sessionId,
       "mcp-protocol-version": "2025-11-25",
     },
@@ -2940,6 +3114,30 @@ async function firstFrame(response: Response): Promise<string> {
   const { value } = await reader.read();
   reader.releaseLock();
   return new TextDecoder().decode(value);
+}
+
+/** The next frame on a stream that is supposed to still be REACHABLE, or `""`.
+ *  The wait never costs a passing run anything: the frame is already buffered by
+ *  the time the assertion reads, so only a deaf stream ever reaches the deadline. */
+async function frameOrNone(response: Response, ms = 5_000): Promise<string> {
+  const reader = response.body!.getReader();
+  let arrived = false;
+  const read = reader.read()
+    .then(({ value }) => { arrived = true; return value === undefined ? "" : new TextDecoder().decode(value); })
+    .catch(() => { arrived = true; return ""; });
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<string>((resolve) => { timer = setTimeout(() => resolve(""), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+    // Released only when the read actually finished, so a test may read the same
+    // stream again: releasing under a PENDING read rejects it, and nothing would
+    // be left to observe that rejection.
+    if (arrived) reader.releaseLock();
+  }
 }
 
 async function pkceChallenge(verifier: string): Promise<string> {

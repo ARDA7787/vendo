@@ -336,4 +336,15 @@ export interface ToolRegistry {
    *  hint, which means only the guard-bound registry has to know the law. */
   descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]>;
   execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome>;
+  /** This {@link ToolListingContext.listingScope} is finished — forget whatever
+   *  the registry remembers for it.
+   *
+   *  A registry that narrows a listing by scope has to keep that state keyed by a
+   *  STRING, so nothing collects it: the MCP door's scope is a session id, and
+   *  without this the sets could only ever shed by capacity, which makes a
+   *  process-global cap into a cross-tenant interference channel (round 6
+   *  2026-08-03). Optional, because a registry that remembers nothing per scope
+   *  has nothing to release; calling it is never required for correctness — a
+   *  released scope simply reads as a fresh listing. */
+  releaseListingScope?(scope: string): void;
 }

@@ -82,7 +82,7 @@ import { createCheckingLayer } from "./checking/layer.js";
 import { validateCompiledCreate } from "./generation/validation/validate.js";
 import { wireCompileOptionsFor } from "./generation/wire-options.js";
 import type { BrainTurn } from "./generation/brain.js";
-import { createAppHistory } from "./history.js";
+import { createAppHistory, type PinIntentKind } from "./history.js";
 import { createInClientApprovals, type InClientVerdict } from "./inclient.js";
 import { createAppInterchange } from "./interchange.js";
 import {
@@ -100,7 +100,7 @@ import {
 } from "./box-agent.js";
 import { parseVendoManifest } from "./manifest.js";
 import { createAppOpener, createProgressiveQueryResolver, machinesDisabledError, servedAppsDisabledError, stripServerAuthoritativeFields } from "./open.js";
-import { appRecordInput, documentFromRecord, enabledAfterDocumentEdit, listAllRecords, nextEnvStaleAt, rowFromRecord, sessionOf, updateAppRow, withoutSession } from "./persistence.js";
+import { appRecordInput, documentFromRecord, enabledAfterDocumentEdit, listAllRecords, nextEnvStaleAt, rowFromRecord, sessionOf, updateAppRow, withoutSession, type AppRecordWrite } from "./persistence.js";
 import { classifyLegacyPlacements, detectPinDrift, hasDefaultExport, pinComponentName, pinForkSource, type InClientApproval, type PinBaseline, type PinDrift } from "./pins.js";
 import { createReviewLifecycle, type RemixRejection, type ReviewQueueEntry } from "./review.js";
 import { collectSecretValues, redactSecretJson, redactSecretText } from "./redaction.js";
@@ -1684,6 +1684,22 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     }
   };
 
+  /**
+   * The undo point an append already spent, deleted because the write it was
+   * appended FOR never landed. `undo()` restores the latest snapshot
+   * unconditionally, so an orphan version is a loaded gun: the snapshot
+   * predates the concurrent change a refusal just preserved, and one undo
+   * would write it straight over that change. Cleanup failure is logged, never
+   * thrown — the refusal itself is what the caller must hear about.
+   */
+  const discardVersion = async (appId: AppId, versionId: string): Promise<void> => {
+    try {
+      await history.discard(appId, versionId);
+    } catch (error) {
+      console.error(`[vendo] a refused write left an undo point behind (${appId}): ${safeErrorMessage(error)}`);
+    }
+  };
+
   const persistEdit = async (
     previous: AppDocument,
     app: AppDocument,
@@ -1695,6 +1711,11 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
        *  server lane's automation path); every other edit keeps the
        *  disarm-on-trigger-change rule below. */
       armTrigger?: boolean;
+      /** `"fork"` on the fork gesture's own version — the ONE pin intent that
+       *  vouches for the pinned source having started as the captured baseline,
+       *  which is what `pins.rebase` replays the rest of the trail onto. Every
+       *  other write records a replayable `"edit"`. */
+      pinIntentKind?: PinIntentKind;
     } = {},
     /**
      * The brain's conversation to persist beside the document. Omitting it
@@ -1737,14 +1758,28 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     } else {
       app.egressApproved = [...previous.egressApproved];
     }
-    await history.append(app.id, previous, version, pinSlots ?? touchedPinSlots(previous, app));
-    const wasEnabled = await assertCurrent();
-    // A changed trigger must be re-armed — enable() re-captures and re-mints trigger state.
-    const enabled = options.armTrigger === true && app.trigger !== undefined
-      ? true
-      : enabledAfterDocumentEdit(previous, app, wasEnabled);
-    const appRow = appRecordInput(app, rowSubject, enabled, session ?? sessionOf(previous));
-    await apps.put(appRow);
+    const versionId = await history.append(
+      app.id,
+      previous,
+      version,
+      pinSlots ?? touchedPinSlots(previous, app),
+      options.pinIntentKind,
+    );
+    let appRow: AppRecordWrite;
+    try {
+      const wasEnabled = await assertCurrent();
+      // A changed trigger must be re-armed — enable() re-captures and re-mints trigger state.
+      const enabled = options.armTrigger === true && app.trigger !== undefined
+        ? true
+        : enabledAfterDocumentEdit(previous, app, wasEnabled);
+      appRow = appRecordInput(app, rowSubject, enabled, session ?? sessionOf(previous));
+      await apps.put(appRow);
+    } catch (error) {
+      // The version above is an undo point to a state that never became the
+      // past — see discardVersion. The refusal is re-thrown unchanged.
+      await discardVersion(app.id, versionId);
+      throw error;
+    }
     await reportDocumentEdit(previous, appRow.data.doc, subject);
     // The stored row keeps the conversation; the document handed BACK never
     // carries it. One rule, every path out of the runtime (get/list/fork/undo
@@ -2498,6 +2533,8 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         : classifyLegacyPlacements(row.doc, config.pinBaselines);
       const document = authoredDocument(input.appId, input.compiled, previous);
       if (mayWrite) {
+        /** The version this save appended, while its write has not landed yet. */
+        let appended: string | undefined;
         try {
           /** Whether this save is a change at all — the history entry and the §9.9
            *  announcement below are both owed only by a save that changes the app. */
@@ -2534,7 +2571,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             // of the 50 capped slots to undo to the state it is already in.
             changed = JSON.stringify(previous) !== JSON.stringify(document);
             if (changed) {
-              await history.append(input.appId, previous, {
+              appended = await history.append(input.appId, previous, {
                 at: new Date().toISOString(),
                 intent: "Saved app.vendo",
                 rung: rungFor(document),
@@ -2556,6 +2593,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             previous === undefined ? undefined : sessionOf(previous),
           );
           await apps.put(appRow);
+          // The write landed, so the version above is real history now: whatever
+          // the announcements below do, it must not be cleaned up.
+          appended = undefined;
           if (previous === undefined) {
             await reportLifecycle("create", document.id, ctx);
           } else if (changed) {
@@ -2580,6 +2620,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           // screen, it just is not in the list. Never silent — and never a reason
           // to withhold the data the person can already see.
           console.error(`[vendo] app not saved (${input.appId}): the harness wrote it as a file but it did not land — ${safeErrorMessage(error)}`);
+          // …and a refused save spends no undo point: the appended version's
+          // snapshot predates the concurrent edit the refusal just preserved, and
+          // `undo()` would write it straight over that edit (see discardVersion).
+          if (appended !== undefined) await discardVersion(input.appId, appended);
         }
       }
       // The queries, through the SAME guard-bound caller `open()` resolves with:
@@ -3286,7 +3330,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           intent: `Remix the host component "${input.slot}"`,
           rung: rungFor(working),
         };
-        const persisted = await persistEdit(previous, working, version, ctx.principal.subject, [input.slot]);
+        const persisted = await persistEdit(previous, working, version, ctx.principal.subject, [input.slot], { pinIntentKind: "fork" });
         await reportLifecycle("pin-fork", persisted.id, ctx, {
           slot: input.slot,
           baseHash: baseline.hash,
@@ -3356,20 +3400,24 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         if (app.ui === "http") {
           throw new VendoError("conflict", `pin ${input.slot} cannot rebase on a served (http) app`);
         }
-        const intents = (await history.pinIntents(app.id, input.slot)).map(({ intent }) => intent);
-        // No recorded fork intent means the trail cannot vouch for the fork's
-        // content (e.g. the pin arrived via an app fork or import, which start
-        // an empty history). A mechanical re-fork would silently discard the
-        // user's remix, so fail closed instead.
-        if (intents.length === 0) {
+        const intents = await history.pinIntents(app.id, input.slot);
+        // The trail must START with the recorded FORK, because that is the only
+        // row whose content the re-fork below reproduces: the fork copied the
+        // captured baseline verbatim, so replaying everything after it lands the
+        // user's own modifications on the new baseline. A trail that does not
+        // begin with a fork cannot vouch for what the pinned component holds —
+        // an empty history (the pin arrived through an app fork or an import) or
+        // a trail whose first row is a write that merely TOUCHED the pin (a
+        // files-first `app.vendo` save records "Saved app.vendo", which is not a
+        // replayable instruction at all). Re-forking either one mechanically
+        // would silently reset the remix to the pristine host component, so fail
+        // closed instead. `kind` is absent on rows written before the
+        // discriminator existed; those cannot vouch for a fork either, and land
+        // on the same refusal.
+        if (intents[0]?.kind !== "fork") {
           throw new VendoError("conflict", `pin ${input.slot} has no recorded edit trail to replay; remix the updated component manually`);
         }
-        // intents[0] is the forking edit by construction: the first edit that
-        // can touch a slot is the fork-pin that creates it, and undo removes a
-        // reverted fork's intent. Re-forking is mechanical (the captured
-        // baseline source is copied through `pinForkSource`, exactly like
-        // fork-pin), so replay starts after it.
-        const replayIntents = intents.slice(1);
+        const replayIntents = intents.slice(1).map(({ intent }) => intent);
         const componentName = pinComponentName(input.slot);
         // ENG-348 — same bar as fork-pin: a baseline the jail could never
         // render must not persist as a "successful" rebase.

@@ -198,10 +198,16 @@ export const createProgressiveQueryResolver = (
  * document must never reach the client: strip both before the verified
  * verdict and the computed drift (when any) are attached — and strip at
  * persist time too (the runtime shares this helper), streamed or at rest.
+ *
+ * `dataUnavailable` joins them: only the code that ran the queries and watched
+ * them fail may tell the user their data did not load (render-seam.ts writes it
+ * on a failed app half). Document-carried, it is a claim about a load that never
+ * happened — and a transient failure must never be persisted as one.
  */
 export const stripServerAuthoritativeFields = <T extends object>(payload: T): T => {
   delete (payload as { inClient?: unknown }).inClient;
   delete (payload as { pinDrift?: unknown }).pinDrift;
+  delete (payload as { dataUnavailable?: unknown }).dataUnavailable;
   return payload;
 };
 

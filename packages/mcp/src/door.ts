@@ -609,6 +609,9 @@ class Door {
         });
       },
       onsessionclosed: async (sessionId) => {
+        // The client's own DELETE. It never routes through `state.close`, so the
+        // listing scope has to be released here too.
+        this.#releaseListing(state);
         await this.#state.deleteSession(sessionId);
       },
     });
@@ -629,6 +632,45 @@ class Door {
       { capabilities },
     );
     const initialContextKey = `mcpr_${randomHex(16)}`;
+    // The reader for the standalone SSE body this session is serving. The DOOR
+    // holds it, and only the door ever cancels it, because cancelling it is the
+    // one thing that releases the transport's `_GET_stream` registration — see
+    // `releaseStandalone`.
+    let standalone: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    /** Give the transport back its standalone slot, and wait until it is gone. */
+    const releaseStandalone = async (): Promise<void> => {
+      const held = standalone;
+      if (held === undefined) return;
+      standalone = undefined;
+      // Awaited: the transport deletes the registration inside the body's own
+      // `cancel` callback, so this has to finish BEFORE anything registers a
+      // replacement. `closeStandaloneSSEStream` is not enough and not used —
+      // it closes the controller with frames still queued, which leaves the
+      // stream readable, so the release fires whenever the abandoned body is
+      // eventually discarded and deletes whatever is registered THEN.
+      await held.cancel().catch(() => {});
+    };
+    /** Hand the client a body the DOOR owns, so the release above is the only
+     *  path that can ever reach the transport's registration. */
+    const adoptStandalone = (response: Response): Response => {
+      if (response.body === null) return response;
+      const reader = response.body.getReader();
+      standalone = reader;
+      const relayed = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const { done, value } = await reader.read();
+          if (done) controller.close();
+          else controller.enqueue(value);
+        },
+        // The client hung up. Deliberately does NOT touch `reader`: a cancel
+        // that reached the transport would delete whatever is registered as the
+        // standalone stream at that MOMENT, which after a reconnect is the new
+        // stream — the client would then hold a healthy-looking channel that
+        // silently drops every later `list_changed` (proven round 6).
+        cancel() {},
+      });
+      return new Response(relayed, { status: response.status, headers: response.headers });
+    };
     state = {
       subject,
       replayScope: initialContextKey,
@@ -638,29 +680,38 @@ class Door {
       ...(bearing === undefined ? {} : { turn: bearing.turn, turnToken: bearing.token }),
       server,
       handleRequest: async (req) => {
-        // A GET is a client asking for its notification channel, and the NEWEST
-        // stream is the live one — so release whatever is registered first.
+        if (req.method !== "GET") return transport.handleRequest(req);
+        let response = await transport.handleRequest(req);
+        // 409 is the transport guarding a standalone registration, and it is the
+        // LAST gate it applies: a wrong `Accept` (406), a bad protocol version
+        // and DNS-rebinding validation all answer before it. So a 409 — and
+        // ONLY a 409 — means this GET is a healthy client asking to be reachable
+        // and the sole obstacle is a registration nobody is reading.
         //
-        // The transport only ever learns a standalone stream is gone through the
-        // ReadableStream's `cancel` callback, which a dropped socket does not
-        // reliably fire. Measured live 2026-08-03: the box client's stream died
-        // at ~138s, both reconnect attempts came back 409 "Only one SSE stream is
-        // allowed per session", the client exhausted its retries — and that
-        // session had no notification channel for the rest of its life, so the
-        // flush below could never land again. A stale registration must never
-        // outrank a client that is asking to be reachable.
-        if (req.method === "GET") transport.closeStandaloneSSEStream();
-        const response = await transport.handleRequest(req);
+        // Measured live 2026-08-03: the box client's stream died at ~138s, both
+        // reconnect attempts came back 409 "Only one SSE stream is allowed per
+        // session", the client exhausted its retries — and that session had no
+        // notification channel for the rest of its life. Releasing before every
+        // GET instead destroyed a healthy stream whenever the transport went on
+        // to reject the request (round 6), which is why this waits for the 409.
+        if (response.status === 409) {
+          await releaseStandalone();
+          response = await transport.handleRequest(req);
+        }
+        if (!(response.headers.get("content-type") ?? "").includes("text/event-stream")) return response;
+        response = adoptStandalone(response);
         // The client's standalone SSE stream just attached. Everything the door
         // tried to announce before it existed was dropped by the transport, so
         // this is where a pending `list_changed` gets its only other chance —
         // including on a reconnect, which is why sending never clears the flag.
-        if (req.method === "GET" && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-          await this.#flushToolsChanged(state);
-        }
+        await this.#flushToolsChanged(state);
         return response;
       },
-      close: () => transport.close(),
+      close: async () => {
+        await releaseStandalone();
+        this.#releaseListing(state);
+        await transport.close();
+      },
     };
     this.#registerHandlers(state, identity);
     await server.connect(transport);
@@ -1016,6 +1067,21 @@ class Door {
     return projectAppsOpenOutput(output, { productName: identity.name, appName });
   }
 
+  /** This session's listing scope is spent. The registry keys expansions by that
+   *  opaque string (a session id), so nothing collects them on its own: without
+   *  this they would shed only when the registry hit its capacity cap, which
+   *  makes a process-global map into a cross-tenant interference channel — one
+   *  principal opening enough sessions evicts another's expansions and their
+   *  expanded tools vanish from their next listing (round 6 2026-08-03). Called
+   *  from every way a session ends: DELETE, sweep, revocation, and an
+   *  initialize that never bound a session id. */
+  #releaseListing(state: SessionState): void {
+    // A turn-credential session carries the TURN's context verbatim, which names
+    // no scope: the turn owns that listing and outlives this session.
+    const scope = state.context.listingScope;
+    if (scope !== undefined) this.#config.tools.releaseListingScope?.(scope);
+  }
+
   async #sweepIdleSessions(): Promise<void> {
     await this.#closeSessions(await this.#state.sweepExpiredSessions(Date.now()));
   }
@@ -1313,6 +1379,12 @@ const utf8 = new TextEncoder();
  *   `$ref` into `$defs` re-imposes the `required` and closed
  *   `additionalProperties` deleted here, from a place the delete never looks.
  *   (`$defs` itself stays — an unreferenced definition constrains nothing.)
+ * - `const`/`enum`, which pin the WHOLE object to a listed value, so the strip
+ *   above them was beside the point: `{"type":"object","const":{...}}` rejected
+ *   both envelopes with "must be equal to constant" (round 6 2026-08-03). A
+ *   swept Ajv run over the rest of the family found nothing else — a bare
+ *   `$defs`/`definitions`, `$recursiveRef` and a nested `required` all accept
+ *   both envelopes.
  */
 const UNKEEPABLE_KEYWORDS = [
   "required",
@@ -1333,6 +1405,8 @@ const UNKEEPABLE_KEYWORDS = [
   "patternProperties",
   "$ref",
   "$dynamicRef",
+  "const",
+  "enum",
 ] as const;
 
 /**

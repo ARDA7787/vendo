@@ -22,10 +22,10 @@ import {
   type ToolRegistry,
 } from "@vendoai/core";
 import { describe, expect, it, vi } from "vitest";
-import { createApps, pinComponentName, type AppsRuntime } from "./index.js";
+import { createApps, pinComponentName, type AppsRuntime, type PinBaseline } from "./index.js";
 import type { SandboxAdapter, SandboxMachine } from "./sandbox.js";
 import { seedGrantRows, storeAccessFixture } from "./testing/app-access-fixture.js";
-import { bindTools, guardFixture, memoryStore, seedAppRow, type GuardFixture } from "./testing/index.js";
+import { bindTools, guardFixture, memoryStore, scriptedLanguageModel, seedAppRow, type GuardFixture } from "./testing/index.js";
 
 const APP_ID = "app_authored";
 
@@ -125,8 +125,18 @@ const stand = (options: {
   box?: boolean;
   /** Wire the multi-party half, so a grant row can make a THIRD PARTY an editor. */
   shared?: boolean;
+  /** Reopen an earlier stand's store — the same apps, seen by a deployment
+   *  whose captured baselines have moved (a host resync). */
+  store?: ReturnType<typeof memoryStore>;
+  /** What `vendo sync` captured for this deployment's remixable slots. */
+  pinBaselines?: readonly PinBaseline[];
+  /** Wire a model, so the generation-gated doors (pins.rebase) get past their
+   *  own refusal. A files-first save never asks it anything — and if a rebase
+   *  replay does, this answer makes the rebase FAIL loudly rather than quietly
+   *  reset the remix. */
+  model?: boolean;
 } = {}): Stand => {
-  const store = memoryStore();
+  const store = options.store ?? memoryStore();
   const guard = guardFixture(options.rules === undefined ? {} : { rules: options.rules });
   const calls: RunContext[] = [];
   const seen: Stand["seen"] = [];
@@ -181,6 +191,8 @@ const stand = (options: {
     },
     ...(options.shared === true ? { appAccess: storeAccessFixture(store), multiParty: true } : {}),
     ...(options.box === true ? { machine: { sandbox: fnBox(seen) } } : {}),
+    ...(options.pinBaselines === undefined ? {} : { pinBaselines: [...options.pinBaselines] }),
+    ...(options.model === true ? { model: scriptedLanguageModel("<Cannot>the model was never asked anything.</Cannot>") } : {}),
   });
   return {
     runtime,
@@ -475,9 +487,71 @@ describe("a save whose text left a pinned component out", () => {
     // slot on this save's version, an edit the FILE made to a pinned component is
     // silently dropped the next time the host ships that component — the same
     // record `persistEdit` writes for a model edit (touchedPinSlots).
+    //
+    // Recorded as an "edit", never as the fork. "Saved app.vendo" is a file-save
+    // receipt, not one of the user's instructions: it cannot be replayed, and it
+    // must not be able to vouch for the pinned source having started as the
+    // captured baseline — which is the one thing the FIRST row of a replay trail
+    // certifies (see the rebase below).
     const trail = await store.records(`vendo:app-pin-intents:${APP_ID}`).list();
-    expect(trail.records.map((record) => (record.data as { slot: string; intent: string })))
-      .toEqual([expect.objectContaining({ slot, intent: "Saved app.vendo" })]);
+    expect(trail.records.map((record) => record.data))
+      .toEqual([expect.objectContaining({ slot, intent: "Saved app.vendo", kind: "edit" })]);
+  });
+
+  /** The host component as `vendo sync` captured it. */
+  const captured = (source: string, hash: string): PinBaseline => ({
+    slot,
+    source,
+    hash,
+    exportable: false,
+    capturedAt: "2026-08-03T00:00:00.000Z",
+  });
+  const HOST_OLD = `export default function Header() {
+  return <h1>Maple</h1>;
+}`;
+  const HOST_NEW = `export default function Header() {
+  return <h1>Maple Bank</h1>;
+}`;
+
+  it("cannot vouch for a fork — the remix survives the next rebase", async () => {
+    const first = stand({ pinBaselines: [captured(HOST_OLD, "sha256:host-old")], model: true });
+    await first.runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    // The shape an app fork or an interchange import leaves: the pin and the
+    // person's remix are on the document, and the history is EMPTY — nothing
+    // recorded the fork that produced that source.
+    await seedAppRow(first.store, {
+      ...(await rowOf(first.store))!.doc!,
+      pins: [{ slot, base: "sha256:host-old" }],
+      components: { [name]: "export default () => null;" },
+    }, "u1");
+    const island = `<App name="Spending">
+  <${name} />
+  <Island name="${name}">export default () =&gt; "Ada's own remix";</Island>
+</App>`;
+
+    // One files-first save that touches the pinned component, so the ONLY pin
+    // intent this app has ever recorded is "Saved app.vendo".
+    await first.runtime.authored({ appId: APP_ID, compiled: compiled(island) }, ctx());
+    expect((await rowOf(first.store))?.doc?.components?.[name]).toContain("Ada's own remix");
+
+    // The host ships a new version of that component and re-syncs: drift.
+    const resynced = stand({
+      store: first.store,
+      pinBaselines: [captured(HOST_NEW, "sha256:host-new")],
+      model: true,
+    });
+    await expect(resynced.runtime.pins.drift(APP_ID, ctx())).resolves.toMatchObject([{ slot }]);
+
+    // A trail whose first row is not the fork cannot vouch for what the pinned
+    // component holds, and a mechanical re-fork would overwrite the remix with
+    // the pristine host component while reporting "rebased". The rebase refuses
+    // instead: the remix stands, and the pin stays honestly drifted.
+    await expect(resynced.runtime.pins.rebase({ appId: APP_ID, slot }, ctx())).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("no recorded edit trail"),
+    });
+    expect((await rowOf(first.store))?.doc?.components?.[name]).toContain("Ada's own remix");
+    await expect(resynced.runtime.pins.drift(APP_ID, ctx())).resolves.toMatchObject([{ slot }]);
   });
 });
 
@@ -570,12 +644,15 @@ describe("a save computed over a row that changed under it", () => {
       expect(row?.doc?.description).toBe("the person's own edit");
       expect(row?.doc?.name).toBe("Spending");
       expect(edits).toEqual([]);
-      // The append already ran, so its version stands — a spent slot whose undo
-      // target is the state before both writes. persistEdit has the same residual
-      // for the same reason (no compare-and-swap on the store seam); what the
-      // second check buys is that the CONCURRENT EDIT survives.
-      expect(await runtime.history(APP_ID, ctx()).list()).toHaveLength(1);
       expect(errors.mock.calls.map(String).join(" ")).toContain("app not saved");
+      // The append already ran — and the refusal takes it back. `undo()` restores
+      // the latest snapshot unconditionally, and this one predates BOTH writes, so
+      // leaving it would hand the next undo a version that wipes the very edit
+      // this save just refused to clobber: preserved, then destroyed one tap later.
+      expect(await runtime.history(APP_ID, ctx()).list()).toEqual([]);
+      // So there is nothing to undo, and the person's own edit survives the try.
+      await expect(runtime.history(APP_ID, ctx()).undo()).rejects.toMatchObject({ code: "conflict" });
+      expect((await rowOf(store))?.doc?.description).toBe("the person's own edit");
     } finally {
       errors.mockRestore();
     }
@@ -593,5 +670,47 @@ describe("a save computed over a row that changed under it", () => {
     expect((await rowOf(store))?.doc?.name).toBe("Money");
     expect(edits).toHaveLength(3);
     expect(await runtime.history(APP_ID, ctx()).list()).toHaveLength(3);
+  });
+
+  /**
+   * The same append-then-check bracket on the path that has a CALLER: every
+   * `persistEdit` write. A refusal there threw before and left its version
+   * behind too, and a version whose write never landed is an undo point aimed
+   * at whatever landed instead. The fork gesture is the one persistEdit path a
+   * model-less stand can drive (it is deterministic by design).
+   */
+  it("leaves no undo point behind when a GESTURE is refused mid-write", async () => {
+    const slot = "dashboard.header";
+    const { runtime, store, arm } = stand({
+      pinBaselines: [{
+        slot,
+        source: "export default function Header() {\n  return <h1>Maple</h1>;\n}",
+        hash: "sha256:host-old",
+        exportable: false,
+        capturedAt: "2026-08-03T00:00:00.000Z",
+      }],
+    });
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    const stored = (await rowOf(store))!.doc!;
+    // Two reads pass (the gesture's own read and persistEdit's row-subject read),
+    // then the edit lands right after the first concurrency check — so the append
+    // runs and the second check refuses the write.
+    arm(async () => {
+      await seedAppRow(store, { ...stored, description: "the person's own edit" }, "u1");
+    }, 2);
+
+    await expect(runtime.pins.fork({ appId: APP_ID, slot }, ctx())).rejects.toMatchObject({
+      code: "conflict",
+    });
+
+    expect((await rowOf(store))?.doc?.description).toBe("the person's own edit");
+    expect((await rowOf(store))?.doc?.pins).toBeUndefined();
+    expect(await runtime.history(APP_ID, ctx()).list()).toEqual([]);
+    // Including the pin intent that version recorded: a fork intent for a fork
+    // that never happened would later vouch for a rebase of a pin that is not
+    // even on the document.
+    expect((await store.records(`vendo:app-pin-intents:${APP_ID}`).list()).records).toEqual([]);
+    await expect(runtime.history(APP_ID, ctx()).undo()).rejects.toMatchObject({ code: "conflict" });
+    expect((await rowOf(store))?.doc?.description).toBe("the person's own edit");
   });
 });

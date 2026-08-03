@@ -26,17 +26,28 @@ interface HistorySnapshot {
   seq: number;
 }
 
+/**
+ * Whether a pin-intent row is the FORKING write that created the pin — the only
+ * kind that can vouch for the pinned component having started as the captured
+ * baseline — or a later modification a rebase replays through the brain.
+ */
+export type PinIntentKind = "fork" | "edit";
+
 /** Internal replay fuel for 06-apps §8 drift rebases; not a VersionEntry field. */
 export interface PinIntentEntry {
   slot: string;
   at: IsoDateTime;
   intent: string;
+  /** Absent on rows written before the discriminator existed; `pins.rebase`
+   *  treats a row that does not say "fork" as unable to vouch for one. */
+  kind?: PinIntentKind;
 }
 
 const pinIntentEntrySchema = z.object({
   slot: z.string().min(1),
   at: isoDateTimeSchema,
   intent: z.string(),
+  kind: z.union([z.literal("fork"), z.literal("edit")]).optional(),
 }).passthrough() satisfies z.ZodType<PinIntentEntry>;
 
 interface StoredPinIntent extends PinIntentEntry {
@@ -85,9 +96,20 @@ const sequenceFromRecord = (record: VendoRecord): number => {
 };
 
 export interface AppHistoryAccess {
-  append(appId: AppId, doc: AppDocument, entry: VersionEntry, pinSlots?: readonly string[]): Promise<void>;
+  /** Returns the appended version's id, so a caller whose write then fails can
+   *  `discard` it — an undo point to a state that never became the past is a
+   *  loaded gun (`undo` restores the latest snapshot unconditionally). */
+  append(
+    appId: AppId,
+    doc: AppDocument,
+    entry: VersionEntry,
+    pinSlots?: readonly string[],
+    pinKind?: PinIntentKind,
+  ): Promise<string>;
   documents(appId: AppId): Promise<AppDocument[]>;
   pinIntents(appId: AppId, slot: string): Promise<PinIntentEntry[]>;
+  /** Deletes one version and the pin intents it recorded. */
+  discard(appId: AppId, versionId: string): Promise<void>;
   clear(appId: AppId): Promise<void>;
   surface(appId: AppId): {
     list(): Promise<VersionEntry[]>;
@@ -103,9 +125,16 @@ export const createAppHistory = (store: StoreAdapter): AppHistoryAccess => {
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt)
       || sequenceFromRecord(left) - sequenceFromRecord(right)
       || left.id.localeCompare(right.id));
+  const deleteVersion = async (appId: AppId, versionId: string): Promise<void> => {
+    await collection(appId).delete(versionId);
+    const intents = intentCollection(appId);
+    for (const record of await allRecords(intents)) {
+      if (storedPinIntentFromRecord(record)?.versionId === versionId) await intents.delete(record.id);
+    }
+  };
 
   return {
-    async append(appId, doc, entry, pinSlots = []) {
+    async append(appId, doc, entry, pinSlots = [], pinKind = "edit") {
       const validated = validateDocument(doc, appId);
       const parsedEntry = versionEntrySchema.parse(entry);
       const records = collection(appId);
@@ -123,7 +152,7 @@ export const createAppHistory = (store: StoreAdapter): AppHistoryAccess => {
       for (const slot of new Set(pinSlots)) {
         await intents.put({
           id: `pinint_${crypto.randomUUID()}`,
-          data: { slot, at: parsedEntry.at, intent: parsedEntry.intent, versionId, seq },
+          data: { slot, at: parsedEntry.at, intent: parsedEntry.intent, kind: pinKind, versionId, seq },
           refs: { slot },
         });
       }
@@ -131,6 +160,7 @@ export const createAppHistory = (store: StoreAdapter): AppHistoryAccess => {
       for (const expired of entries.slice(0, Math.max(0, entries.length - HISTORY_LIMIT))) {
         await records.delete(expired.id);
       }
+      return versionId;
     },
     async documents(appId) {
       const documents: AppDocument[] = [];
@@ -150,8 +180,9 @@ export const createAppHistory = (store: StoreAdapter): AppHistoryAccess => {
           return intent?.slot === slot ? [intent] : [];
         })
         .sort((left, right) => left.seq - right.seq || left.at.localeCompare(right.at))
-        .map(({ slot: intentSlot, at, intent }) => ({ slot: intentSlot, at, intent }));
+        .map(({ slot: intentSlot, at, intent, kind }) => ({ slot: intentSlot, at, intent, ...(kind === undefined ? {} : { kind }) }));
     },
+    discard: deleteVersion,
     async clear(appId) {
       const records = collection(appId);
       for (const record of await allRecords(records)) await records.delete(record.id);
@@ -193,11 +224,7 @@ export const createAppHistory = (store: StoreAdapter): AppHistoryAccess => {
           await store.records("vendo_apps").put(
             appRecordInput(snapshot.doc, row.subject, enabled, sessionOf(row.doc)),
           );
-          await collection(appId).delete(latest.id);
-          const intents = intentCollection(appId);
-          for (const record of await allRecords(intents)) {
-            if (storedPinIntentFromRecord(record)?.versionId === latest.id) await intents.delete(record.id);
-          }
+          await deleteVersion(appId, latest.id);
           return structuredClone(snapshot.doc);
         },
       };

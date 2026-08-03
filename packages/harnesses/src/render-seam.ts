@@ -204,6 +204,18 @@ export async function viewForWrite(
     if (skeleton !== undefined) options.emit(skeleton.streamId, skeleton.part);
   }
   let data: Record<string, Json> | undefined;
+  /**
+   * The app half FAILED, as opposed to answering with nothing.
+   *
+   * Settling alone is honest about the spinner and dishonest about the data: every
+   * unresolved binding renders "—" (packages/ui branded.tsx), so a failed load is
+   * indistinguishable from "you have no spending". The operator gets the log
+   * below; without this marker the user gets a plausible lie. So the failure rides
+   * the payload as a server-written extra — the same channel `inClient`,
+   * `pinDrift` and `streaming` ride — and the renderer says, in the surface, that
+   * this view could not load its data.
+   */
+  let dataUnavailable = false;
   try {
     data = await options.authoredApp?.({ appId, compiled: compiledApp });
   } catch (error) {
@@ -211,15 +223,20 @@ export async function viewForWrite(
     // there forever — the card stuck on "Building your view…", which is the exact
     // symptom the settle flag exists to prevent. `authored` can genuinely throw
     // (its own store reads and hold checks run before its internal try), so this
-    // path is reachable. A settled app of "—" beats a permanent spinner, and the
-    // brokenness reaches the operator here and the harness through `validate` —
-    // never the user.
+    // path is reachable. So the view settles AND says it could not load its data,
+    // and the brokenness reaches the operator here and the harness through
+    // `validate`.
+    dataUnavailable = true;
     console.error(
       `[vendo] the app half of ${appId} failed; the view settles without its data — ${safeErrorMessage(error)}`,
     );
   }
   // The app half has run: this is the finished paint, so it SETTLES.
-  return viewPart(appId, data === undefined ? payload : { ...payload, data }, false);
+  return viewPart(appId, {
+    ...payload,
+    ...(data === undefined ? {} : { data }),
+    ...(dataUnavailable ? { dataUnavailable: true } : {}),
+  }, false);
 }
 
 /**

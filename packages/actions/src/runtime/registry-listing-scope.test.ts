@@ -164,4 +164,24 @@ describe("lazy expansion is scoped to the listing that asked for it", () => {
     // …as is the same object with no scope at all: a scope is opt-in, never inferred.
     expect(names(await actions.descriptors(ada))).toEqual(["host_listAccounts"]);
   });
+
+  it("a released scope is forgotten, so the sets do not shed by CAPACITY alone", async () => {
+    // Round 6: nothing ever released a scope, so the only way out of the map was
+    // its capacity cap — and that map is process-global across tenants, which made
+    // "open enough sessions" a way to evict another principal's expansions. A
+    // string key is not collectable, so the owner has to say when it is finished.
+    const { actions } = registry();
+    const ada_ = (): ToolListingContext => ({ ...ada, listingScope: "mcps_ada" });
+    const bob_ = (): ToolListingContext => ({ ...bob, listingScope: "mcps_bob" });
+    await actions.expandToolkits(["slack"], ada_());
+    await actions.expandToolkits(["gmail"], bob_());
+
+    actions.releaseListingScope?.("mcps_ada");
+
+    // Ada's finished session forgets its expansion (it fails toward "search
+    // again", the same direction an unidentified run fails)…
+    expect(names(await actions.descriptors(ada_()))).toEqual(["host_listAccounts"]);
+    // …and bob's live session is untouched by it.
+    expect(names(await actions.descriptors(bob_()))).toContain("gmail_GMAIL_SEND");
+  });
 });
