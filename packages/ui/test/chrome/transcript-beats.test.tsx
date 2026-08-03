@@ -491,10 +491,14 @@ describe("a build in flight, and a build that dies", () => {
     expect(document.querySelector(".fl-boot-hairline")).toBeNull();
     expect(document.querySelector("[data-vendo-app-embed]")).toBeNull();
     expect(screen.queryByText(/Building your view/)).toBeNull();
-    // The record of the failure: the ✕ beat is back (a failed call is content),
-    // the runtime's own line, and the agent's sentence.
-    expect(document.querySelector("[data-vendo-tool='vendo_apps_create']")?.className)
-      .toContain("fl-beat-error");
+    // ⚠️ TEST EDIT (M20): this asserted the failed CREATE's own ✕ beat, which
+    // sat directly above the build-failed block's ✕ — one failure, two identical
+    // ✕ lines in the same vocabulary. §15 wants the ✕ in the record, and the
+    // block IS that record (it also says what the failure means for the reader).
+    expect(document.querySelector("[data-vendo-tool='vendo_apps_create']")).toBeNull();
+    const failures = [...document.querySelectorAll(".fl-beat-error")];
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.closest("[data-vendo-build-failed]")).toBeTruthy();
     expect(document.body.textContent).toContain("nothing was changed");
     // No retry furniture grew in the process (§15).
     for (const button of Array.from(document.querySelectorAll("button"))) {
