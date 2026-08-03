@@ -7,7 +7,7 @@ import { themeCssVariables } from "../theme.js";
 import { PayloadView } from "../tree/renderer.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { hasSeen, markSeen, type VendoDiscoverability, type VendoGreeting } from "./discoverability.js";
-import { LauncherRing, LauncherSignal, LauncherToast, useLauncherStatus } from "./launcher-status.js";
+import { LauncherFace, LauncherToast, useLauncherStatus } from "./launcher-status.js";
 import { deliverPrefill, PrefillScopeContext, registerOverlayOpener } from "./overlay-registry.js";
 import { usePinAction } from "./pin-ceremony.js";
 import {
@@ -757,25 +757,7 @@ export function VendoOverlay({
           aria-label={launcherLabel ?? "AI agent"}
           onClick={() => setOpen(!open)}
         >
-          {status.working
-            ? <LauncherRing {...(status.progress === undefined ? {} : { progress: status.progress })} />
-            : launcherConfig.icon ?? <span className="fl-launcher-blob" aria-hidden="true" />}
-          {status.working
-            ? launcherLabel === null
-              ? null
-              : <span className="fl-launcher-beat" aria-hidden="true">{status.label}&hellip;</span>
-            : launcherLabel}
-          <LauncherSignal askCount={status.askCount} unseenResults={status.unseenResults} />
-          {/* The spoken half: what the pill would tell someone who cannot see
-              it. Inside the button (its aria-label owns the name), so no extra
-              landmark appears on the host page. */}
-          <span className="fl-sr-only" aria-live="polite">
-            {status.working
-              ? `${status.label}…`
-              : status.askCount > 0
-                ? `${status.askCount} waiting on you`
-                : status.unseenResults ? "New results in your conversation" : ""}
-          </span>
+          <LauncherFace status={status} label={launcherLabel} {...(launcherConfig.icon === undefined ? {} : { icon: launcherConfig.icon })} />
         </button>
       )}
       {/* The whisper caption rides above the pill and auto-dismisses; opening

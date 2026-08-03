@@ -2291,6 +2291,10 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   background: var(--vendo-accent); color: var(--vendo-accent-fg);
   font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .fl-launcher-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--vendo-accent); }
+/* Blob-only orb (label: null): the signals ride the corner instead of widening
+   the circle. The fixed corner variants are their own containing block. */
+.fl-launcher[data-vendo-launcher-bare] .fl-launcher-badge { position: absolute; top: -3px; right: -3px; }
+.fl-launcher[data-vendo-launcher-bare] .fl-launcher-dot { position: absolute; top: 3px; right: 3px; }
 /* The completion toast rides above the pill it came from, in the corner the
    user last saw working — never a center-screen modal. */
 .fl-launcher-toast { display: flex; align-items: center; gap: 10px; max-width: 300px;

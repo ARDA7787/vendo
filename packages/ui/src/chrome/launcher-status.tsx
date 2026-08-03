@@ -10,7 +10,7 @@
  * results they haven't seen. Nothing here ever opens or folds a surface on its
  * own; every path needs a click.
  */
-import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { useVendoContext } from "../context.js";
 import { useAttention } from "../hooks/use-approvals.js";
 import { toolTitle } from "./humanize.js";
@@ -114,7 +114,7 @@ export function useLauncherStatus({ open, threadId, onOpen }: {
 }
 
 /** The pill's mark while a run is live: a ring in place of the morph blob. */
-export function LauncherRing({ progress }: { progress?: { done: number; total: number } }) {
+function LauncherRing({ progress }: { progress?: { done: number; total: number } }) {
   if (progress === undefined) {
     return <span className="fl-launcher-ring" data-vendo-ring="indeterminate" aria-hidden="true" />;
   }
@@ -133,11 +133,45 @@ export function LauncherRing({ progress }: { progress?: { done: number; total: n
 }
 
 /** dot ≺ number (§3): a waiting ask always outranks an unseen result. */
-export function LauncherSignal({ askCount, unseenResults }: { askCount: number; unseenResults: boolean }) {
+function LauncherSignal({ askCount, unseenResults }: { askCount: number; unseenResults: boolean }) {
   if (askCount > 0) {
     return <span className="fl-launcher-badge" aria-hidden="true">{askCount > 9 ? "9+" : askCount}</span>;
   }
   return unseenResults ? <span className="fl-launcher-dot" aria-hidden="true" /> : null;
+}
+
+/**
+ * Everything inside the pill: the mark (morph blob, host icon, or the run's
+ * ring), the text (host label, or the live beat), the signal, and the spoken
+ * line. The button itself — placement, open/close, focus — stays in
+ * VendoOverlay; only its face lives here.
+ */
+export function LauncherFace({ status, label, icon }: {
+  status: LauncherStatus;
+  /** The host's pill text; `null` is the blob-only orb (no text at all). */
+  label: string | null;
+  icon?: ReactNode;
+}) {
+  const spoken = status.working
+    ? `${status.label}…`
+    : status.askCount > 0
+      ? `${status.askCount} waiting on you`
+      : status.unseenResults ? "New results in your conversation" : "";
+  return (
+    <>
+      {status.working
+        ? <LauncherRing {...(status.progress === undefined ? {} : { progress: status.progress })} />
+        : icon ?? <span className="fl-launcher-blob" aria-hidden="true" />}
+      {label === null ? null : status.working
+        ? <span className="fl-launcher-beat" aria-hidden="true">{status.label}&hellip;</span>
+        : label}
+      <LauncherSignal askCount={status.askCount} unseenResults={status.unseenResults} />
+      {/* The spoken half, for someone who cannot see the pill. It lives inside
+          the button — whose aria-label owns the NAME — so a host page never
+          grows an extra landmark for it. */}
+      <span className="fl-sr-only" aria-live="polite">{spoken}</span>
+    </>
+  );
 }
 
 /** The completion toast: one headline, one way back. Rides above the pill it
