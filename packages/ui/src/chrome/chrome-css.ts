@@ -59,6 +59,14 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   /* derived aesthetics */
   --vendo-accent-soft: color-mix(in srgb, var(--vendo-accent) 8%, transparent);
   --vendo-border-strong: color-mix(in srgb, var(--vendo-fg) 14%, transparent);
+  /* WCAG 1.4.11 (non-text contrast, 3:1) — the S1 hairline is deliberately
+     felt-not-seen, which is fine for a divider and NOT fine for the only mark
+     that tells you which conversation is open, which rail row is selected, or
+     whether a switch is off. Those marks derive one step up: ~50% of the
+     foreground mixed into the background, which clears 3:1 against both the
+     background and the surface in either scheme, and is still nothing but the
+     host's own tokens. Never used for decoration. */
+  --vendo-indicator: color-mix(in srgb, var(--vendo-fg) 50%, var(--vendo-bg));
   /* The ONE shadow, and it only ever paints elements that FLOAT above the
      surface: the composer card, toasts, hovered tiles, popovers/menus, the
      launcher pill and the overlay panel. Every resting surface is flat. */
@@ -2304,13 +2312,19 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-rail-nav { display: flex; flex-direction: column; gap: 2px; }
 /* Airy rows at 14.5px (S1): the rail is navigation, so it never competes with
    the column for attention — the selected row is a soft fill, not a bar. */
-.fl-rail-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
+.fl-rail-row { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
   border: 0; border-radius: var(--vendo-radius); background: transparent; color: var(--vendo-fg-muted);
   font: 500 14.5px/1.25 var(--vendo-font); text-align: left; cursor: pointer;
   transition: background .14s, color .14s; }
 .fl-rail-row:hover { background: color-mix(in srgb, var(--vendo-fg) 4%, transparent); color: var(--vendo-fg); }
 .fl-rail-row[aria-selected="true"], .fl-rail-row[aria-current="page"] {
   background: color-mix(in srgb, var(--vendo-fg) 6%, transparent); color: var(--vendo-fg); }
+/* The selected state cannot BE the 6% fill: at ~1.1:1 it is invisible to a good
+   many people and fails 1.4.11 outright. The fill stays as the soft ground; the
+   mark that carries the meaning is this bar, derived at 3:1+. */
+.fl-rail-row[aria-selected="true"]::before, .fl-rail-row[aria-current="page"]::before,
+.fl-rail-chat[aria-current="page"]::before { content: ""; position: absolute; left: 2px; top: 50%;
+  width: 2.5px; height: 15px; margin-top: -7.5px; border-radius: 2px; background: var(--vendo-indicator); }
 .fl-rail-row:focus-visible, .fl-rail-chat:focus-visible, .fl-rail-more:focus-visible,
 .fl-tile-hit:focus-visible, .fl-tile--ghost:focus-visible, .fl-center-head-btn:focus-visible {
   outline: 2px solid var(--vendo-accent); outline-offset: 2px; }
@@ -2337,7 +2351,8 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   font: 460 14.5px/1.35 var(--vendo-font); text-align: left; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .14s; }
 .fl-rail-chat:hover { background: color-mix(in srgb, var(--vendo-fg) 4%, transparent); }
-.fl-rail-chat[aria-current="page"] { background: color-mix(in srgb, var(--vendo-fg) 6%, transparent); }
+.fl-rail-chat[aria-current="page"] { background: color-mix(in srgb, var(--vendo-fg) 6%, transparent);
+  font-weight: 600; }
 .fl-rail-need { color: var(--vendo-fg-muted); }
 /* The running-turn pulse, on the row the turn belongs to — marked by the page
    from the run-activity store (data-vendo-running). It used to require
@@ -2386,8 +2401,10 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;
   margin: 0 auto; padding: 0 30px 4px; width: 100%; max-width: 660px; }
 .fl-shelf--grid { max-width: none; padding: 0; gap: 18px; }
+/* A tile is a CONTROL (its whole face opens the app), so its edge is the thing
+   that says where the control is — the 8% hairline left that at ~1.15:1. */
 .fl-tile { position: relative; display: flex; flex-direction: column; overflow: hidden; text-align: left;
-  border: 1px solid var(--vendo-border); border-radius: var(--vendo-radius-card);
+  border: 1px solid var(--vendo-indicator); border-radius: var(--vendo-radius-card);
   background: var(--vendo-surface);
   transition: transform var(--vendo-duration) var(--vendo-ease), box-shadow var(--vendo-duration) var(--vendo-ease); }
 /* Hover-lift is one of the two places shadow is allowed to appear (S1). */
@@ -2457,8 +2474,10 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-center-head-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0 10px;
   border: 0; border-radius: var(--vendo-radius-sm); background: transparent; color: var(--vendo-fg-muted);
   font: 500 13px/1 var(--vendo-font); white-space: nowrap; cursor: pointer; }
+/* Same reasoning as the rail rows: the 6% ground plus a mark that can be seen. */
 .fl-center-head-btn[aria-current="page"] { color: var(--vendo-fg);
-  background: color-mix(in srgb, var(--vendo-fg) 6%, transparent); }
+  background: color-mix(in srgb, var(--vendo-fg) 6%, transparent);
+  box-shadow: inset 0 -2px 0 var(--vendo-indicator); }
 .fl-center-head-new { color: var(--vendo-fg); }
 .fl-center-scrim { position: absolute; inset: 0; z-index: 3;
   background: color-mix(in srgb, var(--vendo-fg) 22%, transparent);

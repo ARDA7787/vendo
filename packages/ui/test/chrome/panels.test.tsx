@@ -82,6 +82,9 @@ describe("ActivityPanel and AutomationsPanel exports", () => {
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable Invoice watcher" }));
     await waitFor(() => expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("false"));
+    // M33 — OFF is a STATE, so its track has to be visible as one (WCAG 1.4.11);
+    // the 14% hairline it used to wear sat at ~1.4:1.
+    expect(screen.getByRole("switch").style.background).toBe("var(--vendo-indicator)");
     expect(wire.requests).toContainEqual(expect.objectContaining({ method: "POST", path: "/automations/app_auto/disable" }));
   });
 

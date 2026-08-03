@@ -406,7 +406,10 @@ export function AutomationsPanel() {
                   aria-checked={entry.enabled}
                   disabled={busy[`toggle-${appId}`]}
                   style={{
-                    background: entry.enabled ? "var(--vendo-accent)" : "var(--vendo-border-strong)",
+                    // OFF has to be VISIBLE as a state (WCAG 1.4.11): the 14%
+                    // hairline track sat at ~1.4:1, so "off" read as "no
+                    // control here". --vendo-indicator is the 3:1 derivation.
+                    background: entry.enabled ? "var(--vendo-accent)" : "var(--vendo-indicator)",
                     transform: entry.enabled ? undefined : "rotate(180deg)",
                     transition: "background .2s ease, transform .2s cubic-bezier(.22,1,.36,1)",
                   }}
