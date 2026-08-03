@@ -327,6 +327,38 @@ describe("the plain-words line says what happens, not which tool", () => {
     expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
     expect(container.querySelector(".fl-approval-details")).not.toBeNull();
   });
+
+  it("UNGRADED never folds and never loses the ceremony (ruling 15, second half)", () => {
+    // The wire graded nothing. Ruling 15 made the DISPLAY grade a write; the
+    // card then treated the ask as ordinary — `critical` false — so the
+    // consequence sentence folded the real inputs behind Details and the
+    // ceremony edge was dropped. Scrutiny must not be reduced on a grade
+    // nobody supplied.
+    const approval = buildApprovalRequest({
+      approvalId: "apr_ungraded",
+      toolCallId: "call_ungraded",
+      tool: "host_transferMoney",
+      args: { amount_cents: 4750, recipient_name: "Acme Utilities" },
+    }, {});
+    expect(approval.descriptor.critical).toBe(true);
+    const container = show(approval);
+    expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+    expect(container.querySelector(".fl-approval-details")).toBeNull();
+    expect(container.querySelector(".fl-cardshell--ceremony")).not.toBeNull();
+    expect(container.querySelector(".fl-btn-ceremony")).not.toBeNull();
+  });
+
+  it("a GRADED ask is untouched — it still folds", () => {
+    const graded = buildApprovalRequest({
+      approvalId: "apr_graded",
+      toolCallId: "call_graded",
+      tool: "host_transferMoney",
+      args: { amount_cents: 4750, recipient_name: "Acme Utilities" },
+      risk: "write",
+    }, {});
+    expect(graded.descriptor.critical).toBeUndefined();
+    expect(show(graded).querySelector(".fl-approval-details")).not.toBeNull();
+  });
 });
 
 describe("the venue byline never prints an id", () => {
