@@ -248,13 +248,6 @@
         "type": "object",
         "properties": {}
       },
-      "risk": "ungraded",
-      "binding": {
-        "kind": "openapi",
-        "operationId": "getSpendingInsights",
-        "method": "GET",
-        "path": "/maple/api/insights/spending"
-      },
       "outputSchema": {
         "type": "object",
         "description": "The spending slices live under `data` — the array itself is `data`, never the response body.",
@@ -295,6 +288,13 @@
         "required": [
           "data"
         ]
+      },
+      "risk": "ungraded",
+      "binding": {
+        "kind": "openapi",
+        "operationId": "getSpendingInsights",
+        "method": "GET",
+        "path": "/maple/api/insights/spending"
       },
       "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
     },
