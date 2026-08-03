@@ -24,7 +24,7 @@ describe("failed-build banner in the thread (0.4.4 cert defect B)", () => {
     await wire.close();
   });
 
-  it("renders the error beat and the classified reason from a restored thread", async () => {
+  it("renders the error beat from a restored thread", async () => {
     const failedTurn: UIMessage = {
       id: "msg_build_failed",
       role: "assistant",
@@ -46,7 +46,14 @@ describe("failed-build banner in the thread (0.4.4 cert defect B)", () => {
     const banner = document.querySelector("[data-vendo-build-failed]");
     expect(banner).toBeTruthy();
     expect(banner?.querySelector(".fl-beat-error")).toBeTruthy();
-    expect(banner?.textContent).toContain("app build failed: generation failed");
+    // TEST CHANGE, STATED OUT LOUD: this line used to assert
+    //   expect(banner?.textContent).toContain("app build failed: generation failed")
+    // — it PINNED the defect the wave E2E caught. `reason` is the runtime's
+    // sentence for whoever can fix the build (it reaches an end user carrying
+    // `amount / sum(spending.data.amount)`, env-var names, "check the host
+    // server log"), and asserting it renders verbatim demanded the developer's
+    // voice on an end-user surface, against §16 law 3. What the banner must
+    // carry is asserted in the consumer-voice test below.
   });
 
   it("renders nothing for a malformed part (no reason)", async () => {
