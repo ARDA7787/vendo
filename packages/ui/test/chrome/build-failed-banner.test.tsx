@@ -77,3 +77,77 @@ describe("failed-build banner in the thread (0.4.4 cert defect B)", () => {
     expect(document.querySelector("[data-vendo-build-failed]")).toBeNull();
   });
 });
+
+/** Spec §15 + §16 law 3 — the sentence a PERSON reads when a build fails.
+ *
+ *  The wave E2E caught the runtime's reason rendering verbatim in a real user's
+ *  thread. Every one of these is a real string the runtime puts on this part,
+ *  and every one of them is written for whoever can fix the build. */
+describe("the build-failure sentence is the user's, not the developer's", () => {
+  let wire: Awaited<ReturnType<typeof createWireServer>>;
+  let client: VendoClient;
+
+  beforeEach(async () => {
+    wire = await createWireServer();
+    client = createVendoClient({ baseUrl: wire.url });
+  });
+  afterEach(async () => {
+    cleanup();
+    await wire.close();
+  });
+
+  /** Verbatim from the live capture (fault-live/fault-03), plus the other two
+      developer-voiced classes the runtime can put on this part. */
+  const LEAKED: [string, string][] = [
+    ["the honesty gate's teaching sentence (the live capture)",
+      "app build failed: This app wasn't created, because it didn't pass the checks that keep an app honest:"
+      + " The percent column uses the same raw `amount` field as its value instead of computing"
+      + " `amount / sum(spending.data.amount)` — the `value` expression is a declarative string that the"
+      + " DataTable does not evaluate, so every row will render the raw cent-scale integer (e.g. 285000)."],
+    ["the no-model-key line",
+      "app build failed: ANTHROPIC_API_KEY is set but @ai-sdk/anthropic is not installed in this app"],
+    ["the build watchdog's line",
+      "app build failed: the build never finished — the server-side build task stalled or died without"
+      + " reporting a failure. Retry the request; if this repeats, check the host server log."],
+  ];
+
+  /** Code the user should never be shown: call syntax, dotted paths,
+      snake_case/SCREAMING_SNAKE identifiers, backticked source. */
+  const CODE_SHAPED = [/\w\(/, /[A-Za-z]\.[A-Za-z]/, /[A-Za-z]_[A-Za-z]/, /`/, /@[a-z-]+\//];
+
+  async function mountFailure(reason: string) {
+    const existing = wire.state.threads.get("thr_1")!;
+    wire.state.threads.set("thr_1", {
+      ...existing,
+      messages: [...existing.messages.filter(message => message.id !== "msg_leak"), {
+        id: "msg_leak",
+        role: "assistant",
+        parts: [{
+          type: "data-vendo-build-failed",
+          id: "vendo-build-failed:call_1",
+          data: { toolCallId: "call_1", reason },
+        } as UIMessage["parts"][number]],
+      }],
+    });
+    render(<VendoProvider client={client}><VendoThread threadId="thr_1" /></VendoProvider>);
+    await screen.findByText("Couldn't build the app");
+    return document.querySelector("[data-vendo-build-failed]")!.textContent ?? "";
+  }
+
+  it.each(LEAKED)("says what it means for the reader, not %s", async (_label, reason) => {
+    const shown = await mountFailure(reason);
+    expect(shown).toContain("I couldn't finish building that view");
+    expect(shown).toContain("nothing was changed");
+    for (const pattern of CODE_SHAPED) expect(shown, `${pattern} in: ${shown}`).not.toMatch(pattern);
+  });
+
+  // ONE sentence for every class, on purpose: the runtime's classification is a
+  // substring scan over the concatenated findings, and `host_listScheduledPayments`
+  // in a tool inventory makes an ordinary validation failure land as "quota
+  // exhausted" (observed live 2026-08-03). Copy that branches on that label
+  // would just tell a different lie.
+  it("says the same true thing for a mislabelled class", async () => {
+    expect(await mountFailure("app build failed: quota exhausted"))
+      .toContain("I couldn't finish building that view");
+  });
+});
