@@ -67,6 +67,8 @@ function stubClient(over: {
   pending?: () => ApprovalRequest[];
   /** Every app read this client is asked for, in order (H16 boot accounting). */
   log?: string[];
+  /** Every `apps.open` fails, the way a dead app machine fails. */
+  openFails?: boolean;
 } = {}): VendoClient {
   const apps = over.apps ?? [];
   const pending = over.pending ?? (() => []);
@@ -88,6 +90,7 @@ function stubClient(over: {
       },
       async open(id: string) {
         log.push(`open:${id}`);
+        if (over.openFails === true) throw Object.assign(new Error(`app ${id} has no machine: VENDO_API_KEY unset`), { code: "cloud-required" });
         const app = apps.find(item => item.id === id) ?? apps[0]!;
         return { kind: "tree", payload: (app as { tree: unknown }).tree };
       },
@@ -498,6 +501,31 @@ describe("mobile P1 (§12)", () => {
   });
 });
 
+/** MEDIUM (post-check) — a tile preview had ONE visual state for three
+ *  situations: never scrolled to, booting, and booted-and-FAILED. A failed boot
+ *  sat under a pulsing skeleton forever, promising a view that was never
+ *  coming. */
+describe("a tile preview says which of its states it is in", () => {
+  it("shows an honest line when the app's boot failed, and no developer text", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")], openFails: true }));
+    const failed = await waitFor(
+      () => {
+        const node = document.querySelector('[data-vendo-preview="failed"]');
+        expect(node).toBeTruthy();
+        return node!;
+      },
+      { timeout: 12_000 },
+    );
+    expect(failed.textContent).toBe("This didn’t load.");
+    expect(failed.textContent).not.toContain("VENDO_API_KEY");
+    expect(document.querySelector(".fl-tile-skel")).toBeNull();
+    // The tile still offers the one thing that can help: opening the app,
+    // where OpenApp carries the Try again (ruling 18).
+    expect(screen.getByRole("button", { name: "Open Invoices" })).toBeTruthy();
+  }, 20_000);
+
+});
+
 /** H-4 — the tile's preview must be inert on BOTH supported React majors. The
  *  suite runs on React 19, which knows the JSX `inert` prop; React 18 (in the
  *  peer range) drops it with a warning, so the attribute has to be set on the
@@ -576,6 +604,23 @@ describe("the app boot gate on the Apps grid (H16)", () => {
     // The two below the fold still cost nothing.
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(log).toEqual(["get:app_1", "open:app_1"]);
+  });
+
+  it("says WHICH nothing a tile is showing: never-scrolled-to is not booting", async () => {
+    // The MEDIUM finding's other half: a tile that never intersects rendered
+    // the same pulsing skeleton as one whose boot is in flight, so the surface
+    // claimed to be loading something it had not asked for.
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices"), appDoc("app_2", "Payroll")] }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    await screen.findByRole("heading", { name: "Apps", exact: true });
+    await waitFor(() => expect(watched().size).toBe(2));
+    const state = () => [...document.querySelectorAll("[data-vendo-preview]")]
+      .map(node => node.getAttribute("data-vendo-preview"));
+    expect(state()).toEqual(["idle", "idle"]);
+
+    scrollTo(document.querySelectorAll(".fl-tile")[0]!.querySelector(".fl-tile-skel")!);
+    await waitFor(() => expect(state()[1]).toBe("idle"));
+    expect(await screen.findByText("Invoices app surface")).toBeTruthy();
   });
 });
 

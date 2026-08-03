@@ -40,11 +40,25 @@ const SHELF_LIMIT = 4;
 function TilePreview({ appId }: { appId: string }) {
   const { components } = useVendoContext();
   const { ref, seen } = useInViewport<HTMLSpanElement>();
-  const { surface } = useApp(appId, { enabled: seen });
-  if (!surface) return <span ref={ref} className="fl-tile-skel" />;
+  const { surface, error, isLoading } = useApp(appId, { enabled: seen });
   // No keepalive and no action handler: a preview must not hold a machine warm
   // (or accept a click) on behalf of an app nobody has opened yet.
-  return <span ref={ref} className="fl-tile-scale"><AppFrame surface={surface} components={components} /></span>;
+  if (surface) return <span ref={ref} className="fl-tile-scale"><AppFrame surface={surface} components={components} /></span>;
+  // THREE states hid behind one skeleton: nothing asked for yet (the tile is
+  // below the fold and the gate above has booted nothing), a boot in flight,
+  // and a boot that FAILED — the last of which sat under a pulsing skeleton
+  // forever, promising a view that was never coming. A failed boot says so, in
+  // the reader's words (ruling 18 + §16 law 3: no code, no ids). It offers no
+  // Try again of its own: the preview is inert by design, and the tile's one
+  // affordance already opens the app, where `OpenApp` carries the retry.
+  if (error && !isLoading) {
+    return (
+      <span ref={ref} className="fl-tile-none" data-vendo-preview="failed" role="status">
+        This didn’t load.
+      </span>
+    );
+  }
+  return <span ref={ref} className="fl-tile-skel" data-vendo-preview={seen ? "loading" : "idle"} />;
 }
 
 /**
