@@ -79,6 +79,7 @@ in `gates/`.
 | `gates/build.log` | `pnpm build --force` | 24/24 · `Cached: 0 cached, 24 total` · 48.1s · `EXIT=0` |
 | `gates/typecheck.log` | `pnpm typecheck --force` | 43/43 · `Cached: 0 cached, 43 total` · 30.5s · `EXIT=0` |
 | `gates/ui-test.log` | `pnpm --filter @vendoai/ui test` | 99 files / 891 tests passed · `EXIT=0` |
+| `gates/lint.log` | `pnpm exec turbo run lint --force` | 6/6 · `Cached: 0 cached, 6 total` · 12.4s · `EXIT=0` |
 
 The root `pnpm test` suite was deliberately NOT run: sibling rounds were building
 on the same laptop, and round C's wave-level `gates/test.log` covers that target.
