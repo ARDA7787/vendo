@@ -19,10 +19,13 @@ import {
   ToolkitLogo,
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
+import { developmentMode } from "./dev-mode.js";
 import { fieldRows } from "./field-rows.js";
 
-/** The wire risk slugs, in the user's language (the raw slug stays available
-    on the chip's tooltip via the tool name; end users never read jargon). */
+/** The wire risk slugs, in the user's language. The raw TOOL slug used to ride
+    the chip's `title` tooltip "for developers" — a tooltip is an end-user
+    surface (L37), so it is dev-mode only now; the slug's real home is the
+    `data-risk`/`data-vendo-tool` attributes machines read. */
 const RISK_LABEL: Record<string, string> = {
   read: "Read-only",
   write: "Makes changes",
@@ -186,7 +189,8 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             <span
               className="fl-chip"
               data-risk={approval.descriptor.risk}
-              title={approval.descriptor.name}
+              data-vendo-tool={approval.descriptor.name}
+              {...(developmentMode() ? { title: approval.descriptor.name } : {})}
               style={{ marginLeft: "auto", padding: "2px 7px", fontSize: "10px", cursor: "default" }}
             >
               {RISK_LABEL[approval.descriptor.risk] ?? approval.descriptor.risk}
