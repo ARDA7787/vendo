@@ -1093,6 +1093,37 @@ function ApprovalScenario() {
     : <ApprovalCard approval={destructiveApproval} onDecide={decide} />;
 }
 
+/** Ruling 11 / §16 law 3 — the descriptor hole, in a real browser: the SAME ask,
+ *  carrying the sentence demo-bank's `.vendo/tools.json` wrote for the MODEL.
+ *  The card must print its own words instead, and its queue row must agree. */
+const modelInstructionApproval: ApprovalRequest = {
+  id: "apr_descriptor",
+  call: { id: "call_descriptor", tool: "host_getSpendingInsights", args: { period: "month" } },
+  descriptor: {
+    name: "host_getSpendingInsights",
+    description: "Spending by category for the current period. Amounts are integer cents"
+      + " (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying,"
+      + " including any totals you compute. Do not re-divide.",
+    inputSchema: { type: "object", properties: { period: { type: "string" } } },
+    risk: "read",
+  },
+  inputPreview: "host_getSpendingInsights {\"period\":\"month\"}",
+  ctx: {
+    principal: { kind: "user", subject: "browser-user", display: "Browser User" },
+    venue: "chat",
+    presence: "present",
+  },
+  createdAt: NOW,
+};
+
+function DescriptorHoleScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <ApprovalCard approval={modelInstructionApproval} onDecide={async () => undefined} />
+    </VendoProvider>
+  );
+}
+
 function TreeThemeBoundary({ children }: { children: ReactNode }) {
   const theme = useVendoTheme();
   return <div className="tree-theme-boundary" style={themeCssVariables(theme) as CSSProperties}>{children}</div>;
@@ -1968,6 +1999,7 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/palette": return { title: "Command palette", content: <OpenPalette /> };
     case "/palette-host": return { title: "Palette — host input collision", content: <PaletteHostInputScenario /> };
     case "/approval": return { title: "Destructive approval", content: <ApprovalScenario /> };
+    case "/approval-descriptor": return { title: "Approval — model-instruction descriptor", content: <DescriptorHoleScenario />, ownProvider: true };
     case "/activity": return { title: "Activity", content: <ActivityPanel /> };
     case "/activity-dark": return { title: "Activity — dark", theme: darkTheme, content: <ActivityPanel /> };
     case "/automations": return { title: "Automations", content: <AutomationsPanel /> };
