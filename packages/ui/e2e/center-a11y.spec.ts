@@ -87,21 +87,29 @@ test("H18: a keyboard walk of the rail destroys nothing", async ({ page }) => {
   await expect(row).toBeVisible();
   const conversation = (await row.textContent())!;
 
-  // Type a draft, then walk the rail with the arrow keys.
+  // ⚠️ TEST EDIT — H18's GUARANTEE is unchanged and still asserted below: an
+  // arrow walk of the rail destroys neither the open conversation nor the
+  // draft. What changed is why it holds. It used to rest on the tablist
+  // refusing to activate on arrow (manual activation), which the rail needed
+  // only because "New chat" — an ACT — was one of its tabs. The act is a plain
+  // button outside the tablist now, so the arrows CANNOT REACH IT AT ALL, and
+  // the remaining tabs (all views) select as you move, per APG.
   await page.getByRole("textbox", { name: "Message" }).fill("half-typed question the arrows must not eat");
+  const newChat = page.getByRole("button", { name: "New chat" });
   await page.getByRole("tab", { name: "Apps" }).click();
   await page.getByRole("tab", { name: "Apps" }).focus();
   for (const key of ["ArrowUp", "ArrowUp", "ArrowDown", "Home", "End"]) {
     await page.keyboard.press(key);
   }
-  // Apps is still the selected view; the conversation and its draft survive.
-  await expect(page.getByRole("tab", { name: "Apps" })).toHaveAttribute("aria-selected", "true");
+  // The walk never landed on the act, and the conversation is still the open
+  // one — the half-typed question was not eaten.
+  await expect(newChat).not.toBeFocused();
+  await expect(newChat).not.toHaveAttribute("aria-current", "page");
   await expect(page.locator(".fl-rail-chat[aria-current='page']").first()).toHaveText(conversation);
 
-  await page.getByRole("tab", { name: "New chat" }).focus();
-  await page.keyboard.press("Enter");
-  // Enter is what acts — and only then.
-  await expect(page.getByRole("tab", { name: "New chat" })).toHaveAttribute("aria-selected", "true");
+  // Clicking the act is what starts over — and only then.
+  await newChat.click();
+  await expect(newChat).toHaveAttribute("aria-current", "page");
 });
 
 test("H11: nothing inside a live tile preview is reachable", async ({ page }) => {

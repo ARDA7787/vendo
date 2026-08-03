@@ -238,7 +238,8 @@ test("the center carries its two doors and a needs-you section that clears", asy
   await oneAskWaiting(page);
   await openScenario(page, "page-chat");
   const rail = page.getByRole("navigation", { name: "Assistant" });
-  await expect(rail.getByRole("tab", { name: "New chat" })).toBeVisible();
+  // ⚠️ TEST EDIT — "New chat" is a BUTTON, not a tab: it is an act, not a view.
+  await expect(rail.getByRole("button", { name: "New chat" })).toBeVisible();
   await expect(rail.getByRole("tab", { name: "Apps" })).toBeVisible();
   await expect(rail.getByRole("tab", { name: "Automations" })).toBeVisible();
 
@@ -322,19 +323,27 @@ test("H9 — collapsing the workspace is final; the stage does not re-open it", 
   await expect(panel).not.toHaveAttribute("data-vendo-expanded", /.*/);
 });
 
-test("H18 — arrows move focus in the rail, they never activate", async ({ page }) => {
+// ⚠️ TEST EDIT — same guarantee, new reason. This asserted the MECHANISM
+// (arrows move focus without activating), which the rail only needed while an
+// ACT sat inside its tablist. "New chat" is a button outside the list now, so
+// no arrow key can reach it and H18 holds by construction.
+test("H18 — an arrow walk of the rail never starts a new chat", async ({ page }) => {
   await openScenario(page, "page-chat");
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("a draft the arrow keys must not eat");
-  const newChat = page.getByRole("tab", { name: "New chat" });
-  await expect(newChat).toHaveAttribute("aria-selected", "true");
+  const newChat = page.getByRole("button", { name: "New chat" });
+  await expect(newChat).toHaveAttribute("aria-current", "page");
 
-  await newChat.focus();
+  // Walk the whole tablist, both directions, past both ends.
+  await page.getByRole("tab", { name: "Apps" }).focus();
   for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "End", "Home"]) {
     await page.keyboard.press(key);
   }
-  // Nothing was activated by moving: the selected door and the draft survive.
-  await expect(newChat).toHaveAttribute("aria-selected", "true");
+  // The act was never reached and never fired.
+  await expect(newChat).not.toBeFocused();
+  // Walk back to the conversation the way a person would — its own row, not
+  // the act — and the half-typed draft is still sitting there.
+  await page.locator(".fl-rail-chat").first().click();
   await expect(composer).toHaveValue("a draft the arrow keys must not eat");
 });
 
