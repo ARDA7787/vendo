@@ -1,7 +1,6 @@
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { capturedPinBaselineSchema } from "@vendoai/actions";
 import {
   VENDO_APP_FORMAT,
   VENDO_POLICY_FORMAT,
@@ -1106,106 +1105,6 @@ describe("09 §3 public wire", () => {
   });
 });
 
-describe("development runtime source capture", () => {
-  async function captureRoot(): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), "vendo-runtime-capture-"));
-    cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
-    return root;
-  }
-
-  it("writes a schema-valid baseline for a runtime-only registration", async () => {
-    const root = await captureRoot();
-    const sourceFile = join(root, "src", "runtime-card.tsx");
-    await mkdir(join(root, "src"), { recursive: true });
-    await writeFile(sourceFile, "export const RuntimeCard = () => <article>runtime</article>;\n", "utf8");
-    const { vendo } = await setup(vi.fn(async () => principal), { development: { root } });
-
-    const response = await vendo.handler(request("POST", "/dev/remixable-source", {
-      slot: "RuntimeCard",
-      source: new URL(`file://${sourceFile}`).href,
-      exportable: true,
-    }));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ slot: "RuntimeCard", status: "captured" });
-    const baseline = JSON.parse(await readFile(join(root, ".vendo", "remixable", "RuntimeCard.json"), "utf8"));
-    expect(capturedPinBaselineSchema.safeParse(baseline).success).toBe(true);
-    expect(baseline).toMatchObject({ slot: "RuntimeCard", exportable: true });
-  });
-
-  it("rejects capture from an anonymous session without touching disk", async () => {
-    const root = await captureRoot();
-    const sourceFile = join(root, "src", "runtime-card.tsx");
-    await mkdir(join(root, "src"), { recursive: true });
-    await writeFile(sourceFile, "export const RuntimeCard = () => null;\n", "utf8");
-    const { vendo } = await setup(vi.fn(async () => null), { development: { root } });
-
-    const response = await vendo.handler(request("POST", "/dev/remixable-source", {
-      slot: "RuntimeCard",
-      source: sourceFile,
-      exportable: false,
-    }));
-    expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({
-      error: { code: "blocked", message: "runtime capture requires a host-resolved principal" },
-    });
-    await expect(access(join(root, ".vendo", "remixable", "RuntimeCard.json"))).rejects.toThrow();
-  });
-
-  it("does not mount the route outside development", async () => {
-    vi.stubEnv("NODE_ENV", "production");
-    const { vendo } = await setup();
-    const response = await vendo.handler(request("POST", "/dev/remixable-source", {
-      slot: "Absent",
-      source: "/tmp/absent.tsx",
-      exportable: false,
-    }));
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: { code: "not-found", message: "unknown Vendo route" } });
-  });
-
-  it("refuses sources outside the host root", async () => {
-    const root = await captureRoot();
-    const outside = await mkdtemp(join(tmpdir(), "vendo-runtime-outside-"));
-    cleanups.push(async () => { await rm(outside, { recursive: true, force: true }); });
-    const outsideFile = join(outside, "outside.tsx");
-    await writeFile(outsideFile, "export const Outside = () => null;\n", "utf8");
-    const { vendo } = await setup(vi.fn(async () => principal), { development: { root } });
-
-    const response = await vendo.handler(request("POST", "/dev/remixable-source", {
-      slot: "Outside",
-      source: outsideFile,
-      exportable: false,
-    }));
-    expect(response.status).toBe(400);
-    await expect(access(join(root, ".vendo", "remixable", "Outside.json"))).rejects.toThrow();
-  });
-
-  it("preserves an existing static baseline", async () => {
-    const root = await captureRoot();
-    const sourceFile = join(root, "runtime-card.tsx");
-    const baselineFile = join(root, ".vendo", "remixable", "RuntimeCard.json");
-    await writeFile(sourceFile, "export const RuntimeCard = () => null;\n", "utf8");
-    await mkdir(join(root, ".vendo", "remixable"), { recursive: true });
-    const existing = {
-      slot: "RuntimeCard",
-      source: "export const RuntimeCard = () => <strong>static</strong>;",
-      hash: `sha256:${"b".repeat(64)}`,
-      exportable: true,
-      capturedAt: new Date(Date.now() + 60_000).toISOString(),
-    };
-    await writeFile(baselineFile, `${JSON.stringify(existing, null, 2)}\n`, "utf8");
-    const { vendo } = await setup(vi.fn(async () => principal), { development: { root } });
-
-    const response = await vendo.handler(request("POST", "/dev/remixable-source", {
-      slot: "RuntimeCard",
-      source: sourceFile,
-      exportable: false,
-    }));
-    expect(await response.json()).toMatchObject({ status: "preserved", hash: existing.hash });
-    expect(JSON.parse(await readFile(baselineFile, "utf8"))).toEqual(existing);
-  });
-});
-
 describe("06-apps §9 in-client venue over the wire", () => {
   const seedApp = async (vendo: Vendo, doc: AppDocument, subject = principal.subject) => {
     await vendo.store.ensureSchema();
@@ -1238,7 +1137,7 @@ describe("06-apps §9 in-client venue over the wire", () => {
   });
 
   it("injects an approval in development and open() rides the hash-pinned verdict end to end", async () => {
-    const { vendo } = await setup(vi.fn(async () => principal), { development: {} });
+    const { vendo } = await setup(vi.fn(async () => principal), { development: true });
     const doc = app("app_venue");
     await seedApp(vendo, doc);
 
@@ -1276,7 +1175,7 @@ describe("06-apps §9 in-client venue over the wire", () => {
   });
 
   it("rejects approval injection from an anonymous session", async () => {
-    const { vendo } = await setup(vi.fn(async () => null), { development: {} });
+    const { vendo } = await setup(vi.fn(async () => null), { development: true });
     const response = await vendo.handler(request("POST", "/dev/inclient-approval", {
       appId: "app_venue",
     }));
@@ -1705,7 +1604,7 @@ describe("00 overview / 01-core §2 — per-client anonymous sessions", () => {
     expect(setCookie(response)).toBeNull();        // no new cookie minted
   });
 
-  it("uses Secure __Host- over https and the plain wire-scoped name over http", async () => {
+  it("uses Secure __Host- over https and the plain name over http — both Path=/", async () => {
     const resolver = vi.fn(async () => null);
     const { vendo } = await setup(resolver);
     vi.spyOn(vendo.apps, "list").mockResolvedValue([]);
@@ -1715,12 +1614,82 @@ describe("00 overview / 01-core §2 — per-client anonymous sessions", () => {
     expect(setCookie(https)).toContain("Secure");
     expect(setCookie(https)).toContain("Path=/;");
 
+    // Path=/ on http too (#693): the pointer must ride DOCUMENT requests so a
+    // host minting on its document response can see an existing one.
     const httpReq = new Request("http://host.test/api/vendo/apps", { method: "GET" });
     const http = await vendo.handler(httpReq);
     expect(setCookie(http)).toContain("vendo_anon_session=");
     expect(setCookie(http)).not.toContain("__Host-");
     expect(setCookie(http)).not.toContain("Secure");
-    expect(setCookie(http)).toContain("Path=/api/vendo");
+    expect(setCookie(http)).toContain("Path=/;");
+  });
+
+  it("REGRESSION #693: a plain-http identity survives the host's document-response mint (path-scoped browser jar)", async () => {
+    // The blessed cold-load fix (anon-session-race.test.ts) has the HOST mint
+    // the pointer on its document response, mirroring the wire's own cookie
+    // contract: mint UNLESS the request already carries one. A document path
+    // lives outside BASE_PATH, so whether the browser presents the wire's
+    // cookie there is decided by the cookie's Path attribute alone. A
+    // BASE_PATH-scoped plain-http cookie is invisible on every document/page
+    // request, so the host re-mints per page load and poll — and the re-mint
+    // shares the cookie's one jar slot (same name/host/path), moving the
+    // visitor onto a fresh subject: list endpoints answer [], and the second
+    // message on any thread conflicts. https never had the bug because the
+    // __Host- form REQUIRES Path=/.
+    const seen: string[] = [];
+    const resolver = vi.fn(async () => null);
+    const { vendo } = await setup(resolver);
+    vi.spyOn(vendo.apps, "list").mockImplementation(async (ctx) => {
+      seen.push(ctx.principal.subject);
+      return [];
+    });
+
+    // A browser jar the way real jars work: one slot per name (RFC 6265 §5.3
+    // step 11 — same name/host/path overwrites), and a cookie rides a request
+    // only when the request path falls under its Path attribute (§5.1.4).
+    const jar = new Map<string, { value: string; path: string }>();
+    const storeSetCookie = (header: string | null): void => {
+      if (header === null) return;
+      const [pair, ...attrs] = header.split(";");
+      const eq = pair!.indexOf("=");
+      const path = attrs.map(attr => attr.trim()).find(attr => attr.toLowerCase().startsWith("path="))?.slice(5) ?? "/";
+      jar.set(pair!.slice(0, eq).trim(), { value: pair!.slice(eq + 1).trim(), path });
+    };
+    const cookiesFor = (requestPath: string): string =>
+      [...jar.entries()]
+        .filter(([, cookie]) =>
+          requestPath === cookie.path
+          || (cookie.path.endsWith("/") && requestPath.startsWith(cookie.path))
+          || requestPath.startsWith(`${cookie.path}/`))
+        .map(([name, cookie]) => `${name}=${cookie.value}`)
+        .join("; ");
+    const listApps = async (): Promise<Response> => {
+      const cookie = cookiesFor("/api/vendo/apps");
+      const response = await vendo.handler(new Request("http://localhost:3000/api/vendo/apps", {
+        headers: cookie === "" ? {} : { cookie },
+      }));
+      storeSetCookie(setCookie(response));
+      return response;
+    };
+
+    // 1. A plain-http wire request mints the pointer into the jar.
+    await listApps();
+    const wireCookie = jar.get("vendo_anon_session")!;
+
+    // 2. The host's document response runs mint-unless-present, mirroring the
+    //    wire's contract (name, attributes, and Path all taken from the wire's
+    //    own mint) — exactly what the demos host's middleware does.
+    if (!cookiesFor("/pricing").includes("vendo_anon_session=")) {
+      const raw = new Uint8Array(16);
+      globalThis.crypto.getRandomValues(raw);
+      const hostMinted = Array.from(raw, byte => byte.toString(16).padStart(2, "0")).join("");
+      storeSetCookie(`vendo_anon_session=${hostMinted}; Path=${wireCookie.path}; HttpOnly; SameSite=Lax`);
+    }
+
+    // 3. The next wire request is still the SAME visitor in the same browser.
+    await listApps();
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBe(seen[0]);
   });
 
   it("ignores a valid cookie presented under the wrong name for the protocol", async () => {

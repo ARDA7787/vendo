@@ -63,6 +63,7 @@ export const CREATE_VENDO_CONFIG_KEYS = [
   "approvals",
   "apps",
   "packs",
+  "tours",
 ] as const;
 
 export type CreateVendoConfigKey = (typeof CREATE_VENDO_CONFIG_KEYS)[number];

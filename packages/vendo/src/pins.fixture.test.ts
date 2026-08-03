@@ -73,6 +73,7 @@ describe("pin baseline schema lockstep", () => {
       source: "export default function Card() { return null; }",
       hash: "sha256:abc",
       exportable: true,
+      review: true,
       capturedAt: "2026-07-14T12:00:00.000Z",
       sourceImports: { "./Badge": "src/Badge.tsx" },
       subSources: {
@@ -114,27 +115,25 @@ export default function MapleNetWorthCard() {
 import "./globals.css";
 export default function Layout({ children }) { return children; }
 `);
-    await writeFile(join(root, "src", "host-catalog.tsx"), `
-import MapleNetWorthCard from "./MapleNetWorthCard";
-export const hostCatalog = [{
-  name: "net-worth-card",
-  component: MapleNetWorthCard,
-  remixable: true,
-  exportable: false,
-  sampleProps: { currency: "USD" },
-}];
+    await writeFile(join(root, "src", "app", "page.tsx"), `
+import { Remixable } from "@vendoai/ui/chrome";
+import MapleNetWorthCard from "../MapleNetWorthCard";
+export default function Page() {
+  return <Remixable><MapleNetWorthCard /></Remixable>;
+}
 `);
 
     const synced = await vendoSync({ root, out: join(root, ".vendo") });
-    expect(synced.pins).toEqual({ captured: ["net-worth-card"], drifted: [] });
+    expect(synced.remixableErrors).toEqual([]);
+    expect(synced.pins).toEqual({ captured: ["MapleNetWorthCard"], drifted: [] });
     const baseline = pinBaselineSchema.parse(JSON.parse(
-      await readFile(join(root, ".vendo", "remixable", "net-worth-card.json"), "utf8"),
+      await readFile(join(root, ".vendo", "remixable", "MapleNetWorthCard.json"), "utf8"),
     ));
     expect(baseline.sourceImports).toEqual({ "./MapleTrendBadge": "src/MapleTrendBadge.tsx" });
     expect(baseline.subSources).toEqual({
       "src/MapleTrendBadge.tsx": { source: badgeSource, imports: {} },
     });
-    expect(baseline.sampleProps).toEqual({ currency: "USD" });
+    expect(baseline.sampleProps).toBeUndefined();
     expect(baseline.styles).toEqual([{ path: "src/app/globals.css", css: rootCss }]);
     await writeFile(join(root, ".vendo", "remixable", "invalid.json"), "{not json\n");
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -169,15 +168,16 @@ export const hostCatalog = [{
     // Gesture-owned forking: the user's Remix gesture, executed deterministically
     // by the engine — the captured source is copied and the pin recorded with NO
     // model call at all.
-    const edited = await vendo.apps.pins.fork({ appId: imported.id, slot: "net-worth-card" }, ctx);
+    const edited = await vendo.apps.pins.fork({ appId: imported.id, slot: "MapleNetWorthCard" }, ctx);
 
+    // Gesture-owned forking: the fork never reaches the model at all.
     expect(modelCalls).toBe(0);
     expect(edited.app.pins).toEqual([{
-      slot: "net-worth-card",
+      slot: "MapleNetWorthCard",
       base: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     }]);
     const [componentName, pinnedSource] = Object.entries(edited.app.components ?? {})[0] ?? [];
-    expect(componentName).toMatch(/^PinnedNetWorthCard/);
+    expect(componentName).toMatch(/^PinnedMapleNetWorthCard/);
     expect(pinnedSource).toBe(componentSource);
     expect(edited.app.tree).toMatchObject({
       nodes: expect.arrayContaining([expect.objectContaining({
@@ -193,7 +193,6 @@ export const hostCatalog = [{
         [componentName as string]: {
           sourceImports: { "./MapleTrendBadge": "src/MapleTrendBadge.tsx" },
           subSources: { "src/MapleTrendBadge.tsx": { source: badgeSource, imports: {} } },
-          sampleProps: { currency: "USD" },
           styles: [{ path: "src/app/globals.css", css: rootCss }],
         },
       },
@@ -213,18 +212,21 @@ export const hostCatalog = [{
   return <article><span>Net worth</span><strong>$1.2M</strong></article>;
 }\n`;
     await writeFile(join(root, "src", "MapleNetWorthCard.tsx"), componentSource);
-    await writeFile(join(root, "src", "host-catalog.tsx"), `
+    await writeFile(join(root, "src", "page.tsx"), `
+import { Remixable } from "@vendoai/ui/chrome";
 import MapleNetWorthCard from "./MapleNetWorthCard";
-export const hostCatalog = [{
-  name: "net-worth-card",
-  component: MapleNetWorthCard,
-  remixable: true,
-  exportable: true,
-}];
+export default function Page() {
+  return <Remixable><MapleNetWorthCard /></Remixable>;
+}
 `);
 
     const synced = await vendoSync({ root, out: join(root, ".vendo") });
-    expect(synced.pins).toEqual({ captured: ["net-worth-card"], drifted: [] });
+    expect(synced.pins).toEqual({ captured: ["MapleNetWorthCard"], drifted: [] });
+    // Sync always writes exportable: false now; raise it by hand to prove the
+    // apps-side export gate still honors an exportable (legacy) baseline.
+    const baselineFile = join(root, ".vendo", "remixable", "MapleNetWorthCard.json");
+    const captured = JSON.parse(await readFile(baselineFile, "utf8"));
+    await writeFile(baselineFile, JSON.stringify({ ...captured, exportable: true }, null, 2));
     // The fork gesture never reaches the model; the composition still wants one.
     const model = scriptedModel(() => "");
     const store = createStore({ dataDir: join(root, ".data") });
@@ -248,12 +250,12 @@ export const hostCatalog = [{
       },
     }, ctx);
 
-    const edited = await vendo.apps.pins.fork({ appId: imported.id, slot: "net-worth-card" }, ctx);
+    const edited = await vendo.apps.pins.fork({ appId: imported.id, slot: "MapleNetWorthCard" }, ctx);
     const archive = await vendo.apps.exportApp(edited.app.id, ctx);
     const exported = await vendo.apps.importApp(archive, ctx);
 
     expect(edited.app.pins).toEqual([{
-      slot: "net-worth-card",
+      slot: "MapleNetWorthCard",
       base: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     }]);
     expect(exported.pins).toEqual(edited.app.pins);

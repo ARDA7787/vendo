@@ -134,7 +134,6 @@ function normalizeEntry(entry: RegisteredComponent): NormalizedCatalogEntry {
     ...(entry.propsSchema === undefined ? {} : { propsSchema: entry.propsSchema }),
     ...(derived === undefined ? {} : { propsJsonSchema: derived }),
     ...(entry.examples === undefined ? {} : { examples: entry.examples }),
-    ...(entry.remixable === undefined ? {} : { remixable: entry.remixable }),
   };
 }
 
@@ -154,7 +153,6 @@ export function normalizeCatalogConfig(
     description: entry.description,
     ...(entry.props === undefined ? {} : { propsSchema: entry.props }),
     ...(entry.examples === undefined ? {} : { examples: entry.examples }),
-    ...(entry.remixable === undefined ? {} : { remixable: entry.remixable }),
   }));
 }
 
@@ -220,7 +218,7 @@ const searchTokens = (value: string): string[] =>
     .filter(Boolean);
 
 /** One catalog entry as the model reads it: today's shipped vocabulary
- *  (`{ component, description, props?, examples?, remixable? }`, build contract
+ *  (`{ component, description, props?, examples? }`, build contract
  *  §5), where `props` is the JSON Schema — a component whose props you cannot see
  *  is a component you cannot use. */
 export interface CatalogSearchMatch {
@@ -228,7 +226,6 @@ export interface CatalogSearchMatch {
   description: string;
   props?: JsonSchema;
   examples?: string[];
-  remixable?: boolean;
 }
 
 export function searchRuntimeCatalog(
@@ -263,6 +260,5 @@ export function searchRuntimeCatalog(
       description: entry.description,
       ...(entry.propsJsonSchema === undefined ? {} : { props: entry.propsJsonSchema }),
       ...(entry.examples === undefined ? {} : { examples: [...entry.examples] }),
-      ...(entry.remixable === undefined ? {} : { remixable: entry.remixable }),
     }));
 }

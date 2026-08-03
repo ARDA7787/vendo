@@ -120,6 +120,26 @@ describe("06-apps §8 — gesture-owned deterministic fork (pins.fork)", () => {
     expect(listed.find(({ id }) => id === forked.app.id)?.pins).toEqual([{ slot: SLOT, base: "sha256:maple-base" }]);
   });
 
+  it("stores the gesture's serializable live props as the pinned node's seed (2026-08-02 final shape)", async () => {
+    const store = memoryStore();
+    const runtime = runtimeWith(store);
+
+    // The wrapper snapshots its serializable live props at fork time; they
+    // land as the pinned node's props — the fork's dashboard seed when it is
+    // placed away from the host page. In place, the wrapper streams live
+    // props instead, merged OVER this seed.
+    const props = { valueCents: 549_071_500, series: [1, 2, 3] };
+    const forked = await runtime.pins.fork({ slot: SLOT, props }, ctx);
+    expect(forked.app.tree?.nodes).toContainEqual(expect.objectContaining({
+      component: COMPONENT,
+      source: "generated",
+      props,
+    }));
+    // Persisted, not just returned.
+    const stored = (await runtime.list(ctx)).find(({ id }) => id === forked.app.id);
+    expect(stored?.tree?.nodes.find((node) => node.component === COMPONENT)?.props).toEqual(props);
+  });
+
   it("runs a gesture instruction as ONE ordinary edit, already scoped to the fork", async () => {
     const store = memoryStore();
     const app = seedDoc();
@@ -250,5 +270,71 @@ describe("06-apps §8 — gesture-owned deterministic fork (pins.fork)", () => {
     expect(rebase.app.pins).toEqual([{ slot: SLOT, base: "sha256:maple-new" }]);
     expect(rebase.app.components?.[COMPONENT]).toContain("$1.2M in blue");
     expect(rebase.app.components?.[COMPONENT]).toContain("/* v2 */");
+  });
+});
+
+// Remix final shape (2026-08-02) — the appId-less gesture is idempotent per
+// (subject, slot): the server dedupes, so a double-tap can never mint a
+// duplicate app and the UI latch is cosmetic.
+describe("06-apps §8 — fork idempotency (appId-less dedupe)", () => {
+  it("returns the existing app on a second gesture instead of minting a duplicate", async () => {
+    const store = memoryStore();
+    const runtime = runtimeWith(store);
+
+    const first = await runtime.pins.fork({ slot: SLOT }, ctx);
+    // The empty-slot mint records the placement slot discovery mounts by.
+    expect(first.app.placements).toEqual([SLOT]);
+    const second = await runtime.pins.fork({ slot: SLOT }, ctx);
+    expect(second.app.id).toBe(first.app.id);
+    expect(second.app).toEqual(first.app);
+    expect(second.slot).toBe(SLOT);
+    expect(second.componentName).toBe(COMPONENT);
+    // The result still describes the recorded deterministic fork.
+    expect(second.version.intent).toBe(`Remix the host component "${SLOT}"`);
+
+    // One app row, not two.
+    const listed = await runtime.list(ctx);
+    expect(listed.filter(({ pins }) => pins?.some((pin) => pin.slot === SLOT))).toHaveLength(1);
+  });
+
+  it("drops a riding instruction on the dedupe hit — no edit, no model call", async () => {
+    const store = memoryStore();
+    // No model configured: an edit attempt on the dedupe path would surface
+    // as a failure-shaped edit, so an undefined `edit` proves none ran.
+    const runtime = runtimeWith(store);
+
+    const first = await runtime.pins.fork({ slot: SLOT }, ctx);
+    const second = await runtime.pins.fork({ slot: SLOT, instruction: "Make it green" }, ctx);
+    expect(second.app.id).toBe(first.app.id);
+    expect(second.edit).toBeUndefined();
+    expect(second.app).toEqual(first.app);
+  });
+
+  it("converges to ONE app when two appId-less gestures race past the pre-mint check", async () => {
+    const store = memoryStore();
+    const guard = guardFixture();
+    const runtime = runtimeWith(store, { guard });
+
+    // Promise.all starts both forks before either awaits its store put, so
+    // both pre-mint dedupe lists resolve empty and both gestures mint — the
+    // exact list-then-put race. The post-persist re-check must delete the
+    // newer mint and hand both callers the same surviving app.
+    const [first, second] = await Promise.all([
+      runtime.pins.fork({ slot: SLOT }, ctx),
+      runtime.pins.fork({ slot: SLOT }, ctx),
+    ]);
+
+    // The race really happened (both racers minted) and really converged
+    // (the loser's row was reaped, not just hidden).
+    const operations = guard.audit.map((event) => event.detail?.operation);
+    expect(operations.filter((operation) => operation === "create")).toHaveLength(2);
+    expect(operations.filter((operation) => operation === "delete")).toHaveLength(1);
+
+    expect(second.app.id).toBe(first.app.id);
+    expect(first.version.intent).toBe(`Remix the host component "${SLOT}"`);
+    expect(second.version.intent).toBe(`Remix the host component "${SLOT}"`);
+    const listed = await runtime.list(ctx);
+    expect(listed.filter(({ pins }) => pins?.some((pin) => pin.slot === SLOT))).toHaveLength(1);
+    expect(listed).toHaveLength(1);
   });
 });

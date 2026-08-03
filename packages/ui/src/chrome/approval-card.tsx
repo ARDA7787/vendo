@@ -1,24 +1,52 @@
-import { canonicalJson, sha256Hex, type ApprovalDecision, type ApprovalRequest, type JsonSchema } from "@vendoai/core";
+import {
+  canonicalJson,
+  sha256Hex,
+  type ApprovalDecision,
+  type ApprovalRequest,
+  type Json,
+  type JsonSchema,
+} from "@vendoai/core";
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
-import { argProperties, argValue } from "./humanize.js";
 import { toolPresentation } from "./build-beat.js";
 import { ChromeRoot } from "./chrome-root.js";
+import { argProperties, argValue, humanizeToolName, type ToolMeta } from "./humanize.js";
 
-/** Flat, primitive-valued args render as aligned field rows; anything nested
-    falls back to the raw JSON preview (real inputs, always). Values go through
-    `argValue`, so a declared money amount reads as money and never as the raw
-    integer a person misreads by 100×. */
-function flatFields(args: unknown, inputSchema: JsonSchema | undefined): Array<[string, string]> | undefined {
+/** The wire risk slugs, in the user's language (the raw slug stays available
+    on the chip's tooltip via the tool name; end users never read jargon). */
+const RISK_LABEL: Record<string, string> = {
+  read: "Read-only",
+  write: "Makes changes",
+  destructive: "Irreversible",
+};
+
+/** Flat, primitive-valued args render as aligned field rows — humanized label,
+    host-formatted value (ToolMeta.formatField), raw value on the tooltip so
+    the real input stays one hover away; anything nested falls back to the raw
+    JSON preview (real inputs, always).
+
+    With no host formatter, the value still goes through `argValue`, so a
+    declared money amount reads as money and never as the raw integer a person
+    misreads by 100×. */
+function flatFields(
+  args: unknown,
+  inputSchema: JsonSchema | undefined,
+  meta?: ToolMeta,
+): Array<[string, string, string]> | undefined {
   if (typeof args !== "object" || args === null || Array.isArray(args)) return undefined;
   const entries = Object.entries(args as Record<string, unknown>);
   if (entries.length === 0 || entries.length > 8) return undefined;
   const properties = argProperties(inputSchema);
-  const rows: Array<[string, string]> = [];
+  const rows: Array<[string, string, string]> = [];
   for (const [key, value] of entries) {
     if (value !== null && typeof value === "object") return undefined;
-    rows.push([key, argValue(key, value, properties)]);
+    const raw = String(value);
+    rows.push([
+      humanizeToolName(key),
+      meta?.formatField?.(key, value as Json) ?? argValue(key, value, properties),
+      raw,
+    ]);
   }
   return rows;
 }
@@ -79,7 +107,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   );
   const title = presentation.title;
   const description = (presentation.description ?? approval.descriptor.description).trim();
-  const fields = flatFields(approval.call.args, approval.descriptor.inputSchema);
+  const fields = flatFields(approval.call.args, approval.descriptor.inputSchema, meta);
   // Lane pick 1-A — consequence-first: when the presentation can truthfully
   // say what approving does in one sentence, that sentence leads and the raw
   // fields fold behind a "Details" disclosure (still the same real inputs,
@@ -143,7 +171,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             )}
           </span>
           <div className="fl-approval-heading">
-            <div className="fl-approval-eyebrow">{critical ? "CRITICAL" : presentation.eyebrow}</div>
+            <div className="fl-approval-eyebrow">{presentation.eyebrow}</div>
             <div className="fl-approval-title">{title}</div>
             {showDescription ? <div className="fl-approval-desc">{description}</div> : null}
           </div>
@@ -153,7 +181,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             title={approval.descriptor.name}
             style={{ marginLeft: "auto", padding: "2px 7px", fontSize: "10px", cursor: "default" }}
           >
-            {approval.descriptor.risk}
+            {RISK_LABEL[approval.descriptor.risk] ?? approval.descriptor.risk}
           </span>
         </div>
         {consequence ? (
@@ -168,10 +196,10 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
         {(() => {
           const inputs = fields ? (
             <dl className="fl-approval-fields" aria-label="Real tool inputs" style={{ display: "grid", gap: "7px", margin: 0 }}>
-              {fields.map(([key, value]) => (
-                <div className="fl-approval-field" key={key}>
-                  <dt>{key}</dt>
-                  <dd>{value}</dd>
+              {fields.map(([label, value, raw]) => (
+                <div className="fl-approval-field" key={label}>
+                  <dt>{label}</dt>
+                  <dd title={raw === value ? undefined : raw}>{value}</dd>
                 </div>
               ))}
             </dl>

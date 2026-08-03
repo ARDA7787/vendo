@@ -49,9 +49,16 @@ const VALUE_EXPORTS = [
   // Shelf Task 4 — the conversation-opening registry seam (slot remix,
   // triggers, palette defaults all route through it).
   "openVendoConversation",
+  // Keystone graduates B8 — the pin ceremony. `usePinAction` is what every pin
+  // affordance calls; `playPinCeremony` is the same sequence for a host running
+  // a pin from its own control.
+  "playPinCeremony",
+  "usePinAction",
   // Shelf Lane B — the two placeable pieces (ui-usage-dx §2).
   "VendoActivities",
   "VendoTrigger",
+  // Keystone graduates B7 — the remixable-surface affordance.
+  "Remixable",
   // The eject surface (§4 customization ladder): internals the ejected
   // thread compiles against, exported deliberately so ejected chrome keeps
   // data/wire logic as a package dependency and only forks pixels.
@@ -123,6 +130,9 @@ const TYPE_EXPORTS = [
   "OpenConversationOptions",
   "VendoActivitiesProps",
   "VendoTriggerProps",
+  // 2026-08-02 final shape: RemixContext died with the context-chip behavior
+  // (remix always means fork now) — deliberately absent.
+  "RemixableProps",
   // Eject surface types.
   "VendoThreadProps",
   "MorphToastProps",

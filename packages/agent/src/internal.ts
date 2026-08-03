@@ -38,3 +38,6 @@ export { abandonPendingApprovals, guardApprovalIds, validateUpsert } from "./age
 export { ThreadRepository } from "./threads.js";
 export { validateMessage, upsertMessage } from "./agent.js";
 export { THREAD_ID_HEADER } from "./agent.js";
+// Tour mode's play shape. The harness door takes the same `scripted` hook as
+// `createAgent`, so a scripted turn reads identically whichever door serves it.
+export type { ScriptedTurn } from "./agent.js";

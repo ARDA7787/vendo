@@ -1,5 +1,7 @@
+import { execFile, type ExecFileException } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import { stdin, stdout } from "node:process";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import type { DevCredential } from "../dev-creds/resolve.js";
 import { runDeviceLogin } from "./cloud/device-login.js";
 import { cloudDoctor, type CloudDoctorResult } from "./doctor-live.js";
@@ -7,6 +9,7 @@ import {
   askYesNo,
   cloudProjectProps,
   errorClass,
+  exists,
   readOptional,
   toolingTelemetry,
   writeText,
@@ -25,22 +28,94 @@ import {
 
 /** Upsert one NAME=value line in .env.local without clobbering other lines.
     Exported for init's --cloud-key flag, which lands a supplied key exactly
-    where the mint below would. */
+    where the mint below would. Every caller follows the write with
+    `warnEnvLocalNotIgnored` — a secret just landed on disk. */
 export async function upsertEnvLocal(root: string, name: string, value: string): Promise<void> {
   const path = join(root, ".env.local");
-  const current = await readOptional(path);
+  const current = (await readOptional(path)) ?? "";
   const line = `${name}=${value}`;
-  if (current === null || current.length === 0) {
-    await writeText(path, `${line}\n`);
-    return;
-  }
   const pattern = new RegExp(`^\\s*${name}\\s*=.*$`, "m");
-  if (pattern.test(current)) {
-    await writeText(path, current.replace(pattern, line));
+  await writeText(path, pattern.test(current)
+    ? current.replace(pattern, line)
+    : `${current}${current === "" || current.endsWith("\n") ? "" : "\n"}${line}\n`);
+}
+
+/** One loud line when the file we just wrote a secret into would be committed.
+    Never blocks the write (the key is already minted and unrecoverable) — the
+    dev needs to know, not to be stopped. Three honest outcomes, each with the
+    remediation that actually works for it. */
+export async function warnEnvLocalNotIgnored(root: string, output: Output): Promise<void> {
+  // The write follows symlinks, so the file git must be asked about is the REAL
+  // one: a .env.local that is itself gitignored can point straight at a tracked
+  // file, and asking about the link would call that safe. Both sides resolved,
+  // or the name is nonsense whenever the ROOT itself sits under a link (every
+  // macOS temp dir: /var → /private/var). Ask the repository that holds the
+  // SECRET, which a link can move — or take out of every working tree, where
+  // there is nothing to leak into.
+  const link = join(root, ".env.local");
+  const file = await realpath(link).catch(() => link);
+  const name = relative(await realpath(root).catch(() => root), file);
+  const where = dirname(file);
+  if (!(await insideWorkTree(where))) return;
+
+  const verdict = await gitCheckIgnore(where, file);
+  if (verdict.kind === "ignored") return;
+  if (verdict.kind === "unknown") {
+    output.error(`warning: ${name} holds a secret and git could not say whether it is ignored (${verdict.reason}) — check it yourself before you commit.`);
     return;
   }
-  const separator = current.endsWith("\n") ? "" : "\n";
-  await writeText(path, `${current}${separator}${line}\n`);
+  // check-ignore answers from the patterns alone, so it calls a TRACKED file
+  // "not ignored" even when a pattern matches it — and a file already in the
+  // index commits no matter what .gitignore says. Only `git rm --cached` undoes
+  // that, so the index is what decides between the two remedies.
+  if (await gitTracks(where, file)) {
+    output.error(`warning: ${name} holds a secret and is TRACKED by git — .gitignore alone will NOT stop the next commit: run \`git rm --cached ${name}\`, then add \`${name}\` to .gitignore.`);
+    return;
+  }
+  output.error(`warning: ${name} holds a secret and is NOT gitignored — add \`${name}\` to .gitignore before you commit.`);
+}
+
+/** Is this path inside a git working tree? Answered by walking up for a `.git`
+    entry (a directory, or the file a worktree/submodule uses) — never by
+    matching git's stderr, which a localized git translates: deciding "no
+    repository" from English text is how an outside-repo write starts warning
+    and a broken repo inside one goes quiet. */
+async function insideWorkTree(from: string): Promise<boolean> {
+  for (let dir = resolve(from); ; dir = dirname(dir)) {
+    if (await exists(join(dir, ".git"))) return true;
+    if (dirname(dir) === dir) return false;
+  }
+}
+
+/** Exit 0 only when the path is in the index — every other outcome is "not
+    tracked". Asked only after check-ignore reported "not ignored", so the
+    common (ignored) case costs no second subprocess. */
+function gitTracks(cwd: string, path: string): Promise<boolean> {
+  return new Promise((settle) => {
+    execFile("git", ["ls-files", "--error-unmatch", "--", path], { cwd }, (error) => settle(error === null));
+  });
+}
+
+type IgnoreVerdict = { kind: "ignored" } | { kind: "not-ignored" } | { kind: "unknown"; reason: string };
+
+/** `git check-ignore` is the only authority that reads nested .gitignore files
+    and negations correctly: exit 0 is "ignored", exit 1 is "not ignored". The
+    caller has already established that a working tree exists, so any OTHER
+    exit is a repository that cannot answer (dubious ownership, an unreadable
+    config, no git binary) and must never pass for "ignored". git's own stderr
+    is quoted to the human but never parsed for the decision. */
+function gitCheckIgnore(cwd: string, path: string): Promise<IgnoreVerdict> {
+  return new Promise((settle) => {
+    execFile("git", ["check-ignore", "-q", "--", path], { cwd }, (error, _stdout, stderr) => {
+      if (error === null) return settle({ kind: "ignored" });
+      if ((error as ExecFileException).code === 1) return settle({ kind: "not-ignored" });
+      const reported = stderr.trim().split("\n")[0];
+      const reason = reported !== undefined && reported.length > 0
+        ? reported.slice(0, 200)
+        : ((error as ExecFileException).code === "ENOENT" ? "git is not installed" : "git failed");
+      settle({ kind: "unknown", reason });
+    });
+  });
 }
 
 /** The auth.md protocol file on Vendo Cloud (Agent Install DX, Layer 2). */

@@ -238,7 +238,12 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
   border-bottom: 1px solid var(--vendo-border);
   background: color-mix(in srgb, var(--vendo-surface) 92%, var(--vendo-fg) 8%); }
 .fl-appcard-dot { width: 8px; height: 8px; border-radius: 999px; flex: none;
-  background: var(--vendo-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--vendo-accent) 16%, transparent); }
+  background: var(--vendo-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--vendo-accent) 16%, transparent);
+  transition: width .2s ease, margin-right .2s ease, opacity .2s ease; }
+/* The dot narrates the BUILD only — once the view is ready it fades and
+   collapses (margin swallows the flex gap), leaving just the app's name. */
+.fl-appcard-bar[data-state="ready"] .fl-appcard-dot { opacity: 0; width: 0; margin-right: -8px;
+  box-shadow: none; }
 .fl-appcard-name { font: 600 12.5px/1 var(--vendo-font); color: var(--vendo-fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fl-appcard-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
@@ -366,7 +371,11 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
 .fl-md > :first-child { margin-top: 0; }
 .fl-md > :last-child { margin-bottom: 0; }
 .fl-md p { margin: 0 0 8px; }
+/* Explicit list-style: host CSS resets (Tailwind preflight) set none globally
+   and the thread renders in the host's cascade, eating the bullets. */
 .fl-md ul, .fl-md ol { margin: 0 0 8px; padding-left: 20px; }
+.fl-md ul { list-style: disc; }
+.fl-md ol { list-style: decimal; }
 .fl-md li { margin: 2px 0; }
 .fl-md li > p { margin: 0; }
 .fl-md h1, .fl-md h2, .fl-md h3, .fl-md h4 { margin: 10px 0 6px; font-weight: 650; line-height: 1.3;
@@ -531,7 +540,6 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
 /* Connect-card lifecycle (2026-07 demo feedback): the button spins while the
    OAuth window is open, then becomes a quiet permanent Connected badge. */
 .fl-connect-spin { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; display: inline-block;
-  vertical-align: -2px; margin-right: 7px;
   border: 2px solid color-mix(in srgb, currentColor 35%, transparent); border-top-color: currentColor;
   animation: fl-spin .7s linear infinite; }
 .fl-connect-done { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px 5px 8px;
@@ -645,6 +653,9 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
   clip-path: polygon(14% 44%, 0 62%, 40% 100%, 100% 18%, 84% 4%, 39% 68%); }
 .fl-btn { border: 1px solid var(--vendo-border); border-radius: 9px; padding: 8px 15px;
   font: 550 12.5px/1 var(--vendo-font); letter-spacing: -.006em;
+  /* Icon + label ride one non-wrapping row (a squeezed flex row used to fold
+     the connect spinner onto its own line above the label). */
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap;
   background: var(--vendo-surface); color: var(--vendo-fg); cursor: pointer;
   box-shadow: 0 1px 1.5px color-mix(in srgb, var(--vendo-fg) 5%, transparent);
   transition: background .13s, border-color .13s, transform .05s, box-shadow .13s; }
@@ -660,7 +671,10 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
 .fl-btn-spin { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
   border: 2px solid color-mix(in srgb, var(--vendo-accent-fg) 35%, transparent);
   border-top-color: var(--vendo-accent-fg); animation: fl-spin .7s linear infinite; }
-.fl-approval--ceremony { border-color: var(--vendo-warn-border); background: var(--vendo-warn-bg); }
+/* Ceremony stays on the neutral card — the amber lives in one accent bar,
+   the icon and the eyebrow (refactoring-ui: accent border over full wash). */
+.fl-approval--ceremony { border-color: var(--vendo-warn-border);
+  box-shadow: inset 3px 0 0 var(--vendo-warn), var(--vendo-shadow); }
 .fl-approval--ceremony .fl-approval-ic { color: var(--vendo-warn); background: color-mix(in srgb, var(--vendo-warn) 16%, transparent); }
 .fl-approval--ceremony .fl-approval-eyebrow { color: var(--vendo-warn); }
 .fl-approval-unverified { margin-left: 8px; padding: 1px 6px; border-radius: 999px; font-size: 9.5px;
@@ -670,7 +684,8 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
 .fl-btn-ceremony { background: var(--vendo-warn); color: var(--vendo-warn-on-fill); border-color: transparent;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--vendo-warn) 40%, transparent); }
 .fl-btn-ceremony:hover { opacity: .92; background: var(--vendo-warn); border-color: transparent; }
-.fl-approval--escalation { border-color: var(--vendo-warn-border); background: var(--vendo-warn-bg); }
+.fl-approval--escalation { border-color: var(--vendo-warn-border);
+  box-shadow: inset 3px 0 0 var(--vendo-warn), var(--vendo-shadow); }
 .fl-approval--escalation .fl-approval-ic { color: var(--vendo-warn); background: color-mix(in srgb, var(--vendo-warn) 16%, transparent); }
 .fl-approval--escalation .fl-approval-eyebrow { color: var(--vendo-warn); }
 .fl-approval-reason { margin: 10px 0 0; font: 400 12.5px/1.4 var(--vendo-font); color: var(--vendo-fg);
@@ -732,8 +747,14 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
     0 10px 28px color-mix(in srgb, var(--vendo-fg) 7%, transparent),
     0 0 0 3px var(--vendo-accent-soft); }
 .fl-composer-drag { border-color: var(--vendo-accent); }
-/* align-items:flex-end so the buttons sit at the bottom as the field grows. */
-.fl-composer-row { display: flex; align-items: flex-end; gap: 10px; }
+/* align-items:flex-start so the text grows DOWNWARD from a fixed top edge and
+   the controls stay where the user last saw them. flex-end (the old rule) was
+   right for a one-line field and wrong for every other: the textarea's own text
+   sits at ITS top, so past one line the row pushed the icons and Send down while
+   the text stayed put — the field read as mis-centred and Send moved under the
+   cursor mid-sentence. At one line the icon's 34px box and the text's 33px line
+   box agree within half a pixel, so the collapsed composer is unchanged. */
+.fl-composer-row { display: flex; align-items: flex-start; gap: 10px; }
 .fl-composer textarea { flex: 1; border: 0; outline: 0; background: transparent; color: var(--vendo-fg);
   font-family: var(--vendo-font); font-size: var(--vendo-base-size); line-height: 1.5; resize: none; max-height: 200px;
   padding: 6px 0; overflow-y: auto; scrollbar-width: none; }
@@ -1408,21 +1429,58 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
   text-decoration: underline; text-underline-offset: 3px; }
 .fl-invite-own:hover { color: var(--vendo-fg); }
 
-/* ---- remix affordance (ui-usage-dx §2 — remix folds into Slot as a flag) ----
-   Hover-revealed over the slot's content: the filled state (.fl-slot) and the
-   host-original state (the [data-vendo-slot] inline wrapper) share one rule.
-   Focus reveals it too, so it stays keyboard-reachable. */
-.fl-slot-remix { position: absolute; top: 10px; right: 10px; z-index: 6;
-  display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px;
-  border: 1px solid var(--vendo-border); border-radius: 9px;
-  background: color-mix(in srgb, var(--vendo-surface) 92%, transparent);
-  -webkit-backdrop-filter: var(--vendo-blur); backdrop-filter: var(--vendo-blur);
-  color: var(--vendo-fg-muted); font: 600 11.5px/1 var(--vendo-font-family);
-  box-shadow: var(--vendo-shadow); cursor: pointer;
-  opacity: 0; pointer-events: none; transition: opacity .15s, color .15s; }
-[data-vendo-slot]:hover .fl-slot-remix, .fl-slot-remix:focus-visible { opacity: 1; pointer-events: auto; }
-.fl-slot-remix:hover { color: var(--vendo-fg); }
-.fl-slot-remix:focus-visible { outline: 2px solid var(--vendo-accent); outline-offset: 2px; }
+/* ---- <Remixable>: the seed that blooms into the pill ----
+   A ~9px muted ✦ at rest in the wrapped element's top-right corner, blooming
+   IN PLACE into the ✦ Remix pill — same corner, same optical centre, so it
+   reads as one mark opening rather than a glyph swapping for a button. The
+   reveal is driven by [data-vendo-revealed] (React state), never :hover: a
+   CSS-only reveal dies on the cursor's way to the pill, which is exactly the
+   travel that has to keep it alive (Remixable holds it open for a grace
+   period). A flat accent pill, never a ring — a projector loses an outline.
+   Both marks sit above the host's own content but never intercept it: the
+   seed is inert, the pill only once revealed. */
+.fl-remixable { position: relative; }
+.fl-remixable-chrome { display: contents; }
+.fl-remix-seed { position: absolute; top: 4px; right: 5px; z-index: 6; pointer-events: none;
+  font-size: 9px; line-height: 1; color: var(--vendo-accent); opacity: .32; }
+.fl-remix-pill { position: absolute; top: 3px; right: 4px; z-index: 6; transform-origin: top right;
+  display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 3px;
+  padding: 3px 8px; background: var(--vendo-accent); color: var(--vendo-accent-fg);
+  font: 600 11px/1.35 var(--vendo-font-family); letter-spacing: .01em; white-space: nowrap;
+  cursor: pointer; opacity: 0; transform: scale(.9); pointer-events: none; }
+.fl-remix-pill-mark { font-size: 10px; line-height: 1; }
+.fl-remixable[data-vendo-revealed] .fl-remix-seed { opacity: 0; transform: scale(1.4); }
+.fl-remixable[data-vendo-revealed] .fl-remix-pill { opacity: 1; transform: scale(1); pointer-events: auto; }
+.fl-remixable[data-vendo-revealed] .fl-remix-pill:active { transform: scale(.97); }
+.fl-remix-pill:focus-visible { outline: 2px solid var(--vendo-accent); outline-offset: 2px; }
+/* The bloom itself — guarded, so under reduced motion the two states simply
+   swap with no travel (the .vendo-root[data-vendo-motion="reduced"] rule
+   covers the theme-level dial the same way). */
+@media (prefers-reduced-motion: no-preference) {
+  .fl-remix-seed { transition: opacity 120ms cubic-bezier(.23,1,.32,1), transform 120ms cubic-bezier(.23,1,.32,1); }
+  .fl-remix-pill { transition: opacity 180ms cubic-bezier(.23,1,.32,1), transform 180ms cubic-bezier(.23,1,.32,1); }
+}
+
+/* ---- ✦ management popover (2026-08-02 final shape) ----
+   The pill on an already-remixed component opens this instead of forking:
+   status line, open-in-panel, revert. Borrows the slot menu's glass look.
+   The wrap carries the pill's absolute position so pill and menu share an
+   anchor; the pill inside it drops its own offset. No entry animation — the
+   popover appears in place (reduced motion needs no special case). */
+.fl-remix-menu-wrap { position: absolute; top: 3px; right: 4px; z-index: 7; }
+.fl-remix-menu-wrap .fl-remix-pill { position: static; }
+.fl-remix-menu { position: absolute; top: 26px; right: 0; min-width: 188px; padding: 6px;
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  border: 1px solid var(--vendo-border-strong); border-radius: 12px;
+  background: var(--vendo-glass-strong); -webkit-backdrop-filter: var(--vendo-blur); backdrop-filter: var(--vendo-blur);
+  box-shadow: var(--vendo-shadow); font-family: var(--vendo-font-family); }
+.fl-remix-status { padding: 6px 9px 7px; font: 500 11px/1.4 var(--vendo-font-family);
+  color: var(--vendo-fg-muted); border-bottom: 1px solid var(--vendo-border); margin-bottom: 3px; }
+.fl-remix-menu button { text-align: left; font: 500 12.5px/1.2 var(--vendo-font-family); padding: 7px 9px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--vendo-fg); cursor: pointer; }
+.fl-remix-menu button:hover { background: var(--vendo-accent-soft); }
+.fl-remix-menu button:disabled { color: var(--vendo-fg-muted); cursor: default; }
+.fl-remix-menu button.is-danger { color: var(--vendo-danger); }
 
 /* ---- filled state + overflow menu ---- */
 .fl-slot-filled { position: relative; flex: 1; }
@@ -1993,11 +2051,18 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the wave-2
    mobile jump, 8A-8E markdown). Derived from existing tokens only.
    ==================================================================== */
 
-/* C1 — live status ribbon (glued above the composer while a turn works). */
-.fl-ribbon { display: flex; align-items: center; gap: 9px; margin: 0 16px -6px; padding: 8px 12px;
-  border: 1px solid var(--vendo-border); border-radius: 12px; background: var(--vendo-glass-strong);
+/* C1 — live status ribbon, tucked BEHIND the composer (one unit, Codex-
+   style): narrower than the composer, top corners only, and its bottom edge
+   slides under the card — the composer (position:relative) paints over the
+   overlap, so the composer keeps its own full radius. The composer sits
+   either adjacent or inside the dock anchor, so both DOM shapes lose their
+   top margin. */
+.fl-ribbon { display: flex; align-items: center; gap: 9px; margin: 0 30px -12px; padding: 7px 12px 19px;
+  border: 1px solid var(--vendo-border); border-bottom: 0; border-radius: 14px 14px 0 0;
+  background: color-mix(in srgb, var(--vendo-fg) 3%, var(--vendo-glass-strong));
   -webkit-backdrop-filter: var(--vendo-blur); backdrop-filter: var(--vendo-blur);
-  font: 500 12.5px/1.3 var(--vendo-font); color: var(--vendo-fg-muted); box-shadow: var(--vendo-shadow); }
+  font: 500 12.5px/1.3 var(--vendo-font); color: var(--vendo-fg-muted); }
+.fl-ribbon + .fl-composer, .fl-ribbon + .fl-dock-anchor .fl-composer { margin-top: 0; }
 .fl-ribbon .fl-beat-orb { width: 9px; height: 9px; }
 .fl-ribbon-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--vendo-fg); font-weight: 550; }

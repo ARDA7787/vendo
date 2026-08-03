@@ -18,7 +18,6 @@ import type { VendoAgent } from "@vendoai/agent";
 import type { ByoApprovalResolution } from "../byo-approvals.js";
 import type { HarnessTurns } from "../harness-turn.js";
 import type { ConnectionsService } from "../connections.js";
-import type { RuntimeCaptureHandler } from "../runtime-capture.js";
 
 /** The shared wire toolkit (kill-list B4): the route-table types and matcher,
     the JSON/error envelope helpers, and the param validators every wire area
@@ -26,7 +25,7 @@ import type { RuntimeCaptureHandler } from "../runtime-capture.js";
     wire/context.ts; server.ts assembles the table from the per-area modules
     under src/wire/. */
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.1";
 export const BASE_PATH = "/api/vendo";
 
 export type SandboxVenue = "e2b" | "cloud" | "custom" | false;
@@ -103,7 +102,6 @@ export interface WireDeps {
   door?: McpDoor;
   /** True only in a development composition — gates the local injection seams. */
   development: boolean;
-  runtimeCapture?: RuntimeCaptureHandler;
   onRequestOrigin?: (origin: string) => void;
   /** 02-store §4 (kill-list B3) ephemeral-session policy. `now` reads the
       (possibly injected) session clock; `sweep` runs the store TTL sweep and

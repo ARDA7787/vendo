@@ -50,7 +50,6 @@ export type { VendoClient, VendoClientConfig } from "@vendoai/ui";
 // umbrella-internal — the Vendo interface exposes no `mcp` handle (09 §2) — so
 // only this host-facing seam belongs on the root.
 export type { HostOAuthAdapter } from "@vendoai/mcp";
-export { remixable, type RemixableRegistration, type RemixableReportOptions } from "./remixable.js";
 // Packs (architecture §5). `definePack` lives on the ROOT entry, not `/server`,
 // because a pack module is imported twice — once by the server for its tools,
 // checks and skills, once by the client root to mount its components — so the

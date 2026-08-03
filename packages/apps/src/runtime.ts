@@ -98,7 +98,8 @@ import {
 import { parseVendoManifest } from "./manifest.js";
 import { createAppOpener, createProgressiveQueryResolver, machinesDisabledError, servedAppsDisabledError, stripServerAuthoritativeFields } from "./open.js";
 import { appRecordInput, documentFromRecord, enabledAfterDocumentEdit, listAllRecords, nextEnvStaleAt, rowFromRecord, sessionOf, updateAppRow, withoutSession } from "./persistence.js";
-import { detectPinDrift, hasDefaultExport, pinComponentName, pinForkSource, type InClientApproval, type PinBaseline, type PinDrift } from "./pins.js";
+import { classifyLegacyPlacements, detectPinDrift, hasDefaultExport, pinComponentName, pinForkSource, type InClientApproval, type PinBaseline, type PinDrift } from "./pins.js";
+import { createReviewLifecycle, type RemixRejection, type ReviewQueueEntry } from "./review.js";
 import { collectSecretValues, redactSecretJson, redactSecretText } from "./redaction.js";
 import {
   boxAllowlist,
@@ -263,6 +264,15 @@ export interface AppsConfig {
    *  per create/edit (engine.ts GenerationDependencies). */
   designRules?: string | (() => string | undefined);
   pinBaselines?: PinBaseline[];
+  /** Remix review (round-2 hardening 2026-08-02) — the host's reviewer
+   *  assertion for the review-kind lifecycle. Reviewing crosses owner
+   *  boundaries, so it is never inferred from a principal alone: `reviewer`
+   *  answers whether THIS caller may read the full queue, reject, and approve
+   *  review-kind remixes. Unset, the queue serves only the caller's own
+   *  submissions and reject/approve-as-reviewer refuse, naming this hook. */
+  review?: {
+    reviewer?(ctx: RunContext): boolean | Promise<boolean>;
+  };
   /** ADAPTER RULE — the share/publish seam (see cloud.ts): the umbrella wires
    * the Cloud console client when VENDO_API_KEY fills the unset slot; this
    * block never reads the environment. Unset → share/publish fail with
@@ -326,6 +336,10 @@ export interface EditResult {
   automation?: {
     mode: "steps" | "agentic";
     trigger: Trigger;
+    /** What the arming actually produced — false when the seam left the
+     * trigger disarmed or arming threw (the issues entry says why). The
+     * thread's automation card needs the true state, not an inference. */
+    enabled: boolean;
     resultsCollection?: string;
     pendingGrants?: ApprovalRequest[];
   };
@@ -563,6 +577,11 @@ export type PinRebaseResult =
 export interface PinForkInput {
   appId?: AppId;
   slot: string;
+  /** The wrapper's serializable live props at fork time (2026-08-02 final
+   *  shape). Stored as the pinned node's props — the fork's dashboard seed
+   *  when it is placed away from the host page; in place the wrapper streams
+   *  live props over the frame boundary on every render instead. */
+  props?: Record<string, Json>;
   instruction?: string;
 }
 
@@ -727,6 +746,29 @@ export interface AppsRuntime {
     approvals(appId: AppId, ctx: RunContext): Promise<InClientApproval[]>;
     verdict(appId: AppId, ctx: RunContext): Promise<InClientVerdict>;
     approve(input: { appId: AppId; approvedBy: string }, ctx: RunContext): Promise<InClientApproval>;
+  };
+  /**
+   * Remix final shape (2026-08-02) — additive review-kind lifecycle surface
+   * (same additive precedent as `inClient`/`pins`). A review-kind remix (an
+   * app forked from a baseline captured with `review: true`) is invisible to
+   * its own user until a host reviewer approves; the approved version then
+   * mounts natively in place, riding the §9 hash-pin machinery. These two
+   * methods are the reviewer's side and cross owner boundaries BY DESIGN
+   * (the reviewer is not the remixing user), so both are gated on the host's
+   * reviewer assertion ({@link AppsConfig.review} `reviewer`): this is the
+   * production path — a self-hoster mounts their own admin-authenticated
+   * route over it (Cloud's console is the hosted equivalent). Without the
+   * hook, `queue` serves only the caller's own submissions and `reject`
+   * refuses, naming the hook.
+   */
+  review: {
+    /** Every review-kind version awaiting review, oldest submission first —
+     *  the full queue for an asserted reviewer, the caller's own items
+     *  otherwise. */
+    queue(ctx: RunContext): Promise<ReviewQueueEntry[]>;
+    /** Reject the app's CURRENT version with a note the user's panel surfaces.
+     *  The work is not deleted; a new version supersedes the rejection. */
+    reject(input: { appId: AppId; note: string }, ctx: RunContext): Promise<RemixRejection>;
   };
   /**
    * 06-apps §8 — additive drift→rebase surface (same additive precedent as
@@ -1034,6 +1076,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     return await config.appAccess.can(ctx, level, { app: appId });
   };
 
+  // Pins/placements split (2026-08-02) — every runtime read classifies legacy
+  // rows (classifyLegacyPlacements), so drift, ship-diff, export, and the wire
+  // all see fork provenance in `pins` and slot placement in `placements`; the
+  // next persistEdit writes the classified document, normalizing the row.
   const owned = async (
     appId: AppId,
     ctx: RunContext,
@@ -1041,7 +1087,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
   ): Promise<AppDocument | null> => {
     const record = await apps.get(appId);
     if (record === null || !(await holds(appId, ctx, level, record))) return null;
-    return documentFromRecord(record);
+    return classifyLegacyPlacements(documentFromRecord(record), config.pinBaselines);
   };
 
   /** Build contract §9.5/§9.8 — must this app be served through the proxy
@@ -1407,6 +1453,21 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
   config.guard.onApprovalDecision((id, approved) => onApprovalDecision(id, approved));
 
   const inClientApprovals = createInClientApprovals(config.store);
+  // Remix final shape (2026-08-02) — review-kind gating over the §9 hash-pin
+  // machinery: which document open() serves and the venue vocabulary the
+  // client resolves ("pending-review" = show the ORIGINAL, never a jailed
+  // fork; a served older approved version carries the current standing).
+  const review = createReviewLifecycle({
+    store: config.store,
+    baselines: config.pinBaselines,
+    approvals: inClientApprovals,
+    history,
+  });
+  // Round-2 hardening (2026-08-02) — reviewing is a HOST trust decision, so
+  // it only ever comes from the composition's explicit assertion; no hook
+  // means no caller is a reviewer, ever.
+  const reviewerAsserted = async (ctx: RunContext): Promise<boolean> =>
+    config.review?.reviewer !== undefined && await config.review.reviewer(ctx) === true;
   // execution-v2 Lane D — fn: refs on a machine-bearing app resolve over the
   // v2 box door (the same wake Lane C's wire proxy rides); the wrap leaves
   // every other ref on the existing caller. Queries hit this at open(),
@@ -1431,7 +1492,9 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
   const opener = createAppOpener(
     caller,
     config.pinBaselines,
-    (doc) => inClientApprovals.venueStateFor(doc),
+    // Review-aware venue: instant-kind answers exactly the plain hash-pin
+    // venue; review-kind never answers a jail state (review.ts).
+    (doc) => review.venueStateFor(doc),
     // Wave 4 (layer 3) — the served surface: wake-on-open over the machine
     // lifecycle, the provider's public ingress URL for $PORT, and the theming
     // handoff (host theme tokens as a query param the served app MAY consume).
@@ -1566,9 +1629,12 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     const assertCurrent = async (): Promise<boolean> => {
       const current = await apps.get(previous.id);
       const row = current === null ? null : rowFromRecord(current);
+      // `previous` came through a classifying read (owned), so the stored row
+      // classifies the same way before comparing — otherwise every edit of a
+      // not-yet-normalized legacy row would read as a concurrent change.
       if (row === null
         || row.subject !== rowSubject
-        || JSON.stringify(row.doc) !== JSON.stringify(previous)) {
+        || JSON.stringify(classifyLegacyPlacements(row.doc, config.pinBaselines)) !== JSON.stringify(previous)) {
         throw new VendoError("conflict", `app changed during edit: ${previous.id}`);
       }
       return row.enabled;
@@ -2016,6 +2082,16 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         issues.push("the box did not produce a verified served web app (GET / must answer 200 text/html) — the surface was not flipped; retry the edit");
       }
     }
+    // Wave 9 — an edit that rode the ladder to an automation is an audit event
+    // in its own right (the row main has carried since the ladder shipped): the
+    // trigger now fires unattended, so the trail must say when it was authored.
+    if (lane.automation !== undefined) {
+      await reportGuard(ctx.principal.subject, appId, ctx, {
+        operation: "automation-created",
+        mode: lane.automation.mode,
+        triggerKind: lane.automation.trigger.on.kind,
+      });
+    }
     return {
       document,
       findings,
@@ -2323,7 +2399,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       for (const record of records
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))) {
         try {
-          const document = documentFromRecord(record);
+          const document = classifyLegacyPlacements(documentFromRecord(record), config.pinBaselines);
           // A terminally failed build is a tombstone open() reads to resolve
           // the embed — not a real app; it never joins the listable surface.
           if (document.buildFailed !== undefined) continue;
@@ -2346,6 +2422,7 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       await data.clear(app, ctx.principal.subject, await history.documents(appId));
       await history.clear(appId);
       await inClientApprovals.clear(appId);
+      await review.clear(appId);
       await exposure.clearForApp(appId);
       await egressApprovals.clearForApp(appId);
       await parkedActions.clearForApp(appId);
@@ -2752,7 +2829,12 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
     },
 
     async open(appId, ctx) {
-      return opener(await requireOwned(appId, ctx, "viewer"), ctx);
+      const app = await requireOwned(appId, ctx, "viewer");
+      // Review-kind (2026-08-02): an unapproved current version is invisible —
+      // open() serves the newest APPROVED version from the existing history
+      // instead (or the pending state when none was ever approved). Instant
+      // kind passes through untouched.
+      return opener(await review.serveDocFor(app), ctx);
     },
 
     async call(appId, ref, args, ctx) {
@@ -2812,7 +2894,33 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         return inClientApprovals.verdictFor(app);
       },
       async approve(input, ctx) {
-        const app = await requireOwned(input.appId, ctx);
+        // Round-2 hardening (2026-08-02) — a review-kind approval IS the
+        // review, so it never comes from the remixing user themselves: the
+        // requester is refused unless the host's reviewer assertion
+        // (apps.review.reviewer) covers them, and an asserted reviewer may
+        // approve across the owner boundary (that is the reviewer's job).
+        // Instant-kind keeps the plain access scoping unchanged.
+        const record = await apps.get(input.appId);
+        if (record === null) throw new VendoError("not-found", `app not found: ${input.appId}`);
+        const row = rowFromRecord(record);
+        const app = classifyLegacyPlacements(row.doc, config.pinBaselines);
+        // `holds` rather than a bare subject compare: the row is read WITHOUT
+        // owner scoping here (a reviewer crosses that boundary), so the access
+        // question is asked through the ONE permission check — which keeps the
+        // org/sharing editor reaching their own team's app. Neither branch ever
+        // approves; only which refusal the caller is told apart.
+        const permitted = await holds(input.appId, ctx, "editor", record);
+        if (review.isReviewKind(app)) {
+          if (!await reviewerAsserted(ctx)) {
+            if (permitted) {
+              throw new VendoError("blocked", "a review-kind remix cannot be approved by its own user — set apps.review.reviewer(ctx) in your composition to assert who reviews");
+            }
+            // Masked like every unreachable app read.
+            throw new VendoError("not-found", `app not found: ${input.appId}`);
+          }
+        } else if (!permitted) {
+          throw new VendoError("not-found", `app not found: ${input.appId}`);
+        }
         const approval = await inClientApprovals.record({
           appId: app.id,
           versionHash: appVersionHash(app),
@@ -2824,6 +2932,43 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           approvedBy: approval.approvedBy,
         });
         return approval;
+      },
+    },
+
+    review: {
+      async queue(ctx) {
+        const entries = await review.queue();
+        if (await reviewerAsserted(ctx)) return entries;
+        // No reviewer assertion → a caller sees only their own submissions;
+        // nobody reads another user's pending fork source through this door.
+        return entries.filter((entry) => entry.requester === ctx.principal.subject);
+      },
+      async reject(input, ctx) {
+        // Rejecting is reviewer-only, and reviewing is a HOST trust decision:
+        // it requires the composition's explicit assertion, in every venue.
+        if (config.review?.reviewer === undefined) {
+          throw new VendoError("blocked", "rejecting a remix review requires the host's reviewer assertion — set apps.review.reviewer(ctx) in your composition");
+        }
+        if (!await reviewerAsserted(ctx)) {
+          // Masked like every unowned app read: a non-reviewer learns nothing.
+          throw new VendoError("not-found", `app not found: ${input.appId}`);
+        }
+        // Reviewer-side, cross-subject by design: the app is looked up
+        // WITHOUT owner scoping (the reviewer assertion above stands in front).
+        const record = await apps.get(input.appId);
+        if (record === null) throw new VendoError("not-found", `app not found: ${input.appId}`);
+        const row = rowFromRecord(record);
+        const doc = classifyLegacyPlacements(row.doc, config.pinBaselines);
+        const rejection = await review.reject({ doc, note: input.note, by: ctx.principal.subject });
+        // The audit event lands under the OWNER's subject so the rejection is
+        // loud in the remixing user's activity, not the reviewer's.
+        await reportGuard(row.subject, doc.id, ctx, {
+          operation: "review-reject",
+          versionHash: rejection.versionHash,
+          by: rejection.by,
+          note: rejection.note,
+        });
+        return rejection;
       },
     },
 
@@ -2840,16 +2985,41 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       async fork(input, ctx) {
         const baseline = (config.pinBaselines ?? []).find(({ slot }) => slot === input.slot);
         if (baseline === undefined) {
-          throw new VendoError("not-found", `remixable slot "${input.slot}" has no captured baseline; register the component as remixable and run vendo sync`);
+          throw new VendoError("not-found", `remixable slot "${input.slot}" has no captured baseline; wrap the component in <Remixable> and run vendo sync`);
         }
         const forkOnto = (base: AppDocument): AppDocument => {
           const forked = structuredClone(base);
-          const issues = applyPinFork(forked, { slot: input.slot }, config.pinBaselines)
+          // applyPinFork prefixes its issues for the compiler that calls it; a
+          // user gesture never saw that op, so the prefix is stripped from the
+          // surfaced error. `props` are the wrapper's live props at fork time
+          // (2026-08-02 final shape) — they become the pinned node's props.
+          const issues = applyPinFork(
+            forked,
+            { slot: input.slot, ...(input.props === undefined ? {} : { props: input.props }) },
+            config.pinBaselines,
+          )
             .map((issue) => issue.replace(/^pin fork failed: /, ""));
           if (issues.length > 0) throw new VendoError("conflict", issues.join("; "));
           const validation = validateAppDocument(forked);
           if (!validation.ok) throw new VendoError("validation", validation.error.message);
           return forked;
+        };
+        const carriesSlotPin = (app: AppDocument): boolean =>
+          app.pins?.some((pin) => pin.slot === input.slot) === true;
+        // The deterministic fork a dedupe hit describes was recorded when the
+        // winning app was minted — intents[0] of the pin's replay trail.
+        const dedupedResult = async (existing: AppDocument): Promise<PinForkResult> => {
+          const recorded = (await history.pinIntents(existing.id, input.slot))[0];
+          return {
+            app: existing,
+            version: {
+              at: recorded?.at ?? new Date().toISOString(),
+              intent: recorded?.intent ?? `Remix the host component "${input.slot}"`,
+              rung: rungFor(existing),
+            },
+            slot: input.slot,
+            componentName: pinComponentName(input.slot),
+          };
         };
         let previous: AppDocument;
         if (input.appId !== undefined) {
@@ -2858,6 +3028,17 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             throw new VendoError("conflict", "a pin fork requires a vendo-genui/v2 tree app");
           }
         } else {
+          // Idempotent per (subject, slot) — the appId-less gesture dedupes
+          // server-side: when this subject already has an app whose pins name
+          // the slot, that app IS the fork, and it is returned instead of
+          // minting a duplicate (a double-tap can never mint two; the UI
+          // latch is cosmetic). A riding instruction is dropped — the tap
+          // that created the fork already carries it, and replaying it here
+          // would apply the same edit twice.
+          // The OLDEST matching row, so every dedupe path (this pre-check and
+          // the post-persist re-check below) converges on the same winner.
+          const existing = (await runtime.list(ctx)).filter(carriesSlotPin).at(-1);
+          if (existing !== undefined) return dedupedResult(existing);
           // The empty-slot Remix gesture: mint the minimal base document the
           // fork lands in, so the fork itself is an ordinary recorded edit
           // (undo returns to the empty base; rebase finds a full trail).
@@ -2871,6 +3052,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
               root: "root",
               nodes: [{ id: "root", component: "Stack", source: "prewired" }],
             },
+            // The empty-slot gesture means "show the remix in THIS slot": the
+            // mint records the placement (location) beside the pin the fork
+            // records (provenance) — slot discovery reads placements only.
+            placements: [input.slot],
           };
           // Dry-run the fork BEFORE persisting the base, so a bad baseline
           // never strands an empty app.
@@ -2893,6 +3078,19 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
           slot: input.slot,
           baseHash: baseline.hash,
         });
+        if (input.appId === undefined) {
+          // The pre-mint dedupe is list-then-put: two concurrent gestures can
+          // both find nothing and mint two apps. Close the race after the
+          // persist — list again, and when an OLDER app also carries the
+          // slot's pin, delete the just-minted row and return the older one.
+          // Both racers pick the same winner: list order is deterministic
+          // (createdAt, then id), so only the loser deletes itself.
+          const oldest = (await runtime.list(ctx)).filter(carriesSlotPin).at(-1);
+          if (oldest !== undefined && oldest.id !== persisted.id) {
+            await runtime.delete(persisted.id, ctx);
+            return dedupedResult(oldest);
+          }
+        }
         const componentName = pinComponentName(input.slot);
         const result: PinForkResult = {
           app: persisted,

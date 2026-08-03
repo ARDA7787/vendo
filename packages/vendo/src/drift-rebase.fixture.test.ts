@@ -102,21 +102,19 @@ describe.sequential("06-apps §8 — the drift→rebase journey through the real
     const root = await mkdtemp(join(tmpdir(), "vendo-drift-rebase-"));
     cleanups.push(async () => rm(root, { recursive: true, force: true }));
     await mkdir(join(root, "src"), { recursive: true });
-    const slot = "net-worth-card";
+    const slot = "MapleNetWorthCard";
     const componentName = pinComponentName(slot);
     const hostSource = `export default function MapleNetWorthCard() {
   return <article><span>Net worth</span><strong>$1.2M</strong></article>;
 }\n`;
     const componentFile = join(root, "src", "MapleNetWorthCard.tsx");
     await writeFile(componentFile, hostSource);
-    await writeFile(join(root, "src", "host-catalog.tsx"), `
+    await writeFile(join(root, "src", "page.tsx"), `
+import { Remixable } from "@vendoai/ui/chrome";
 import MapleNetWorthCard from "./MapleNetWorthCard";
-export const hostCatalog = [{
-  name: "${slot}",
-  component: MapleNetWorthCard,
-  remixable: true,
-  exportable: true,
-}];
+export default function Page() {
+  return <Remixable><MapleNetWorthCard /></Remixable>;
+}
 `);
     const synced = await vendoSync({ root, out: join(root, ".vendo") });
     expect(synced.pins).toEqual({ captured: [slot], drifted: [] });
@@ -134,7 +132,7 @@ export const hostCatalog = [{
       model: scriptedModel(remixNote),
       principal: async () => principal,
       store,
-      development: { root },
+      development: true,
     });
     const imported = await vendo.apps.importApp({
       format: VENDO_APP_FORMAT,
@@ -185,7 +183,7 @@ export const hostCatalog = [{
       model: scriptedModel(remixNote),
       principal: async () => principal,
       store,
-      development: { root },
+      development: true,
     });
     const expectedDrift = {
       slot,

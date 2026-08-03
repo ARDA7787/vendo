@@ -102,19 +102,17 @@ describe.sequential("06-apps §9 — the in-client promotion journey through the
   return <article><span>Net worth</span><strong>$1.2M</strong></article>;
 }\n`;
     await writeFile(join(root, "src", "MapleNetWorthCard.tsx"), hostSource);
-    await writeFile(join(root, "src", "host-catalog.tsx"), `
+    await writeFile(join(root, "src", "page.tsx"), `
+import { Remixable } from "@vendoai/ui/chrome";
 import MapleNetWorthCard from "./MapleNetWorthCard";
-export const hostCatalog = [{
-  name: "net-worth-card",
-  component: MapleNetWorthCard,
-  remixable: true,
-  exportable: true,
-}];
+export default function Page() {
+  return <Remixable><MapleNetWorthCard /></Remixable>;
+}
 `);
     const synced = await vendoSync({ root, out: join(root, ".vendo") });
-    expect(synced.pins.captured).toEqual(["net-worth-card"]);
+    expect(synced.pins.captured).toEqual(["MapleNetWorthCard"]);
 
-    const componentName = pinComponentName("net-worth-card");
+    const componentName = pinComponentName("MapleNetWorthCard");
     // The brain, scripted. Only BRAIN turns are answered ("THEY ARE ASKING NOW:" is its
     // marker); the AI reviewer rides the same model and reports nothing.
     const model = scriptedModel((prompt) => {
@@ -137,7 +135,7 @@ export const hostCatalog = [{
       model,
       principal: async () => principal,
       store,
-      development: { root },
+      development: true,
     });
     const ctx = { principal, venue: "app" as const, presence: "present" as const, sessionId: "session_journey" };
 
@@ -155,7 +153,7 @@ export const hostCatalog = [{
 
     // The fork is the user's Remix GESTURE, executed deterministically by the
     // engine (the captured source is copied, the pin recorded, no model call).
-    const forked = await vendo.apps.pins.fork({ appId: imported.id, slot: "net-worth-card" }, ctx);
+    const forked = await vendo.apps.pins.fork({ appId: imported.id, slot: "MapleNetWorthCard" }, ctx);
     expect(forked.componentName).toBe(componentName);
     const remixed = await vendo.apps.edit(imported.id, "Call out that it is remixed", ctx);
     expect(remixed.failure).toBeUndefined();
@@ -169,7 +167,7 @@ export const hostCatalog = [{
       appId,
       versionHash: appVersionHash(remixed.app),
       pins: [{
-        slot: "net-worth-card",
+        slot: "MapleNetWorthCard",
         component: componentName,
         drifted: false,
       }],

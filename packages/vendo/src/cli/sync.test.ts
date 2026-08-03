@@ -18,7 +18,7 @@ const report = (
   tools: { added: [], removed: [], changed },
   breaking,
   pins: { captured: [], drifted: [] },
-  unresolvedPins: [],
+  remixableErrors: [],
   catalog: { discovered: 2, registered: 1 },
   warnings: [],
 });
@@ -206,24 +206,34 @@ describe("vendo sync", () => {
     expect(messages.errors).toContain("warning: failed to push sync report: cloud offline");
   });
 
-  it("warns about every unresolved remixable slot as experimental and exits zero", async () => {
+  it("prints every remixable wrapper error and exits two", async () => {
     const errors: string[] = [];
     const output = { log() {}, error(message: string) { errors.push(message); } };
-    const unresolved = {
+    const failed = {
       ...report(),
-      unresolvedPins: [{
-        slot: "InlineCard",
-        component: "() => null",
-        reason: "inline-component" as const,
-        hint: "run the host in dev with Vendo mounted to runtime-capture it",
-      }],
+      remixableErrors: [
+        "src/app/page.tsx:4 \u2014 <Remixable> must wrap exactly one component element; extract it into a component and wrap that",
+      ],
     };
-    // Remix is experimental: the failed capture warns loudly but never fails
-    // the host's build.
-    expect(await runSync({ targetDir: ".", output, sync: async () => unresolved })).toBe(0);
-    expect(errors.join("\n")).toContain("experimental");
-    expect(errors.join("\n")).toContain("InlineCard [inline-component]");
-    expect(errors.join("\n")).toContain("run the host in dev with Vendo mounted to runtime-capture it");
+    // An uncapturable wrapper is a defended constraint (final-shape spec
+    // 2026-08-02): the sync run fails loudly, never degrades silently.
+    expect(await runSync({ targetDir: ".", output, sync: async () => failed })).toBe(2);
+    expect(errors.join("\n")).toContain("src/app/page.tsx:4");
+    expect(errors.join("\n")).toContain("extract it into a component and wrap that");
+  });
+
+  it("prints one line per pruned stale baseline", async () => {
+    const messages = captureOutput();
+    const pruned = {
+      ...report(),
+      pins: { captured: [], drifted: [], pruned: ["MapleNetWorthCard", "CadenceMissingDocsHero"] },
+    };
+    expect(await runSync({ targetDir: ".", output: messages.output, sync: async () => pruned })).toBe(0);
+    const prunedLines = messages.logs.filter((line) => line.startsWith("pruned:"));
+    expect(prunedLines).toHaveLength(2);
+    expect(prunedLines[0]).toContain("MapleNetWorthCard");
+    expect(prunedLines[1]).toContain("CadenceMissingDocsHero");
+    expect(prunedLines[0]).toContain("stale baseline deleted");
   });
 
   it("names drifted slots and says forks stay on the old capture until rebased", async () => {
@@ -240,20 +250,17 @@ describe("vendo sync", () => {
     // Drift alone never fails the sync and never mutates any fork.
   });
 
-  it("still pushes --report and keeps blast-radius exit three when slots are also unresolved", async () => {
+  it("still pushes --report and keeps blast-radius exit three when wrappers also fail", async () => {
     const messages = captureOutput();
     const push = vi.fn(async () => {});
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       impact: [{ tool: "host_x", apps: [{ id: "app_x", title: "X" }], automations: [], grants: 0 }],
     }), { status: 200 })) as typeof fetch;
-    const unresolved = {
+    const failed = {
       ...report([{ tool: "host_x", change: "removed" as const }]),
-      unresolvedPins: [{
-        slot: "InlineCard",
-        component: "() => null",
-        reason: "inline-component" as const,
-        hint: "run the host in dev with Vendo mounted to runtime-capture it",
-      }],
+      remixableErrors: [
+        "src/app/page.tsx:4 \u2014 <Remixable> must wrap exactly one component element; extract it into a component and wrap that",
+      ],
     };
 
     const exit = await runSync({
@@ -264,14 +271,14 @@ describe("vendo sync", () => {
       output: messages.output,
       fetchImpl,
       push,
-      sync: async () => unresolved,
+      sync: async () => failed,
     });
 
-    // Unresolved slots never mask the more severe blast-radius signal, and the
+    // Wrapper errors never mask the more severe blast-radius signal, and the
     // pushed report still carries them for the Cloud console.
     expect(exit).toBe(3);
-    expect(push).toHaveBeenCalledWith(expect.objectContaining({ report: unresolved }));
-    expect(messages.errors.join("\n")).toContain("InlineCard [inline-component]");
+    expect(push).toHaveBeenCalledWith(expect.objectContaining({ report: failed }));
+    expect(messages.errors.join("\n")).toContain("src/app/page.tsx:4");
   });
 
   it("prints the init-style catalog summary", async () => {
@@ -306,26 +313,23 @@ describe("vendo sync", () => {
     });
   });
 
-  it("--json carries unresolved slots in the report, exits zero, and keeps stdout to one object", async () => {
+  it("--json carries wrapper errors in the report, exits two, and keeps stdout to one object", async () => {
     const messages = captureOutput();
-    const unresolved = {
+    const failed = {
       ...report(),
-      unresolvedPins: [{
-        slot: "InlineCard",
-        component: "() => null",
-        reason: "inline-component" as const,
-        hint: "run the host in dev with Vendo mounted to runtime-capture it",
-      }],
+      remixableErrors: [
+        "src/app/page.tsx:4 — <Remixable> must wrap exactly one component element; extract it into a component and wrap that",
+      ],
     };
 
-    expect(await runSync({ targetDir: ".", json: true, output: messages.output, sync: async () => unresolved })).toBe(0);
+    expect(await runSync({ targetDir: ".", json: true, output: messages.output, sync: async () => failed })).toBe(2);
 
     expect(messages.logs).toHaveLength(1);
     expect(messages.errors).toHaveLength(0);
     expect(JSON.parse(messages.logs[0]!)).toMatchObject({
-      ok: true,
-      exitCode: 0,
-      report: { unresolvedPins: [{ slot: "InlineCard", reason: "inline-component" }] },
+      ok: false,
+      exitCode: 2,
+      report: { remixableErrors: [expect.stringContaining("src/app/page.tsx:4")] },
       notes: [],
     });
   });
@@ -492,15 +496,15 @@ describe("telemetry project attribution + cloud-key sourcing (P1 review)", () =>
   });
 });
 
-describe("sync AI enrichment integration (cse lane 1c)", () => {
+describe("sync judgment-pass integration", () => {
   const offline = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
   const dirs: string[] = [];
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  async function hostWithTools(): Promise<{ dir: string; toolsPath: string }> {
-    const dir = await mkdtemp(join(tmpdir(), "vendo-sync-enrich-"));
+  async function hostWithTools(): Promise<{ dir: string; toolsPath: string; judgmentsPath: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "vendo-sync-judge-"));
     dirs.push(dir);
     await mkdir(join(dir, ".vendo"), { recursive: true });
     const toolsPath = join(dir, ".vendo", "tools.json");
@@ -515,11 +519,44 @@ describe("sync AI enrichment integration (cse lane 1c)", () => {
         srcHash: "sha256:a",
       }],
     }, null, 2)}\n`, "utf8");
-    return { dir, toolsPath };
+    return { dir, toolsPath, judgmentsPath: join(dir, ".vendo", "judgments.json") };
   }
 
-  it("keyless: structural-only line, zero errors, exit 0, file untouched — CI needs no model", async () => {
-    const { dir, toolsPath } = await hostWithTools();
+  const reply = (value: unknown): string => `\`\`\`json\n${JSON.stringify(value)}\n\`\`\``;
+
+  /** Canned replies in order: the judge call, then the skeptic call. */
+  function scripted(responses: string[]): { id: string; availability: () => Promise<string>; run: () => Promise<string> } {
+    return {
+      id: "scripted",
+      availability: async () => "scripted engine",
+      run: async () => {
+        const next = responses.shift();
+        if (next === undefined) throw new Error("scripted harness exhausted");
+        return next;
+      },
+    };
+  }
+
+  /** A risk HARDENING plus prose — both apply themselves, so one run lands a
+   *  judgment with no human in the loop. */
+  const HARDENING = [
+    reply({
+      tools: [{
+        name: "host_a",
+        description: "Judged by the fake engine.",
+        risk: "write",
+        evidence: "await db.update(counter)",
+      }],
+      narrative: "host_a mutates a counter.",
+    }),
+    reply({ verdicts: [
+      { name: "host_a", field: "description", verdict: "uphold" },
+      { name: "host_a", field: "risk", verdict: "uphold" },
+    ] }),
+  ];
+
+  it("keyless: structural-only line, zero errors, exit 0, files untouched — CI needs no model", async () => {
+    const { dir, toolsPath, judgmentsPath } = await hostWithTools();
     const before = await readFile(toolsPath, "utf8");
     const messages = captureOutput();
     const exit = await runSync({
@@ -527,7 +564,7 @@ describe("sync AI enrichment integration (cse lane 1c)", () => {
       output: messages.output,
       fetchImpl: offline,
       sync: async () => report(),
-      enrich: {
+      judge: {
         resolveCredential: async () => ({ rung: "none" }),
         // proof, not inference: ANY engine touchpoint (even the availability
         // probe) throws and fails this test outright
@@ -540,61 +577,111 @@ describe("sync AI enrichment integration (cse lane 1c)", () => {
     });
     expect(exit).toBe(0);
     expect(messages.errors.filter((line) => !line.startsWith("warning:"))).toEqual([]);
-    expect(messages.logs.join("\n")).toContain("enrichment: structural-only");
+    expect(messages.logs.join("\n")).toContain("judgment: structural-only");
     expect(await readFile(toolsPath, "utf8")).toBe(before);
+    // A keyless pass records nothing: no empty judgments file appears.
+    await expect(readFile(judgmentsPath, "utf8")).rejects.toThrow();
   });
 
-  it("keyed: applies the fake engine's proposals and prints the narrative (apply-then-show)", async () => {
-    const { dir, toolsPath } = await hostWithTools();
+  it("keyed: writes the surviving judgment to judgments.json and prints the narrative", async () => {
+    const { dir, toolsPath, judgmentsPath } = await hostWithTools();
+    const beforeTools = await readFile(toolsPath, "utf8");
     const messages = captureOutput();
-    const harness = {
-      id: "scripted",
-      availability: async () => "scripted engine",
-      run: async () => `\`\`\`json\n${JSON.stringify({
-        tools: [{ name: "host_a", description: "Enriched by the fake engine.", risk: "write" }],
-        narrative: "host_a mutates a counter.",
-      })}\n\`\`\``,
-    };
     const exit = await runSync({
       targetDir: dir,
       output: messages.output,
       fetchImpl: offline,
       sync: async () => report(),
-      enrich: { harness, treeHash: async () => "feedfacefeedfacefeedfacefeedfacefeedface" },
+      judge: { harness: scripted([...HARDENING]) },
     });
     expect(exit).toBe(0);
-    const file = JSON.parse(await readFile(toolsPath, "utf8"));
-    expect(file.tools[0]).toMatchObject({ description: "Enriched by the fake engine.", risk: "write", enriched: true });
-    expect(file.watermark).toBe("feedfacefeedfacefeedfacefeedfacefeedface");
+    const file = JSON.parse(await readFile(judgmentsPath, "utf8"));
+    expect(file.tools.host_a).toMatchObject({
+      binding: "GET /api/a",
+      fields: { description: "Judged by the fake engine.", risk: "write" },
+      evidence: "await db.update(counter)",
+    });
+    // The judgment channel NEVER writes the deterministic skeleton.
+    expect(await readFile(toolsPath, "utf8")).toBe(beforeTools);
     expect(messages.logs.join("\n")).toContain("host_a mutates a counter.");
+    expect(messages.logs.join("\n")).toContain("1 tools judged");
   });
 
-  // TEMP: deleted by judgment-layer lane C2 — this used to also assert
-  // `watermark: false` reached vendoSync. That option is gone (sync writes no
-  // watermark at all now); what --no-watermark still has to do — skip the AI
-  // pass and leave tools.json byte-identical — is asserted below.
-  it("--no-watermark skips enrichment entirely and leaves tools.json untouched", async () => {
-    const { dir, toolsPath } = await hostWithTools();
+  it("--no-ai skips the pass entirely and leaves .vendo untouched", async () => {
+    const { dir, toolsPath, judgmentsPath } = await hostWithTools();
     const before = await readFile(toolsPath, "utf8");
     const messages = captureOutput();
     const syncSeam = vi.fn(async () => report());
-    const harness = {
-      id: "never",
-      availability: async () => "never",
-      run: async () => { throw new Error("must not run"); },
-    };
     const exit = await runSync({
       targetDir: dir,
       output: messages.output,
       fetchImpl: offline,
       sync: syncSeam as never,
-      noWatermark: true,
-      enrich: { harness },
+      noAi: true,
+      judge: {
+        harness: {
+          id: "never",
+          availability: async () => { throw new Error("must not probe"); },
+          run: async () => { throw new Error("must not run"); },
+        },
+      },
     });
     expect(exit).toBe(0);
     expect(syncSeam).toHaveBeenCalled();
-    expect(messages.logs.join("\n")).not.toContain("enrichment");
+    expect(messages.logs.join("\n")).not.toContain("judgment");
     expect(await readFile(toolsPath, "utf8")).toBe(before);
+    await expect(readFile(judgmentsPath, "utf8")).rejects.toThrow();
+  });
+
+  it("--review asks before a loosening lands; declining drops it and keeps the hardening", async () => {
+    const { dir, toolsPath, judgmentsPath } = await hostWithTools();
+    // Waking a scanner-disabled tool is the clearest loosening there is.
+    await writeFile(toolsPath, `${JSON.stringify({
+      format: "vendo/tools@3",
+      tools: [{
+        name: "host_a",
+        description: "Use this to call host_a.",
+        inputSchema: { type: "object", properties: {} },
+        risk: "read",
+        disabled: true,
+        binding: { kind: "route", method: "GET", path: "/api/a", argsIn: "query" },
+        srcHash: "sha256:a",
+      }],
+    }, null, 2)}\n`, "utf8");
+    const messages = captureOutput();
+    const questions: string[] = [];
+    const exit = await runSync({
+      targetDir: dir,
+      output: messages.output,
+      fetchImpl: offline,
+      sync: async () => report(),
+      review: true,
+      judge: {
+        harness: scripted([
+          reply({
+            tools: [{
+              name: "host_a",
+              description: "Reads the counter.",
+              disabled: false,
+              evidence: "export async function GET() {",
+            }],
+            narrative: "",
+          }),
+          reply({ verdicts: [
+            { name: "host_a", field: "description", verdict: "uphold" },
+            { name: "host_a", field: "disabled", verdict: "uphold" },
+          ] }),
+        ]),
+        confirm: async (question) => { questions.push(question); return false; },
+      },
+    });
+    expect(exit).toBe(0);
+    expect(questions.join("\n")).toContain("judgments.json");
+    expect(messages.logs.join("\n")).toContain("loosenings declined and dropped");
+    const file = JSON.parse(await readFile(judgmentsPath, "utf8"));
+    // The prose hardening applied itself; the wake did not land.
+    expect(file.tools.host_a.fields.description).toBe("Reads the counter.");
+    expect(file.tools.host_a.fields.disabled).toBeUndefined();
   });
 
   it("resolves a model key that lives only in the sync dir's .env.local (#567)", async () => {
@@ -603,39 +690,39 @@ describe("sync AI enrichment integration (cse lane 1c)", () => {
     // keeps the assertion deterministic no matter what real ANTHROPIC_API_KEY /
     // VENDO_API_KEY the developer/CI machine exports (which, with process env
     // winning, would otherwise mask the .env.local value under test).
-    const { dir, toolsPath } = await hostWithTools();
+    const { dir, judgmentsPath } = await hostWithTools();
     await writeFile(join(dir, ".env.local"), "VENDO_TEST_ONLY_MODEL_KEY=sk-only-in-dotenv\n", "utf8");
     const messages = captureOutput();
     let seenKey: string | undefined;
-    const harness = {
-      id: "npx-engine",
-      availability: async ({ env }: { env: Record<string, string | undefined> }) =>
-        (typeof env.VENDO_TEST_ONLY_MODEL_KEY === "string" ? "byo (.env.local)" : null),
-      run: async () => `\`\`\`json\n${JSON.stringify({
-        tools: [{ name: "host_a", description: "Enriched via the .env.local key.", risk: "write" }],
-        narrative: "host_a mutates a counter.",
-      })}\n\`\`\``,
-    };
+    const responses = [...HARDENING];
     const exit = await runSync({
       targetDir: dir,
       output: messages.output,
       fetchImpl: offline,
       sync: async () => report(),
-      enrich: {
-        harnesses: [harness],
+      judge: {
+        harnesses: [{
+          id: "npx-engine",
+          availability: async ({ env }: { env: Record<string, string | undefined> }) =>
+            (typeof env.VENDO_TEST_ONLY_MODEL_KEY === "string" ? "byo (.env.local)" : null),
+          run: async () => {
+            const next = responses.shift();
+            if (next === undefined) throw new Error("scripted harness exhausted");
+            return next;
+          },
+        }],
         resolveCredential: async ({ env }) => {
           seenKey = env.VENDO_TEST_ONLY_MODEL_KEY;
           return typeof env.VENDO_TEST_ONLY_MODEL_KEY === "string"
             ? { rung: "env-key", provider: "anthropic", envVar: "ANTHROPIC_API_KEY" }
             : { rung: "none" };
         },
-        treeHash: async () => "feedfacefeedfacefeedfacefeedfacefeedface",
       },
     });
     expect(exit).toBe(0);
     expect(seenKey).toBe("sk-only-in-dotenv");
-    const file = JSON.parse(await readFile(toolsPath, "utf8"));
-    expect(file.tools[0]).toMatchObject({ description: "Enriched via the .env.local key.", enriched: true });
+    const file = JSON.parse(await readFile(judgmentsPath, "utf8"));
+    expect(file.tools.host_a).toMatchObject({ fields: { description: "Judged by the fake engine." } });
   });
 
   it("no key in .env.local and none in process env stays structural-only (#567)", async () => {
@@ -650,7 +737,7 @@ describe("sync AI enrichment integration (cse lane 1c)", () => {
       output: messages.output,
       fetchImpl: offline,
       sync: async () => report(),
-      enrich: {
+      judge: {
         harnesses: [{
           id: "npx-engine",
           availability: async ({ env }: { env: Record<string, string | undefined> }) =>
@@ -664,11 +751,11 @@ describe("sync AI enrichment integration (cse lane 1c)", () => {
       },
     });
     expect(exit).toBe(0);
-    expect(messages.logs.join("\n")).toContain("enrichment: structural-only");
+    expect(messages.logs.join("\n")).toContain("judgment: structural-only");
     expect(await readFile(toolsPath, "utf8")).toBe(before);
   });
 
-  it("--json folds enrichment lines into notes, never stdout prose", async () => {
+  it("--json folds judgment lines into notes, never stdout prose", async () => {
     const { dir } = await hostWithTools();
     const messages = captureOutput();
     const exit = await runSync({
@@ -677,10 +764,12 @@ describe("sync AI enrichment integration (cse lane 1c)", () => {
       fetchImpl: offline,
       json: true,
       sync: async () => report(),
-      enrich: { resolveCredential: async () => ({ rung: "none" }) },
+      judge: { resolveCredential: async () => ({ rung: "none" }) },
     });
     expect(exit).toBe(0);
+    // Exactly one object on stdout: the pass's narrative never leaks as prose.
+    expect(messages.logs).toHaveLength(1);
     const result = JSON.parse(messages.logs[0]!);
-    expect(result.notes.join("\n")).toContain("enrichment: structural-only");
+    expect(result.notes.join("\n")).toContain("judgment: structural-only");
   });
 });

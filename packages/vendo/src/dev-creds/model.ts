@@ -1,12 +1,15 @@
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { acceptsSamplingParams, UNKNOWN_MODEL_MAX_OUTPUT_TOKENS } from "@vendoai/apps";
+import { meterExhaustedFromError, VendoError } from "@vendoai/core";
 import type { LanguageModel } from "ai";
 import { resolveCloudBaseUrl } from "../cli/cloud/client.js";
 import {
   describeDevCredential,
   resolveDevCredential,
   type DevCredential,
+  type EnvKeyProvider,
   type ResolveDevCredentialOptions,
 } from "./resolve.js";
 
@@ -63,13 +66,15 @@ interface LanguageModelV3Like {
   specificationVersion: "v3";
   provider: string;
   modelId: string;
-  supportedUrls: Record<string, RegExp[]>;
+  supportedUrls: PromiseLike<Record<string, RegExp[]>> | Record<string, RegExp[]>;
   doGenerate(options: unknown): PromiseLike<unknown>;
   doStream(options: unknown): PromiseLike<unknown>;
 }
 
 type Resolution =
-  | { mode: "delegate"; model: LanguageModelV3Like }
+  /** The credential rides along so a rejected key can name its own fix
+   *  (rejectedKey below); an explicit host-passed model object has none. */
+  | { mode: "delegate"; model: LanguageModelV3Like; credential?: DevCredential }
   | { mode: "unavailable"; message: string };
 
 interface ProviderSpec {
@@ -351,7 +356,7 @@ export class DevModelController {
     const modelId = this.modelId(spec);
     const model = factory(config)(modelId);
     this.announce(`${describeDevCredential(credential)} → ${modelId}${announceSuffix}`);
-    return { mode: "delegate", model };
+    return { mode: "delegate", model, credential };
   }
 
   private async resolveOnce(): Promise<Resolution> {
@@ -395,25 +400,112 @@ export class DevModelController {
     return { mode: "unavailable", message: NO_CREDENTIAL_MESSAGE };
   }
 
-  async doGenerate(callOptions: unknown): Promise<unknown> {
-    const resolution = await this.resolve();
-    if (resolution.mode === "delegate") return resolution.model.doGenerate(callOptions);
-    throw new Error(resolution.message);
+  /** This controller's own lazy model — the credential-aware call path. A
+   *  caller that probes `resolve()` first (vendo try's capability flags) must
+   *  hand THIS to the runtime, never the raw provider model the resolution
+   *  carries: only this path keeps the rejected key's rung (rejectedKey). */
+  model(): LanguageModel {
+    return lazyModel(this, "vendo", this.name ?? "vendo-env");
   }
 
-  async doStream(callOptions: unknown): Promise<unknown> {
-    const resolution = await this.resolve();
-    if (resolution.mode === "delegate") return resolution.model.doStream(callOptions);
-    throw new Error(resolution.message);
+  doGenerate(callOptions: unknown): Promise<unknown> {
+    return this.call(callOptions, (model, options) => model.doGenerate(options));
   }
+
+  doStream(callOptions: unknown): Promise<unknown> {
+    return this.call(callOptions, (model, options) => model.doStream(options));
+  }
+
+  private async call<T>(
+    callOptions: unknown,
+    invoke: (model: LanguageModelV3Like, options: unknown) => PromiseLike<T>,
+  ): Promise<T> {
+    const resolution = await this.resolve();
+    if (resolution.mode === "unavailable") throw new VendoError("validation", resolution.message);
+    try {
+      return await invoke(resolution.model, resolvedCallOptions(callOptions, resolution.model));
+    } catch (error) {
+      const fix = rejectedKey(resolution.credential, error);
+      if (fix === undefined) throw error;
+      // The provider error stays the `cause`: its request id and response
+      // headers are the operator's diagnostic trail, and the agent logs the
+      // thrown error verbatim before the wire ever sees the crafted message.
+      throw Object.assign(fix, { cause: error });
+    }
+  }
+}
+
+const PROVIDER_LABELS: Record<EnvKeyProvider, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  google: "Google",
+};
+
+/** The rejected-key fix, per rung. Only the ladder knows WHICH credential the
+ *  provider just refused, so this is the one place the next step can be right:
+ *  telling a BYO-key host to run `vendo login` (or a Cloud host to edit a
+ *  provider key) sends them the wrong way. A 401 carrying the Cloud meter
+ *  refusal keeps its own richer sentence (the agent's pricing rail formats that
+ *  from the body); every other error travels untouched. A status duck-check is
+ *  enough here — unlike the agent's wire gate, this only ever sees the model
+ *  call's own failure, whichever ai-SDK copy the provider install came from. */
+function rejectedKey(credential: DevCredential | undefined, error: unknown): VendoError | undefined {
+  const rejected = typeof error === "object" && error !== null
+    && (error as { statusCode?: unknown }).statusCode === 401
+    && meterExhaustedFromError(error) === undefined;
+  if (!rejected) return undefined;
+  if (credential?.rung === "vendo-cloud") {
+    return new VendoError(
+      "cloud-required",
+      "VENDO_API_KEY was rejected by the Vendo Cloud model gateway (401) — run `vendo login` to mint a fresh key "
+      + "(it lands in .env.local), or manage project keys in the Vendo Cloud console.",
+    );
+  }
+  if (credential?.rung === "env-key") {
+    return new VendoError(
+      "validation",
+      `your ${PROVIDER_LABELS[credential.provider]} API key was rejected (401) — check ${credential.envVar} `
+      + "in .env.local; a revoked or mistyped key fails exactly this way.",
+    );
+  }
+  return undefined;
+}
+
+/** Sampling params, re-decided against the RESOLVED rung. The lazy wrapper's
+ *  modelId is the family name by design (lazyModel below), so model-params'
+ *  Claude 5 allowlist never sees the real id: the engine's `temperature: 0`
+ *  rides through the ladder and a pinned Claude 5 rung 400s every call (#692).
+ *  Call time is after resolution — the one moment the real id is known — so a
+ *  rejecting rung's sampling params are dropped here and the explicit output
+ *  cap is set (same rule and reasons as modelCallParams: a sampling-era
+ *  provider registry silently truncates an unknown id at 4096 otherwise).
+ *  Sampling-era Claude and non-Claude rungs pass through untouched. */
+function resolvedCallOptions(callOptions: unknown, model: LanguageModelV3Like): unknown {
+  if (acceptsSamplingParams(model.modelId)) return callOptions;
+  const options = { ...(callOptions as Record<string, unknown>) };
+  delete options["temperature"];
+  delete options["topP"];
+  delete options["topK"];
+  options["maxOutputTokens"] ??= UNKNOWN_MODEL_MAX_OUTPUT_TOKENS;
+  return options;
 }
 
 function lazyModel(controller: DevModelController, provider: string, modelId: string): LanguageModel {
   const model: LanguageModelV3Like = {
     specificationVersion: "v3",
+    // The lazy IDENTITY is vendo's own by design (the family name is the seam).
     provider,
     modelId,
-    supportedUrls: {},
+    // CAPABILITY, though, must be the resolved provider's: the SDK reads
+    // supportedUrls to decide whether a remote image/PDF is ingested natively
+    // or downloaded first, so answering "none" makes callers fetch files the
+    // provider could have fetched itself — fatal under restricted egress. The
+    // spec allows a promise here, which is what lets a lazy rung answer.
+    get supportedUrls() {
+      return controller.resolve().then((resolution) => (
+        resolution.mode === "delegate" ? resolution.model.supportedUrls : {}
+      ));
+    },
     doGenerate: (callOptions) => controller.doGenerate(callOptions),
     doStream: (callOptions) => controller.doStream(callOptions),
   };
@@ -427,8 +519,7 @@ function lazyModel(controller: DevModelController, provider: string, modelId: st
  *  agent slot: `vendo` on the Cloud rung, the provider's flagship default on
  *  a BYO rung. A name is passed VERBATIM to the resolved rung. */
 export function vendoModel(name?: string, options: VendoModelOptions = {}): LanguageModel {
-  const controller = new DevModelController({ ...options, ...(name === undefined ? {} : { name }) });
-  return lazyModel(controller, "vendo", name ?? "vendo-env");
+  return new DevModelController({ ...options, ...(name === undefined ? {} : { name }) }).model();
 }
 
 /** @deprecated Renamed `vendoModel()` (models spec 2026-07-22) — same ladder,

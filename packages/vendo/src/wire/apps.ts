@@ -86,10 +86,41 @@ export const appRoutes: RouteEntry[] = [
   route("POST", "/apps/fork-pin", async ({ request, deps, context }) => {
     const ctx = await context("app");
     const body = await requestJson(request);
+    // 2026-08-02 final shape — `props` is the wrapper's serializable live
+    // props at fork time, stored on the fork as its dashboard seed.
+    const props = body["props"];
+    if (props !== undefined && (typeof props !== "object" || props === null || Array.isArray(props))) {
+      throw new VendoError("validation", "props must be an object");
+    }
     return json(await deps.apps.pins.fork({
       slot: string(body["slot"], "slot"),
+      ...(props === undefined ? {} : { props: props as Record<string, Json> }),
       ...(body["instruction"] === undefined ? {} : { instruction: string(body["instruction"], "instruction") }),
     }, ctx));
+  }),
+  // Remix final shape (2026-08-02) — the review seam for the host's console:
+  // every review-kind version awaiting a reviewer, with requester, slot,
+  // version hash, submission time, resubmission count and the ship-diff
+  // payload. It crosses owner boundaries, so it carries the FULL scoping of
+  // the in-client approval seam (wire/misc.ts): a development composition AND
+  // a host-resolved principal — reviewing is a HOST trust decision, and no
+  // wire surface may expose one subject's pending fork source to another.
+  // Even in dev the cross-owner read requires the composition's reviewer
+  // assertion (apps.review.reviewer, enforced by the runtime); without it a
+  // caller sees only their own submissions, and any other caller gets an
+  // EMPTY queue — masked, never a probe. Production reviews ride Cloud's
+  // console, or the self-hoster's own admin-authenticated route over the
+  // runtime surface (apps.review).
+  // Like fork-pin above, this entry must stay ahead of the "/apps/:appId/*"
+  // catch-all, whose rest pattern would otherwise capture
+  // appId="review-queue".
+  route("GET", "/apps/review-queue", async ({ deps, context }) => {
+    const ctx = await context("app");
+    if (!deps.development || ctx.principal.ephemeral === true) return json([]);
+    // Round-2 hardening: the runtime scopes the answer — the FULL queue only
+    // under the host's reviewer assertion (apps.review.reviewer); any other
+    // host-resolved caller sees just their own submissions.
+    return json(await deps.apps.review.queue(ctx));
   }),
   route("POST", "/apps/import", async ({ request, deps, context }) => {
     // The CSRF floor exempts import (binary body), so it must instead require
@@ -234,6 +265,22 @@ export const appRoutes: RouteEntry[] = [
         slot: string(body["slot"], "slot"),
         ...(body["instruction"] === undefined ? {} : { instruction: string(body["instruction"], "instruction") }),
       }, ctx));
+    }
+    // Remix final shape (2026-08-02) — the reviewer's rejection of the app's
+    // CURRENT review-kind version: the note is REQUIRED (it is what the
+    // user's panel surfaces) and the work is not deleted — a new version
+    // supersedes the rejection. Reviewer-side and cross-subject by design,
+    // so it carries the review queue's full scoping (development composition
+    // + host-resolved principal + the composition's reviewer assertion,
+    // enforced by the runtime: without apps.review.reviewer the reject
+    // refuses, naming the hook) instead of owner scoping; any other caller
+    // gets the same not-found an unowned app answers (masked).
+    if (request.method === "POST" && operation === "reject-review" && segments.length === 3) {
+      if (!deps.development || ctx.principal.ephemeral === true) {
+        throw new VendoError("not-found", `app not found: ${appId}`);
+      }
+      const body = await requestJson(request);
+      return json(await deps.apps.review.reject({ appId, note: string(body["note"], "note") }, ctx));
     }
     // Wave 7 H2 — the embed surface's keepalive: user activity on an embedded
     // served app rides one host-proxied HEAD through the machine (re-arming

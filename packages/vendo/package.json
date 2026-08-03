@@ -1,6 +1,6 @@
 {
   "name": "@vendoai/vendo",
-  "version": "0.5.0",
+  "version": "0.6.1",
   "description": "The Vendo umbrella: default composition, public wire routes, React provider, and the vendo CLI.",
   "keywords": [
     "ai",
@@ -97,7 +97,7 @@
     "pretest": "pnpm run build:playground",
     "test": "vitest run",
     "pretypecheck": "pnpm run build:playground",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.docs-check.json --noEmit",
     "pretest:coverage": "pnpm run build:playground",
     "test:coverage": "vitest run --coverage"
   },

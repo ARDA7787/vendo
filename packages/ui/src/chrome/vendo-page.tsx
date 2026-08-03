@@ -13,8 +13,15 @@ import { ACTIVITY_ANCHOR_ATTRIBUTE, ACTIVITY_BUMP_EVENT } from "./morph-toast.js
 import { ConnectedAccountsPanel } from "./connected-accounts-panel.js";
 import { ForkOffer, ShareDialog } from "./share-dialog.js";
 import { TakeoverPortal } from "./takeover-portal.js";
-import { VendoThread } from "./thread/index.js";
+import { VendoThread, type VendoThreadProps } from "./thread/index.js";
 import { WaitingQueue } from "./waiting-queue.js";
+
+/** Host passthrough for the chat tab's thread — the same starter cards and
+    discoverability dial a standalone VendoThread takes, so a host's curated
+    landing survives the move onto the full workspace. */
+export interface VendoPageProps {
+  thread?: Pick<VendoThreadProps, "suggestions" | "discoverability">;
+}
 
 const TABS = ["chat", "apps", "automations", "accounts", "activity"] as const;
 
@@ -27,7 +34,7 @@ function title(tab: Tab): string {
   return tab[0]!.toUpperCase() + tab.slice(1);
 }
 
-function ChatWorkspace() {
+function ChatWorkspace({ thread }: { thread?: VendoPageProps["thread"] }) {
   const takeover = useMobileTakeover();
   const { threads, isLoading, error: threadsError, refresh } = useThreads();
   const [selected, setSelected] = useState<string>();
@@ -113,10 +120,12 @@ function ChatWorkspace() {
           <VendoThread
             threadId={selected}
             onThreadId={onThreadId}
+            {...(thread?.suggestions === undefined ? {} : { suggestions: thread.suggestions })}
             discoverability={
-              userChose.current || (!isLoading && threadsError === undefined && threads.length === 0)
-                ? undefined
-                : "quiet"
+              thread?.discoverability
+                ?? (userChose.current || (!isLoading && threadsError === undefined && threads.length === 0)
+                  ? undefined
+                  : "quiet")
             }
           />
         </div>
@@ -127,13 +136,25 @@ function ChatWorkspace() {
 
 function OpenApp({ appId }: { appId: string }) {
   const { client, components } = useVendoContext();
-  const { surface, refresh } = useApp(appId);
+  const { surface, error, isLoading, refresh } = useApp(appId);
   // Wave 7 H2 — same keepalive as VendoSlot's MountedApp (see frames.tsx).
   const keepalive = useMemo(
     () => ({ ping: () => client.apps.pingMachine(appId), reopen: refresh }),
     [appId, client, refresh],
   );
-  if (!surface) return <div role="status">Opening app…</div>;
+  if (!surface) {
+    // useApp has already spent its retries; without a way to ask again the
+    // pane sat on "Opening app…" until a page reload (Keystone graduates A5).
+    if (error && !isLoading) {
+      return (
+        <div role="alert" className="fl-error">
+          This app didn’t open — {error.message}
+          <button type="button" className="fl-error-retry" onClick={() => void refresh()}>Try again</button>
+        </div>
+      );
+    }
+    return <div role="status">Opening app…</div>;
+  }
   return <AppFrame key={appId} surface={surface} components={components} keepalive={keepalive} onAction={({ action, payload }) => client.apps.call(appId, action, payload ?? {})} />;
 }
 
@@ -324,7 +345,7 @@ function AppsWorkspace() {
 }
 
 /** 08-ui §4 — full workspace with WAI-ARIA automatic-activation tabs. */
-export function VendoPage() {
+export function VendoPage({ thread }: VendoPageProps = {}) {
   const takeover = useMobileTakeover();
   const [tab, setTab] = useState<Tab>("chat");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -389,7 +410,7 @@ export function VendoPage() {
         </div>
         <div className="fl-page-body">
           <section className="fl-page-pane" id={`vendo-panel-${tab}`} role="tabpanel" aria-labelledby={`vendo-tab-${tab}`}>
-            {tab === "chat" ? <ChatWorkspace /> : null}
+            {tab === "chat" ? <ChatWorkspace thread={thread} /> : null}
             {tab === "apps" ? <AppsWorkspace /> : null}
             {tab === "automations" ? <AutomationsPanel /> : null}
             {tab === "accounts" ? <ConnectedAccountsPanel /> : null}

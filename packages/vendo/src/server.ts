@@ -28,6 +28,12 @@ export { vendo, type VendoHarnessDeps, type VendoHarnessOptions } from "@vendoai
 // package the host installed (architecture §6).
 export { instant, type InstantHarnessDeps, type InstantHarnessOptions } from "@vendoai/harnesses";
 import { createHarnessTurns, type HarnessTurns } from "./harness-turn.js";
+// Both types already sit in the PUBLIC signatures below — `apps:` is typed off
+// `AppsConfig`, `Vendo.harness` is a `HarnessTurns` — so a host reads them
+// today and simply cannot name them. Exported so it can (and so the quickstart
+// config listing, which is compiled against these very interfaces, can too).
+export type { HarnessTurns } from "./harness-turn.js";
+export type { AppsConfig } from "@vendoai/apps";
 import { createTurnCredentials, type TurnCredentials } from "./turn-credentials.js";
 import { warnDeprecatedConfigKeys } from "./config-keys.js";
 import { orgPolicyPath, orgPolicyResolver, workspacePolicySource } from "./org-policy.js";
@@ -192,6 +198,11 @@ import { cloudConfig, type CloudConfig, type CloudConfigResult } from "./cloud-c
 // rides the server surface too: the composition seam (selectConfigSurface)
 // consults it for a `.vendo` surface the host neither set nor keeps on disk.
 export { cloudConfig, type CloudConfig, type CloudConfigDoc, type CloudConfigResult, type CloudConfigOptions } from "./cloud-config.js";
+import { createTourScript, type TourEntry } from "./tours/index.js";
+// Tour mode is plain OSS config — the entry types ride the server surface so a
+// host can name them (`const tours: TourEntry[] = [...]`) without reaching
+// into a subpath.
+export type { TourApp, TourEntry, TourPart, TourResponse } from "./tours/index.js";
 import { selectConfigSurface, type ConfigSurfaceName } from "./config-surface.js";
 export {
   selectConfigSurface,
@@ -219,7 +230,6 @@ export {
   type MergedPacks,
   type PackContext,
 } from "./packs/index.js";
-import { createRuntimeCapture } from "./runtime-capture.js";
 import {
   BASE_PATH,
   VERSION,
@@ -292,7 +302,10 @@ export interface Vendo {
 // beside createVendo/CreateVendoConfig: the hosted try venue (a Worker in the
 // console repo) composes typed `profile` pieces against the umbrella alone,
 // without adding a direct @vendoai/actions or @vendoai/core dependency.
-export type { CatalogFile, ExtractedTool, OverridesFile } from "@vendoai/actions";
+// ServerActionHandler rides along for the same reason: it is the value type of
+// the documented `serverActions` config key, so a host must be able to name it
+// without adding a direct @vendoai/actions dependency.
+export type { CatalogFile, ExtractedTool, OverridesFile, ServerActionHandler } from "@vendoai/actions";
 export type { VendoTheme } from "@vendoai/core";
 export type { PolicyFile } from "@vendoai/guard";
 
@@ -402,15 +415,15 @@ export interface CreateVendoConfig {
   judge?: Judge;
   secrets?: SecretsProvider;
   telemetry?: boolean;
-  /** Development-only source capture. NODE_ENV=development enables this with
-      cwd/.vendo defaults; an explicit object supplies a host root for adapters
-      whose process cwd differs. `false` disables the environment default. */
-  development?: boolean | { root?: string; out?: string };
+  /** Development-only injection seams (e.g. /dev/inclient-approval).
+      NODE_ENV=development enables them; `false` disables the environment
+      default. */
+  development?: boolean;
   /** Unified try surface — the project root the `.vendo/` profile is read
       under: the actions files (tools.json/overrides.json via the actions
       block's `dir`), theme.json, brief.md, catalog.json, the
-      per-generation design-rules.md read, the remixable pin baselines, and the
-      development-capture defaults all resolve against it. Unset keeps today's
+      per-generation design-rules.md read, and the remixable pin baselines
+      all resolve against it. Unset keeps today's
       behavior (the process cwd), so `npx vendo try` can mount a real
       composition over a profile living in a temp directory without chdir. */
   profileDir?: string;
@@ -547,6 +560,19 @@ export interface CreateVendoConfig {
   apps?: {
     experimentalServedApps?: boolean;
     experimentalMachines?: boolean;
+    /** Remix review (round-2 hardening 2026-08-02) — the host's reviewer
+        assertion for the review-kind remix lifecycle: whether THIS caller may
+        read the full review queue, reject, and approve review-kind remixes.
+        Reviewing crosses owner boundaries, so it is never inferred from a
+        principal alone. Unset, the dev review-queue route serves only the
+        caller's own submissions, reject refuses naming this hook, and a user
+        can never approve their own review-kind remix. The same gate rides the
+        runtime surface (`vendo.apps.review` / `vendo.apps.inClient.approve`)
+        — the production path a self-hoster mounts an admin-authenticated
+        route over; Cloud's console is the hosted equivalent. */
+    review?: {
+      reviewer?(ctx: RunContext): boolean | Promise<boolean>;
+    };
     /** The island smoke-render gate: every generated island renders once in a
         headless DOM before it can reach a screen. ON unless explicitly false. */
     pipeline?: AppsConfig["pipeline"];
@@ -576,6 +602,15 @@ export interface CreateVendoConfig {
       written as a plain function of the boot context — which is exactly what
       `apps()` is, so it has no privileged path a third party lacks. */
   packs?: readonly PackProvider<PackContext>[];
+  /** Tour mode — deterministic scripted responses in front of the real agent,
+      for demos and onboarding tours. An ordered list of `{ prompt, respond }`
+      entries: an entry fires only on a close variant of its own frozen prompt
+      (normalized similarity, not keywords) and only ONCE per thread, replaying
+      its recorded prose and app documents at a live turn's cadence. Every
+      other ask — including a follow-up about what a tour just put on screen —
+      falls through to the live agent untouched. Plain config: no key, no Cloud
+      dependency, identical behavior with and without VENDO_API_KEY. */
+  tours?: readonly TourEntry[];
 }
 
 /** ENG-237 recommended defaults (documented in the PR body; Yousef-gated as
@@ -2165,6 +2200,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // that runs generated web apps is a deliberate per-project decision).
     ...(config.apps?.experimentalServedApps === undefined ? {} : { experimentalServedApps: config.apps.experimentalServedApps }),
     ...(config.apps?.experimentalMachines === undefined ? {} : { experimentalMachines: config.apps.experimentalMachines }),
+    // Round-2 hardening — the host's reviewer assertion for the review-kind
+    // remix lifecycle, threaded verbatim (see the CreateVendoConfig comment).
+    ...(config.apps?.review === undefined ? {} : { review: config.apps.review }),
     // Wave 9 — a ladder-authored automation is armed through the automations
     // engine's own enable(), so the 07 §3 grant-capture flow runs at creation
     // and the missing standing-grant approvals surface on the edit result.
@@ -2394,6 +2432,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // runs, exposed so needsApproval never mints an approval for a call the
     // gate will refuse with a connect card.
     preflight: (call, ctx) => connectGate.check(call, ctx),
+    // Tour mode. Composed only when a host configured tours, so a deployment
+    // without them has no seam to pay for and no way to grow one.
+    ...(config.tours === undefined || config.tours.length === 0
+      ? {}
+      : { scripted: createTourScript({ tours: config.tours, apps }) }),
   });
   // Architecture §3 — WHO THINKS, composed ONCE.
   //
@@ -2527,6 +2570,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
         revoke: (token: string) => turnCredentials.revoke(token),
       },
     } : {}),
+    // Tour mode, composed on THIS door too. `createAgent` below takes the same
+    // hook, but post-flip the harness door is the one `POST /threads` reaches
+    // for every SQL-capable store — wiring only the agent would leave tours
+    // silently dead on the shipped default. One script, both doors.
+    ...(config.tours === undefined || config.tours.length === 0
+      ? {}
+      : { scripted: createTourScript({ tours: config.tours, apps }) }),
   });
   /**
    * THE harness door — one object, served two ways.
@@ -2855,13 +2905,6 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   const development = config.development !== undefined
     ? config.development !== false
     : isDevelopmentEnv;
-  // profileDir fills the capture-root default (its out then derives under it);
-  // an explicit development.root/out always wins.
-  const developmentPaths = {
-    ...(config.profileDir === undefined ? {} : { root: config.profileDir }),
-    ...(typeof config.development === "object" ? config.development : {}),
-  };
-  const runtimeCapture = development ? createRuntimeCapture(developmentPaths) : null;
   const handler = createWireHandler({
     principal: resolvePrincipal,
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
@@ -2911,7 +2954,6 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     sweep: runSweep,
     sweepEnabled,
     ...(door === undefined ? {} : { door }),
-    ...(runtimeCapture === null ? {} : { runtimeCapture }),
     onRequestOrigin: (origin) => {
       // Same-origin default for route-binding execution (04): no VENDO_BASE_URL
       // → the wire's own origin, learned from the first VALIDATED request and

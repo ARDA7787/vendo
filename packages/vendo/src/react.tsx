@@ -64,6 +64,10 @@ export {
   ScriptedTransport,
   type DirectorCue,
   type DirectorScript,
+  // pin-events.ts — the bus a slot re-reads on, for a host that pins from its
+  // own control instead of a Vendo surface.
+  announcePin,
+  onPinAnnounced,
   // theme.ts
   defaultVendoTheme,
   resolveTheme,
@@ -98,7 +102,6 @@ export {
 // does not resolve for them (same TS2307 story as the registry's
 // ComponentRegistry import).
 export { VendoOverlay, type VendoOverlayProps } from "@vendoai/ui/chrome";
-export { remixable, type RemixableRegistration, type RemixableReportOptions } from "./remixable.js";
 
 type ProviderProps = ComponentProps<typeof VendoProvider>;
 

@@ -72,6 +72,9 @@ const CENTS_SCHEMA: JsonSchema = {
   },
 };
 
+// Labels are the humanized form (#698, "labels prettified for reading"); the
+// VALUE column is what this file is about. The raw value still rides the dd
+// tooltip, so nothing about the honesty contract is traded for the prettier dt.
 describe("the consent card's money rendering", () => {
   it("renders a host-declared cents amount as money, never as its raw integer", () => {
     const rows = rowsOf(transfer(
@@ -79,9 +82,9 @@ describe("the consent card's money rendering", () => {
       CENTS_SCHEMA,
     ));
     expect(rows).toEqual([
-      ["memo", "July water bill"],
-      ["amount", "$47.50"],
-      ["recipient_name", "Acme Utilities"],
+      ["Memo", "July water bill"],
+      ["Amount", "$47.50"],
+      ["Recipient name", "Acme Utilities"],
     ]);
     // The exact misread the proof caught: 4750 must not survive anywhere on the
     // card's fields.
@@ -93,7 +96,7 @@ describe("the consent card's money rendering", () => {
       { amountCents: 4750 },
       { type: "object", properties: { amountCents: { type: "integer" } } },
     ));
-    expect(rows).toEqual([["amountCents", "$47.50"]]);
+    expect(rows).toEqual([["Amount cents", "$47.50"]]);
   });
 
   it("renders a host-declared dollars amount as money too", () => {
@@ -101,14 +104,14 @@ describe("the consent card's money rendering", () => {
       { amount: 47.5 },
       { type: "object", properties: { amount: { type: "number", description: "Amount in dollars" } } },
     ));
-    expect(rows).toEqual([["amount", "$47.50"]]);
+    expect(rows).toEqual([["Amount", "$47.50"]]);
   });
 
   it("says the unit is unspecified rather than letting an undeclared amount read as dollars", () => {
     // The in-thread card synthesizes an EMPTY descriptor schema, so this is the
     // real state of a live surface, not a hypothetical.
     const rows = rowsOf(transfer({ amount: 4750 }, {}));
-    expect(rows).toEqual([["amount", "4750 (unit not specified)"]]);
+    expect(rows).toEqual([["Amount", "4750 (unit not specified)"]]);
   });
 
   it("leaves every non-money value exactly as it was — no currency guessing", () => {
@@ -125,10 +128,10 @@ describe("the consent card's money rendering", () => {
       },
     ));
     expect(rows).toEqual([
-      ["invoiceId", "inv_42"],
-      ["count", "4750"],
-      ["permanent", "true"],
-      ["quantity", "2"],
+      ["Invoice id", "inv_42"],
+      ["Count", "4750"],
+      ["Permanent", "true"],
+      ["Quantity", "2"],
     ]);
   });
 });

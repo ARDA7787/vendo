@@ -94,6 +94,7 @@ truth about the code as it stands.
 | `approvals` | **adapter family** (the guard's approval lifecycle) | unchanged |
 | `apps` | **pack option** → `apps({ … })` | unchanged. `designRules`, `fillConcurrency`, `checks`, `pipeline` are generation options; `experimentalMachines` / `experimentalServedApps` are project-level opt-ins. Deliberately NOT given a second spelling in wave 2: `apps: {…}` works, no host asked for `apps({…})`, and two spellings for one thing is the cost, not the feature |
 | `packs` | **slot** `packs` | unchanged; unset means `[apps()]` |
+| `tours` | **venue plumbing** (tour mode's scripted-turn seam) | unchanged. Plain OSS config, arrived on main after this table was written (#713): an ordered list of `{ prompt, respond }` entries replayed in front of the live agent. It composes the agent's `scripted` hook and nothing else, so it has no slot to move into |
 
 ## Deleted keys
 

@@ -70,13 +70,22 @@ export { appVersionHash } from "./version-hash.js";
 export {
   type InClientVenueState,
   type InClientVerdict,
+  type ReviewStanding,
 } from "./inclient.js";
+// Remix final shape (2026-08-02) — the review-kind lifecycle vocabulary:
+// the queue entry the console seam lists and the rejection record the note
+// surfaces from (AppsRuntime.review is the behavior surface).
+export {
+  remixRejectionSchema,
+  type RemixRejection,
+  type ReviewQueueEntry,
+} from "./review.js";
 export {
   type ShipDiff,
   type ShipDiffGenerated,
   type ShipDiffPin,
 } from "./ship-diff.js";
-// The bench host surface (apps/genui-bench): the demo-bank catalog/tool/shape
+// The bench host surface (tools/genui-bench): the demo-bank catalog/tool/shape
 // loaders the live harnesses already share, exported because the exports map
 // closes deep imports. Data-only helpers — no engine behavior rides on them.
 // HostToolInfo is the tool slice those loaders (and GenerationDependencies)
@@ -100,6 +109,16 @@ export type {
 // function of the public AppPlan, so demo/harness surfaces can render a plan's
 // skeleton without booting the engine.
 export { skeletonFromPlan, type Skeleton } from "./generation/skeleton.js";
+// The model-capability rule (model-params.ts): which Claude ids still accept
+// sampling params, and the output cap for ids a sampling-era provider registry
+// does not know. Exported for the umbrella's model ladder — its lazy wrapper
+// reports a family id ("vendo-env"), so the resolved rung's REAL id must be
+// re-checked at call time (#692). Data-only rule — no engine behavior rides
+// on the export.
+export {
+  acceptsSamplingParams,
+  UNKNOWN_MODEL_MAX_OUTPUT_TOKENS,
+} from "./model-params.js";
 export {
   UNSTORED_APP_ID,
   type GeneratedAppDocument,

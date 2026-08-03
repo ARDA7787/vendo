@@ -98,7 +98,7 @@ const extracted = (
 
 /**
  * The tools.json a Maple-shaped host ships. The first two names and bindings are
- * copied from `apps/demo-bank/.vendo/tools.json` verbatim — they are the observed
+ * copied from `examples/demo-bank/.vendo/tools.json` verbatim — they are the observed
  * bug, not an invention.
  */
 const TOOLS = [

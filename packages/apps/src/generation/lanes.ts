@@ -308,11 +308,13 @@ export const armAutomationTrigger = async (
   seam: ArmAutomationSeam | undefined,
   appId: AppId,
   ctx: RunContext,
-): Promise<{ pendingGrants?: ApprovalRequest[]; issues: string[] }> => {
-  if (seam === undefined) return { issues: [] };
+): Promise<{ enabled: boolean; pendingGrants?: ApprovalRequest[]; issues: string[] }> => {
+  // No seam means the stored row was armed by the persist itself.
+  if (seam === undefined) return { enabled: true, issues: [] };
   try {
     const armed = await seam(appId, ctx);
     return {
+      enabled: armed.enabled,
       ...(armed.missing.length === 0 ? {} : { pendingGrants: structuredClone(armed.missing) }),
       issues: armed.enabled
         ? []
@@ -320,6 +322,7 @@ export const armAutomationTrigger = async (
     };
   } catch (error) {
     return {
+      enabled: false,
       issues: [`the automation was authored but arming it failed (${error instanceof Error ? error.message : "unknown error"}) — enable it explicitly via the automations engine (automations.enable / POST /automations/:appId/enable)`],
     };
   }
@@ -404,6 +407,10 @@ export interface ServerLaneResult extends LaneResult {
   automation?: {
     mode: "steps" | "agentic";
     trigger: Trigger;
+    /** What the arming actually produced — false when the seam left the trigger
+     *  disarmed or arming threw (the issues entry says why). The thread's
+     *  automation card needs the true state, not an inference. */
+    enabled: boolean;
     resultsCollection?: string;
     /** Standing-grant approvals the arming seam surfaced. */
     pendingGrants?: ApprovalRequest[];
@@ -473,10 +480,14 @@ const runAutomationArm = async (
     }
   }
   let pendingGrants: ApprovalRequest[] | undefined;
+  // Direct arming happens inside land() (armTrigger) — enabled unless the
+  // host's seam reports otherwise.
+  let enabled = true;
   if (deps.land !== undefined) {
     await deps.land(landed, { armTrigger: deps.armAutomation === undefined });
     const armed = await armAutomationTrigger(deps.armAutomation, deps.appId, deps.ctx);
     pendingGrants = armed.pendingGrants;
+    enabled = armed.enabled;
     findings.push(...armed.issues.map((issue) => warn(where, issue)));
   }
   return {
@@ -485,6 +496,7 @@ const runAutomationArm = async (
     automation: {
       mode,
       trigger: structuredClone(automation.trigger),
+      enabled,
       ...(automation.resultsCollection === undefined ? {} : { resultsCollection: automation.resultsCollection }),
       ...(pendingGrants === undefined ? {} : { pendingGrants }),
     },

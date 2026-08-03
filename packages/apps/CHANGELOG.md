@@ -1,5 +1,86 @@
 # @vendoai/apps
 
+## 0.6.1
+
+### Patch Changes
+
+- a2bd192: A Claude 5 model pinned through the model ladder can generate again (#692).
+
+  `vendoModel()`'s lazy wrapper reports its family id (`"vendo-env"`) by design,
+  so model-params' Claude 5 allowlist never saw the resolved rung's real id: the
+  engine's `temperature: 0` rode through the ladder and a pinned Claude 5 model
+  (`VENDO_MODEL=claude-sonnet-5` with `ANTHROPIC_API_KEY`) rejected every call
+  with 400 "`temperature` is deprecated for this model". Sampling support is now
+  re-decided at call time against the RESOLVED rung — the one moment the real id
+  is known — dropping the sampling params such a rung rejects and setting the
+  explicit output cap that guards against a sampling-era provider's silent 4096
+  truncation. Sampling-era Claude and non-Claude rungs pass through untouched.
+  `@vendoai/apps` exports the capability rule (`acceptsSamplingParams`,
+  `UNKNOWN_MODEL_MAX_OUTPUT_TOKENS`) so the umbrella rides the engine's one
+  allowlist instead of a copy.
+
+  - @vendoai/core@0.6.1
+
+## 0.6.0
+
+### Minor Changes
+
+- 3ae3d13: Delete template tool descriptions and the domains manifest.
+
+  `vendo sync` no longer invents a description for a tool your API does not
+  describe. The deterministic `"Use this to …"` generator is gone: an
+  undescribed tool carries `""` in `.vendo/tools.json`, which is the honest
+  keyless state. Sync's AI enrichment pass proposes real descriptions when a
+  model credential is present, and `overrides.json → tools[name].description`
+  still wins forever.
+
+  The domains manifest is gone end to end. Generation already receives the full
+  tool list, so a derived summary of tool nouns told the model nothing new — and
+  a finite `hasNot` can never enumerate what a host lacks. Removed: the `domains`
+  field from both `.vendo/tools.json` and `.vendo/overrides.json`, the
+  `DATA DOMAINS` prompt section, and the `domains` provider slot on the apps
+  runtime.
+
+  Removed public API: `DomainManifest` and `domainManifestSchema` (from
+  `@vendoai/core`); the `domains` field on `ToolsFile` / `OverridesFile`;
+  `createApps({ domains })`. `mergedSemanticsAndDomains` is now
+  `mergedHostSemantics` and returns the per-tool semantics record directly
+  (the `MergedHostSemantics` wrapper type is gone).
+
+  `.vendo/overrides.json` is strict, so a leftover `domains` key now fails
+  loudly at parse — delete it and re-run `vendo sync`.
+
+- a7199db: Chrome polish wave + the automation card's missing emitter.
+
+  - **Status ribbon docks onto the composer** (Codex-style): narrower than the
+    composer, top corners only, its bottom edge tucked behind the card — no more
+    floating pill with a gap, on both the page surface and the overlay's
+    dock-anchor DOM.
+  - **Approval card de-escalated**: the ceremony card keeps the neutral surface
+    with a single amber accent bar instead of the full yellow wash; the
+    ALL-CAPS "CRITICAL" eyebrow is gone; risk slugs render in the user's
+    language ("Irreversible", "Makes changes", "Read-only") with the raw slug
+    intact on `data-risk` and the tooltip.
+  - **App-card dot stands down when ready**: the pulsing build dot fades and
+    collapses once the view is generated; the ready bar carries just the name.
+  - **`.fl-btn` is a non-wrapping flex row**: icon + label ride one line (the
+    connect card's "Connecting…" spinner no longer folds onto its own line).
+  - **`VendoPage` accepts `thread`** (`suggestions` + `discoverability`
+    passthrough to the chat tab), so hosts can move their curated landing onto
+    the full workspace; Maple's Ask Maple page and Cadence's assistant now
+    render the workspace console.
+  - **The automation card now actually streams**: `vendo_apps_edit` ok-outputs
+    that armed an automation emit `data-vendo-automation` from the agent tool
+    bridge (name-scoped, 01 §16), and the apps runtime reports the armed
+    trigger's true `enabled` state on `EditResult.automation`. The playground
+    gallery gains an "Automation created" scenario.
+
+### Patch Changes
+
+- Updated dependencies [89153f8]
+- Updated dependencies [3ae3d13]
+  - @vendoai/core@0.6.0
+
 ## 0.5.0
 
 ### Minor Changes
