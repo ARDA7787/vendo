@@ -21,6 +21,7 @@ import {
   type IsoDateTime,
   type Json,
   type NormalizedCatalog,
+  type PlanDisplay,
   type RunContext,
   type ApprovalId,
   type ApprovalRequest,
@@ -455,15 +456,18 @@ const buildWatchdogMs = effectiveBuildWatchdogMs;
 
 const QUOTA_SIGNAL = /quota|insufficient|payment|billing|\b402\b/i;
 const TIMEOUT_SIGNAL = /time?d?\s*out|timeout|abort/i;
-/** The dev-model's own no-usable-credential lines (missing provider package /
- *  no key at all). These are written by Vendo, not a provider — the ONE
- *  failure class whose full message IS the honest reason, so it surfaces
- *  verbatim instead of collapsing to "generation failed" (0.4.x E2E: the
- *  surface said {code:"validation"} while the actionable `npm install
- *  @ai-sdk/...` line landed only in the operator terminal). Anchored to the
- *  exact shapes in vendo/dev-creds so a provider error that merely mentions a
- *  key can never leak through. */
-const MODEL_UNAVAILABLE_SIGNAL = /^(?:[A-Z][A-Z0-9_]* is set but @ai-sdk\/[\w-]+ is not installed in this app|Vendo found no model key)/;
+/** The dev-model's own no-usable-credential lines (missing provider package,
+ *  no key at all, or a key the provider REFUSED). These are written by Vendo,
+ *  not a provider — the ONE failure class whose full message IS the honest
+ *  reason, so it surfaces verbatim instead of collapsing to "generation failed"
+ *  (0.4.x E2E: the surface said {code:"validation"} while the actionable
+ *  `npm install @ai-sdk/...` line landed only in the operator terminal; the
+ *  same swallowing was measured again 2026-08-03 for the 401 lines, where the
+ *  generic reason was ALSO wrongly retryable — a revoked key fails identically
+ *  on every retry). Anchored to the exact shapes in vendo/dev-creds
+ *  (`rejectedKey`, `noModelKey`) so a provider error that merely mentions a key
+ *  can never leak through. */
+const MODEL_UNAVAILABLE_SIGNAL = /^(?:[A-Z][A-Z0-9_]* is set but @ai-sdk\/[\w-]+ is not installed in this app|Vendo found no model key|your [A-Za-z]+ API key was rejected \(401\)|VENDO_API_KEY was rejected by the Vendo Cloud model gateway \(401\))/;
 
 /**
  * Map a generation-turn throw to the short, honest, NON-LEAKY reason persisted
@@ -942,10 +946,16 @@ export const assembleTree = (source: {
   components?: Record<string, string>;
   /** W4b — the stamped per-island tool manifests ride beside the sources. */
   componentTools?: Record<string, string[]>;
+  /** The plan's arrival posture (redesign spec §5): inline card or opened stage.
+   *  It is assembled HERE rather than at either emitter so the in-process
+   *  generation and the harness render seam cannot disagree about the field.
+   *  Absent stays absent — the client reads that as inline. */
+  display?: PlanDisplay;
 }): Tree => ({
   ...structuredClone(source.tree),
   ...(source.components === undefined ? {} : { components: structuredClone(source.components) }),
   ...(source.componentTools === undefined ? {} : { componentTools: structuredClone(source.componentTools) }),
+  ...(source.display === undefined ? {} : { display: source.display }),
 } as Tree);
 
 const pinnedSubtree = (app: AppDocument, componentName: string): unknown[] => {

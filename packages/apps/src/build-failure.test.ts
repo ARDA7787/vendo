@@ -277,6 +277,21 @@ describe("buildFailureReason", () => {
     expect(buildFailureReason(new Error(noKeyLine))).toEqual({ reason: noKeyLine, retryable: false });
   });
 
+  it("passes the ladder's REJECTED-key lines through too — a 401 is the same actionable class", () => {
+    // Both shapes are crafted by vendo/dev-creds (rejectedKey), not by a
+    // provider: the whole point is that only the ladder knows which credential
+    // was refused, so collapsing them to "generation failed · retry" sends the
+    // person back to the same dead key with nothing to act on.
+    const envLine = "your Anthropic API key was rejected (401) — check ANTHROPIC_API_KEY in .env.local; "
+      + "a revoked or mistyped key fails exactly this way.";
+    expect(buildFailureReason(new VendoError("validation", "model could not produce a valid app", [
+      `model generation failed: ${envLine}`,
+    ]))).toEqual({ reason: envLine, retryable: false });
+    const cloudLine = "VENDO_API_KEY was rejected by the Vendo Cloud model gateway (401) — run `vendo login` to mint "
+      + "a fresh key (it lands in .env.local), or manage project keys in the Vendo Cloud console.";
+    expect(buildFailureReason(new Error(cloudLine))).toEqual({ reason: cloudLine, retryable: false });
+  });
+
   it("never mistakes a provider key error for the dev-model class (no raw-message leak)", () => {
     // A provider message that mentions a key must stay canned — raw provider
     // text (which can echo key prefixes) never reaches the surface.
