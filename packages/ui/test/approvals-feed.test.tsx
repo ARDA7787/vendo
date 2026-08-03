@@ -10,13 +10,20 @@ import { createWireServer } from "./wire-server.js";
  * held their own interval, so a host mounting both surfaces spent 36 requests a
  * minute with nothing waiting.
  *
- * Every assertion here is RELATIVE (three surfaces cost what one costs) rather
- * than a count of ticks in a window, so a slow machine can't turn the invariant
- * into a flake.
+ * The load-bearing proofs here are COUNTING proofs, not rate proofs: three
+ * surfaces mount on exactly one GET, and one decision costs exactly one refresh.
+ * Where polling cadence has to be involved at all, the assertion is on ELAPSED
+ * TIME rather than on ticks-in-a-window — jitter can only make elapsed longer,
+ * which is the safe direction, whereas the defect (N independent pollers) makes
+ * it shorter. Counting ticks in a fixed real-time window does NOT work: measured
+ * on a loaded laptop the same 250ms window produced 3 polls once and 7 the next,
+ * so any ±1 tolerance between two such windows is a coin flip, not a gate.
  */
 
 const CADENCE_MS = 25;
 const WINDOW_MS = 250;
+/** Enough polls that (N-2) cadences is a real floor rather than one tick. */
+const POLLS_MEASURED = 6;
 
 function Surface({ pollMs }: { pollMs: number }) {
   const { askCount, asks, decide } = useAttention({ pollMs });
@@ -59,19 +66,7 @@ describe("the shared approvals feed", () => {
     expect(polls()).toBe(1);
   });
 
-  it("costs the same to poll three surfaces as one", async () => {
-    const single = render(
-      <VendoProvider client={client}>
-        <Surface pollMs={CADENCE_MS} />
-      </VendoProvider>,
-    );
-    await waitFor(() => expect(polls()).toBeGreaterThan(0));
-    const before = polls();
-    await settle(WINDOW_MS);
-    const alone = polls() - before;
-    single.unmount();
-    expect(alone).toBeGreaterThan(1);
-
+  it("serializes three surfaces onto one cadence instead of tripling it", async () => {
     const together = render(
       <VendoProvider client={client}>
         <Surface pollMs={CADENCE_MS} />
@@ -79,14 +74,16 @@ describe("the shared approvals feed", () => {
         <Surface pollMs={CADENCE_MS} />
       </VendoProvider>,
     );
-    const start = polls();
-    await settle(WINDOW_MS);
-    const shared = polls() - start;
+    // The feed is SELF-SCHEDULING: each poll arms the next only once it settled,
+    // so N polls cost at least (N-1) cadences of wall clock however many
+    // surfaces are mounted. Three independent pollers would reach the same count
+    // in a third of the time — the failure mode makes this number SMALLER, and
+    // machine load only makes it bigger, so the bound is safe in one direction.
+    const started = Date.now();
+    await waitFor(() => expect(polls()).toBeGreaterThanOrEqual(POLLS_MEASURED), { timeout: 5_000 });
+    const elapsed = Date.now() - started;
     together.unmount();
-
-    // Three independent pollers would be ~3× the single-surface cost; one
-    // shared poller lands within a tick of it.
-    expect(shared).toBeLessThanOrEqual(alone + 1);
+    expect(elapsed).toBeGreaterThanOrEqual((POLLS_MEASURED - 2) * CADENCE_MS);
   });
 
   it("stops entirely when the last surface unmounts", async () => {
@@ -98,6 +95,13 @@ describe("the shared approvals feed", () => {
     );
     await waitFor(() => expect(polls()).toBeGreaterThan(1));
     view.unmount();
+    // The unsubscribe stops the timer and drops the in-flight RESULT, but a
+    // request already on the wire still arrives and the server still counts it
+    // (the sibling visibility case says the same thing out loud). Let that one
+    // land, THEN demand a full window of silence — ten cadences in which a live
+    // poller could not have stayed quiet. Stricter than asserting equality
+    // across the drain, and without the race.
+    await settle(WINDOW_MS);
     const after = polls();
     await settle(WINDOW_MS);
     expect(polls()).toBe(after);
