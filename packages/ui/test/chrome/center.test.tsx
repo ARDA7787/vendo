@@ -36,7 +36,13 @@ function appDoc(id: string, name: string): AppDocument {
     tree: {
       formatVersion: "vendo-genui/v2",
       root: "root",
-      nodes: [{ id: "root", component: "Text", props: { text: `${name} app surface` } }],
+      nodes: [
+        { id: "root", component: "Stack", children: ["label", "act"] },
+        { id: "label", component: "Text", props: { text: `${name} app surface` } },
+        // A real generated view has its own interactive furniture — the reason a
+        // tile preview cannot simply be aria-hidden.
+        { id: "act", component: "Button", props: { label: "Pay now", action: "pay" } },
+      ],
     },
   } as AppDocument;
 }
@@ -259,6 +265,24 @@ describe("the home shelf", () => {
     expect(ghosts.length).toBeGreaterThan(0);
     expect(shelf.textContent).toMatch(/tap to build/i);
     expect(screen.queryByRole("region", { name: "Your apps" })).toBeNull();
+  });
+
+  it("a live tile's preview is inert, not aria-hidden-with-focusables (H11)", async () => {
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    const shelf = await screen.findByRole("region", { name: "Your apps" });
+    await within(shelf).findByText("Invoices app surface");
+    const preview = shelf.querySelector(".fl-tile-view")!;
+    // The generated view really does carry its own focusable furniture…
+    expect(preview.querySelector("button")).toBeTruthy();
+    // …so hiding it from assistive tech while leaving it in the tab order is the
+    // defect. `inert` does both halves; aria-hidden does neither safely.
+    expect(preview.hasAttribute("inert")).toBe(true);
+    expect(preview.getAttribute("aria-hidden")).toBeNull();
+    // Every focusable inside the tile sits under that inert wrapper — the only
+    // thing the keyboard can reach on a tile is its own "Open" hit area.
+    const reachable = [...shelf.querySelectorAll<HTMLElement>("button,input,select,textarea,a[href],[tabindex]")]
+      .filter(node => node.closest("[inert]") === null);
+    expect(reachable.map(node => node.getAttribute("aria-label"))).toEqual(["Open Invoices"]);
   });
 
   it("once an app exists the ghosts are gone and the shelf is live", async () => {

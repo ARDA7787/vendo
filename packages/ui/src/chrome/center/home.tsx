@@ -38,9 +38,13 @@ function TilePreview({ appId }: { appId: string }) {
   return <span className="fl-tile-scale"><AppFrame surface={surface} components={components} /></span>;
 }
 
-/** A live app tile. The preview is decorative (`aria-hidden`) and inert; the
- *  hit area is one real button over the tile, so nothing interactive is ever
- *  nested inside a button and assistive tech is offered one honest action. */
+/** A live app tile. The preview is `inert` — which both takes it out of the
+ *  accessibility tree AND makes everything inside it unfocusable, in one
+ *  attribute. `aria-hidden` alone was a lie the keyboard could walk into: a
+ *  generated view's own buttons and inputs stayed tabbable inside a subtree
+ *  screen readers had been told to ignore (axe aria-hidden-focus, once per
+ *  tile). The hit area is one real button over the tile, so assistive tech is
+ *  offered exactly one honest action. */
 export function AppTile({ app, onOpen, children }: {
   app: AppDocument;
   onOpen(): void;
@@ -54,7 +58,7 @@ export function AppTile({ app, onOpen, children }: {
   const viewless = app.ui === undefined;
   return (
     <article className="fl-tile">
-      <div className="fl-tile-view" aria-hidden="true">
+      <div className="fl-tile-view" inert>
         {viewless
           ? (
             <span className="fl-tile-none">
