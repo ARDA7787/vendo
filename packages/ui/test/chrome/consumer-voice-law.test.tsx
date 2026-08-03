@@ -511,9 +511,13 @@ describe("the widened audit — no chrome surface renders a developer string", (
    * thread/composer, automations-panel), leaving only the one that is a DECIDED
    * exception rather than an open defect.
    */
-  const KNOWN_OPEN: Record<string, string> = {
-    "embeds.tsx": "decided exception, documented at the render site: the BYO-agent embed's contract (embeds.test) is that the wire failure stays legible",
-  };
+  // Pass 3 closed the last three (approval-card, thread/composer,
+  // automations-panel); the post-check round closed the final entry, embeds.tsx
+  // (M36) — the "decided exception" was the BYO-agent embed rendering the wire's
+  // own sentence, and ruling 18 answers it differently: one honest line plus
+  // Try again, with the wire's half dev-mode only. The table is now EMPTY, and
+  // the staleness check below keeps it honest.
+  const KNOWN_OPEN: Record<string, string> = {};
 
   const chromeSources = (): string[] => {
     const collect = (dir: string): string[] =>

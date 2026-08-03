@@ -162,19 +162,40 @@ describe("VendoStage", () => {
     expect(approval.textContent).not.toContain("chat · present");
   });
 
-  it("shows the driver error and Retry starts a clean session", () => {
+  it("shows a failed session and Retry starts a clean one", () => {
+    // ⚠️ TEST EDIT (M36): this required the DRIVER's own sentence in the banner.
+    // The real driver builds that string from any thrown Error's message
+    // (realtime-driver.ts), so the line carried raw exceptions —
+    // "NotAllowedError: Permission denied", "Failed to fetch", a provider 401.
+    // The person gets the standing line with Retry beside it; the driver's text
+    // is dev-mode only (next test).
     const driver = new ScriptedVoiceDriver();
     renderStage(driver);
     fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
 
-    act(() => driver.emit({ type: "error", error: { message: "Microphone permission was denied" } }));
+    act(() => driver.emit({ type: "error", error: { message: "NotAllowedError: Permission denied" } }));
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain("Microphone permission was denied");
+    expect(alert.textContent).toContain("Voice session failed");
+    expect(alert.textContent).not.toContain("NotAllowedError");
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
 
     expect(driver.starts).toBe(2);
     expect(screen.getByRole("status", { name: "Voice status" }).textContent).toBe("Connecting…");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the driver's own sentence for developers — dev mode only", () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    try {
+      const driver = new ScriptedVoiceDriver();
+      renderStage(driver);
+      fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
+      act(() => driver.emit({ type: "error", error: { message: "NotAllowedError: Permission denied" } }));
+      expect(screen.getByRole("alert").textContent).toContain("NotAllowedError: Permission denied");
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
   });
 
   it("toggles mute with an announced pressed state", () => {
