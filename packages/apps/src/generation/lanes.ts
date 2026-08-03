@@ -415,6 +415,11 @@ export interface ServerLaneResult extends LaneResult {
     /** Standing-grant approvals the arming seam surfaced. */
     pendingGrants?: ApprovalRequest[];
   };
+  /** What arming had to say, for the CALLER — not just the operator's log. A
+   *  trigger the seam left disarmed (or failed to arm) is the person's problem
+   *  to act on, and the sentence names the surface that fixes it, so it rides
+   *  the edit result rather than only a findings line nobody downstream reads. */
+  armingIssues?: string[];
   /** box: the interface the box reported after building. The plan's
    *  `waitsForServer` groups fill against these samples. `servesUi`/`servedOk`
    *  ride along for the layer-3 flip the runtime owns (it is the only place that
@@ -480,19 +485,25 @@ const runAutomationArm = async (
     }
   }
   let pendingGrants: ApprovalRequest[] | undefined;
-  // Direct arming happens inside land() (armTrigger) — enabled unless the
-  // host's seam reports otherwise.
-  let enabled = true;
+  // Arming only ever happens on the land path — either inside land() itself
+  // (armTrigger) or through the host's seam right after it. With no `land`,
+  // the automation was authored and handed back UNSTORED, so nothing armed it
+  // and it is not enabled: claiming otherwise would put a live-looking card in
+  // the thread for a trigger that does not exist in any row.
+  let enabled = false;
+  let armingIssues: string[] = [];
   if (deps.land !== undefined) {
     await deps.land(landed, { armTrigger: deps.armAutomation === undefined });
     const armed = await armAutomationTrigger(deps.armAutomation, deps.appId, deps.ctx);
     pendingGrants = armed.pendingGrants;
     enabled = armed.enabled;
+    armingIssues = armed.issues;
     findings.push(...armed.issues.map((issue) => warn(where, issue)));
   }
   return {
     document: landed,
     findings,
+    ...(armingIssues.length === 0 ? {} : { armingIssues }),
     automation: {
       mode,
       trigger: structuredClone(automation.trigger),

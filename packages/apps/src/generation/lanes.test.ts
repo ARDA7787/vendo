@@ -296,6 +296,17 @@ describe("runServerLane — steps and agentic automations", () => {
     expect(result.findings.map(({ message }) => message).join(" ")).toContain("left it disabled");
   });
 
+  it("reports an UNLANDED automation as not enabled: with no land seam nothing was stored, so nothing was armed", async () => {
+    // The `land` contract: absent, the lane authors the automation and hands it
+    // back unlanded, and arms NOTHING (arming a row whose trigger is not stored
+    // would enable an automation that does not exist). Reporting `enabled: true`
+    // there would tell the thread's automation card an unstored trigger is live.
+    const result = await runServerLane(agenticPlan(), document(), serverDeps(scripted([], NUDGE_PLAN)));
+
+    expect(result.automation?.mode).toBe("agentic");
+    expect(result.automation?.enabled).toBe(false);
+  });
+
   it("keeps the automation when the board rewire fails, and reports the missing board", async () => {
     const result = await runServerLane(stepsPlan(), document(), serverDeps(scripted([], DIGEST_PLAN), {
       rebind: async () => ({ issues: ["binding /results/records/0 does not exist"] }),

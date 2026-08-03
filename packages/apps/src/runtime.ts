@@ -2092,12 +2092,18 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
         triggerKind: lane.automation.trigger.on.kind,
       });
     }
+    // Arming's own sentences are the CALLER's, not just the log's: a trigger
+    // left disarmed is the person's to fix, and the sentence names the surface
+    // that fixes it. The rest of the lane's findings stay operator-side.
+    const armingIssues = lane.armingIssues ?? [];
     return {
       document,
       findings,
       ...(lane.automation === undefined ? {} : { automation: lane.automation }),
       ...(lane.server === undefined ? {} : { graduated: true }),
-      ...(issues.length === 0 ? {} : { issues }),
+      ...(issues.length === 0 && armingIssues.length === 0
+        ? {}
+        : { issues: [...issues, ...armingIssues] }),
     };
   };
 
