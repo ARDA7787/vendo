@@ -1,0 +1,13 @@
+{
+  "name": "MapleSpendingDonut",
+  "hash": "sha256:65da5b48fd30fb447529cbb2dd8c14ebaa02a194b9ee6a971b6df54b5632270a",
+  "capturedAt": "2026-08-03T09:42:04.792Z",
+  "module": "src/vendo/registry.tsx",
+  "skipped": {
+    "reason": "unsupported-imports",
+    "detail": "It imports \"recharts\", which the sandboxed preview cannot load.",
+    "specifiers": [
+      "recharts"
+    ]
+  }
+}

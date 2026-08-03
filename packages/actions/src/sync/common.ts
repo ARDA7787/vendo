@@ -154,6 +154,10 @@ async function resolvedCandidate(base: string, realRoot: string): Promise<Resolv
     } catch {
       continue;
     }
+    // The pre-realpath check above is not enough: an in-project symlink
+    // pointing into node_modules resolves to a path inside the root and would
+    // otherwise be captured as if it were the host's own source.
+    if (realCandidate.split(path.sep).includes("node_modules")) continue;
     if (!isInside(realRoot, realCandidate)) continue;
     try {
       return { file: realCandidate, source: await fs.readFile(realCandidate, "utf8") };
@@ -298,6 +302,14 @@ async function importBases(importer: string, specifier: string, root: string): P
     if (specifier.startsWith("@/")) bases.push(path.join(root, specifier.slice(2)));
   }
   return bases;
+}
+
+/** True when a specifier names a PACKAGE rather than the host's own source:
+ *  nothing relative to resolve and no tsconfig path alias that maps it. Source
+ *  capture stops at that boundary — a node_modules module is never the host's
+ *  code — and stays silent about it, so only genuinely broken host imports warn. */
+export async function isPackageSpecifier(importer: string, specifier: string, root: string): Promise<boolean> {
+  return (await importBases(importer, specifier, root)).length === 0;
 }
 
 async function resolveImportedSource(

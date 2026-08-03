@@ -1,0 +1,13 @@
+{
+  "name": "MapleSparkline",
+  "hash": "sha256:2b4683921fd5612f220c2c236fa76f7a6346abc9c32c9d067f1545bc1626125d",
+  "capturedAt": "2026-08-03T09:42:04.718Z",
+  "module": "src/vendo/registry.tsx",
+  "skipped": {
+    "reason": "unsupported-imports",
+    "detail": "It imports \"recharts\", which the sandboxed preview cannot load.",
+    "specifiers": [
+      "recharts"
+    ]
+  }
+}
