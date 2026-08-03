@@ -159,6 +159,20 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
     setChatsOpen(false);
   }, []);
 
+  // The shelf rides the composer's accessory seam, and ONLY while the column is
+  // actually showing: every tile is a real mounted app, so a shelf sitting
+  // behind another door would boot machines nobody is looking at.
+  const shelf = home && view === "chat"
+    ? (
+      <AppShelf
+        apps={appsApi.apps}
+        onOpen={openApp}
+        {...(thread?.suggestions === undefined ? {} : { suggestions: thread.suggestions })}
+        scope={scope}
+      />
+    )
+    : null;
+
   const chats = (
     <>
       {/* §4 — the numbered attention section, present only while asks wait. */}
@@ -205,18 +219,7 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
                   onThreadId={conversation.onThreadId}
                   {...(thread?.suggestions === undefined ? {} : { suggestions: thread.suggestions })}
                   discoverability={thread?.discoverability ?? (conversation.settledFresh ? undefined : "quiet")}
-                  {...(home
-                    ? {
-                      composerAccessory: (
-                        <AppShelf
-                          apps={appsApi.apps}
-                          onOpen={openApp}
-                          {...(thread?.suggestions === undefined ? {} : { suggestions: thread.suggestions })}
-                          scope={scope}
-                        />
-                      ),
-                    }
-                    : {})}
+                  {...(shelf === null ? {} : { composerAccessory: shelf })}
                 />
               </PrefillScopeContext.Provider>
             </div>

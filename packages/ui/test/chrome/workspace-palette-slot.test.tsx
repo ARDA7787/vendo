@@ -23,7 +23,7 @@ describe("VendoPage, VendoPalette, and VendoSlot exports", () => {
 
   it("uses roving automatic tabs, swaps panels, and lists and opens fixture apps", async () => {
     render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
-    const chat = screen.getByRole("tab", { name: "Chat" });
+    const chat = screen.getByRole("tab", { name: "New chat" });
     chat.focus();
     fireEvent.keyDown(chat, { key: "ArrowRight" });
     const apps = screen.getByRole("tab", { name: "Apps" });
@@ -32,11 +32,14 @@ describe("VendoPage, VendoPalette, and VendoSlot exports", () => {
     expect(await screen.findByText("Invoices")).toBeTruthy();
     expect(screen.getByText("Invoice watcher")).toBeTruthy();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Open" })[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Open Invoices" }));
     expect(await screen.findByText("Invoices app surface")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "Automations" }));
     expect(await screen.findByRole("heading", { name: "Automations" })).toBeTruthy();
+    // Activity moved under the rail's quiet ··· row (redesign §10: the two
+    // named doors are Apps and Automations; receipts are one gesture away).
+    fireEvent.click(screen.getByRole("button", { name: "More sections" }));
     fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
     expect(await screen.findByRole("heading", { name: "Activity" })).toBeTruthy();
   });

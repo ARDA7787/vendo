@@ -35,7 +35,7 @@ describe("greeting-as-tutorial on VendoPage", () => {
     // The transient empty mount must NOT have burned the once-ever flag.
     expect(hasSeen("greeting")).toBe(false);
     // The user's first actually-fresh conversation shows the tutorial once.
-    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    fireEvent.click(screen.getByRole("tab", { name: "New chat" }));
     await waitFor(() => expect(intro()).toBeTruthy());
     expect(hasSeen("greeting")).toBe(true);
   });
@@ -52,7 +52,7 @@ describe("greeting-as-tutorial on VendoPage", () => {
     // explicit New conversation (a state no-op here: the page already sits on
     // the fresh landing) withholds the greeting rather than risk burning it.
     // The user's one showing arrives on a later visit with a healthy list.
-    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    fireEvent.click(screen.getByRole("tab", { name: "New chat" }));
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(intro()).toBeNull();
     expect(hasSeen("greeting")).toBe(false);

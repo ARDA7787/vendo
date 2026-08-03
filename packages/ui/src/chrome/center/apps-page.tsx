@@ -175,10 +175,14 @@ export function AppsPage({ api, opened, onOpened }: AppsPageProps) {
             {denied?.appId === app.id ? (
               <ForkOffer
                 {...(denied.instruction === undefined ? {} : { instruction: denied.instruction })}
+                // The copy lands as its own LIVE tile in this grid — visible
+                // proof without navigating away from what they were doing. (The
+                // old page opened it in a pane below the grid; in the center,
+                // opening replaces the grid, which is too big a move to make
+                // on someone's behalf.)
                 onFork={() => during(async () => {
-                  const copy = await fork(app.id);
+                  await fork(app.id);
                   setDenied(undefined);
-                  onOpened(copy.id);
                 })}
                 onDismiss={() => setDenied(undefined)}
               />
