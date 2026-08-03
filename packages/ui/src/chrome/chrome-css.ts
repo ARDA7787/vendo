@@ -2463,6 +2463,17 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-center-sheet-top { display: flex; justify-content: flex-end; }
 .fl-center-sheet .fl-rail-nav { margin-top: 18px; padding-top: 12px;
   border-top: 1px solid var(--vendo-border); }
+/* M2 respects the OS (spec §6): everything the center added that MOVES is off
+   under prefers-reduced-motion — the sheet's full-width slide (the largest
+   travel in the wave), its scrim fade, the tile hover-lift, and the waiting
+   strip's disclosure chevron. The hover SHADOW stays: it is depth, not motion. */
+@media (prefers-reduced-motion: reduce) {
+  .fl-center-sheet, .fl-center-scrim { animation: none; }
+  .fl-tile { transition: box-shadow var(--vendo-duration) var(--vendo-ease); }
+  .fl-tile:hover, .fl-tile--ghost:hover { transform: none; }
+  .fl-waiting-strip > summary::after { transition: none; }
+}
+
 /* Stacked home: two tiles across at phone widths, shorter previews. */
 .fl-center--mobile .fl-shelf { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px;
   max-width: none; padding: 0 14px 4px; }

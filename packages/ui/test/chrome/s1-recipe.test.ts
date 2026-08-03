@@ -25,6 +25,19 @@ describe("S1 recipe", () => {
     expect(CHROME_CSS).toContain("--vendo-ease: cubic-bezier(0.32, 0.72, 0, 1)");
   });
 
+  it("every moving thing the center added respects prefers-reduced-motion (M29)", () => {
+    const reduce = [...CHROME_CSS.matchAll(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g)]
+      .map(match => match[1]!)
+      .join("\n");
+    // The sheet's full-width slide and its scrim, the tile hover-lift, and the
+    // waiting strip's chevron rotation.
+    expect(reduce).toContain(".fl-center-sheet");
+    expect(reduce).toContain(".fl-center-scrim");
+    expect(reduce).toMatch(/\.fl-tile:hover[^}]*transform: none/);
+    expect(reduce).toMatch(/\.fl-tile--ghost:hover[^}]*transform: none/);
+    expect(reduce).toMatch(/\.fl-waiting-strip > summary::after \{ transition: none; \}/);
+  });
+
   it("animates exactly one element while a card builds — the boot hairline", () => {
     const building = [...CHROME_CSS.matchAll(/^[^\n{]*\[data-state="building"\][^{]*\{[^}]*\}/gm)]
       .map((match) => match[0])
