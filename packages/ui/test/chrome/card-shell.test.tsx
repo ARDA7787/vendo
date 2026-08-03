@@ -137,9 +137,10 @@ describe("one card shell, three laws", () => {
     });
     // Count first, collapsed, and the cards are the same shell underneath.
     expect(strip.hasAttribute("open")).toBe(false);
-    expect(strip.querySelector("summary")?.textContent).toMatch(/^Waiting on you · \d+$/);
+    expect(strip.querySelector("summary")?.textContent).toBe(`${CARD_EYEBROWS.waiting} · 1`);
     expect(strip.querySelector(".fl-cardshell")).not.toBeNull();
-    expect(strip.querySelector(".fl-card-eyebrow")?.textContent).toBe(CARD_EYEBROWS.waiting);
+    // The row says what KIND of ask it is; the summary carries the count.
+    expect(strip.querySelector(".fl-card-eyebrow")?.textContent).toBe(CARD_EYEBROWS.approval);
   });
 
   it("never renders a refusal's developer sentence — the consumer-voice law", () => {

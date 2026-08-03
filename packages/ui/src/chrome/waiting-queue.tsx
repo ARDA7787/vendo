@@ -38,6 +38,24 @@ export interface WaitingQueueProps {
   pollMs?: number;
 }
 
+/* integration: replace with useAttention — Lane D's single attention source
+   (`import { useAttention } from "../hooks/use-approvals.js"`), which the
+   launcher badge reads too, so the strip and the badge cannot disagree. This
+   worktree predates that hook, so this shim exposes the exact same names the
+   strip consumes: deleting it and adding the import is the whole swap. */
+function useAttention({ pollMs }: { pollMs: number }): {
+  askCount: number;
+  asks: ApprovalRequest[];
+  decide(id: string, decision: { approve: boolean }): void;
+} {
+  const { pending, decide } = useApprovals(pollMs > 0 ? { pollMs } : {});
+  return {
+    askCount: pending.length,
+    asks: pending,
+    decide: (id, decision) => void decide(id, decision),
+  };
+}
+
 function WaitingRow({ approval, onDecide }: {
   approval: ApprovalRequest;
   onDecide(approve: boolean): void;
@@ -58,7 +76,9 @@ function WaitingRow({ approval, onDecide }: {
     <CardShell label={`Approval for ${title}`} ceremony={ceremony}>
       <CardHead
         icon={<ToolkitLogo {...(presentation.logoUrl === undefined ? {} : { src: presentation.logoUrl })} fallback={CLOCK_GLYPH} />}
-        eyebrow={CARD_EYEBROWS.waiting}
+        // The strip's own summary already says "Waiting on you"; the row says
+        // what KIND of ask it is (the humanization source's own eyebrow).
+        eyebrow={presentation.eyebrow}
         title={title}
       />
       <CardLine>{description.length > 0 && description !== title ? description : runsAsYouLine(title)}</CardLine>
@@ -77,19 +97,19 @@ function WaitingRow({ approval, onDecide }: {
 /** The waiting-on-you queue (08-ui §4 chrome; mounted by VendoPage's chat
     workspace, exportable for any host placement). */
 export function WaitingQueue({ pollMs = 5_000 }: WaitingQueueProps = {}) {
-  const { pending, decide } = useApprovals(pollMs > 0 ? { pollMs } : {});
-  if (pending.length === 0) return null;
+  const { askCount, asks, decide } = useAttention({ pollMs });
+  if (askCount === 0) return null;
   return (
     <ChromeRoot automaticPolicyNotice={false}>
       <section className="fl-waiting" aria-label="Waiting on you">
         <details className="fl-waiting-strip">
-          <summary>Waiting on you · {pending.length}</summary>
+          <summary>{CARD_EYEBROWS.waiting} · {askCount}</summary>
           <div className="fl-waiting-cards">
-            {pending.map(approval => (
+            {asks.map(approval => (
               <WaitingRow
                 key={approval.id}
                 approval={approval}
-                onDecide={approve => void decide(approval.id, { approve })}
+                onDecide={approve => decide(approval.id, { approve })}
               />
             ))}
           </div>
