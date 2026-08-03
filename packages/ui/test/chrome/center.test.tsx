@@ -583,6 +583,18 @@ describe("the named doors", () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open Invoices" })));
   });
 
+  it("H-3 — opening from the HOME SHELF still lands focus on the way back", async () => {
+    // `cameFrom` is written only by the Apps grid's own tile, so the two other
+    // ways into an open app (the home shelf, and this page's create field) hit
+    // the early return and dropped focus on <body>. The heading is the promised
+    // fallback: the grid the user is returning to was never on screen.
+    mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Invoices" }));
+    const open = await screen.findByRole("region", { name: "Invoices" });
+    fireEvent.click(within(open).getByRole("button", { name: "← All apps" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Apps" })));
+  });
+
   it("an opened app names its region from the FIRST paint, not after the fetch (M40)", async () => {
     mount(stubClient({ apps: [appDoc("app_1", "Invoices")] }));
     fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
