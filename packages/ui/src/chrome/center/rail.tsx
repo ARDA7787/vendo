@@ -173,20 +173,48 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
 export function NeedsYou({ onOpen }: { onOpen(): void }) {
   const { tools } = useVendoContext();
   const { askCount, asks } = useAttention({ pollMs: NEEDS_POLL_MS });
-  if (askCount === 0) return null;
+  const spoken = useAskAnnouncement(askCount);
   return (
-    <section className="fl-rail-group" aria-label={`Needs you — ${askCount} waiting`}>
-      <p className="fl-rail-label">
-        Needs you
-        <span className="fl-rail-badge">{askCount}</span>
-      </p>
-      {asks.map(approval => (
-        <button type="button" className="fl-rail-chat fl-rail-need" key={approval.id} onClick={onOpen}>
-          {toolTitle(approval.call.tool, tools[approval.call.tool])}
-        </button>
-      ))}
-    </section>
+    <>
+      {/* The spoken half. An ask can arrive from anywhere — an automation run,
+          another tab — and the section appearing silently told nobody; the
+          section VANISHING told nobody either. A live region has to be mounted
+          BEFORE its words change to be announced reliably, so it lives out here
+          (empty until something happens) rather than inside the section that
+          comes and goes. */}
+      <p className="fl-sr-only" role="status">{spoken}</p>
+      {askCount === 0 ? null : (
+        <section className="fl-rail-group" aria-label={`Needs you — ${askCount} waiting`}>
+          <p className="fl-rail-label">
+            Needs you
+            <span className="fl-rail-badge">{askCount}</span>
+          </p>
+          {asks.map(approval => (
+            <button type="button" className="fl-rail-chat fl-rail-need" key={approval.id} onClick={onOpen}>
+              {toolTitle(approval.call.tool, tools[approval.call.tool])}
+            </button>
+          ))}
+        </section>
+      )}
+    </>
   );
+}
+
+/** What the live region says, in the user's words: only ever the CHANGE. */
+function useAskAnnouncement(askCount: number): string {
+  const [spoken, setSpoken] = useState("");
+  const previous = useRef(askCount);
+  useEffect(() => {
+    const was = previous.current;
+    previous.current = askCount;
+    if (askCount === was) return;
+    if (askCount === 0) {
+      setSpoken("Nothing is waiting on you now.");
+      return;
+    }
+    setSpoken(askCount === 1 ? "1 thing needs you." : `${askCount} things need you.`);
+  }, [askCount]);
+  return spoken;
 }
 
 interface ThreadGroup {

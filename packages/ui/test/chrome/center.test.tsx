@@ -249,6 +249,19 @@ describe("Needs you", () => {
     );
   });
 
+  it("a new ask is announced, and so is the moment it settles (M31)", async () => {
+    let waiting = [ask("apr_1")];
+    mount(stubClient({ pending: () => waiting }));
+    const rail = await screen.findByRole("navigation", { name: "Assistant" });
+    const status = within(rail).getByRole("status");
+    await waitFor(() => expect(status.textContent).toBe("1 thing needs you."));
+    waiting = [];
+    await waitFor(
+      () => expect(status.textContent).toBe("Nothing is waiting on you now."),
+      { timeout: 12000 },
+    );
+  });
+
   it("is absent from the first paint when nothing is waiting", async () => {
     mount(stubClient());
     await screen.findByRole("tab", { name: "Apps" });
