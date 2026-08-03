@@ -95,8 +95,10 @@ export interface McpDoorConfig {
   tools: ToolRegistry;
   /** Audit reporting for auth events (§3); tool decisions happen inside the bound registry. */
   guard: Guard;
-  /** §3 — the host owns session/principal lookup; the door can own consent too. */
-  oauth: HostOAuthAdapter;
+  /** §3 — the host owns session/principal lookup; the door can own consent too.
+   *  Required for an outside-serving door; an `internal` door has no OAuth space
+   *  to run, so it needs none and is given none. */
+  oauth?: HostOAuthAdapter;
   /** Door-owned protocol state (clients, codes, refresh grants) — wired like every other block. */
   store: StoreAdapter;
   /** §4 — saved apps ride along as MCP Apps; absent → tools-only door. */
@@ -193,6 +195,21 @@ export interface McpDoorConfig {
    * credential space and the door behaves exactly as it did before.
    */
   turnCredentials?: TurnCredentialPort;
+  /**
+   * Serve the turn-credential space and NOTHING else.
+   *
+   * A composition that names a harness thinking outside this process needs a
+   * door for that harness alone. `mcp: true` means one thing and must keep
+   * meaning it — "my users may connect third-party agents to my product" — so
+   * the two decisions are decoupled here rather than in the host's config: an
+   * internal door has no authorization server, no discovery documents, no
+   * consent page, no client registration, no outside session, and no listing
+   * for anyone but a live turn. Its mount answers a valid turn bearer, and
+   * answers everything else with a 401 that names no way in.
+   *
+   * `oauth` is meaningless here and is not read.
+   */
+  internal?: boolean;
 }
 
 export interface McpDoor {
@@ -220,7 +237,9 @@ export function createMcpDoorWithState(config: McpDoorConfig, state: McpDoorStat
 
 class Door {
   readonly #config: McpDoorConfig;
-  readonly #oauth: OAuthServer;
+  /** The OUTSIDE credential space. Undefined on an `internal` door, which is
+   *  the whole of what "internal" means: there is no other space to serve. */
+  readonly #oauth: OAuthServer | undefined;
   readonly #remoteAs: RemoteAsVerifier | undefined;
   readonly #state: McpDoorState;
   /** Last mount an MCP request actually arrived at — a server-card hint only.
@@ -238,7 +257,15 @@ class Door {
   constructor(config: McpDoorConfig, state: McpDoorState) {
     this.#config = config;
     this.#state = state;
-    this.#oauth = new OAuthServer(config);
+    if (config.internal !== true && config.oauth === undefined) {
+      throw new TypeError(
+        "an outside-serving MCP door requires a HostOAuthAdapter (10-mcp §3); "
+        + "pass `internal: true` for a door that serves only live turns",
+      );
+    }
+    this.#oauth = config.oauth === undefined
+      ? undefined
+      : new OAuthServer({ ...config, oauth: config.oauth });
     this.#remoteAs = config.remoteAs === undefined ? undefined : new RemoteAsVerifier(config.remoteAs);
     this.#publicOrigin = config.baseUrl === undefined ? undefined : publicOriginOf(config.baseUrl);
     this.#shimHtml = shimHtml(config.theme);
@@ -261,6 +288,13 @@ class Door {
     const url = new URL(req.url);
     const origin = url.origin;
     const path = url.pathname;
+
+    // 10-mcp §3b — an INTERNAL door has no outside credential space, so none of
+    // the routes below (which exist only to get an outsider one) are served.
+    // The host's adapter and the protocol server are present or absent together.
+    const oauth = this.#oauth;
+    const hostOAuth = this.#config.oauth;
+    if (oauth === undefined || hostOAuth === undefined) return this.#internalOnly(req, path);
 
     if (path.startsWith(PRM_PREFIX)) {
       if (req.method !== "GET") return notFound();
@@ -299,16 +333,16 @@ class Door {
     const mount = endpoint.mount;
     if (endpoint.kind === "authorize") {
       return this.#config.remoteAs === undefined
-        && (req.method === "GET" || (req.method === "POST" && this.#oauth.hasPrebuiltConsent))
-        ? this.#oauth.authorize(req, resourceUri(origin, mount))
+        && (req.method === "GET" || (req.method === "POST" && oauth.hasPrebuiltConsent))
+        ? oauth.authorize(req, resourceUri(origin, mount))
         : notFound();
     }
     if (endpoint.kind === "token") {
-      return req.method === "POST" && this.#config.remoteAs === undefined ? this.#oauth.token(req) : notFound();
+      return req.method === "POST" && this.#config.remoteAs === undefined ? oauth.token(req) : notFound();
     }
     if (endpoint.kind === "revoke") {
       if (req.method !== "POST" || this.#config.remoteAs !== undefined) return notFound();
-      const result = await this.#oauth.revoke(req);
+      const result = await oauth.revoke(req);
       if (result.grant?.tokenType === "refresh_token") {
         if (result.grant.familyId === undefined) {
           await this.#killSubjectClient(result.grant.subject, result.grant.clientId);
@@ -319,13 +353,13 @@ class Door {
       return result.response;
     }
     if (endpoint.kind === "register") {
-      return req.method === "POST" && this.#config.remoteAs === undefined ? this.#oauth.register(req) : notFound();
+      return req.method === "POST" && this.#config.remoteAs === undefined ? oauth.register(req) : notFound();
     }
     if (endpoint.kind === "federate") {
       return req.method === "GET"
         && this.#config.federation !== undefined
-        && (this.#config.oauth.authorize !== undefined || this.#config.oauth.session !== undefined)
-        ? handleFederation(req, resourceUri(origin, mount), this.#config.federation.secret, this.#config.oauth)
+        && (hostOAuth.authorize !== undefined || hostOAuth.session !== undefined)
+        ? handleFederation(req, resourceUri(origin, mount), this.#config.federation.secret, hostOAuth)
         : notFound();
     }
     if (endpoint.kind === "connect") {
@@ -340,10 +374,32 @@ class Door {
       });
     }
     if (!["GET", "POST", "DELETE"].includes(req.method)) return notFound();
-    return this.#handleMcp(req, mount);
+    return this.#handleMcp(req, mount, oauth);
   }
 
-  async #handleMcp(req: Request, mount: string): Promise<Response> {
+  /**
+   * The whole of an INTERNAL door: one credential space, and no way into the
+   * other because the other is not there.
+   *
+   * Nothing is disabled here — the outside half is simply never constructed, so
+   * discovery, the authorization server, consent, registration and the connect
+   * page are all just absent paths. The mount answers a live turn's bearer
+   * exactly as a full door does (the same `#handleTurnMcp`, unchanged), and
+   * answers everything else with a 401 that carries NO `www-authenticate`: a
+   * challenge names a resource-metadata URL, and naming one would be pointing
+   * at a sign-in path that does not exist.
+   */
+  async #internalOnly(req: Request, path: string): Promise<Response> {
+    if (outsideSpacePath(path)) return notFound();
+    if (!["GET", "POST", "DELETE"].includes(req.method)) return notFound();
+    await this.#sweepIdleSessions();
+    const presented = bearerOf(req);
+    const turn = presented === undefined ? null : await this.#resolveTurn(presented);
+    if (turn === null) return locked();
+    return this.#handleTurnMcp(req, path, presented!, turn);
+  }
+
+  async #handleMcp(req: Request, mount: string, oauth: OAuthServer): Promise<Response> {
     // handler() has already rebased req onto the canonical public base.
     const origin = new URL(req.url).origin;
     const resource = resourceUri(origin, mount);
@@ -359,7 +415,7 @@ class Door {
     if (turn !== null) return this.#handleTurnMcp(req, mount, presented!, turn);
 
     const auth = this.#remoteAs === undefined
-      ? await this.#oauth.authenticate(req)
+      ? await oauth.authenticate(req)
       : await this.#remoteAs.authenticate(req);
     if (!auth || (this.#remoteAs === undefined && !sameCanonicalUri(auth.grant.resource, resource))) {
       return unauthorized(origin, mount, req.headers.has("authorization"));
@@ -382,10 +438,10 @@ class Door {
       return unknownSession();
     }
 
-    const principal = await this.#oauth.principal(auth.grant.subject);
+    const principal = await oauth.principal(auth.grant.subject);
     if (principal === null) {
       await this.#killSubject(auth.grant.subject);
-      await this.#oauth.auditRevoke(auth.grant.subject, auth.grant.clientId);
+      await oauth.auditRevoke(auth.grant.subject, auth.grant.clientId);
       return unauthorized(origin, mount, true);
     }
     // 10-mcp §2: anonymous/ephemeral principals are never served a session —
@@ -812,9 +868,12 @@ class Door {
   }
 
   async revokeClient(subject: string, clientId: string): Promise<void> {
-    await this.#oauth.revokeClient(subject, clientId);
+    const oauth = this.#oauth;
+    // An internal door issued no client anything; there is nothing to take back.
+    if (oauth === undefined) return;
+    await oauth.revokeClient(subject, clientId);
     await this.#killSubjectClient(subject, clientId);
-    await this.#oauth.auditRevoke(subject, clientId);
+    await oauth.auditRevoke(subject, clientId);
   }
 
   async #killSubjectClient(subject: string, clientId: string): Promise<void> {
@@ -857,6 +916,17 @@ function endpointFor(path: string): {
     if (path.endsWith(suffix)) return { kind, mount: path.slice(0, -suffix.length) };
   }
   return { kind: "mcp", mount: path };
+}
+
+/** A path that exists only to get an OUTSIDE agent a credential: the four
+ *  discovery documents, the OAuth endpoints, and the connect page. An internal
+ *  door serves none of them, so on one they are not paths at all. */
+function outsideSpacePath(path: string): boolean {
+  return path.startsWith(PRM_PREFIX)
+    || path.startsWith(AS_PREFIX)
+    || path === SERVER_CARD_PATH
+    || path === SERVER_CARD_ALIAS_PATH
+    || endpointFor(path).kind !== "mcp";
 }
 
 function normalizeMount(mount: string): string {
@@ -937,6 +1007,13 @@ function unauthorized(origin: string, mount: string, tokenPresented: boolean): R
   return json({ error: { code: "unauthorized", message: "A valid bearer token is required" } }, 401, {
     "www-authenticate": challenge,
   });
+}
+
+/** An INTERNAL door's only refusal. Deliberately WITHOUT a `www-authenticate`
+ *  challenge: the challenge's whole job is to name the resource metadata a
+ *  client registers against, and this door has none to name. */
+function locked(): Response {
+  return json({ error: { code: "unauthorized", message: "A valid bearer token is required" } }, 401);
 }
 
 function unknownSession(): Response {

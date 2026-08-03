@@ -2407,6 +2407,34 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     : config.mcp === true
       ? {}
       : undefined;
+  /**
+   * THE COMPOSITION RULE — the two decisions are decoupled.
+   *
+   * `mcp` is the host saying "my users may connect third-party agents to my
+   * product", and it opens the whole door. A harness that thinks outside this
+   * process reaches `turn.tools` over the same door (10-mcp §3b) and needs one
+   * whether or not the host ever said that — so declaring `requires.toolDoor`
+   * mounts the INTERNAL half by itself, with no config value to write and
+   * nothing exposed. `mcp` set wins: the full door already serves both spaces.
+   */
+  const internalDoorOnly = mcpOptions === undefined && harness.requires?.toolDoor === true;
+  /**
+   * Where the harness's thinker dials the door.
+   *
+   * The operator-set public origin is the only one a MACHINE may ever be given:
+   * a learned origin comes from the Host header, and a box holding a live turn
+   * credential must never be pointed at one. A harness that needs NO machine
+   * thinks inside this host's own process, so it may also dial the origin the
+   * wire itself was reached at — which is what lets
+   * `claudeCode({ machine: "local" })` run with nothing configured at all. The
+   * trust rule is route-binding's own (04 §4): learned origins are trusted in
+   * development and nowhere else.
+   */
+  const doorBase = (): string | undefined => mcpOptions?.baseUrl
+    ?? configuredBaseUrl
+    ?? (harness.requires?.sandbox === true || actionsConfig.baseUrlTrusted !== true
+      ? undefined
+      : actionsConfig.baseUrl);
 
   const harnessTurns = createHarnessTurns({
     harness: harness as Harness<never>,
@@ -2449,22 +2477,23 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // grant: without a credential minted from inside the turn there is nothing
     // to resolve, and the credential's authority window IS this publication.
     liveTurn: ({ threadId, ctx, tools }) => turnCredentials.publish(threadId, { ctx, tools }),
-    // The other half, for a harness whose thinker runs on a machine: where the
-    // door is, and how to mint one conversation's credential for it. `url` is
-    // undefined when the deployment set no public base — a machine cannot reach
-    // a door nobody can name, and the harness says so in the operator's voice
-    // rather than opening a session that would 401 on its first tool call.
-    ...(mcpOptions === undefined ? {} : {
+    // The other half, for a harness whose thinker is not in this process: where
+    // the door is, and how to mint one conversation's credential for it. `url`
+    // is undefined when nothing this harness may dial exists — a machine cannot
+    // reach a door nobody can name, and the harness says so in the operator's
+    // voice rather than opening a session that would 401 on its first tool call.
+    // Read per turn, not captured: with no operator base the origin is learned
+    // from the wire's first validated request, which is the one that arrives.
+    ...(mcpOptions !== undefined || internalDoorOnly ? {
       toolDoor: {
-        // The SAME origin the door itself is configured with, or a machine would
-        // be pointed at a URL discovery never advertises.
-        url: (mcpOptions.baseUrl ?? configuredBaseUrl) === undefined
-          ? undefined
-          : new URL(MCP_MOUNT, mcpOptions.baseUrl ?? configuredBaseUrl).toString(),
+        get url(): string | undefined {
+          const base = doorBase();
+          return base === undefined ? undefined : new URL(MCP_MOUNT, base).toString();
+        },
         mint: (threadId: string) => turnCredentials.mint(threadId),
         revoke: (token: string) => turnCredentials.revoke(token),
       },
-    }),
+    } : {}),
   });
   /**
    * THE harness door — one object, served two ways.
@@ -2756,6 +2785,21 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       ...(mcpOptions.remoteAs === undefined ? {} : { remoteAs: mcpOptions.remoteAs }),
       ...(mcpOptions.federation === undefined ? {} : { federation: mcpOptions.federation }),
       ...(theme === undefined ? {} : { theme }),
+    });
+  } else if (internalDoorOnly) {
+    // The INTERNAL half alone. It answers one live turn's credential and
+    // nothing else, so it is handed only what that leg reads: the credential
+    // registry and where it lives. No oauth (there is no space to sign into),
+    // no apps ride-alongs, no `surfaces.mcp` menu, no theme — a turn's tools,
+    // curation and rendering are all decided by the turn.
+    door = createMcpDoor({
+      internal: true,
+      tools: boundTools,
+      guard,
+      store,
+      turnCredentials,
+      mount: MCP_MOUNT,
+      ...(configuredBaseUrl === undefined ? {} : { baseUrl: configuredBaseUrl }),
     });
   }
   // Minted on first request via the deps getter below — Workers forbids

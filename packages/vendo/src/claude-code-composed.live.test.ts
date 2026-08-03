@@ -27,6 +27,12 @@
  * this machine, so `http://127.0.0.1:<port>` is a real, reachable, and entirely
  * un-mocked origin. The tool call below therefore travels a genuine HTTP MCP
  * round trip into `vendo.handler`, exactly as the box's does over the internet.
+ *
+ * **door-internal.** Not one composition here passes `mcp`. That option means
+ * "my users may connect third-party agents to my product" and these hosts never
+ * said it; naming `claudeCode()` is the whole ask, and composition answers with
+ * the internal half of the door. So this file now exercises the DEFAULT
+ * `claudeCode()` path rather than a door the host had to open by hand.
  */
 import { createServer, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -37,7 +43,7 @@ import type { Principal, ToolDescriptor, ToolRegistry } from "@vendoai/core";
 import { defineHarness } from "@vendoai/harnesses";
 import { claudeCode } from "@vendoai/harnesses/claude-code";
 import { createStore, type VendoStore } from "@vendoai/store";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createVendo, type Vendo } from "./server.js";
 
 const live = process.env["ANTHROPIC_API_KEY"] === undefined ? describe.skip : describe;
@@ -46,6 +52,7 @@ const MODEL = process.env["VENDO_LIVE_MODEL"] ?? "claude-sonnet-4-5";
 const principal: Principal = { kind: "user", subject: "user_claude_composed" };
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -135,16 +142,14 @@ async function compose(overrides: Record<string, unknown> = {}): Promise<{
   const store = await tempStore();
   const host = hostTools();
   const origin = nextOrigin();
+  // The harness reaches its tools over THIS door (10-mcp §3b) — the INTERNAL
+  // one composition mounts for it, with no `mcp` option anywhere. The operator
+  // base is how a deployment names an origin its thinker can dial.
+  vi.stubEnv("VENDO_BASE_URL", origin);
   const vendo = createVendo({
     model: {} as LanguageModel,
     principal: async () => principal,
     store,
-    // The harness reaches its tools over THIS door (10-mcp §3b).
-    mcp: { baseUrl: origin },
-    oauth: {
-      async authorize() { return { subject: principal.subject }; },
-      async principal(subject: string) { return { kind: "user" as const, subject }; },
-    },
     ...overrides,
   } as Parameters<typeof createVendo>[0]);
   vendo.actions.add(host.tools);
@@ -199,6 +204,52 @@ live("claudeCode() through createVendo", () => {
     expect(JSON.stringify(thread.messages)).not.toContain("inputTokens");
   }, 420_000);
 
+  it("door-internal · ZERO CONFIG: no `mcp`, no base URL, and the agent still runs the product's tools", async () => {
+    // The headline this lane exists for. Everything a host writes is here:
+    // `createVendo({ harness: claudeCode({ machine: "local" }) })`. No `mcp`,
+    // no `oauth`, no `VENDO_BASE_URL`. Composition mounts the internal door and
+    // the host learns its own origin from the request that arrives — so the
+    // turn is driven over the REAL loopback URL, not through `vendo.handler`,
+    // because the origin the wire is reached at is the whole mechanism.
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    const store = await tempStore();
+    const host = hostTools();
+    const origin = nextOrigin();
+    const vendo = createVendo({
+      model: {} as LanguageModel,
+      principal: async () => principal,
+      store,
+      harness: claudeCode({ machine: "local", model: MODEL, maxTurns: 10 }),
+      // NODE_ENV=development also arms source capture, which is unrelated.
+      development: false,
+    } as Parameters<typeof createVendo>[0]);
+    vendo.actions.add(host.tools);
+    await listen(vendo, origin);
+
+    const answered = await fetch(`${origin}/api/vendo/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        threadId: "thr_zero_config",
+        message: userMessage("m1", "How many invoices are open? Just tell me the number."),
+      }),
+    });
+    expect(answered.status).toBe(200);
+    const wire = await answered.text();
+    console.log("[zero-config turn]", JSON.stringify({ wire: wire.slice(0, 1200), calls: host.calls }));
+
+    // The tool really executed host-side, over a door nobody configured.
+    expect(host.calls).toHaveLength(1);
+    // And no outsider could have reached it: the same origin serves no
+    // discovery at all.
+    const card = await fetch(`${origin}/.well-known/mcp/server-card.json`);
+    expect(card.status).toBe(404);
+    const bare = await fetch(`${origin}/api/vendo/mcp`, { method: "POST" });
+    expect(bare.status).toBe(401);
+    expect(bare.headers.get("www-authenticate")).toBeNull();
+  }, 420_000);
+
   it("door-ctx · a guard DENIAL travels the door and is NARRATED, never crashed", async () => {
     // Moved here from `claude-code.live.test.ts` when the tools became the
     // door's: a denial now arrives as the MCP tool's in-band error text rather
@@ -207,15 +258,11 @@ live("claudeCode() through createVendo", () => {
     const store = await tempStore();
     const origin = nextOrigin();
     const calls: string[] = [];
+    vi.stubEnv("VENDO_BASE_URL", origin);
     const vendo = createVendo({
       model: {} as LanguageModel,
       principal: async () => principal,
       store,
-      mcp: { baseUrl: origin },
-      oauth: {
-        async authorize() { return { subject: principal.subject }; },
-        async principal(subject: string) { return { kind: "user" as const, subject }; },
-      },
       harness: claudeCode({ machine: "local", model: MODEL, maxTurns: 8 }),
     } as Parameters<typeof createVendo>[0]);
     vendo.actions.add({
@@ -256,6 +303,15 @@ live("claudeCode() through createVendo", () => {
     expect(text.toLowerCase()).toMatch(/approv|permission|confirm/);
   }, 420_000);
 
+  /**
+   * These last two compose with NO listener and NO operator base, so the
+   * internal door composition mounts has no origin the subprocess could dial.
+   * That is not a misconfiguration and must not refuse the turn: a local
+   * thinker with no origin is a workspace-only assistant, and these two prove
+   * it still thinks. (The BOX leg's refusal for the same missing origin is
+   * pinned offline in `claude-code.test.ts`; the local half can only be proven
+   * here, because a local-leg unit test would have to run the real SDK.)
+   */
   it("§1.3 · turn.state is DURABLE: a second composition on the same store resumes the session", async () => {
     const store = await tempStore();
     const runTurn = async (id: string, text: string): Promise<string> => {

@@ -204,19 +204,6 @@ const readState = (raw: string | undefined): ClaudeState => {
  */
 const doorTokens = new Map<string, string>();
 
-/** A missing door is a deployment fact, not a per-turn event. */
-let noDoorWarned = false;
-function warnNoDoorOnce(): void {
-  if (noDoorWarned) return;
-  noDoorWarned = true;
-  console.error(
-    "[vendo] claudeCode() has no MCP door, so this agent has NONE of your product's "
-    + "actions — only its own workspace. Its tools travel the door now: pass "
-    + "`mcp: true` to createVendo and set VENDO_BASE_URL (or `mcp: { baseUrl }`) "
-    + "to an origin the machine can reach.",
-  );
-}
-
 /** A callback-driven producer, consumed by the generator that must `yield`. */
 function eventQueue<T>() {
   const buffered: T[] = [];
@@ -250,7 +237,10 @@ export function claudeCode(
     optionsSchema: optionsSchema as never,
     // The factory reads its OWN arg; the compose gate stays dumb (§9: a
     // spawned-CLI harness with no machine to live on is a BOOT error).
-    ...(options.machine === "local" ? {} : { requires: { sandbox: true } }),
+    // `toolDoor` on BOTH legs: the SDK session reaches the host's tools over
+    // remote MCP whether it runs in a box or as a subprocess here, so this is
+    // what makes composition mount a door with no `mcp` option in sight.
+    requires: { toolDoor: true, ...(options.machine === "local" ? {} : { sandbox: true }) },
 
     async *run(turn: Turn<ClaudeCodeOptions>): AsyncGenerator<HarnessEvent, void, void> {
       // Per-turn options may override the model knobs and NOTHING else: `machine`
@@ -303,33 +293,32 @@ export function claudeCode(
       );
 
       // The host's MCP door — the ONLY way this harness reaches the world now
-      // that the in-process projection is gone (10-mcp §3b).
+      // that the in-process projection is gone (10-mcp §3b). Composition mounts
+      // one for us (`requires.toolDoor`), so an empty slot means the runtime is
+      // being driven directly, without one: the box's own hands and nothing else.
       const doorPort = harnessAdapters(harness).toolDoor as ToolDoorPort | undefined;
+      const doorUrl = doorPort?.url;
+      if (doorPort !== undefined && doorUrl === undefined && resolved.machine !== "local") {
+        // A door exists and no BOX can reach it. Loud for the operator, because
+        // only they can fix it, and one plain sentence for the user — the same
+        // shape as the missing-sandbox branch above. Running on anyway would
+        // hand the model a workspace and no hands, which is the
+        // polite-refusal-at-HTTP-200 failure this codebase refuses to ship.
+        console.error(
+          "[vendo] claudeCode() cannot reach the MCP door: set VENDO_BASE_URL (or "
+          + "`mcp: { baseUrl }`) to the deployment's public origin. The agent's tools "
+          + "travel over that door, so without it the model has no way to act.",
+        );
+        yield { type: "error", message: "I can't use this product's actions right now." };
+        return;
+      }
+      // A LOCAL thinker with no origin to dial is not a misconfiguration to
+      // refuse: nothing was set wrong, the deployment simply never named an
+      // origin, and a subprocess on this machine is a legitimate
+      // workspace-only assistant. It runs with its own hands and no product
+      // actions — the same turn a composition with no door has always served.
       let door: { url: string; token: string } | undefined;
-      if (doorPort === undefined) {
-        // No door was composed at all, so this turn has the box's own hands and
-        // NONE of the product's actions. That is a legitimate deployment (a host
-        // using the harness purely for workspace work) and it is also, far more
-        // often, someone who has not noticed that `claudeCode()` reaches its
-        // tools through the door now. Loud once per process for the operator;
-        // the user is never lied to, because a model with no tool refuses
-        // honestly rather than inventing one.
-        warnNoDoorOnce();
-      } else {
-        if (doorPort.url === undefined) {
-          // A door exists but nothing can reach it. Loud for the operator,
-          // because only they can fix it, and one plain sentence for the user —
-          // the same shape as the missing-sandbox branch above. Running on
-          // anyway would hand the model a workspace and no hands, which is the
-          // polite-refusal-at-HTTP-200 failure this codebase refuses to ship.
-          console.error(
-            "[vendo] claudeCode() cannot reach the MCP door: set VENDO_BASE_URL (or "
-            + "`mcp: { baseUrl }`) to the deployment's public origin. The agent's tools "
-            + "travel over that door, so without it the model has no way to act.",
-          );
-          yield { type: "error", message: "I can't use this product's actions right now." };
-          return;
-        }
+      if (doorPort !== undefined && doorUrl !== undefined) {
         const conversation = threadOf(turn);
         if (!machine.carriesSession) {
           const previous = doorTokens.get(conversation);
@@ -341,7 +330,7 @@ export function claudeCode(
           token = doorPort.mint(conversation);
           if (token !== undefined) doorTokens.set(conversation, token);
         }
-        if (token !== undefined) door = { url: doorPort.url, token };
+        if (token !== undefined) door = { url: doorUrl, token };
       }
 
       const events = eventQueue<ClaudeTurnEvent>();
