@@ -61,6 +61,9 @@ const listeners = new Set<() => void>();
 let activity: RunActivity = IDLE;
 let result: RunResult | undefined;
 let resultSeq = 0;
+/** The last settle ANNOUNCED (conversation + last message id), so two surfaces
+    on one conversation cannot raise two toasts for one turn. */
+let announced: string | undefined;
 
 function notify(): void {
   for (const listener of listeners) listener();
@@ -174,7 +177,16 @@ export function publishThreadRun(key: symbol, snapshot: ThreadRunSnapshot): void
   // an approval is waiting, not finished (the badge already counts it).
   const settled = previous?.running === true && !next.running
     && next.status === "ready" && !next.waiting;
-  if (settled) result = summarize(snapshot, next.done);
+  // A host may mount TWO thread surfaces on one conversation (VendoOverlay and
+  // VendoPage): each hook publishes independently, so ONE turn settled twice and
+  // the user was told about it twice. The turn's identity is its conversation
+  // plus its last message, so a second surface reporting the same settle is the
+  // same news — announced once (Round B's dual-surface finding).
+  const identity = `${snapshot.threadId ?? ""}::${snapshot.messages.at(-1)?.id ?? ""}`;
+  if (settled && identity !== announced) {
+    announced = identity;
+    result = summarize(snapshot, next.done);
+  }
   recompute();
   // Always notify: both snapshots keep stable identities while the facts are
   // unchanged, so React bails out of the render on its own.
@@ -214,6 +226,7 @@ export function resetRunActivity(): void {
   surfaces.clear();
   activity = IDLE;
   result = undefined;
+  announced = undefined;
   notify();
 }
 

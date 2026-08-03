@@ -114,3 +114,40 @@ describe("the toast headline is words, not markdown (M25)", () => {
     expect(settle("I moved $47.50 to Acme Utilities.")).toBe("I moved $47.50 to Acme Utilities.");
   });
 });
+
+/** Round B's dual-surface finding: a host may mount BOTH VendoOverlay and
+ *  VendoPage on one conversation. Each hook publishes its own snapshot, so one
+ *  finished turn used to raise two completion toasts. */
+describe("one turn, one announcement (dual-surface dedupe)", () => {
+  const OTHER = Symbol("second-thread-surface");
+
+  const running = { threadId: "thr_1", status: "streaming" as const, messages: [turn([{ tool: "host_list_transactions", state: "input-available" }])] };
+  const ready = { threadId: "thr_1", status: "ready" as const, messages: [turn([{ tool: "host_list_transactions", state: "output-available" }], "All done.")] };
+
+  it("announces once when two surfaces both settle the same turn", () => {
+    publishThreadRun(SURFACE, running);
+    publishThreadRun(OTHER, running);
+    publishThreadRun(SURFACE, ready);
+    const first = unseenRunResult();
+    expect(first?.headline).toBe("All done.");
+    publishThreadRun(OTHER, ready);
+    // The SAME result object, not a second one with a bumped id.
+    expect(unseenRunResult()?.id).toBe(first?.id);
+  });
+
+  it("still announces the NEXT turn in the same conversation", () => {
+    publishThreadRun(SURFACE, running);
+    publishThreadRun(SURFACE, ready);
+    const first = unseenRunResult()!;
+    markRunResultsSeen();
+    const secondTurn = {
+      threadId: "thr_1",
+      status: "ready" as const,
+      messages: [{ ...turn([{ tool: "host_list_transactions", state: "output-available" }], "And again."), id: "msg_b" } as UIMessage],
+    };
+    publishThreadRun(SURFACE, running);
+    publishThreadRun(SURFACE, secondTurn);
+    expect(unseenRunResult()?.headline).toBe("And again.");
+    expect(unseenRunResult()?.id).not.toBe(first.id);
+  });
+});
