@@ -344,6 +344,12 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
   /** H6 + ruling 14 — ONE ladder, so the card and the row are the same sentence
    *  on the same fixture, at every rung. */
   describe("the card and its queue row read from one ladder", () => {
+    /** RULING 21 — this fixture had `descriptor.name === call.tool` at every
+     *  tier, so it could not see H-1: the card classified off
+     *  `descriptor.name` while its queue row classified off `call.tool`, and a
+     *  server-served ask where those differ printed two different sentences
+     *  for ONE ask. They differ here now, the way a server that names its
+     *  descriptors independently of the wire tool id serves them. */
     const money = (): ApprovalRequest => ({
       id: "apr_money",
       call: {
@@ -352,7 +358,7 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
         args: { amount_cents: 4750, recipient_name: "Acme Utilities" },
       },
       descriptor: {
-        name: "host_transferMoney",
+        name: "payments.transfer.v2",
         title: "Send money",
         // The wire's own sentence rides along and must reach neither surface.
         description: MODEL_INSTRUCTION,
