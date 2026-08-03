@@ -2499,6 +2499,10 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
       const document = authoredDocument(input.appId, input.compiled, previous);
       if (mayWrite) {
         try {
+          /** Whether this save is a change at all — the history entry and the §9.9
+           *  announcement below are both owed only by a save that changes the app. */
+          let changed = false;
+          let enabled = false;
           if (previous !== undefined) {
             // `persistEdit`'s `assertCurrent` bracket, in the shape a files-first
             // save can take it. `document` carries the baseline's own history
@@ -2510,42 +2514,51 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             // every save re-reads its own baseline. Re-reads only a row this
             // caller was already authorized to read — a fresh id is never
             // re-fetched, so the cross-tenant rule above stands.
-            const current = await apps.get(input.appId);
-            const stored = current === null ? null : rowFromRecord(current);
-            if (stored === null
-              // The subject too, for persistEdit's reason: a promote that landed
-              // in the window moved the row to an org, and re-writing the stale
-              // owner would lose the app out of it.
-              || stored.subject !== row?.subject
-              || JSON.stringify(classifyLegacyPlacements(stored.doc, config.pinBaselines)) !== JSON.stringify(previous)) {
-              throw new VendoError("conflict", `app changed under this save: ${input.appId}`);
-            }
+            const assertCurrent = async (): Promise<boolean> => {
+              const current = await apps.get(input.appId);
+              const stored = current === null ? null : rowFromRecord(current);
+              if (stored === null
+                // The subject too, for persistEdit's reason: a promote that landed
+                // in the window moved the row to an org, and re-writing the stale
+                // owner would lose the app out of it.
+                || stored.subject !== row?.subject
+                || JSON.stringify(classifyLegacyPlacements(stored.doc, config.pinBaselines)) !== JSON.stringify(previous)) {
+                throw new VendoError("conflict", `app changed under this save: ${input.appId}`);
+              }
+              return stored.enabled;
+            };
+            await assertCurrent();
             // The undo point this path had none of: the state the save replaces,
             // appended before the write lands, exactly as persistEdit does it. A
             // re-save that changed nothing is not a version — it would spend one
             // of the 50 capped slots to undo to the state it is already in.
-            if (JSON.stringify(previous) !== JSON.stringify(document)) {
+            changed = JSON.stringify(previous) !== JSON.stringify(document);
+            if (changed) {
               await history.append(input.appId, previous, {
                 at: new Date().toISOString(),
                 intent: "Saved app.vendo",
                 rung: rungFor(document),
-              });
+              }, touchedPinSlots(previous, document));
             }
+            // Asserted a SECOND time, after the append, for persistEdit's reason:
+            // the append is itself a store round trip, so the first check alone
+            // leaves the whole of it inside the TOCTOU window. Its answer is also
+            // the arm bit this write must keep — read after the window, never from
+            // the stale baseline row.
+            enabled = enabledAfterDocumentEdit(previous, document, await assertCurrent());
           }
           const appRow = appRecordInput(
             document,
             // §9.5 — a promoted app's row subject is the ORG id; the editor check
             // above is what authorized this write, and the row keeps its owner.
             row?.subject ?? ctx.principal.subject,
-            previous === undefined
-              ? false
-              : enabledAfterDocumentEdit(previous, document, row?.enabled ?? false),
+            enabled,
             previous === undefined ? undefined : sessionOf(previous),
           );
           await apps.put(appRow);
           if (previous === undefined) {
             await reportLifecycle("create", document.id, ctx);
-          } else {
+          } else if (changed) {
             // §9.9 — the ONE announcement every change to what an app IS passes
             // through (see reportDocumentEdit). A files-first rewrite changes what
             // the app is while leaving `trigger` verbatim, so the intent hash a
@@ -2553,10 +2566,13 @@ export const createApps = (config: AppsConfig): AppsRuntime => {
             // party's rewrite leaves sponsorship ACTIVE and the automation keeps
             // firing on the sponsor's authority against code the sponsor never
             // saw — and a sponsor's own rename changes the hash with no re-bind,
-            // killing their own automation at the next fire. Announced on EVERY
-            // save that lands, partial ones included: what the store holds is
-            // what fires, and both halves of the hook converge (invalidation is
-            // terminal; a re-bind binds the currently stored intent).
+            // killing their own automation at the next fire. Announced on every
+            // save that CHANGES the app, partial ones included: what the store
+            // holds is what fires, and both halves of the hook converge
+            // (invalidation is terminal; a re-bind binds the currently stored
+            // intent). An identical re-save is announced on neither half — the
+            // app is not different, and invalidation is terminal, so announcing
+            // it would kill a live sponsorship for nothing.
             await reportDocumentEdit(previous, appRow.data.doc, ctx.principal.subject);
           }
         } catch (error) {

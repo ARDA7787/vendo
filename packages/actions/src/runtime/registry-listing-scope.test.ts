@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunContext } from "@vendoai/core";
+import type { RunContext, ToolListingContext } from "@vendoai/core";
 import type { Connector } from "../connectors/connector.js";
 import { createActions } from "./registry.js";
 
@@ -146,5 +146,22 @@ describe("lazy expansion is scoped to the listing that asked for it", () => {
     await actions.expandToolkits(["slack"], ada);
 
     expect(names(await actions.descriptors({ ...ada }))).toEqual(["host_listAccounts"]);
+  });
+
+  it("a caller that cannot keep one object says which run it is with listingScope", async () => {
+    // The MCP door is that caller: it mints a BRAND-NEW context per authenticated
+    // request (consent and memberships are per-request facts), so identity made
+    // every request a different run and an expanded tool vanished from the very
+    // re-list the door's `list_changed` had just promised (round 5, 2026-08-03).
+    const { actions } = registry();
+    const request = (): ToolListingContext => ({ ...ada, listingScope: "mcps_ada" });
+    await actions.expandToolkits(["slack"], request());
+
+    // A DIFFERENT object, same scope: the same listing.
+    expect(names(await actions.descriptors(request()))).toContain("slack_SLACK_SEND");
+    // Another session of the same subject is still its own listing…
+    expect(names(await actions.descriptors({ ...ada, listingScope: "mcps_ada_2" }))).toEqual(["host_listAccounts"]);
+    // …as is the same object with no scope at all: a scope is opt-in, never inferred.
+    expect(names(await actions.descriptors(ada))).toEqual(["host_listAccounts"]);
   });
 });

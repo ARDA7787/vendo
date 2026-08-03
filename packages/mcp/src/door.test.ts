@@ -11,6 +11,7 @@ import {
   type RecordStore,
   type StoreAdapter,
   type ToolCall,
+  type ToolListingContext,
   type ToolOutcome,
   type ToolRegistry,
   type VendoTheme,
@@ -19,6 +20,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { exportJWK, generateKeyPair, jwtVerify, SignJWT, type KeyLike } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMcpDoorWithState } from "./door.js";
@@ -1980,6 +1982,10 @@ describe("createMcpDoor declared output schemas on the wire", () => {
     additionalProperties: false,
   };
 
+  /** A marker no other schema in this file carries, so the door's compile cache
+   *  (module-level, and warm from the tests above) is guaranteed to miss it. */
+  const COMPILE_PROBE = "compile-cache probe";
+
   const declaring = (name: string, outputSchema: Record<string, unknown>) => ({
     name,
     description: `the ${name} tool`,
@@ -2040,6 +2046,58 @@ describe("createMcpDoor declared output schemas on the wire", () => {
       properties: hostile.properties,
       additionalProperties: true,
     });
+    await connected.client.close();
+  });
+
+  it("drops the two keywords that reject a key without ever NAMING one", async () => {
+    // Round 5, both proven against the SDK's own validator before the fix.
+    // `patternProperties` types keys by REGEX, so "^vendo" type-rejected
+    // `vendo_truncated: true` (and "^.*$" would have taken `vendo_value` too) —
+    // no reserved-name check could see it, because the name is never written.
+    const patterned = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      patternProperties: { "^vendo": { type: "string" } },
+    };
+    // A top-level `$ref` reaches AROUND the strip: the `required` and the closed
+    // `additionalProperties` live in `$defs`, where deleting top-level keywords
+    // never looks, and both envelopes failed. Not reachable from the shipped
+    // OpenAPI extractor (it inlines refs) — a hand-written outputSchema is.
+    const referencing = {
+      type: "object",
+      $ref: "#/$defs/Row",
+      $defs: { Row: { type: "object", required: ["id"], additionalProperties: false, properties: { id: { type: "string" } } } },
+    };
+    const { connected } = await open({
+      extraDescriptors: [declaring("host_patterned", patterned), declaring("host_referencing", referencing)],
+      getOutcome: (call) => call.tool === "host_patterned"
+        ? { status: "ok", output: { vendo_truncated: true, vendo_chars: 91_000, vendo_preview: "{\"answer\"" } }
+        : { status: "ok", output: "just text" },
+    });
+
+    const listed = await connected.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    expect(byName.get("host_patterned")?.outputSchema).toEqual({
+      type: "object",
+      properties: { answer: { type: "string" } },
+      additionalProperties: true,
+    });
+    // `$defs` stays: an unreferenced definition constrains nothing, and the door
+    // only removes what can reject.
+    expect(byName.get("host_referencing")?.outputSchema).toEqual({
+      type: "object",
+      $defs: referencing.$defs,
+      additionalProperties: true,
+    });
+
+    // The proof: the client compiled both advertised schemas and validates every
+    // ok result against them, so a kept keyword would throw right here.
+    const truncated = await connected.client.callTool({ name: "host_patterned", arguments: {} });
+    expect(truncated.isError).toBeFalsy();
+    expect(truncated.structuredContent).toMatchObject({ vendo_truncated: true });
+    const wrapped = await connected.client.callTool({ name: "host_referencing", arguments: {} });
+    expect(wrapped.isError).toBeFalsy();
+    expect(wrapped.structuredContent).toEqual({ vendo_value: "just text" });
     await connected.client.close();
   });
 
@@ -2201,6 +2259,42 @@ describe("createMcpDoor declared output schemas on the wire", () => {
     await connected.client.close();
   });
 
+  it("compiles a given schema ONCE, however many listings advertise it", async () => {
+    // Compiling is the expensive half of a listing and it is pure: 244ms for 35
+    // schemas, 1370ms for 301 (measured 2026-08-03), paid AGAIN on every
+    // `tools/list` — and this redesign re-lists on every `list_changed`. The
+    // verdict is cached on the serialized schema the pass already computes.
+    //
+    // Driven over raw JSON-RPC on purpose: the SDK client compiles every
+    // advertised schema too (`cacheToolMetadata`), and a counter that saw both
+    // sides could not say which one recompiled.
+    const probe = { type: "object", properties: { note: { type: "string", description: COMPILE_PROBE } } };
+    const harness = makeHarness({ extraDescriptors: [declaring("host_probe", probe)] });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const getValidator = vi.spyOn(AjvJsonSchemaValidator.prototype, "getValidator");
+    const compiles = () => getValidator.mock.calls
+      .filter(([schema]) => JSON.stringify(schema).includes(COMPILE_PROBE)).length;
+    try {
+      const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+      const sessionId = initialized.headers.get("mcp-session-id")!;
+      const list = async () => {
+        const response = await harness.door.handler(mcpRequest(tokens.access_token, sessionId));
+        expect(response.status).toBe(200);
+        return await response.text();
+      };
+
+      expect(await list()).toContain(COMPILE_PROBE);
+      expect(compiles()).toBe(1);
+      // The second listing still ADVERTISES the schema — the cached verdict is an
+      // answer, not a skip — and costs no compile.
+      expect(await list()).toContain(COMPILE_PROBE);
+      expect(compiles()).toBe(1);
+    } finally {
+      getValidator.mockRestore();
+    }
+  });
+
   it("a malformed `required` no longer costs the tool its fields — it is dropped either way", async () => {
     // `required: "id"` used to reject the whole schema, because the wire carried
     // `required` and the client's ToolSchema wants an array. Nothing enforceable
@@ -2322,6 +2416,100 @@ describe("createMcpDoor announces a connector search that grew the surface", () 
     expect(seen).toEqual(["notifications/tools/list_changed"]);
     expect((await connected.client.listTools()).tools.map((tool) => tool.name)).toContain("gmail_send");
     await connected.client.close();
+  });
+
+  it("the expanded tool survives the RE-LIST, though the door rebuilt its context in between", async () => {
+    // The regression this exists for (round 5, 2026-08-03): the registry scopes
+    // lazily expanded toolkits to the run that expanded them, and the door mints
+    // a BRAND-NEW context object per authenticated request (consent and
+    // memberships are per-request facts). Keyed on object identity alone, every
+    // request was a different run: the search expanded, the door announced
+    // `list_changed`, and a client that ACTED on it — re-listing, as this real SDK
+    // client does — got a listing without the tool it had just been told about.
+    // Permanently. The notification was a guaranteed lie to any client that
+    // re-lists. (A client that never re-lists is a separate problem and not this
+    // one: agent-sdk 0.3.215 registers no list-changed handler for an HTTP MCP
+    // server, so the boxed harness listed once per session in the live run.)
+    //
+    // Invisible to the harness above, whose registry ignores `ctx` entirely, so
+    // this one scopes the way the real registry does: by `ctx.listingScope` when
+    // the caller supplies one, by the context object otherwise.
+    const expandedScopes = new Set<unknown>();
+    const contexts = new Set<object>();
+    const scopeOf = (ctx?: ToolListingContext): unknown =>
+      ctx === undefined ? undefined : ctx.listingScope ?? ctx;
+
+    const { connected, seen, notification } = await open({
+      extraDescriptors: (ctx) => {
+        if (ctx !== undefined) contexts.add(ctx);
+        return expandedScopes.has(scopeOf(ctx)) ? [search, late] : [search];
+      },
+      getOutcome: (call, ctx) => {
+        if (call.tool === "search_connectors") expandedScopes.add(scopeOf(ctx));
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).not.toContain("gmail_send");
+    expect((await connected.client.callTool({ name: "search_connectors", arguments: { query: "gmail" } })).isError)
+      .toBeFalsy();
+    await notification;
+    expect(seen).toEqual(["notifications/tools/list_changed"]);
+
+    // The promise kept: the re-list the door asked for finds the tool.
+    expect((await connected.client.listTools()).tools.map((tool) => tool.name)).toContain("gmail_send");
+
+    // …and it was a real re-list across rebuilt contexts, not one object reused:
+    // several distinct context objects, ONE listing scope between them. Without
+    // this pair the assertion above would pass on a door that never rebuilt.
+    expect(contexts.size).toBeGreaterThan(1);
+    expect(new Set([...contexts].map((ctx) => (ctx as ToolListingContext).listingScope)).size).toBe(1);
+    expect(expandedScopes).toEqual(new Set([connected.transport.sessionId]));
+    await connected.client.close();
+  });
+
+  it("a dropped SSE stream is released, so the reconnect is served and the pending announcement rides it", async () => {
+    // Measured live 2026-08-03 (box client, ~138s uptime): the standalone stream
+    // died, the client's two reconnect attempts came back 409 "Only one SSE
+    // stream is allowed per session", it gave up — and the session had no
+    // notification channel left, so nothing could ever be announced on it again.
+    // The transport releases a stream only through the ReadableStream's `cancel`
+    // callback, and a socket that just dies does not fire it. Abandoning the
+    // response body below, unread and uncancelled, is exactly that state.
+    //
+    // Raw HTTP, not the SDK client: the client owns its own reconnect policy and
+    // would never let a test hold a session in this state.
+    let expanded = false;
+    const harness = makeHarness({
+      extraDescriptors: () => (expanded ? [search, late] : [search]),
+      getOutcome: (call) => {
+        if (call.tool === "search_connectors") expanded = !expanded;
+        return { status: "ok", output: { tools: ["gmail_send"] } };
+      },
+    });
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+    const searchOnce = () => harness.door.handler(
+      mcpCall(tokens.access_token, sessionId, "search_connectors", { query: "gmail" }),
+    );
+
+    // A search before any stream exists: the notification is dropped by the
+    // transport, and the flag it left behind is what the GET below flushes.
+    await searchOnce();
+    const first = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    expect(first.headers.get("content-type")).toContain("text/event-stream");
+    expect(await firstFrame(first)).toContain("notifications/tools/list_changed");
+
+    // The socket dies. Nothing cancels the body, so the transport still believes
+    // this session has a stream — and the announcement raised now goes nowhere.
+    await searchOnce();
+
+    const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+    // Used to be 409, twice, and then the client stopped asking.
+    expect(reconnected.status).toBe(200);
+    expect(await firstFrame(reconnected)).toContain("notifications/tools/list_changed");
   });
 
   it("a search as the session's FIRST call survives a stream that attaches later", async () => {
@@ -2456,13 +2644,19 @@ interface HarnessOptions {
   menuTools?: string[] | (() => string[] | undefined | Promise<string[] | undefined>);
   productName?: string;
   state?: McpDoorState;
-  /** The call is passed so one harness can answer several tools differently. */
-  getOutcome?: (call: ToolCall) => ToolOutcome;
+  /** The call is passed so one harness can answer several tools differently; the
+   *  context so a registry can record WHICH run just expanded a toolkit. */
+  getOutcome?: (call: ToolCall, ctx: ToolListingContext) => ToolOutcome;
   principal?: (subject: string) => Principal | null;
   apps?: AppsPort;
   /** A function form lets a test GROW the surface mid-session (lazy connector
-   *  expansion), which is exactly what a memoized door menu would miss. */
-  extraDescriptors?: Awaited<ReturnType<ToolRegistry["descriptors"]>> | (() => Awaited<ReturnType<ToolRegistry["descriptors"]>>);
+   *  expansion), which is exactly what a memoized door menu would miss. It is
+   *  handed the LISTING CONTEXT, so a test can also answer per run the way the
+   *  real registry does — scoped by `ctx.listingScope`, falling back to the
+   *  context object's identity. */
+  extraDescriptors?:
+    | Awaited<ReturnType<ToolRegistry["descriptors"]>>
+    | ((ctx?: ToolListingContext) => Awaited<ReturnType<ToolRegistry["descriptors"]>>);
   check?: Guard["check"];
   mount?: string;
   baseUrl?: string;
@@ -2497,17 +2691,17 @@ function makeHarness(options: HarnessOptions = {}) {
     onApprovalDecision() { return () => undefined; },
   };
   const tools: ToolRegistry = {
-    async descriptors() {
+    async descriptors(ctx) {
       return [{
         name: "host_lookup",
         description: "Look something up",
         inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
         risk: "read",
-      }, ...(typeof options.extraDescriptors === "function" ? options.extraDescriptors() : options.extraDescriptors ?? [])];
+      }, ...(typeof options.extraDescriptors === "function" ? options.extraDescriptors(ctx) : options.extraDescriptors ?? [])];
     },
     async execute(call, ctx) {
       executions.push({ id: call.id, ctx });
-      return options.getOutcome?.(call) ?? { status: "ok", output: { answer: 42 } };
+      return options.getOutcome?.(call, ctx) ?? { status: "ok", output: { answer: 42 } };
     },
   };
   const config = {
@@ -2709,6 +2903,43 @@ function mcpRequest(accessToken: string, sessionId?: string, resource = BASE) {
         : { method: "tools/list", params: {} }),
     }),
   });
+}
+
+/** `mcpRequest` covers initialize and tools/list; this is any other method on a
+ *  live session, over raw HTTP. */
+function mcpCall(accessToken: string, sessionId: string, name: string, args: Record<string, unknown>) {
+  return new Request(BASE, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-session-id": sessionId,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "tools/call", params: { name, arguments: args } }),
+  });
+}
+
+/** The standalone SSE stream a client opens for server-initiated notifications. */
+function sseRequest(accessToken: string, sessionId: string) {
+  return new Request(BASE, {
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: "text/event-stream",
+      "mcp-session-id": sessionId,
+      "mcp-protocol-version": "2025-11-25",
+    },
+  });
+}
+
+/** The first SSE frame already buffered on a stream. Reading does NOT cancel the
+ *  body, which is what lets a test hold a stream the server still believes in. */
+async function firstFrame(response: Response): Promise<string> {
+  const reader = response.body!.getReader();
+  const { value } = await reader.read();
+  reader.releaseLock();
+  return new TextDecoder().decode(value);
 }
 
 async function pkceChallenge(verifier: string): Promise<string> {

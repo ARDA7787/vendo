@@ -343,6 +343,16 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       // This disables FILESYSTEM settings discovery only — `plugins` below is an
       // explicit programmatic list, so native skills survive tenant isolation.
       settingSources: [],
+      // The other half of that rule, for MCP. `settingSources` closes SETTINGS
+      // discovery; the SDK names a project `.mcp.json` as something only this flag
+      // ignores. The box's cwd is a disk the model writes itself (Write and Bash
+      // under bypassPermissions), and `reopen` relaunches a fresh CLI over that
+      // same cwd — a server mounted that way would arrive as `mcp__*` tools:
+      // outside DISALLOWED_TOOLS, outside the guard, outside the audit log,
+      // outside egress filtering. Whether the CLI would ever mount one unapproved
+      // is unproven, and this closes the question at zero cost: the door above is
+      // the only MCP server this box wants.
+      strictMcpConfig: true,
       // Without this the SDK hands us whole assistant blocks and the user watches
       // a still screen for the length of a paragraph.
       includePartialMessages: true,

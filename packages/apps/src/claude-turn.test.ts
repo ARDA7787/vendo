@@ -156,6 +156,19 @@ describe("the tools are the HOST's MCP door — the projection is gone", () => {
     expect(options.mcpServers).toBeUndefined();
   });
 
+  test("the door is the ONLY server — a `.mcp.json` in the box cannot mount another", async () => {
+    // `settingSources: []` closes settings discovery; the SDK documents a project
+    // `.mcp.json` as something only `strictMcpConfig` ignores, and the box's cwd is
+    // a disk the model writes itself. Tools mounted that way would be `mcp__*`
+    // names outside the deny-list, the guard, the audit log and egress filtering.
+    const { options } = await run([], { toolDoor: TOOL_DOOR });
+    expect(options.settingSources).toEqual([]);
+    expect(options.strictMcpConfig).toBe(true);
+  });
+
+  test("strictness is not conditional on a door — a box with no server admits none either", async () => {
+    expect((await run([])).options.strictMcpConfig).toBe(true);
+  });
 });
 
 describe("permissions — the box is the permission, the door is the permission (D1)", () => {

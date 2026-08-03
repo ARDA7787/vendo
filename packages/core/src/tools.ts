@@ -298,15 +298,33 @@ export const toolOutcomeSchema = z.discriminatedUnion("status", [
  *  `venue`/`presence` are what design §12's projection reads: the guard
  *  withholds destructive and external tools from an unattended run.
  *
- *  The OBJECT ITSELF also identifies the run, and a registry may narrow a
- *  listing by it: `@vendoai/actions` scopes lazily expanded connector toolkits
- *  to the run that expanded them, keyed by this object's identity (fix
- *  2026-08-03 — expansion was process-wide and permanent, so one conversation's
- *  `search_connectors` answered an unrelated conversation's first `tools/list`
- *  with 301 tools instead of 35). Pass a run's OWN context object through, do
- *  not rebuild an equivalent one per call: a fresh object reads as a fresh run,
- *  which costs a re-search rather than another run's set. */
-export type ToolListingContext = Pick<RunContext, "venue" | "presence">;
+ *  The run also has to be IDENTIFIABLE, because a registry may narrow a listing
+ *  by it: `@vendoai/actions` scopes lazily expanded connector toolkits to the
+ *  run that expanded them (fix 2026-08-03 — expansion was process-wide and
+ *  permanent, so one conversation's `search_connectors` answered an unrelated
+ *  conversation's first `tools/list` with 301 tools instead of 35). Two ways to
+ *  say which run this is, and a caller picks exactly one:
+ *
+ *  - {@link listingScope} — an opaque string the caller already has (an MCP
+ *    session id). Preferred whenever the caller cannot keep ONE context object:
+ *    the MCP door mints a fresh context per authenticated request, because
+ *    consent and memberships are per-request facts, so identity there made every
+ *    request a new run — and an expanded tool vanished from the re-list the
+ *    door's own `list_changed` had just asked a client for (fix 2026-08-03,
+ *    round 5).
+ *  - the OBJECT ITSELF, when no scope is given. One run, one context object:
+ *    the agent threads the same object through descriptors, seed, search and
+ *    execute, and the door projects a live turn's context verbatim.
+ *
+ *  Either way, an UNIDENTIFIED run fails toward "search again", never toward
+ *  another run's set: a rebuilt object with no scope reads as a fresh listing. */
+export type ToolListingContext = Pick<RunContext, "venue" | "presence"> & {
+  /** Opaque run/session key. Same string ⇒ same listing, whatever the object;
+   *  absent ⇒ the object's identity is the key. Never parsed, never a
+   *  permission — a listing is not an authorization (the guard and the
+   *  per-user connect check decide what may RUN). */
+  listingScope?: string;
+};
 
 /** 01-core §4 */
 export interface ToolRegistry {

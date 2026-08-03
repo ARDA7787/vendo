@@ -26,6 +26,7 @@
 import {
   compilePlan,
   compileWire,
+  safeErrorMessage,
   vendoViewPartSchema,
   vendoViewStreamId,
   type AppId,
@@ -202,7 +203,21 @@ export async function viewForWrite(
     const skeleton = viewPart(appId, payload, true);
     if (skeleton !== undefined) options.emit(skeleton.streamId, skeleton.part);
   }
-  const data = await options.authoredApp?.({ appId, compiled: compiledApp });
+  let data: Record<string, Json> | undefined;
+  try {
+    data = await options.authoredApp?.({ appId, compiled: compiledApp });
+  } catch (error) {
+    // The streaming skeleton is ALREADY on screen. Rethrowing here would leave it
+    // there forever — the card stuck on "Building your view…", which is the exact
+    // symptom the settle flag exists to prevent. `authored` can genuinely throw
+    // (its own store reads and hold checks run before its internal try), so this
+    // path is reachable. A settled app of "—" beats a permanent spinner, and the
+    // brokenness reaches the operator here and the harness through `validate` —
+    // never the user.
+    console.error(
+      `[vendo] the app half of ${appId} failed; the view settles without its data — ${safeErrorMessage(error)}`,
+    );
+  }
   // The app half has run: this is the finished paint, so it SETTLES.
   return viewPart(appId, data === undefined ? payload : { ...payload, data }, false);
 }
@@ -212,16 +227,20 @@ export async function viewForWrite(
  * other operation passes straight through, so the result is still a `WorkspaceFs`.
  */
 export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSeamOptions): WorkspaceFs {
-  const emitFor = async (path: string): Promise<void> => {
-    if (hotPathAppId(path) === undefined) return;
+  /** True iff this path put a view on screen — what the plan's yield is keyed on. */
+  const emitFor = async (path: string): Promise<boolean> => {
+    if (hotPathAppId(path) === undefined) return false;
     try {
       // Read back what the store now holds rather than trusting a remembered
       // argument: append, encoding and any store-side normalization land here.
       const content = await workspace.readFile(path);
       const view = await viewForWrite(path, content, options);
-      if (view !== undefined) options.emit(view.streamId, view.part);
+      if (view === undefined) return false;
+      options.emit(view.streamId, view.part);
+      return true;
     } catch {
       // A view is a courtesy on top of a landed commit. It can never fail one.
+      return false;
     }
   };
 
@@ -250,17 +269,29 @@ export function wrapWorkspaceForRender(workspace: WorkspaceFs, options: RenderSe
         // the two views — and since `changed` is sorted, `app.vendo` sorts first
         // and the plan would overwrite the finished app with a picture of it.
         // The app document is the better view by definition, so the plan yields
-        // to it. A commit with only the plan still paints its skeleton: that is
-        // the seconds-to-skeleton promise, and it is the case that made the
-        // ordering here look harmless before the app half carried data.
+        // to it — but only to an app that ACTUALLY PAINTED. An `app.vendo` that
+        // does not parse or does not render emits nothing, and a plan that yielded
+        // to it would leave the pane blank for the whole turn: the one thing the
+        // skeleton exists to prevent. So the app half runs first, and each plan
+        // then paints unless its own app already did.
         const authored = new Set(
           result.changed
             .filter((path) => hotPathFile(path) === "app.vendo")
             .map((path) => hotPathAppId(path)),
         );
+        const deferred: Array<{ path: string; appId: AppId }> = [];
+        const painted = new Set<AppId>();
         for (const path of result.changed) {
-          if (hotPathFile(path) === "plan.vendo" && authored.has(hotPathAppId(path))) continue;
-          await emitFor(path);
+          const appId = hotPathAppId(path);
+          if (appId === undefined) continue;
+          if (hotPathFile(path) === "plan.vendo" && authored.has(appId)) {
+            deferred.push({ path, appId });
+            continue;
+          }
+          if (await emitFor(path)) painted.add(appId);
+        }
+        for (const { path, appId } of deferred) {
+          if (!painted.has(appId)) await emitFor(path);
         }
         return result;
       };

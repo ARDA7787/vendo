@@ -7,6 +7,7 @@ import type {
   RunContext,
   StoreAdapter,
   ToolDescriptor,
+  ToolListingContext,
   ToolOutcome,
   ToolRegistry,
   ToolResult,
@@ -56,8 +57,29 @@ interface HostIdentity {
   description: string;
 }
 
+/**
+ * The context a door session hands the registry — a `RunContext` plus core's
+ * opaque `listingScope`.
+ *
+ * The scope is load-bearing on THIS surface: the door mints a brand-new context
+ * object per authenticated request (the consent projection and the asserted
+ * memberships are per-request facts), and the registry scopes a lazily expanded
+ * connector toolkit to the run that expanded it. Keyed on object identity, every
+ * request was a different run — so an external/OAuth client that took the
+ * `list_changed` and re-listed got a listing WITHOUT the tool `search_connectors`
+ * had just materialized, permanently (round 5, 2026-08-03, over the real door and
+ * the real SDK client). The session id is what stays the same across those
+ * objects, so the session id is the scope. A TURN session carries the live turn's
+ * own context verbatim, with no scope: one turn is one object, and identity is
+ * right there.
+ */
+type DoorRunContext = RunContext & Pick<ToolListingContext, "listingScope">;
+
 interface SessionState extends McpStateSession {
   server: Server;
+  /** {@link DoorRunContext} — narrowed from `McpStateSession.context` so the
+   *  listing scope the registry reads is visible in the types here. */
+  context: DoorRunContext;
   sessionId?: string;
   /**
    * Set only on a TURN-credential session (10-mcp §3b). Its presence is what
@@ -616,10 +638,23 @@ class Door {
       ...(bearing === undefined ? {} : { turn: bearing.turn, turnToken: bearing.token }),
       server,
       handleRequest: async (req) => {
+        // A GET is a client asking for its notification channel, and the NEWEST
+        // stream is the live one — so release whatever is registered first.
+        //
+        // The transport only ever learns a standalone stream is gone through the
+        // ReadableStream's `cancel` callback, which a dropped socket does not
+        // reliably fire. Measured live 2026-08-03: the box client's stream died
+        // at ~138s, both reconnect attempts came back 409 "Only one SSE stream is
+        // allowed per session", the client exhausted its retries — and that
+        // session had no notification channel for the rest of its life, so the
+        // flush below could never land again. A stale registration must never
+        // outrank a client that is asking to be reachable.
+        if (req.method === "GET") transport.closeStandaloneSSEStream();
         const response = await transport.handleRequest(req);
         // The client's standalone SSE stream just attached. Everything the door
         // tried to announce before it existed was dropped by the transport, so
-        // this is where a pending `list_changed` gets its only other chance.
+        // this is where a pending `list_changed` gets its only other chance —
+        // including on a reconnect, which is why sending never clears the flag.
         if (req.method === "GET" && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
           await this.#flushToolsChanged(state);
         }
@@ -1267,6 +1302,17 @@ const utf8 = new TextEncoder();
  * Top level ONLY. A nested constraint applies to the value of a field the host
  * declared, so it can only ever reject the host's own result — never a
  * reserved-key envelope, whose keys no host schema mentions.
+ *
+ * Two of these reject WITHOUT naming a key, which is why a "does it mention a
+ * reserved name?" check would never have found them (both proven against the
+ * SDK's own validator, round 5 2026-08-03):
+ * - `patternProperties`, which types keys by REGEX: `{"^vendo": {type:"string"}}`
+ *   made `vendo_truncated: true` a client throw, and `"^.*$"` types every key
+ *   there is, including `vendo_value`.
+ * - `$ref`/`$dynamicRef`, which reach around this whole strip: a top-level
+ *   `$ref` into `$defs` re-imposes the `required` and closed
+ *   `additionalProperties` deleted here, from a place the delete never looks.
+ *   (`$defs` itself stays — an unreferenced definition constrains nothing.)
  */
 const UNKEEPABLE_KEYWORDS = [
   "required",
@@ -1284,6 +1330,9 @@ const UNKEEPABLE_KEYWORDS = [
   "maxProperties",
   "propertyNames",
   "unevaluatedProperties",
+  "patternProperties",
+  "$ref",
+  "$dynamicRef",
 ] as const;
 
 /**
@@ -1323,7 +1372,7 @@ const UNKEEPABLE_KEYWORDS = [
  */
 function wireOutputSchema(
   schema: Record<string, unknown> | undefined,
-  compiles: (wire: Record<string, unknown>) => boolean,
+  compiles: (wire: Record<string, unknown>, serialized: string) => boolean,
 ): { outputSchema?: Tool["outputSchema"] } {
   if (!isRecord(schema) || schema.type !== "object") return {};
   if (schema.properties !== undefined && !isObjectValued(schema.properties)) return {};
@@ -1343,7 +1392,7 @@ function wireOutputSchema(
   // `.length` is UTF-16 units and can only UNDER-count bytes, so it is a free
   // pre-reject before the encode.
   if (serialized.length > OUTPUT_SCHEMA_CAP || utf8.encode(serialized).length > OUTPUT_SCHEMA_CAP) return {};
-  if (!compiles(wire)) return {};
+  if (!compiles(wire, serialized)) return {};
   return { outputSchema: wire as Tool["outputSchema"] };
 }
 
@@ -1357,9 +1406,14 @@ function wireOutputSchema(
  * Python-style named group — ordinary in a generated OpenAPI spec — is a compile
  * throw no shape check would ever catch.
  *
- * ONE instance per listing pass, then discarded. Ajv memoizes every compiled
+ * ONE Ajv instance per listing pass, then discarded: Ajv memoizes every compiled
  * schema in a Map keyed by the schema OBJECT, and the door builds a fresh wire
- * object per listing, so a door-lifetime instance would grow without bound.
+ * object per listing, so a door-lifetime instance would grow without bound. The
+ * VERDICT is what carries across listings instead ({@link compileVerdicts}) —
+ * keyed on the serialized schema, which this pass has already computed for the
+ * size cap. Compiling is the expensive half and it is pure: 244ms for 35
+ * schemas, 1370ms for 301 (measured 2026-08-03), on EVERY `tools/list`, and this
+ * redesign's own uncurated listing re-lists on every `list_changed`.
  *
  * On a runtime that forbids code generation (Workers et al) Ajv cannot compile
  * ANYTHING, so no schema is advertised there and the door says so once. That is
@@ -1367,13 +1421,15 @@ function wireOutputSchema(
  * the safe direction: an unaskable schema is exactly the one that took a client's
  * whole listing down.
  */
-function wireSchemaCompiler(): (wire: Record<string, unknown>) => boolean {
+function wireSchemaCompiler(): (wire: Record<string, unknown>, serialized: string) => boolean {
   let validator: AjvJsonSchemaValidator | undefined;
-  return (wire) => {
+  return (wire, serialized) => {
+    const cached = compileVerdicts.get(serialized);
+    if (cached !== undefined) return cached;
     try {
       validator ??= new AjvJsonSchemaValidator();
       validator.getValidator(wire as Parameters<AjvJsonSchemaValidator["getValidator"]>[0]);
-      return true;
+      return rememberVerdict(serialized, true);
     } catch (error) {
       if (error instanceof EvalError && !codegenWarned) {
         codegenWarned = true;
@@ -1383,7 +1439,7 @@ function wireSchemaCompiler(): (wire: Record<string, unknown>) => boolean {
           + "Tools still list and still run; the model just loses the declared result fields.",
         );
       }
-      return false;
+      return rememberVerdict(serialized, false);
     }
   };
 }
@@ -1391,6 +1447,34 @@ function wireSchemaCompiler(): (wire: Record<string, unknown>) => boolean {
 /** Once per process: a runtime without code generation is a deployment fact, not
  *  a per-listing event. */
 let codegenWarned = false;
+
+/**
+ * "Does this exact schema compile?", remembered across listings and sessions —
+ * a pure function of the serialized schema, so the answer never goes stale
+ * (a schema that changes is a different key).
+ *
+ * Bounded by the BYTES it holds, not by entry count: the key IS the schema text,
+ * and one schema may be up to {@link OUTPUT_SCHEMA_CAP} of it. 4 MiB fits any
+ * realistic advertised surface whole (301 tools measured at a few hundred KB)
+ * and is the ceiling for a pathological one, which then just recompiles — the
+ * behaviour before this cache existed. Oldest entry evicted first; there is no
+ * recency to protect, because a listing re-reads the whole set every time.
+ */
+const compileVerdicts = new Map<string, boolean>();
+const VERDICT_CACHE_BYTES = 4 * 1024 * 1024;
+let verdictBytes = 0;
+
+function rememberVerdict(serialized: string, verdict: boolean): boolean {
+  compileVerdicts.set(serialized, verdict);
+  verdictBytes += serialized.length;
+  while (verdictBytes > VERDICT_CACHE_BYTES) {
+    const oldest = compileVerdicts.keys().next();
+    if (oldest.done === true) break;
+    compileVerdicts.delete(oldest.value);
+    verdictBytes -= oldest.value.length;
+  }
+  return verdict;
+}
 
 /** The client's `ToolSchema` asserts every `properties` value is an OBJECT, so a
  *  boolean subschema is legal JSON Schema the wire cannot carry. */
@@ -1619,12 +1703,17 @@ function mcpContext(
   sessionId: string,
   consent: { clientId: string; scopes: string[] },
   memberships?: Membership[],
-): McpRunContext {
+): McpRunContext & { listingScope: string } {
   return {
     principal,
     venue: "mcp",
     presence: "present",
     sessionId,
+    // What ties this request's context to the last one's ({@link DoorRunContext}).
+    // The same string the session is keyed by, so a client's listing survives
+    // the door rebuilding its context — the tool a search materialized is still
+    // there on the re-list the door asked for.
+    listingScope: sessionId,
     mcpConsent: consent,
     // §9.1 — asserted, never stored, and absent when the host asserts nothing.
     ...(memberships === undefined ? {} : { memberships }),

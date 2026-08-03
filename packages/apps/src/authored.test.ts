@@ -88,11 +88,13 @@ interface Stand {
   edits: Array<{ previous: AppDocument; next: AppDocument; editor: string }>;
   /**
    * Land something in the window a save brackets: `run` fires ONCE, right after
-   * the next save reads its baseline row and before it writes. This is the only
-   * way to be inside that window from outside, and it is exactly the race a
-   * concurrent `edit()` is.
+   * a save reads a row and before it writes. This is the only way to be inside
+   * that window from outside, and it is exactly the race a concurrent `edit()`
+   * is. `skipReads` lets that many reads pass first, which is how a test picks
+   * WHICH part of the window it lands in — 0 is the baseline read, 1 is after
+   * the first concurrency check (so inside the history append).
    */
-  arm: (run: () => Promise<void>) => void;
+  arm: (run: () => Promise<void>, skipReads?: number) => void;
 }
 
 /** A machine that answers any `fn:` with a secret, and records being asked. */
@@ -129,7 +131,7 @@ const stand = (options: {
   const calls: RunContext[] = [];
   const seen: Stand["seen"] = [];
   const edits: Stand["edits"] = [];
-  let armed: (() => Promise<void>) | undefined;
+  let armed: { skipReads: number; run: () => Promise<void> } | undefined;
   // The runtime captures its `vendo_apps` collection once; this wrapper hands it
   // an instrumented one so a test can land a write between a save's baseline read
   // and its put.
@@ -142,9 +144,15 @@ const stand = (options: {
         ...records,
         async get(id: string) {
           const record = await records.get(id);
-          const run = armed;
-          armed = undefined;
-          await run?.();
+          if (armed !== undefined) {
+            if (armed.skipReads > 0) {
+              armed.skipReads -= 1;
+            } else {
+              const { run } = armed;
+              armed = undefined;
+              await run();
+            }
+          }
           return record;
         },
       };
@@ -181,8 +189,8 @@ const stand = (options: {
     calls,
     seen,
     edits,
-    arm: (run) => {
-      armed = run;
+    arm: (run, skipReads = 0) => {
+      armed = { skipReads, run };
     },
   };
 };
@@ -447,6 +455,30 @@ describe("a save whose text left a pinned component out", () => {
 
     expect((await rowOf(store))?.doc?.components?.[name]).toContain("2");
   });
+
+  it("records the pin intent that edit does, so a rebase can replay this save", async () => {
+    const { runtime, store } = stand();
+    await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+    await seedAppRow(store, {
+      ...(await rowOf(store))!.doc!,
+      pins: [{ slot, base: "sha256:hostsource" }],
+      components: { [name]: "export default () => null;" },
+    }, "u1");
+
+    const island = `<App name="Spending">
+  <${name} />
+  <Island name="${name}">export default () =&gt; 2;</Island>
+</App>`;
+    await runtime.authored({ appId: APP_ID, compiled: compiled(island) }, ctx());
+
+    // The trail is what `pins.rebase` replays onto a new host baseline. Without the
+    // slot on this save's version, an edit the FILE made to a pinned component is
+    // silently dropped the next time the host ships that component — the same
+    // record `persistEdit` writes for a model edit (touchedPinSlots).
+    const trail = await store.records(`vendo:app-pin-intents:${APP_ID}`).list();
+    expect(trail.records.map((record) => (record.data as { slot: string; intent: string })))
+      .toEqual([expect.objectContaining({ slot, intent: "Saved app.vendo" })]);
+  });
 });
 
 describe("the undo point a files-first save leaves", () => {
@@ -466,13 +498,18 @@ describe("the undo point a files-first save leaves", () => {
   });
 
   it("spends no version on a re-save that changed nothing", async () => {
-    const { runtime } = stand();
+    const { runtime, edits } = stand();
     await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
     await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
 
     // The history is capped at 50: an undo point to the state the app is already
     // in would push a real one out.
     expect(await runtime.history(APP_ID, ctx()).list()).toEqual([]);
+    // And §9.9 says nothing either: the app is not different, invalidation is
+    // terminal, so announcing an identical re-save would kill a live sponsorship
+    // for a change that does not exist. The skill saves on a timer, so this is
+    // the common case, not the corner.
+    expect(edits).toEqual([]);
   });
 });
 
@@ -504,6 +541,41 @@ describe("a save computed over a row that changed under it", () => {
       expect(errors.mock.calls.map(String).join(" ")).toContain("app not saved");
       // …and never a reason to withhold the view the person is already looking at.
       expect(data).toEqual({ spend: { total: 4210, currency: "USD" } });
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("is refused when it lands DURING the version append, not only before it", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { runtime, store, edits, arm } = stand();
+      await runtime.authored({ appId: APP_ID, compiled: compiled(SPEND) }, ctx());
+      const stored = (await rowOf(store))!.doc!;
+      // One read later than the test above: the baseline read and the first
+      // concurrency check both pass, and the edit lands while the history append
+      // is in flight. A single check would have written the pre-edit document
+      // straight over it — the append is a store round trip, so the whole of it
+      // sits inside the window.
+      arm(async () => {
+        await seedAppRow(store, { ...stored, description: "the person's own edit" }, "u1");
+      }, 1);
+
+      await runtime.authored(
+        { appId: APP_ID, compiled: compiled(SPEND.replace("Spending", "Money")) },
+        ctx(),
+      );
+
+      const row = await rowOf(store);
+      expect(row?.doc?.description).toBe("the person's own edit");
+      expect(row?.doc?.name).toBe("Spending");
+      expect(edits).toEqual([]);
+      // The append already ran, so its version stands — a spent slot whose undo
+      // target is the state before both writes. persistEdit has the same residual
+      // for the same reason (no compare-and-swap on the store seam); what the
+      // second check buys is that the CONCURRENT EDIT survives.
+      expect(await runtime.history(APP_ID, ctx()).list()).toHaveLength(1);
+      expect(errors.mock.calls.map(String).join(" ")).toContain("app not saved");
     } finally {
       errors.mockRestore();
     }

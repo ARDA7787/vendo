@@ -11,7 +11,7 @@
  * writes AND commits, which is what the runtime makes happen for the harness.
  */
 import { vendoViewPartSchema, vendoViewStreamId, type Json, type VendoViewPart } from "@vendoai/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HOT_PATH_FILES, HOT_PATH_WATCH, hotPathAppId, wrapWorkspaceForRender } from "./render-seam.js";
 import { testWorkspace } from "./test-doubles.test-util.js";
 
@@ -318,7 +318,7 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
     expect((emitted.at(-1)!.part.payload as { data?: unknown }).data).toBeUndefined();
   });
 
-  it("a throwing app half never fails the commit, and the skeleton still stands", async () => {
+  it("a throwing app half never fails the commit, and the view still SETTLES", async () => {
     const emitted: Array<{ id: string; part: VendoViewPart }> = [];
     const workspace = wrapWorkspaceForRender(testWorkspace(), {
       emit: (id, part) => emitted.push({ id, part }),
@@ -326,10 +326,25 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
         throw new Error("the store is gone");
       },
     });
-    await workspace.writeFile(APP_VENDO, WITH_QUERY);
-    await expect(workspace.commit()).resolves.toMatchObject({ status: "ok" });
-    expect(emitted).toHaveLength(1);
-    expect((emitted[0]!.part.payload as { data?: unknown }).data).toBeUndefined();
+    const logs: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logs.push(args);
+    });
+    try {
+      await workspace.writeFile(APP_VENDO, WITH_QUERY);
+      await expect(workspace.commit()).resolves.toMatchObject({ status: "ok" });
+    } finally {
+      spy.mockRestore();
+    }
+    // The streaming skeleton is already on screen when the app half runs, so a
+    // throw that escaped would leave the card on "Building your view…" forever.
+    // It settles instead, data-less, on the same stream id: an app of "—" beats a
+    // permanent spinner, and the operator is the one who hears about the failure.
+    expect(emitted.map((entry) => (entry.part.payload as { streaming?: boolean }).streaming))
+      .toEqual([true, false]);
+    expect(new Set(emitted.map((entry) => entry.id))).toEqual(new Set([vendoViewStreamId(APP)]));
+    expect((emitted.at(-1)!.part.payload as { data?: unknown }).data).toBeUndefined();
+    expect(logs.map((entry) => String(entry[0])).join("\n")).toContain("the store is gone");
   });
 
   it("never lets the plan overwrite the app when ONE commit carries both files", async () => {
@@ -350,6 +365,30 @@ describe("the app half of an app.vendo commit (§1.6)", () => {
       expect((emitted.at(-1)!.part.payload as { data?: unknown }).data)
         .toEqual({ spend: { total: 4210 } });
       expect((emitted.at(-1)!.part.payload as { streaming?: boolean }).streaming).toBe(false);
+    }
+  });
+
+  it("still paints the plan when the app.vendo in the SAME commit renders nothing", async () => {
+    // The plan yields to an app that PAINTED, never to one that merely CHANGED.
+    // A commit carrying the plan plus an app document that emits nothing — prose,
+    // or a document with no children — must still leave the skeleton on screen;
+    // yielding to it blanks the pane for the length of the turn, which is the one
+    // thing §1.6's skeleton exists to prevent.
+    const nonRendering = ["just some prose, no elements at all", `<App name="Invoices"></App>`];
+    for (const app of nonRendering) {
+      for (const staged of [[PLAN_VENDO, APP_VENDO], [APP_VENDO, PLAN_VENDO]]) {
+        const { calls, emitted, workspace } = appSeam({ spend: { total: 4210 } });
+        for (const path of staged) {
+          await workspace.writeFile(path, path === APP_VENDO ? app : GOOD_PLAN);
+        }
+        await workspace.commit();
+        // Nothing was stored for a non-app, and the plan's skeleton is the view.
+        expect(calls).toEqual([]);
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0]!.id).toBe(vendoViewStreamId(APP));
+        expect((emitted[0]!.part.payload as { nodes: unknown[] }).nodes.length).toBeGreaterThan(0);
+        expect((emitted[0]!.part.payload as { streaming?: boolean }).streaming).toBe(true);
+      }
     }
   });
 

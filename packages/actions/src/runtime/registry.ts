@@ -1103,6 +1103,13 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
    * broad intent matches many index blurbs. Hosts tune it per query via
    * ToolSearchOptions.maxExpansions. */
   const MAX_SEARCH_EXPANSIONS = 3;
+
+  /** How many `listingScope`-identified runs keep their expansion set at once
+   * ({@link expandedByScope}). One live MCP session is one scope, and a door
+   * sweeps idle sessions long before this, so the cap is a leak stop rather
+   * than a working limit — 1024 comfortably exceeds any one host's concurrent
+   * sessions while keeping the map to a few thousand short strings. */
+  const MAX_LISTING_SCOPES = 1024;
   let indexPromise: Promise<Array<{ toolkit: string; label?: string; description?: string }>> | undefined;
   /** Discovery discipline (spec 2026-07-25): identical queries answer from a memo — repeat
    * discovery costs zero index reads, zero expansions, zero schema fetches.
@@ -1124,8 +1131,8 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
    * result is scoped. Dispatch stays global too: what a run can see never
    * decides what may RUN (the guard and the per-user connect check do).
    *
-   * The KEY is the context object's IDENTITY, because that is the only thing
-   * here that identifies a run: `RunContext` carries no conversation id, and
+   * Identity is the DEFAULT key, because for an in-process run it is the only
+   * thing that identifies one: `RunContext` carries no conversation id, and
    * `sessionId` is the wire's process-wide fallback for host-resolved
    * principals, so keying on fields would leave every conversation of one user
    * sharing one listing — the leak that was measured. One run, one context
@@ -1133,15 +1140,54 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
    * request, and the agent threads the same object through descriptors, seed,
    * search and execute. A caller that rebuilds an equivalent object simply gets
    * a fresh listing — it fails toward "search again", never toward another run's
-   * set. A WeakMap, so a finished run's set goes with its context. */
+   * set. A WeakMap, so a finished run's set goes with its context.
+   *
+   * A caller that CANNOT keep one object says so with `ctx.listingScope`
+   * ({@link expandedByScope}). */
   const expandedByRun = new WeakMap<object, Set<string>>();
+
+  /** The same sets, for runs identified by an opaque `listingScope` string
+   * instead of an object.
+   *
+   * The MCP door is the caller that needs it: it mints a BRAND-NEW context per
+   * authenticated request (consent and memberships are per-request facts), so
+   * keyed on identity its own `list_changed` promise was a guaranteed lie to
+   * every client that acts on one — search_connectors expanded, the door
+   * announced, the client re-listed on a new context object, and the expanded
+   * tool was gone (measured over the real door and the real SDK client, round 5
+   * 2026-08-03).
+   *
+   * A Map, not a WeakMap, so it is bounded here rather than by the GC: at most
+   * {@link MAX_LISTING_SCOPES} scopes, least-recently-used evicted first. An
+   * evicted scope loses its expansions and has to search again — the same
+   * failure direction as an unidentified run, never another run's set. */
+  const expandedByScope = new Map<string, Set<string>>();
+
+  function expansionsOf(ctx: ToolListingContext): Set<string> | undefined {
+    const scope = ctx.listingScope;
+    if (scope === undefined) return expandedByRun.get(ctx);
+    const seen = expandedByScope.get(scope);
+    // Re-insert to move this scope to the end: eviction takes the oldest
+    // insertion, so a live session must never age out under an idle one.
+    if (seen !== undefined) {
+      expandedByScope.delete(scope);
+      expandedByScope.set(scope, seen);
+    }
+    return seen;
+  }
 
   function rememberExpansion(ctx: ToolListingContext | undefined, toolkits: string[]): boolean {
     if (ctx === undefined) return false;
-    let seen = expandedByRun.get(ctx);
+    let seen = expansionsOf(ctx);
     if (seen === undefined) {
       seen = new Set<string>();
-      expandedByRun.set(ctx, seen);
+      if (ctx.listingScope === undefined) expandedByRun.set(ctx, seen);
+      else {
+        expandedByScope.set(ctx.listingScope, seen);
+        while (expandedByScope.size > MAX_LISTING_SCOPES) {
+          expandedByScope.delete(expandedByScope.keys().next().value as string);
+        }
+      }
     }
     let grew = false;
     for (const toolkit of toolkits) {
@@ -1159,7 +1205,7 @@ export function createActions(config: RegistryConfig): ActionsRegistry {
   async function scopedDescriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]> {
     const { descriptors, dispatch } = await load();
     if (ctx === undefined) return descriptors;
-    const seen = expandedByRun.get(ctx);
+    const seen = expansionsOf(ctx);
     return descriptors.filter((descriptor) => {
       const entry = dispatch.get(descriptor.name);
       if (entry?.kind !== "connector" || entry.connector.expandToolkits === undefined) return true;
