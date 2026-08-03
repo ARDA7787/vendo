@@ -1,7 +1,8 @@
+import type { Json, JsonSchema } from "@vendoai/core";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoContext } from "../context.js";
-import { toolTitle, type ToolMeta } from "./humanize.js";
+import { argProperties, argValue, humanizeToolName, toolTitle, type ArgProperties, type ToolMeta } from "./humanize.js";
 
 /**
  * The thread's in-progress presentation speaks in the product's voice: each
@@ -65,6 +66,57 @@ export interface ToolConsequence {
   post: string;
 }
 
+/** Fields whose value can NAME the other side of an action, most specific
+    first. Only these: a sentence may never guess who the counterparty is. */
+const TARGET_FIELDS = ["recipient_name", "recipient", "payee", "to", "destination", "merchant", "channel"];
+
+/** The verb CLASS a tool belongs to, read off its humanized words. A class is a
+    category ("moves money"), never the tool's own label — that distinction is
+    the whole point of {@link consentClassLine}. */
+const VERB_CLASSES: [RegExp, string][] = [
+  [/\b(delete|remove|destroy|archive|revoke|cancel)\b/, "deletes something"],
+  [/\b(transfer|pay|payment|refund|charge|order|withdraw|deposit)\b/, "moves money"],
+  [/\b(email|mail|message|notify|post|reply|share|send)\b/, "sends a message"],
+  [/\b(create|add|draft|schedule|book)\b/, "creates something"],
+  [/\b(update|edit|set|change|rename|move)\b/, "changes something"],
+];
+
+function verbClass(name: string): string | undefined {
+  const words = humanizeToolName(name).toLowerCase();
+  return VERB_CLASSES.find(([pattern]) => pattern.test(words))?.[1];
+}
+
+/**
+ * The plain-words line when NOTHING truthful can be synthesized: no host
+ * description, no authored one, no sentence the real inputs support.
+ *
+ * THE DEFECT it replaces: `Vendo will run Send money as you.` — the tool's own
+ * label read back at a bank customer, which is exactly the machine copy the
+ * consumer-voice guarantee exists to keep off a consent card. This says what
+ * approving DOES by class, plus the one thing always true of a Vendo call (it
+ * runs as the person approving it), and never names the tool.
+ */
+export function consentClassLine(name: string, risk: string): string {
+  const verb = verbClass(name);
+  if (verb !== undefined) return `This ${verb}, as you.`;
+  if (risk === "destructive") return "This makes a change you can’t undo, as you.";
+  if (risk === "write") return "This changes something in your account, as you.";
+  return "This reads your data, as you.";
+}
+
+/** The first argument that is REAL money — declared by the host's own field
+    formatter or by the tool's input schema (`argValue`). An undeclared number
+    is not money and never enters a sentence: dressing an integer as currency is
+    the same defect pointing the other way. */
+function moneyValue(args: Record<string, unknown>, meta?: ToolMeta, properties?: ArgProperties): string | undefined {
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const shown = meta?.formatField?.(key, value as Json) ?? argValue(key, value, properties);
+    if (shown !== String(value) && !shown.includes("unit not specified")) return shown;
+  }
+  return undefined;
+}
+
 export function toolPresentation(
   name: string,
   args?: unknown,
@@ -72,6 +124,9 @@ export function toolPresentation(
   /** The descriptor's authored label, when the caller has the descriptor
       (approval surfaces do; a bare tool beat does not). */
   descriptorTitle?: string,
+  /** The declared input schema, when the caller has the descriptor: money in
+      the synthesized sentence is only ever a DECLARED unit. */
+  inputSchema?: JsonSchema,
 ): ToolPresentation {
   const toolkit = toolkitFromToolName(name);
   const logoUrl = toolkit ? toolkitLogoUrl(toolkit) : undefined;
@@ -108,6 +163,25 @@ export function toolPresentation(
     // sight. The fold is only earned when the sentence carries the full
     // content (the Slack branch above) — otherwise the card keeps its open
     // fields so the user reviews the real inputs before approving.
+  } else if (verbClass(name) === "moves money") {
+    // The general money case — the same idea as the Slack branch, for the asks
+    // that actually gate money: a DECLARED amount plus a named counterparty is
+    // enough for one truthful sentence ("Sends $47.50 to Acme Utilities"),
+    // which is what the robotic `Vendo will run Send money as you.` replaced.
+    const amount = moneyValue(flat, meta, argProperties(inputSchema));
+    const target = TARGET_FIELDS
+      .map(field => flat[field])
+      .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+    if (amount !== undefined && target !== undefined) {
+      consequence = {
+        pre: "Sends ",
+        artifact: amount,
+        mid: " to ",
+        target,
+        post: trigger ? `, ${trigger} — as you.` : " — now, as you.",
+      };
+      sub ??= trigger ? `Sends ${amount} to ${target} ${trigger}` : `Sends ${amount} to ${target} as you`;
+    }
   }
   return { title, eyebrow, description, sub, toolkit, logoUrl, consequence };
 }

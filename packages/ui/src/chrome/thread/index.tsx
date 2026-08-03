@@ -348,16 +348,19 @@ export function VendoThread({
   // demo class). Only while text is actively streaming (all tool parts
   // settled) does the caret choreography own the floor.
   const activeToolParts = (activeAssistant?.parts ?? []).filter(isToolUIPart);
-  const liveToolPart = [...activeToolParts].reverse()
+  // A call parked on an approval NEVER narrates here: its card is right there
+  // in the transcript, with the ask in its eyebrow, its title and its buttons.
+  // The ribbon used to add "Send money — waiting for your approval" directly
+  // above a card reading "NEEDS YOUR APPROVAL / Send money" — the same words
+  // twice (the D1 ruling: the card IS the step). A parked turn is not in
+  // progress either, so the pulsing orb was a lie.
+  const narratable = activeToolParts.filter(part => part.state !== "approval-requested");
+  const liveToolPart = [...narratable].reverse()
     .find(part => part.state !== "output-available" && part.state !== "output-error");
-  // A turn parked on an approval is not "busy" (the stream yielded), but the
-  // pause still narrates: the ribbon holds "— waiting for your approval" while
-  // the card sits in the transcript.
-  const awaitingApprovalPart = activeToolParts.find(part => part.state === "approval-requested");
   const activeToolPart = busy
     ? liveToolPart
-      ?? (!assistantHasVisibleText && activeToolParts.length > 0 && !caretShowing ? activeToolParts.at(-1) : undefined)
-    : awaitingApprovalPart;
+      ?? (!assistantHasVisibleText && narratable.length > 0 && !caretShowing ? narratable.at(-1) : undefined)
+    : undefined;
   // 2026-07 loading-state audit — the between-steps gap: a busy turn whose
   // prose has already streamed and whose tool parts have all settled had NO
   // indicator anywhere (the ribbon needs a live part, the caret needs

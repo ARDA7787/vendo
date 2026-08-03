@@ -7,7 +7,7 @@ import {
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
-import { toolPresentation } from "./build-beat.js";
+import { consentClassLine, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -15,7 +15,6 @@ import {
   CardHead,
   CardLine,
   CardShell,
-  runsAsYouLine,
   SHIELD_GLYPH,
   ToolkitLogo,
 } from "./card-shell.js";
@@ -119,16 +118,29 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
     approval.call.args,
     meta,
     approval.descriptor.title,
+    approval.descriptor.inputSchema,
   );
   const title = presentation.title;
   const description = (presentation.description ?? approval.descriptor.description).trim();
   const rows = fieldRows(approval.call.args, approval.descriptor.inputSchema, meta);
-  // Lane pick 1-A — consequence-first: when the presentation can truthfully
-  // say what approving does in one sentence, that sentence leads and the raw
-  // fields fold behind a "Details" disclosure (still the same real inputs,
-  // one tap away). Critical/destructive asks are exempt: maximum scrutiny
-  // keeps every input in plain sight.
-  const consequence = !critical ? presentation.consequence : undefined;
+  // Law 3's precedence for the mandatory line, most local authority first (the
+  // same ladder as `toolTitle`):
+  //   1. the HOST's own sentence for this tool (in-code `ToolMeta`);
+  //   2. else the consequence synthesized from the REAL inputs (lane pick 1-A —
+  //      more specific than any generic sentence: it names the actual money and
+  //      counterparty);
+  //   3. else the authored/synthesized description that rode along;
+  //   4. else the consequence CLASS — never the tool's own label.
+  const hostSentence = meta?.description?.trim();
+  const written = hostSentence !== undefined && hostSentence.length > 0 && hostSentence !== title
+    ? hostSentence
+    : undefined;
+  const consequence = written === undefined ? presentation.consequence : undefined;
+  // The FOLD is the separate call: the raw fields tuck behind a "Details"
+  // disclosure only on an ordinary ask. Critical/destructive keeps every input
+  // in plain sight — maximum scrutiny — and still gets the sentence (a money
+  // ask is exactly where "Vendo will run Send money as you." used to land).
+  const foldFields = consequence !== undefined && !critical;
 
   const decide = async (approve: boolean) => {
     const decision: ApprovalDecision = { approve };
@@ -189,11 +201,15 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             {consequence.post}
           </CardLine>
         ) : (
-          <CardLine>{description.length > 0 && description !== title ? description : runsAsYouLine(title)}</CardLine>
+          <CardLine>
+            {written ?? (description.length > 0 && description !== title
+              ? description
+              : consentClassLine(approval.descriptor.name, approval.descriptor.risk))}
+          </CardLine>
         )}
         {/* The consequence sentence carries the meaning; the mechanical rows
             fold but never leave the DOM (the a11y contract keeps its name). */}
-        {consequence ? (
+        {foldFields ? (
           <details className="fl-approval-details">
             <summary>Details — real inputs</summary>
             {inputs}

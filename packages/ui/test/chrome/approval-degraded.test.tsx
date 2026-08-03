@@ -166,6 +166,72 @@ describe("a boolean field is an answer, never the literal", () => {
   });
 });
 
+describe("the plain-words line says what happens, not which tool", () => {
+  const money = (over: { critical?: boolean; schema?: boolean; meta?: boolean } = {}) => ask({
+    call: {
+      id: "call_send",
+      tool: "host_transferMoney",
+      args: { amount: 4750, recipient_name: "Acme Utilities", memo: "July water bill" },
+    },
+    descriptor: {
+      name: "host_transferMoney",
+      title: "Send money",
+      description: "",
+      inputSchema: over.schema === false
+        ? {}
+        : { type: "object", properties: { amount: { type: "integer", description: "Amount in integer cents" } } },
+      risk: over.critical === false ? "write" : "destructive",
+    },
+  } as Partial<ApprovalRequest>);
+
+  const line = (container: HTMLElement): string => container.querySelector(".fl-card-line")!.textContent!;
+
+  it("tier 1 — the host's own description wins over anything synthesized", () => {
+    const container = show(money(), {
+      host_transferMoney: { label: "Send money", description: "Pays your water bill from checking." },
+    });
+    expect(line(container)).toBe("Pays your water bill from checking.");
+  });
+
+  it("tier 2 — synthesizes one truthful sentence from the REAL inputs", () => {
+    const container = show(money());
+    expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+    // A destructive ask gets the sentence AND keeps every input in plain sight:
+    // the sentence is the meaning, the fold is a separate (non-critical) call.
+    expect(container.querySelector(".fl-approval-details")).toBeNull();
+    expect(rowsOf(container)).toHaveLength(3);
+  });
+
+  it("tier 2 — works off the host's field formatter when no schema rides along", () => {
+    // The live in-thread case: `inputSchema: {}`, money declared only by the
+    // host's ToolMeta formatter (Maple's own approval card).
+    const container = show(money({ schema: false }), {
+      host_transferMoney: { label: "Send money", formatField: (key, value) => key === "amount" && typeof value === "number" ? `$${(value / 100).toFixed(2)}` : undefined },
+    });
+    expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+  });
+
+  it("tier 3 — falls back to the consequence CLASS, never the tool name", () => {
+    // Nothing to synthesize from: no description, no declared money.
+    const bare = show(money({ schema: false }));
+    expect(line(bare)).toBe("This moves money, as you.");
+    expect(line(bare)).not.toContain("Send money");
+    expect(line(bare)).not.toContain("Vendo will run");
+    cleanup();
+    // A tool whose words name no known verb still never reads its own label
+    // back at the person: the risk class carries the sentence.
+    const unknown = show(ask({ args: { note: "hi" } }));
+    expect(line(unknown)).toBe("This changes something in your account, as you.");
+    expect(line(unknown)).not.toContain("Thing do");
+  });
+
+  it("keeps folding the fields behind Details on an ORDINARY consequence ask", () => {
+    const container = show(money({ critical: false }));
+    expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+    expect(container.querySelector(".fl-approval-details")).not.toBeNull();
+  });
+});
+
 describe("the venue byline never prints an id", () => {
   const inApp = (over: Partial<ApprovalRequest["ctx"]>): ApprovalRequest => ask({
     ctx: { principal: { kind: "user", subject: "user_1" }, venue: "app", presence: "present", ...over },

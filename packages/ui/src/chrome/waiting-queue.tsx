@@ -16,7 +16,7 @@ import type { ApprovalRequest } from "@vendoai/core";
 import { useVendoContext } from "../context.js";
 import { useApprovals } from "../hooks/use-approvals.js";
 import { formatAuditTime } from "./activity-semantics.js";
-import { toolPresentation } from "./build-beat.js";
+import { consentClassLine, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -26,7 +26,6 @@ import {
   CardShell,
   CARD_EYEBROWS,
   CLOCK_GLYPH,
-  runsAsYouLine,
   ToolkitLogo,
 } from "./card-shell.js";
 import { ChromeRoot } from "./chrome-root.js";
@@ -67,6 +66,7 @@ function WaitingRow({ approval, onDecide }: {
     approval.call.args,
     meta,
     approval.descriptor.title,
+    approval.descriptor.inputSchema,
   );
   // A destructive ask reads as ceremony — the amber edge, same as in-thread.
   const ceremony = approval.descriptor.risk === "destructive" || approval.descriptor.critical === true;
@@ -81,7 +81,11 @@ function WaitingRow({ approval, onDecide }: {
         eyebrow={presentation.eyebrow}
         title={title}
       />
-      <CardLine>{description.length > 0 && description !== title ? description : runsAsYouLine(title)}</CardLine>
+      <CardLine>
+        {description.length > 0 && description !== title
+          ? description
+          : consentClassLine(approval.call.tool, approval.descriptor.risk)}
+      </CardLine>
       <CardFields rows={fieldRows(approval.call.args, approval.descriptor.inputSchema, meta)} />
       {/* The server's own preview is a debugging aid, not consumer copy. */}
       {developmentMode() ? <CardByline>{approval.inputPreview}</CardByline> : null}
