@@ -77,11 +77,14 @@ function useConversations() {
   // lands a render later — both transients would burn (or flash) the one-time
   // greeting, and would flash the app shelf, for a returning user who is about
   // to be snapped to their latest conversation. Hold both quiet until the
-  // surface has SETTLED on a genuinely fresh thread: list resolved with no
-  // conversations (a FAILED list proves nothing — the empty array is just the
-  // initial value, so an error keeps the gate shut), or an explicit user choice
-  // (userChose is set synchronously before the click's re-render).
-  const settledFresh = userChose.current || (!isLoading && error === undefined && threads.length === 0);
+  // surface has SETTLED on a genuinely fresh thread: a RESOLVED list (a failed
+  // one proves nothing — the empty array is just the initial value) that either
+  // has no conversations at all or that the user has explicitly left for a new
+  // one. The health of the list is a precondition of both: an explicit New chat
+  // against an erroring list is not evidence of a first-ever conversation, and
+  // the once-per-user-ever greeting must never be burned on a guess.
+  const settledFresh = !isLoading && error === undefined
+    && (userChose.current || threads.length === 0);
   return { threads, selected, activeId, onThreadId, choose, settledFresh };
 }
 
