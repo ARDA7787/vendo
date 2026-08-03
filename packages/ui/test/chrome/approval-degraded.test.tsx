@@ -61,8 +61,10 @@ const rowsOf = (container: HTMLElement): Array<[string, string]> =>
 describe("degraded data never changes the card", () => {
   it("keeps the mandatory line with an empty schema, no description and no host metadata", () => {
     const container = show(ask({ args: { note: "hi" } }));
-    // Law 3 — no described tool still gets a sentence, not a blank card.
-    expect(container.querySelector(".fl-card-line")!.textContent).toBe("Vendo will run Thing do as you.");
+    // Law 3 — no described tool still gets a sentence, not a blank card. It
+    // used to pin "Vendo will run Thing do as you." — the tool's label read
+    // back at the user; now it is the consequence CLASS.
+    expect(container.querySelector(".fl-card-line")!.textContent).toBe("This changes something in your account, as you.");
     expect(rowsOf(container)).toEqual([["Note", "hi"]]);
     // The prettified id, never the raw slug (ENG-216).
     expect(screen.queryByText("host_thing_do")).toBeNull();
@@ -287,7 +289,10 @@ describe("the in-thread approval carries the real descriptor", () => {
     expect(rowsOf(container)).toEqual([["Amount", "$47.50"], ["Recipient name", "Acme Utilities"]]);
     expect(screen.getByLabelText("Real tool inputs").textContent).not.toContain("4750");
     expect(container.querySelector(".fl-card-title")!.textContent).toBe("Send money");
-    expect(container.querySelector(".fl-card-line")!.textContent).toBe("Send money from your checking account.");
+    // This line used to pin the authored descriptor sentence. The consequence
+    // synthesized from the real inputs is MORE specific (it names the money and
+    // the counterparty), so it now leads — see the plain-words precedence.
+    expect(container.querySelector(".fl-card-line")!.textContent).toBe("Sends $47.50 to Acme Utilities — now, as you.");
   });
 
   it("still builds a usable ask when the wire carries no descriptor at all", () => {

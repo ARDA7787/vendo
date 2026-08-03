@@ -45,11 +45,11 @@ describe("VendoThread and VendoOverlay exports", () => {
     // data-vendo-tool; risk rides the data attr — same machine affordance the
     // old in-transcript beat carried.
     await screen.findAllByText(/Email send/);
-    const ribbon = document.querySelector("[data-vendo-tool='host_email_send']");
-    expect(ribbon).toBeTruthy();
-    expect(ribbon?.classList.contains("fl-ribbon")).toBe(true);
-    expect(ribbon?.textContent).toContain("Email send");
-    expect(ribbon?.getAttribute("data-vendo-approval")).toBe("write");
+    // These four lines used to assert the ribbon narrating the PARKED call
+    // ("Email send — waiting for your approval") directly above the card that
+    // says "NEEDS YOUR APPROVAL / Email send" — the same words twice. A parked
+    // ask is narrated ONCE, by its card: the ribbon must be gone.
+    expect(document.querySelector(".fl-ribbon")).toBeNull();
     const card = await screen.findByLabelText("Approval for Email send");
     expect(card.textContent).toContain("a@example.com");
     expect(card.textContent).toContain(
