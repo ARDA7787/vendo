@@ -61,17 +61,22 @@ const wirePermissions = (description: string): GrantSetPermission[] => ([
   { approvalId: "apr_2", tool: "host_transferMoney", description, risk: "destructive" },
 ] as unknown as GrantSetPermission[]);
 
-/** Everything a person can READ or HEAR from a rendered surface: every text node
- *  plus every accessible name, one per line so adjacent nodes cannot glue into a
- *  token neither of them contains. The `title` attribute is deliberately
- *  excluded — the consent honesty contract keeps the RAW argument value one hover
- *  away, on purpose. */
+/** Everything a person can READ or HEAR from a rendered surface: every text node,
+ *  every accessible name AND every `title` tooltip, one per line so adjacent
+ *  nodes cannot glue into a token neither of them contains.
+ *
+ *  RULING 17a — `title` used to be excluded "on purpose", to let the consent
+ *  cards keep the raw argument value one hover away. That exclusion is how L37
+ *  survived every audit in the wave: a tooltip IS an end-user surface, and the
+ *  cards were putting raw JSON and developer literals in one. The sweep can see
+ *  it now. */
 function readable(root: ParentNode): string {
   const lines: string[] = [];
   const walker = (root.ownerDocument ?? (root as Document))
     .createTreeWalker(root as Node, 4 /* NodeFilter.SHOW_TEXT */);
   while (walker.nextNode()) lines.push(walker.currentNode.textContent ?? "");
   for (const node of root.querySelectorAll("[aria-label]")) lines.push(node.getAttribute("aria-label") ?? "");
+  for (const node of root.querySelectorAll("[title]")) lines.push(node.getAttribute("title") ?? "");
   return lines.join("\n");
 }
 
@@ -486,6 +491,31 @@ describe("the widened audit — no chrome surface renders a developer string", (
         { tool: "gmail_GMAIL_SEND_EMAIL", title: "Send email", risk: "write" },
       ],
     }} />],
+    // Ruling 17a — the sweep never mounted the APPROVAL CARD, the surface the
+    // whole §16 law was written for. With a money ask (a formatted value, a
+    // graded chip) it exercises the tooltip and chip paths the widened
+    // `readable()` can now see.
+    ["approval card", <ApprovalCard
+      approval={{
+        id: "apr_sweep",
+        call: {
+          id: "call_sweep",
+          tool: "host_getSpendingInsights",
+          args: { amount_cents: 4750, recipient_name: "Acme Utilities", permanent: true },
+        },
+        descriptor: {
+          name: "host_getSpendingInsights",
+          title: "Send money",
+          description: MODEL_INSTRUCTION,
+          inputSchema: {},
+          risk: "destructive",
+        },
+        inputPreview: 'host_getSpendingInsights {"amount_cents":4750}',
+        ctx: { principal: { kind: "user", subject: "user_1" }, venue: "app", presence: "present", appId: "app_7f3a2b41" },
+        createdAt: "2026-08-03T12:00:00.000Z",
+      } as unknown as ApprovalRequest}
+      onDecide={() => undefined}
+    />],
     ["waiting strip", <WaitingQueue pollMs={0} />],
     ["activity", <ActivityPanel />],
     ["automations panel", <AutomationsPanel />],

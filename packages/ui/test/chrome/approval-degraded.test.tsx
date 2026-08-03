@@ -152,8 +152,23 @@ describe("a boolean field is an answer, never the literal", () => {
   it("keeps the raw literal for dev mode, on the dd tooltip", () => {
     const rows = fieldRows({ permanent: true, notifyOwner: false });
     expect(rows.map(row => [row.value, row.raw])).toEqual([["Yes", "true"], ["No", "false"]]);
+    // ⚠️ TEST EDIT (L37): the tooltip used to render for EVERYONE — the test
+    // name always said "for dev mode", and now the code agrees. A `title` is an
+    // end-user surface (it put raw JSON and developer literals one hover from a
+    // bank customer, invisible to every audit because the law excluded `title`).
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    try {
+      const dev = show(ask({ args: { permanent: true } }));
+      expect(dev.querySelector(".fl-card-field dd")!.getAttribute("title")).toBe("true");
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+    cleanup();
     const container = show(ask({ args: { permanent: true } }));
-    expect(container.querySelector(".fl-card-field dd")!.getAttribute("title")).toBe("true");
+    expect(container.querySelector(".fl-card-field dd")!.getAttribute("title")).toBeNull();
+    // The honesty contract lives in the ROW, which always shows every input.
+    expect(rowsOf(container)).toEqual([["Permanent", "Yes"]]);
   });
 
   it("reads a declared boolean and a NESTED boolean the same way", () => {

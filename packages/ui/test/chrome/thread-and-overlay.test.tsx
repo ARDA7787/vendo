@@ -56,12 +56,16 @@ describe("VendoThread and VendoOverlay exports", () => {
     // says "NEEDS YOUR APPROVAL / Email send" — the same words twice. A parked
     // ask is narrated ONCE, by its card: the ribbon must be gone.
     expect(document.querySelector(".fl-ribbon")).toBeNull();
-    const card = await screen.findByLabelText("Approval for Email send");
+    const card = await screen.findByLabelText("Approval for Send the report");
     expect(card.textContent).toContain("a@example.com");
     expect(card.textContent).toContain(
       "This tool changed since you approved it on Jul 1, 2026 — your previous permission no longer applies.",
     );
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    // L38 — the morph toast is the SAME ask, so it carries the card's title. It
+    // recomputed the presentation without the descriptor's authored title, so a
+    // card reading "Send the report" morphed into "Email send — approved".
+    expect((await screen.findByText(/— approved$/)).textContent).toBe("Send the report — approved");
 
     expect(await screen.findByText("Turn complete")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());

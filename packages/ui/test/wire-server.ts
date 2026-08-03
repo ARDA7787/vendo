@@ -622,6 +622,15 @@ export async function createWireServer(options: WireServerOptions = {}) {
                 toolCallId: `call_stream${suffix}`,
                 risk: "write",
                 approvalId: `apr_stream${suffix}`,
+                // spec §16 law 2 — a real server rides the descriptor with the
+                // ask. The fixture omitted it, which is how L38 stayed
+                // invisible: with no authored title, the card and the
+                // post-approve toast happened to agree on the humanized slug.
+                descriptor: {
+                  title: "Send the report",
+                  description: "Send email",
+                  inputSchema: { type: "object", properties: { to: { type: "string" } } },
+                },
                 invalidatedGrant: {
                   id: "grt_stale",
                   grantedAt: "2026-07-01T12:00:00.000Z",
