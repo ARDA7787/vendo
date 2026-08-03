@@ -339,15 +339,23 @@ describe("the in-thread approval carries the real descriptor", () => {
   });
 
   it("still builds a usable ask when the wire carries no descriptor at all", () => {
+    // ⚠️ TEST EDIT (ruling 14): the host's ToolMeta was handed to the BUILDER only
+    // and the card was rendered with no provider `tools`, so the sentence reached
+    // the card through `descriptor.description`. A descriptor sentence is no
+    // longer a rung on the ladder; the host's ToolMeta is, and in production the
+    // card reads it from the same provider the builder does (ThreadApprovals
+    // passes the context's tools to both). The fixture now does what production
+    // does; every other assertion is unchanged.
+    const tools = { host_email_send: { description: "Send an email as you." } };
     const approval = buildApprovalRequest(
       { approvalId: "apr_bare", toolCallId: "call_bare", tool: "host_email_send", args: { to: "a@example.com" } },
-      { host_email_send: { description: "Send an email as you." } },
+      tools,
     );
     expect(approval.descriptor.inputSchema).toEqual({});
     expect(approval.descriptor.risk).toBe("read");
     // Never the server's `tool slug + canonical JSON`.
     expect(approval.inputPreview).toBe("To: a@example.com");
-    const container = show(approval);
+    const container = show(approval, tools);
     expect(container.querySelector(".fl-card-line")!.textContent).toBe("Send an email as you.");
   });
 });
