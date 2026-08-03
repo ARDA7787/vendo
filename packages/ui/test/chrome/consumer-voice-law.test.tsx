@@ -411,9 +411,10 @@ describe("the widened audit — no chrome surface renders a developer string", (
    * The SHAPES that produce the leak, across every chrome and voice source —
    * widened from the wave's ten-file card list to the whole tree, recursively.
    *
-   * `KNOWN_OPEN` is not an excuse list: each entry is a live violation this lane
-   * could not close, with the reason. Two are in files owned by other workers in
-   * this wave; the rest are named in the lane report.
+   * `KNOWN_OPEN` is not an excuse list: each entry is a live violation, with the
+   * reason it is still there. Pass 3 closed the last three (approval-card,
+   * thread/composer, automations-panel), leaving only the one that is a DECIDED
+   * exception rather than an open defect.
    */
   const KNOWN_OPEN: Record<string, string> = {
     "embeds.tsx": "decided exception, documented at the render site: the BYO-agent embed's contract (embeds.test) is that the wire failure stays legible",
