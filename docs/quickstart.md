@@ -255,7 +255,7 @@ import { VendoRoot } from "../vendo/vendo-root";
 
 ## Model keys
 
-The agent needs an LLM. `models.agent` is optional: when you don't name a
+The agent needs an LLM. `models.default` is optional: when you don't name a
 model, the composed default resolves a real key from the environment, in this
 order:
 
@@ -269,7 +269,7 @@ order:
    never paste a key. (`vendo cloud login <email>` remains as an email-OTP
    fallback.)
    Model calls go through the Vendo Cloud model gateway (`vendo` by
-   default — pin another id with `VENDO_MODEL` or `models.agent`, served via
+   default — pin another id with `VENDO_MODEL` or `models.default`, served via
    `@ai-sdk/anthropic`) and meter your dev-mode runs allowance.
 3. Nothing available: chat fails honestly, with exact instructions in the
    server log.
@@ -423,7 +423,7 @@ grant, the run parks for approval before `actAs` is called.
 
 ## The whole configuration surface
 
-Every key is optional. `models.agent` resolves from the environment when
+Every key is optional. `models.default` resolves from the environment when
 absent (see [Model keys](#model-keys)), and with neither `auth` nor
 `principal` every session is ephemeral and anonymous. `auth` and any of
 `principal`/`actAs`/`oauth` are mutually exclusive — supplying both throws a
@@ -439,30 +439,34 @@ compiled against the real `CreateVendoConfig` in
 ```ts
 import type {
   ActAs, ActionsRegistry, AppsRuntime, AutomationsEngine, CatalogFile,
-  ComponentCatalog, ComponentRegistry, Connector, ExtractedTool,
-  HostOAuthAdapter, Json, Judge, KnowledgeAdapter, OverridesFile, PolicyConfig,
-  PolicyFile, Principal, RunContext, RunId, SandboxAdapter, SecretsProvider,
-  ToolRegistry,
+  ComponentCatalog, ComponentRegistry, Connector, ExtractedTool, FilesAdapter,
+  Harness, HostOAuthAdapter, Json, Judge, KnowledgeAdapter, OverridesFile,
+  PackProvider, PolicyConfig, PolicyFile, Principal, RunContext, RunId,
+  SandboxAdapter, SecretsProvider, ToolRegistry,
   VendoAgent, VendoGuard, VendoStore, VendoTheme,
 } from "@vendoai/vendo";
 import type {
-  ConnectionsService, HostAuthPreset, ModelsConfig, ServerActionHandler, TourEntry,
+  AppsConfig, ConnectionsService, HarnessTurns, HostAuthPreset, ModelsConfig,
+  PackContext, ServerActionHandler, TourEntry,
 } from "@vendoai/vendo/server";
 import type { LanguageModel } from "ai";
 
 export interface CreateVendoConfig {
-  /** @deprecated superseded by `models.agent`. */
+  /** @deprecated superseded by `models.default`. */
   model?: LanguageModel;
-  /** @deprecated the model half is superseded by `models.paint`; `disabled` stays. */
+  /** @deprecated the model half is superseded by `models.fill`; `disabled` stays. */
   paint?: { model?: LanguageModel; disabled?: boolean };
-  models?: ModelsConfig;      // { agent, paint, judge, knowledgeVerifier } — name or model object
+  models?: ModelsConfig;      // seats: default, reviewer, judge, fill, verifier
   auth?: HostAuthPreset;      // one preset fills principal + actAs + oauth
   principal?: (req: Request) => Promise<Principal | null>; // escape hatch
+  tools?: ExtractedTool[];    // `vendo init`/`vendo sync` declarations, in memory
   catalog?: ComponentCatalog | ComponentRegistry;          // registry.tsx, or the array form
   theme?: VendoTheme;         // programmatic override for .vendo/theme.json
   brief?: string;             // programmatic override for .vendo/brief.md
   store?: VendoStore;
+  files?: FilesAdapter;       // workspace file content; unset → blobs in the store, 5 MiB cap
   sandbox?: SandboxAdapter;
+  harness?: Harness<never>;   // WHO THINKS. unset → vendo(). also: instant(), claudeCode()
   knowledge?: KnowledgeAdapter; // unset → no vendo_knowledge_search tool
   connectors?: Connector[];
   connectorApps?: string[];   // toolkit scope for the auto-composed Cloud connector
@@ -506,19 +510,15 @@ export interface CreateVendoConfig {
   apps?: {
     experimentalServedApps?: boolean;
     experimentalMachines?: boolean;
-    pipeline?: {              // generation-pipeline knobs, measured before default-on
-      structuredRepair?: boolean;
-      regionParallel?: boolean;
-      endPass?: boolean;
-      exemplarContract?: boolean;
-      smokeRender?: boolean;
-      rebind?: boolean;
-    };
-    designRules?: string;
     review?: {                // review-kind remixes: who may review (queue/reject/approve)
       reviewer?(ctx: RunContext): boolean | Promise<boolean>;
     };
+    pipeline?: AppsConfig["pipeline"];                 // { smokeRender } — the island render gate
+    fillConcurrency?: AppsConfig["fillConcurrency"];   // groups filled at once (default 2)
+    checks?: AppsConfig["checks"];                     // the host's own checks, appended to the built-ins
+    designRules?: string;
   };
+  packs?: readonly PackProvider<PackContext>[]; // where capability comes from. unset → [apps()]
   tours?: readonly TourEntry[];
 }
 
@@ -533,6 +533,7 @@ export interface Vendo {
   actions: ActionsRegistry;
   connections: ConnectionsService;
   store: VendoStore;
+  harness: HarnessTurns;      // turns served through the composed Harness
 }
 ```
 

@@ -45,7 +45,7 @@ shape is under [Grant invalidation](#grant-invalidation).
 Hosts that expose hundreds of tools would flood the model's context if every
 tool were sent up front. The agent instead starts each thread from a bounded
 initial loadout and discovers the rest at runtime through the
-`vendo_tools_search` meta-tool.
+`find_tools` meta-tool.
 
 The guard invariant is unchanged: every tool, initial or searched-in,
 executes through the same guard-bound registry. The loadout gates only what
@@ -105,7 +105,7 @@ Loadout selection is deterministic:
 
 Vendo's own `vendo_*` tools are always active and never count against the cap.
 
-`vendo_tools_search` ranks candidates from the enabled, post-override
+`find_tools` ranks candidates from the enabled, post-override
 descriptor set: name-token matches beat name substrings, name matches beat
 description matches, and a full-query match in the name earns a bonus. Ties
 break by name so results are stable. Disabled tools are never returned. When

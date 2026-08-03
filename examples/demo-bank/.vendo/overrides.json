@@ -9,6 +9,10 @@
       "disabled": true,
       "description": "Auth.js endpoint - never agent-callable"
     },
+    "host_proof_list": {
+      "disabled": true,
+      "description": "Wave-1 live-proof endpoint - never agent-callable"
+    },
     "host_listAccounts": { "title": "List your accounts" },
     "host_getAccount": { "title": "Show one account" },
     "host_listTransactions": { "title": "Search transactions" },
@@ -20,7 +24,12 @@
     "host_listScheduledPayments": { "title": "List scheduled payments" },
     "host_getSpendingInsights": { "title": "Show spending by category" },
     "host_listGoals": { "title": "List savings goals" },
-    "host_transferMoney": { "title": "Send money" }
+    "host_transferMoney": { "title": "Send money" },
+    "host_createOrder": {
+      "title": "Place an order",
+      "risk": "destructive",
+      "description": "Place a delivery order on the user's account. This MOVES MONEY: it charges the user's card and appends a transaction."
+    }
   },
   "surfaces": {
     "mcp": {

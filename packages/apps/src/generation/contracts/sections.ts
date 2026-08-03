@@ -43,7 +43,7 @@ const pinBaselinesPrompt = (baselines: readonly PinBaseline[] = []): string => J
 );
 
 export interface GenerationPromptSection {
-  id: "role" | "tree-contract" | "clock" | "component-styling" | "catalog" | "theme" | "design-rules" | "remixable-slots" | "prewired-props";
+  id: "role" | "tree-contract" | "clock" | "component-styling" | "catalog" | "theme" | "design-rules" | "remixable-slots" | "prewired-props" | "limits";
   content: string;
 }
 
@@ -59,6 +59,31 @@ export const composePromptSections = (sections: readonly GenerationPromptSection
  *  the message below. Create-only — stored apps with long names keep editing
  *  fine (the edit path never re-validates the name). */
 export const APP_NAME_MAX_CHARS = 40;
+
+/**
+ * The host's own facts, as prompt sections — shared by every actor that needs
+ * them (the brain planning, the workers writing markup).
+ *
+ * These are the HOST'S configuration, not prompt polish: `apps.designRules` and
+ * the theme tokens are documented seams a host sets and expects to be obeyed.
+ * A prompt that omits them makes those config keys silently do nothing.
+ */
+export const hostDesignRulesSection = (deps: GenerationDependencies): GenerationPromptSection[] => {
+  const rules = (typeof deps.designRules === "function" ? deps.designRules() : deps.designRules)?.trim();
+  // The section is emitted even when the host set no rules: "(none provided)" is
+  // the difference between a model that knows there are no house rules and one
+  // that was never told either way.
+  return [{
+    id: "design-rules" as const,
+    content: `HOST DESIGN RULES:\n${rules === undefined || rules === "" ? "(none provided)" : rules}`,
+  }];
+};
+
+export const hostThemeSection = (deps: GenerationDependencies): GenerationPromptSection[] =>
+  deps.theme === undefined ? [] : [{
+    id: "theme" as const,
+    content: `THEME TOKENS:\n${JSON.stringify(deps.theme, null, 2)}`,
+  }];
 
 export const generationPromptSections = (deps: GenerationDependencies): GenerationPromptSection[] => [{
   id: "role",

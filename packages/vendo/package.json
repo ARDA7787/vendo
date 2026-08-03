@@ -109,6 +109,7 @@
     "@vendoai/automations": "workspace:*",
     "@vendoai/core": "workspace:*",
     "@vendoai/guard": "workspace:*",
+    "@vendoai/harnesses": "workspace:*",
     "@vendoai/knowledge": "workspace:*",
     "@vendoai/mcp": "workspace:*",
     "@vendoai/store": "workspace:*",

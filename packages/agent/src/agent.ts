@@ -1,9 +1,5 @@
 import {
-  VENDO_APP_BUILD_FAILED_PREFIX,
-  VENDO_APPS_CREATE_TOOL,
   VendoError,
-  formatMeterExhausted,
-  meterExhaustedFromError,
   toVendoWirePart,
   type AgentRunner,
   type ApprovalId,
@@ -17,19 +13,15 @@ import {
 } from "@vendoai/core";
 import { memoryStoreAdapter } from "@vendoai/core/conformance";
 import {
-  convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   isToolUIPart,
-  stepCountIs,
-  streamText,
   type LanguageModel,
-  type ModelMessage,
-  type StopCondition,
-  type ToolSet,
   type UIMessage,
   type UIMessageStreamWriter,
 } from "ai";
+import { startTurn } from "./loop.js";
+import { wireErrorMessage } from "./wire-error.js";
 import { assembleSystemPrompt } from "./prompt.js";
 import { createRunner } from "./runner.js";
 import { ThreadRepository, type Thread, type ThreadSummary } from "./threads.js";
@@ -41,11 +33,11 @@ import {
 } from "./capability-miss.js";
 import { createToolSearchSession, type ToolSearchConfig } from "./tool-search.js";
 
-const THREAD_ID_HEADER = "x-vendo-thread-id";
-
-// AGENT-7: the default agent-loop step cap (unchanged from the previously
-// hardcoded value); hosts raise or lower it via context.maxSteps.
-const DEFAULT_MAX_STEPS = 20;
+/** The effective thread id every turn response carries (03 §1), so a caller
+ *  that began without one can adopt it. Exported through `@vendoai/agent/internal`
+ *  because a composition serving turns through the harness runtime must stamp the
+ *  SAME header — the wire reads it to register turn liveness. */
+export const THREAD_ID_HEADER = "x-vendo-thread-id";
 
 // ENG-309: backoff between persist attempts after a completed stream. Short and
 // bounded — long waits would hold the response open for nothing (the user
@@ -120,7 +112,7 @@ interface AgentConfig {
     maxSteps?: number;
   };
   capabilityMiss?: CapabilityMissConfig;
-  /** ENG-252: enable the `vendo_tools_search` meta-tool and runtime loadout.
+  /** ENG-252: enable the `find_tools` meta-tool and runtime loadout.
    *  When set, the model starts with a bounded initial loadout and discovers the
    *  rest through search; searched-in tools execute through the same guard-bound
    *  registry as any initially-enabled tool. */
@@ -159,10 +151,6 @@ export type ScriptedTurn = (input: {
   writer: UIMessageStreamWriter<UIMessage>;
   signal?: AbortSignal;
 }) => Promise<void>;
-
-// Anthropic prompt-caching breakpoint. providerOptions.anthropic is ignored by every
-// other provider (and by the test mocks), so marking breakpoints degrades to a no-op.
-const CACHE_BREAKPOINT = { anthropic: { cacheControl: { type: "ephemeral" } } } as const;
 
 /** 03-agent §1 */
 export interface VendoAgent {
@@ -207,7 +195,7 @@ function validateConfig(config: AgentConfig): void {
 
 // System-role messages are rejected: the system prompt is assembled server-side
 // (03 §3); accepting one from the client would be a prompt-injection channel.
-function validateMessage(message: UIMessage | undefined): asserts message is UIMessage {
+export function validateMessage(message: UIMessage | undefined): asserts message is UIMessage {
   if (!message
     || typeof message.id !== "string"
     || message.id.length === 0
@@ -217,7 +205,7 @@ function validateMessage(message: UIMessage | undefined): asserts message is UIM
   }
 }
 
-function upsertMessage(messages: UIMessage[], message: UIMessage): void {
+export function upsertMessage(messages: UIMessage[], message: UIMessage): void {
   const index = messages.findIndex((candidate) => candidate.id === message.id);
   if (index === -1) messages.push(message);
   else messages[index] = message;
@@ -267,7 +255,7 @@ function isApprovalResponse(stored: unknown, incoming: unknown): boolean {
 /** AGENT-12: clients may add fresh USER messages and answer approvals — they
  *  may not author assistant content or rewrite history by replaying a known
  *  message id with different parts. */
-function validateUpsert(messages: UIMessage[], message: UIMessage): void {
+export function validateUpsert(messages: UIMessage[], message: UIMessage): void {
   const existing = messages.find((candidate) => candidate.id === message.id);
   if (existing === undefined) {
     if (message.role !== "user") {
@@ -297,7 +285,7 @@ function validateUpsert(messages: UIMessage[], message: UIMessage): void {
   }
 }
 
-function abandonPendingApprovals(messages: UIMessage[]): string[] {
+export function abandonPendingApprovals(messages: UIMessage[]): string[] {
   const abandonedToolCallIds: string[] = [];
   for (const message of messages) {
     message.parts = message.parts.map((part) => {
@@ -332,7 +320,7 @@ function abandonPendingApprovals(messages: UIMessage[]): string[] {
  *  part's `approval.id` is the ai-SDK's own handle; the GUARD's approvalId
  *  rides the data-vendo-approval part beside it, keyed by toolCallId — read it
  *  from either the persisted nested envelope or the flat §16 shape. */
-function guardApprovalIds(messages: UIMessage[], toolCallIds: string[]): ApprovalId[] {
+export function guardApprovalIds(messages: UIMessage[], toolCallIds: string[]): ApprovalId[] {
   if (toolCallIds.length === 0) return [];
   const wanted = new Set(toolCallIds);
   const ids: ApprovalId[] = [];
@@ -347,47 +335,6 @@ function guardApprovalIds(messages: UIMessage[], toolCallIds: string[]): Approva
     }
   }
   return ids;
-}
-
-/** 0.4.4 cert defect B — a terminally failed app BUILD ends the turn. A build
- *  is a minutes-long operation and its failure is deterministic for the same
- *  ask, so letting the model auto-retry inside the turn kept the thread
- *  streaming for up to maxSteps × build-length with nothing visible. The tool
- *  bridge has already streamed the `data-vendo-build-failed` banner with the
- *  classified reason by the time this fires; re-asking is the user's call
- *  (the same resolution the BYO embed's failed vocabulary points at). */
-const buildFailedStop: StopCondition<ToolSet> = ({ steps }) => {
-  const last = steps.at(-1);
-  return last !== undefined && last.toolResults.some((result) => {
-    if (result.toolName !== VENDO_APPS_CREATE_TOOL) return false;
-    const output = result.output as { status?: unknown; error?: { message?: unknown } } | null;
-    // Scoped to the runtime's build-failed class (the canned prefix): a cheap
-    // create error (input validation, feature-flag refusal) costs seconds,
-    // stays model-visible, and the loop may recover from it.
-    return typeof output === "object" && output !== null
-      && output.status === "error"
-      && typeof output.error?.message === "string"
-      && output.error.message.startsWith(VENDO_APP_BUILD_FAILED_PREFIX);
-  });
-};
-
-function providerHistory(messages: UIMessage[]): UIMessage[] {
-  return messages.map((message) => ({
-    ...message,
-    parts: message.parts.map((part) => {
-      if (!isToolUIPart(part)
-        || part.state !== "approval-responded"
-        || part.approval.approved !== false
-        || part.approval.reason !== "abandoned") {
-        return part;
-      }
-      return {
-        ...part,
-        state: "output-denied",
-        approval: { ...part.approval, approved: false },
-      };
-    }),
-  }));
 }
 
 /** self-serve P — a new turn never inherits the LAST turn's failure notice.
@@ -412,47 +359,6 @@ function clearFailedTurnRecord(messages: UIMessage[]): void {
 }
 
 /** 03-agent §1 */
-
-/** The one gate raw errors pass on their way to the wire. Vendo's OWN errors
- *  (code + operator-crafted message) are safe and actionable, so they travel
- *  recognizably prefixed — the thread UI renders the detail line only for
- *  this shape. Anything else (provider/transport internals can carry request
- *  URLs, keys, prompts) stays the fixed generic string. Either way the REAL
- *  error lands in the server log: the operator's terminal is where the
- *  honest message belongs (field case: a dead apps-create turn surfaced as
- *  nothing but "Something went wrong" anywhere).
- */
-function wireErrorMessage(error: unknown): string {
-  console.error("[vendo] turn stream error:", error);
-  // Name+code duck check besides instanceof: a host bundle can carry a second
-  // @vendoai/core copy (dual-package hazard), and its VendoErrors are just as
-  // safe — same crafted messages, same code enum.
-  const vendoShaped = error instanceof VendoError
-    || (error instanceof Error && error.name === "VendoError" && typeof (error as { code?: unknown }).code === "string");
-  if (vendoShaped) {
-    const { message, code } = error as { message: string; code: string };
-    return `Vendo: ${message} (${code})`;
-  }
-  // Pricing v3 (spec §5): the Cloud model gateway's meter refusal reaches this
-  // gate as a provider APICallError (statusCode 402, the structured refusal as
-  // its response body), never as a VendoError. Only OUR formatter's sentence —
-  // meter, figures, reset date, the two exits, all from the parsed structured
-  // fields — travels; the raw body/provider internals still never do, so the
-  // ENG-214 policy holds. The refusal body is the only source of truth (no
-  // client-side entitlement checks); any other 402 stays the generic string.
-  const refusal = meterExhaustedFromError(error);
-  if (refusal !== undefined) {
-    return `Vendo: ${formatMeterExhausted(refusal)} (cloud-required)`;
-  }
-  // A rejected key (401) is deliberately NOT classified here: this gate sees
-  // every failure a turn can throw — a connector's descriptors() included — and
-  // an ai-SDK error shape proves the SHAPE, never the ORIGIN, so a tool's 401
-  // would get told to re-mint a model key. The credential ladder is the only
-  // place that knows the call was the model's, and it wraps its own 401s with
-  // its rung's fix (vendo's dev-creds/model); those arrive above as VendoErrors.
-  return "An error occurred while generating the response.";
-}
-
 export function createAgent(config: AgentConfig): VendoAgent {
   validateConfig(config);
   // kill-list B5: a host that omits `store` still gets thread persistence —
@@ -460,7 +366,7 @@ export function createAgent(config: AgentConfig): VendoAgent {
   // process lifetime — through the exact same ThreadRepository code path a
   // store-backed composition uses. No separate memory-only branch survives.
   const threads = new ThreadRepository(config.store ?? memoryStoreAdapter());
-  // ENG-252: per-thread set of tools loaded in via `vendo_tools_search`. It
+  // ENG-252: per-thread set of tools loaded in via `find_tools`. It
   // persists across turns within a run so a discovered tool stays callable, and
   // is reclaimed on thread delete + session eviction. The LRU cap bounds memory
   // for long-lived, store-backed processes where threads never get evicted (a
@@ -597,57 +503,35 @@ export function createAgent(config: AgentConfig): VendoAgent {
             ? undefined
             : createToolSearchSession({
                 config: config.toolSearch,
-                descriptors: await config.tools.descriptors(),
+                // Per-subject connection state annotates search results.
+                ctx: input.ctx,
+                // THE LAW's projection (design §12): an unattended turn is
+                // never even offered a destructive or external tool.
+                descriptors: await config.tools.descriptors(input.ctx),
                 loaded: loadedFor(thread.id),
                 ...(seedNames === undefined ? {} : { seedNames }),
                 ...(menuNames === undefined ? {} : { menuNames }),
                 // Search hits expanded mid-turn resolve to full descriptors and
                 // materialize into the LIVE toolset — prepareStep re-reads the
                 // active names each step, so they are callable next step.
-                resolve: async (names) => (await config.tools.descriptors()).filter((d) => names.includes(d.name)),
+                // Search must not be a way back to a withheld tool, so the
+                // same projection applies to what it can resolve.
+                resolve: async (names) => (await config.tools.descriptors(input.ctx)).filter((d) => names.includes(d.name)),
                 materialize: (descriptor) => addAgentTool(tools, descriptor, bridgeOptions),
               });
           toolSearch?.attach(tools);
-          // History windowing: bound what is re-sent per turn to the last N whole messages.
-          // Slicing whole UIMessages keeps each turn's tool-call/result pairing intact.
-          const window = config.context?.historyWindow;
-          const history = window !== undefined && thread.messages.length > window
-            ? thread.messages.slice(-window)
-            : thread.messages;
-          const converted = (await convertToModelMessages(providerHistory(history)))
-            .filter((message) => message.content.length > 0);
-          // Cache the stable history prefix (everything but the final message) alongside the
-          // static system prompt below, so Anthropic re-reads the cached prefix instead of
-          // re-billing the whole growing thread each turn.
-          if (converted.length >= 2) {
-            const prefixEnd = converted[converted.length - 2] as ModelMessage;
-            prefixEnd.providerOptions = { ...prefixEnd.providerOptions, ...CACHE_BREAKPOINT };
-          }
-          const modelMessages: ModelMessage[] = [
-            { role: "system", content: system, providerOptions: CACHE_BREAKPOINT },
-            ...converted,
-          ];
-          const maxSteps = config.context?.maxSteps ?? DEFAULT_MAX_STEPS;
-          const result = streamText({
+          // The shared turn loop (loop.ts) — the same call the harness lift
+          // drives. History windowing, cache breakpoints, the step cap,
+          // buildFailedStop and the tool-search loadout all live there, so this
+          // caller and `vendo()` can never drift apart on them.
+          const loop = await startTurn({
             model: config.model,
-            messages: modelMessages,
+            system,
+            messages: thread.messages,
             tools,
-            stopWhen: [stepCountIs(maxSteps), buildFailedStop],
-            maxOutputTokens: config.context?.maxOutputTokens,
-            // ENG-252 loadout: restrict what the model may pick to the current
-            // loadout. `prepareStep` re-reads it each step so a tool loaded via
-            // `vendo_tools_search` becomes callable on the very next step. This
-            // gates the model's CHOICE only — every tool still executes through
-            // the guard-bound registry, so there is no unguarded path.
-            ...(toolSearch === undefined
-              ? {}
-              : {
-                  activeTools: toolSearch.activeToolNames(),
-                  prepareStep: () => ({ activeTools: toolSearch.activeToolNames() }),
-                }),
-            // AGENT-3: cancellation reaches the provider call itself; the loop
-            // never starts another step once the signal fires.
-            abortSignal: input.signal,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            ...(config.context === undefined ? {} : { context: config.context }),
+            ...(toolSearch === undefined ? {} : { toolSearch }),
           });
           // self-serve P: the ai-SDK `error` chunk is TRANSIENT — it sets the
           // client's `error` and belongs to no message, so a failed turn
@@ -661,7 +545,7 @@ export function createAgent(config: AgentConfig): VendoAgent {
           // tool name, args that miss the schema — the SDK feeds those back and
           // the model retries and finishes). Hooking it stamped permanent
           // failure notices onto turns that went on to answer fine.
-          writer.merge(result.toUIMessageStream({
+          writer.merge(loop.result.toUIMessageStream({
             originalMessages: thread.messages,
             // Raw provider/model error strings never reach the wire (they can
             // carry request internals); the error part is a fixed generic message.
@@ -677,19 +561,8 @@ export function createAgent(config: AgentConfig): VendoAgent {
           // AGENT-7: exhausting the step cap is VISIBLE. A run that still wants
           // tool calls after its final permitted step ended because of the cap,
           // not because the model finished — stream a renderable notice.
-          try {
-            const [finishReason, steps] = await Promise.all([result.finishReason, result.steps]);
-            if (finishReason === "tool-calls" && steps.length >= maxSteps) {
-              writer.write(toVendoWirePart({
-                type: "data-vendo-step-limit",
-                limit: maxSteps,
-                message: `Stopped after reaching the ${maxSteps}-step limit for one turn. Reply to continue.`,
-              }) as never);
-            }
-          } catch {
-            // The merged stream already surfaced the run failure; the notice is
-            // best-effort and must never replace or mask that error.
-          }
+          const stepLimit = await loop.stepLimitPart();
+          if (stepLimit !== undefined) writer.write(toVendoWirePart(stepLimit) as never);
         },
         onFinish: async ({ messages }) => {
           await persistFinishedTurn(threads, thread, messages, input.ctx);
