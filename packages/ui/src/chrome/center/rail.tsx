@@ -8,7 +8,7 @@
  */
 import { useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { useVendoContext } from "../../context.js";
-import { useApprovals } from "../../hooks/use-approvals.js";
+import { useAttention } from "../../hooks/use-approvals.js";
 import type { ThreadSummary } from "../../wire-types.js";
 import { toolTitle } from "../humanize.js";
 import { ACTIVITY_ANCHOR_ATTRIBUTE } from "../morph-toast.js";
@@ -130,20 +130,23 @@ export function RailNav({ view, onView, moreOpen, onMoreOpen, activityBump }: Ra
 }
 
 /** §4 attention — the pinned section that EXISTS only while asks are waiting,
- *  numbered. Read-only over the approvals transport: deciding stays with the
- *  surfaces built for it (the waiting strip above the conversation, the card in
- *  the transcript), so a rail row's one job is taking you there. */
+ *  numbered. Counts from Lane D's ONE attention source (`useAttention`), the
+ *  same hook the waiting strip and the launcher badge read, so the rail can
+ *  never show a different number than the surface you land on. Read-only:
+ *  deciding stays with the surfaces built for it (the strip above the
+ *  conversation, the card in the transcript), so a rail row's one job is
+ *  taking you there. */
 export function NeedsYou({ onOpen }: { onOpen(): void }) {
   const { tools } = useVendoContext();
-  const { pending } = useApprovals({ pollMs: NEEDS_POLL_MS });
-  if (pending.length === 0) return null;
+  const { askCount, asks } = useAttention({ pollMs: NEEDS_POLL_MS });
+  if (askCount === 0) return null;
   return (
-    <section className="fl-rail-group" aria-label={`Needs you — ${pending.length} waiting`}>
+    <section className="fl-rail-group" aria-label={`Needs you — ${askCount} waiting`}>
       <p className="fl-rail-label">
         Needs you
-        <span className="fl-rail-badge">{pending.length}</span>
+        <span className="fl-rail-badge">{askCount}</span>
       </p>
-      {pending.map(approval => (
+      {asks.map(approval => (
         <button type="button" className="fl-rail-chat fl-rail-need" key={approval.id} onClick={onOpen}>
           {toolTitle(approval.call.tool, tools[approval.call.tool])}
         </button>
