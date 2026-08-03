@@ -2608,6 +2608,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
           const base = doorBase();
           return base === undefined ? undefined : new URL(MCP_MOUNT, base).toString();
         },
+        // Which of the two mounts this is, stated rather than inferred. With no
+        // origin the harness has to tell a host whose `mcp` cannot be reached
+        // (refuse — they asked for a door) from a host who never asked at all
+        // (run workspace-only — nothing is misconfigured). `internalDoorOnly`
+        // is exactly that fact and it is only known HERE.
+        autoMounted: internalDoorOnly,
         mint: (threadId: string) => turnCredentials.mint(threadId),
         revoke: (token: string) => turnCredentials.revoke(token),
       },

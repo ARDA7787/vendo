@@ -349,14 +349,22 @@ export function claudeCode(
       // below, once there is a machine to say whether it is carrying a session.
       const doorPort = harnessAdapters(harness).toolDoor as ToolDoorPort | undefined;
       const doorUrl = doorPort?.url;
-      if (doorPort !== undefined && doorUrl === undefined && resolved.machine !== "local") {
-        // A door exists and no BOX can reach it. Loud for the operator, because
-        // only they can fix it, and one plain sentence for the user — the same
-        // shape as the missing-sandbox branch below. Running on anyway would
-        // hand the model a workspace and no hands, which is the
-        // polite-refusal-at-HTTP-200 failure this codebase refuses to ship.
-        // Decided HERE, before the machine exists, so a doomed turn never pays
-        // for a sandbox boot.
+      if (doorPort !== undefined && doorUrl === undefined
+        && doorPort.autoMounted !== true && resolved.machine !== "local") {
+        // A door the HOST asked for, and no BOX can reach it. Loud for the
+        // operator, because only they can fix it, and one plain sentence for
+        // the user — the same shape as the missing-sandbox branch below.
+        // Running on anyway would hand the model a workspace and no hands,
+        // which is the polite-refusal-at-HTTP-200 failure this codebase
+        // refuses to ship. Decided HERE, before the machine exists, so a
+        // doomed turn never pays for a sandbox boot.
+        //
+        // `autoMounted` is what keeps this scoped to a real misconfiguration.
+        // Composition mounts the internal door whenever a harness declares
+        // `requires.toolDoor`, which `claudeCode()` now does unconditionally —
+        // so without that check this branch also swallows every workspace-only
+        // deployment that simply never named an origin, which is a supported
+        // shape and not an error. Those fall through to the warning below.
         console.error(
           "[vendo] claudeCode() cannot reach the MCP door: set VENDO_BASE_URL (or "
           + "`mcp: { baseUrl }`) to the deployment's public origin. The agent's tools "

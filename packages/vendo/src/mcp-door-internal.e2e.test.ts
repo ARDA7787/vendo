@@ -296,6 +296,62 @@ async function dialledDoorUrl(
 const LOOPBACK = "http://127.0.0.1:3000";
 const ATTACKER = "https://attacker.evil";
 
+/** The port's own account of WHO mounted it, read from inside a live turn. */
+async function mountedAutoMounted(
+  config: Record<string, unknown> = {},
+): Promise<boolean | undefined> {
+  const store = await tempStore();
+  let seen: boolean | undefined;
+  const harness = defineHarness({
+    name: "door-auto-mounted-probe",
+    requires: { toolDoor: true },
+    async *run() {
+      seen = harnessAdapters(harness).toolDoor?.autoMounted;
+      yield { type: "text", delta: "done" };
+    },
+  });
+  const vendo = createVendo({
+    model: {} as LanguageModel,
+    principal: async () => principal,
+    store,
+    harness: harness as never,
+    development: false,
+    ...config,
+  } as Parameters<typeof createVendo>[0]);
+  await store.ensureSchema();
+  const response = await vendo.handler(new Request(`${ORIGIN}/api/vendo/threads`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      threadId: "thr_auto_mounted",
+      message: { id: "m_auto", role: "user", parts: [{ type: "text", text: "hi" }] },
+    }),
+  }));
+  await response.text();
+  return seen;
+}
+
+describe("the door port says WHO mounted it — the fact the no-origin refusal turns on", () => {
+  it("a host that never configured `mcp` gets an AUTO-MOUNTED port, so a missing origin is workspace-only, not a refusal", async () => {
+    // The harness asked for a door (`requires.toolDoor`); the host asked for
+    // nothing. Composition is the only layer that can tell those apart, so it
+    // states the fact rather than leaving the harness to infer it from
+    // `machine`, which stopped being a proxy for it once `claudeCode()`
+    // declared `requires.toolDoor` unconditionally.
+    expect(await mountedAutoMounted()).toBe(true);
+  });
+
+  it("a host that DID configure `mcp` gets a host-configured port, so an unreachable door still refuses", async () => {
+    expect(await mountedAutoMounted({
+      mcp: true,
+      oauth: {
+        async authorize() { return { subject: SUBJECT }; },
+        async principal(subject: string) { return { kind: "user", subject }; },
+      },
+    })).toBe(false);
+  });
+});
+
 describe("where an internal door is dialled — zero config, and not poisonable by a Host header", () => {
   it("ZERO CONFIG: a machine-less harness with no configured base dials this host's own LOOPBACK origin", async () => {
     vi.stubEnv("NODE_ENV", "development");

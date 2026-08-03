@@ -38,6 +38,23 @@ export interface ToolDoorPort {
   /** The door's canonical absolute URL, or undefined when this deployment has no
    *  public base a machine could reach (`VENDO_BASE_URL` unset). */
   readonly url: string | undefined;
+  /**
+   * Did COMPOSITION mount this door on the harness's behalf, or did the HOST
+   * ask for one? The two look identical from here and mean opposite things when
+   * `url` is undefined:
+   *
+   *   host-configured (`mcp` set) + unreachable → a misconfiguration. The
+   *     operator believes their product's tools are live and they are not, so
+   *     the turn is refused rather than silently under-served.
+   *   auto-mounted + unreachable → not a misconfiguration at all. The harness
+   *     declares `requires.toolDoor`, so composition mounts the internal half
+   *     with no config value in sight; a deployment that never named an origin
+   *     is simply workspace-only, which is a supported shape.
+   *
+   * Absent counts as host-configured: this fails CLOSED, so a port built by
+   * anything that has not thought about the distinction keeps the refusal.
+   */
+  readonly autoMounted?: boolean;
   /** Mint a credential for one conversation. `undefined` outside a live turn of
    *  that thread — the subject is READ from the turn, never named by a caller. */
   mint(threadId: string): string | undefined;

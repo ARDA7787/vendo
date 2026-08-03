@@ -2,7 +2,7 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeF
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { VendoError, type HarnessEvent, type Json, type ToolResult, type Turn } from "@vendoai/core";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 // The REAL box door, driven over a fake transport — see the block comment below.
 // A package subpath, not a relative climb: the door is the wire contract between
 // these two blocks, and `harnesses → apps` is a layer-legal edge.
@@ -707,6 +707,81 @@ describe("a turn on a real box wire", () => {
     // A second mint per turn would leak a live credential per message. Safe
     // because the AUTHORITY is per turn regardless of how old the token is.
     expect(issued).toBe(1);
+  });
+
+  test("an AUTO-MOUNTED door with no origin RUNS the turn workspace-only — the shape a host that never configured `mcp` deploys", async () => {
+    // (b) in the door-origin split: composition mounted this door purely
+    // because the harness declares `requires.toolDoor`; the host never wrote
+    // `mcp` and never named an origin. That is a supported deployment — a
+    // workspace-only assistant doing file work — and it ran for the whole
+    // rebuild until `requires.toolDoor` became unconditional.
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    let booted = false;
+    let seen: { url: string; token: string } | undefined;
+    const sandbox = fakeSandbox(async (box) => { booted = true; seen = box.toolDoor; });
+    const harness = claudeCode({ sandbox });
+    provideHarnessAdapters(harness, {
+      toolDoor: { url: undefined, autoMounted: true, mint: () => "vtk_auto", revoke: () => undefined },
+    });
+
+    const events = await drain(harness, makeTurn().turn);
+    spy.mockRestore();
+
+    // It ran: no refusal.
+    expect(events).not.toContainEqual({
+      type: "error",
+      message: "I can't use this product's actions right now.",
+    });
+    // Box hands: the machine booted, so the agent has its workspace.
+    expect(booted).toBe(true);
+    // ...and no product tools: there is no origin to reach them over, so the
+    // box is handed no door rather than an unreachable one.
+    expect(seen).toBeUndefined();
+    // The operator hears it, once. `warnNoOriginOnce` is once per PROCESS, so
+    // this must remain the only test in this file asserting the sentence.
+    expect(errors.join("\n")).toContain("NONE of your product's actions");
+  });
+
+  test("an AUTO-MOUNTED door WITH a reachable origin still hands the box full tools — auto-mounting suppresses nothing", async () => {
+    let seen: { url: string; token: string } | undefined;
+    const sandbox = fakeSandbox(async (box) => { seen = box.toolDoor; });
+    const harness = claudeCode({ sandbox });
+    provideHarnessAdapters(harness, {
+      toolDoor: {
+        url: "https://app.example.com/api/vendo/mcp",
+        autoMounted: true,
+        mint: () => "vtk_auto_ok",
+        revoke: () => undefined,
+      },
+    });
+
+    await drain(harness, makeTurn({ threadId: "thr_auto_reachable" }).turn);
+
+    expect(seen).toEqual({
+      url: "https://app.example.com/api/vendo/mcp",
+      token: "vtk_auto_ok",
+    });
+  });
+
+  test("a HOST-CONFIGURED door with no reachable URL still REFUSES — an explicit `mcp` that no box can reach is a misconfiguration, not a posture", async () => {
+    // (a) in the split, stated explicitly rather than by omission: the host
+    // asked for a door. Running on would hand the model a workspace and no
+    // hands while the operator believes their tools are live.
+    const sandbox = fakeSandbox(async () => undefined);
+    const harness = claudeCode({ sandbox });
+    provideHarnessAdapters(harness, {
+      toolDoor: { url: undefined, autoMounted: false, mint: () => "vtk_y", revoke: () => undefined },
+    });
+
+    const events = await drain(harness, makeTurn().turn);
+
+    expect(events).toContainEqual({
+      type: "error",
+      message: "I can't use this product's actions right now.",
+    });
   });
 
   test("a door with no reachable URL REFUSES the turn — a model with a workspace and no hands is not a degradation to ship", async () => {
