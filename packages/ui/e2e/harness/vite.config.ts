@@ -8,6 +8,18 @@ const harnessRoot = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig(async () => {
   const wire = await createWireServer({ islandApp: true });
   wire.state.posture = "rules";
+  // §16 law 3 (/byo-embed-failed) — a terminally failed build carrying the
+  // EXACT sentence the wave E2E photographed in a real user's thread on
+  // 2026-08-03. It is a developer's sentence (a component name, an unevaluated
+  // expression) and the embed must not print any of it. Harness-only: the unit
+  // wire fixture seeds no failed apps, so nothing else sees this row.
+  wire.state.failedApps.set("app_build_failed", {
+    reason: "This app wasn't created, because it didn't pass the checks that keep an app honest:"
+      + " the `value` expression is a declarative string that the DataTable does not evaluate,"
+      + " not JavaScript: amount / sum(spending.data.amount)",
+    retryable: true,
+    prompt: "a board showing where my money goes each month",
+  });
 
   return {
     root: harnessRoot,
