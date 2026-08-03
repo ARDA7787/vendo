@@ -11,12 +11,14 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ApprovalRequest } from "@vendoai/core";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
 import {
   ActivityPanel,
   AdoptionCard,
+  ApprovalCard,
   AutomationCard,
   AutomationsPanel,
   ConnectCard,
@@ -25,6 +27,7 @@ import {
   WaitingQueue,
   type GrantSetPermission,
 } from "../../src/chrome/index.js";
+import { consumerVoiceViolation } from "../../src/consumer-voice.js";
 import { createWireServer } from "../wire-server.js";
 
 let wire: Awaited<ReturnType<typeof createWireServer>>;
@@ -57,41 +60,26 @@ const wirePermissions = (description: string): GrantSetPermission[] => ([
   { approvalId: "apr_2", tool: "host_transferMoney", description, risk: "destructive" },
 ] as unknown as GrantSetPermission[]);
 
-/** The widened audit's vocabulary: what a developer string LOOKS like. Every
- *  one of these was seen on a consumer surface in this wave. */
-const FORBIDDEN: Array<[string, RegExp]> = [
-  ["an id-shaped token", /\b[a-z]{2,6}_[A-Za-z0-9]{4,}/],
-  ["code-call syntax", /\b[A-Za-z_$][\w$]*\(\s*[\w$"'{[]/],
-  ["a dotted identifier path", /\b[a-z]{2,}[A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]+)+\b/],
-  ["an environment variable", /\b[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+\b/],
-  ["a configuration instruction", /pass a |set VENDO_|createVendo\(/],
-  ["a model instruction", /\be\.g\.|\bdivide by \d|\bdo not\b|\binteger cents\b/i],
-];
-
 /** Everything a person can READ or HEAR from a rendered surface: every text node
  *  plus every accessible name, one per line so adjacent nodes cannot glue into a
  *  token neither of them contains. The `title` attribute is deliberately
  *  excluded — the consent honesty contract keeps the RAW argument value one hover
- *  away, on purpose.
- *
- *  Real user content is not our plumbing: an email address or a URL a person
- *  typed (or a tool is sending) belongs on the screen, so those are lifted out
- *  before the dotted-path check. */
+ *  away, on purpose. */
 function readable(root: ParentNode): string {
   const lines: string[] = [];
   const walker = (root.ownerDocument ?? (root as Document))
     .createTreeWalker(root as Node, 4 /* NodeFilter.SHOW_TEXT */);
   while (walker.nextNode()) lines.push(walker.currentNode.textContent ?? "");
   for (const node of root.querySelectorAll("[aria-label]")) lines.push(node.getAttribute("aria-label") ?? "");
-  return lines.join("\n").replace(/[\w.+-]+@[\w.-]+|https?:\/\/\S+/g, " ");
+  return lines.join("\n");
 }
 
+/** The vocabulary is `src/consumer-voice.ts` — the SAME definition the render
+ *  paths gate a descriptor sentence with, so the law and the product can never
+ *  drift into two opinions of what a developer string looks like. */
 function auditReadable(root: ParentNode, surface: string): void {
-  const text = readable(root);
-  for (const [label, pattern] of FORBIDDEN) {
-    const hit = pattern.exec(text);
-    expect(hit === null ? "" : `${surface} rendered ${label}: ${hit[0]}`).toBe("");
-  }
+  const violation = consumerVoiceViolation(readable(root));
+  expect(violation === undefined ? "" : `${surface} rendered ${violation}`).toBe("");
 }
 
 describe("LEAK 1 — the standing-access card rendered model instructions", () => {
@@ -238,6 +226,101 @@ describe("LEAK 2, the sibling — the standing-access card's own refusal", () =>
 });
 
 /**
+ * LEAK 5 (ruling 11) — the approval card's own descriptor hole. The card
+ * rendered `descriptor.description` as its MANDATORY plain-words line and its
+ * queue row did the identical thing, so demo-bank's model instruction reached a
+ * consent card at a bank customer. Precedence: the host's own sentence → the
+ * consequence synthesized from the real inputs → the descriptor's own sentence
+ * ONLY IF it reads as consumer copy → the consequence class.
+ */
+describe("LEAK 5 — a descriptor sentence may never be the card's plain-words line", () => {
+  const ask = (description: string): ApprovalRequest => ({
+    id: "apr_desc",
+    call: { id: "call_desc", tool: "host_getSpendingInsights", args: { period: "month" } },
+    descriptor: {
+      name: "host_getSpendingInsights",
+      description,
+      inputSchema: { type: "object", properties: { period: { type: "string" } } },
+      risk: "read",
+    },
+    inputPreview: "host_getSpendingInsights {\"period\":\"month\"}",
+    ctx: { principal: { kind: "user", subject: "user_1" }, venue: "chat", presence: "present" },
+    createdAt: "2026-08-03T12:00:00.000Z",
+  } as unknown as ApprovalRequest);
+
+  /** A clean sentence a HOST author would write for people. */
+  const HOST_AUTHORED = "Shows what you spent by category this month.";
+
+  const cardLine = (): string | undefined =>
+    document.querySelector(".fl-card-line")?.textContent ?? undefined;
+
+  const showCard = (description: string, onDecide: (() => void) | undefined = undefined) =>
+    render(
+      <VendoProvider client={client}>
+        <ApprovalCard approval={ask(description)} onDecide={onDecide ?? (() => undefined)} />
+      </VendoProvider>,
+    );
+
+  /** The queue row goes through the real hook, so the ask arrives the way the
+   *  wire delivers it. */
+  const showQueue = (description: string) => {
+    const base = createVendoClient({ baseUrl: wire.url });
+    const bound = {
+      ...base,
+      approvals: { ...base.approvals, pending: async () => [ask(description)] },
+    } as unknown as VendoClient;
+    render(
+      <VendoProvider client={bound}>
+        <WaitingQueue pollMs={0} />
+      </VendoProvider>,
+    );
+    return waitFor(() => screen.getByRole("article", { name: /Approval for/ }));
+  };
+
+  it("drops a model-instruction descriptor from the card and says what the call does instead", () => {
+    showCard(MODEL_INSTRUCTION);
+    const card = screen.getByRole("article", { name: /Approval for/ });
+    expect(card.textContent).not.toContain("integer cents");
+    expect(card.textContent).not.toContain("divide by 100");
+    expect(card.textContent).not.toContain("e.g.");
+    // Not truncated into nonsense either — the next tier answers in full.
+    expect(cardLine()).toBe("This reads your data, as you.");
+  });
+
+  it("drops it from the QUEUE ROW too — the card and its row cannot diverge", async () => {
+    const row = await showQueue(MODEL_INSTRUCTION);
+    expect(row.textContent).not.toContain("integer cents");
+    expect(row.textContent).not.toContain("divide by 100");
+    expect(cardLine()).toBe("This reads your data, as you.");
+  });
+
+  it("drops the extraction's raw HTTP description — the demo hosts' own shape", () => {
+    showCard("POST /api/demo/pin");
+    expect(screen.getByRole("article", { name: /Approval for/ }).textContent).not.toContain("/api/demo/pin");
+    expect(cardLine()).toBe("This reads your data, as you.");
+  });
+
+  it("still shows a clean host-authored descriptor, on the card and on the row", async () => {
+    showCard(HOST_AUTHORED);
+    expect(cardLine()).toBe(HOST_AUTHORED);
+    cleanup();
+    const row = await showQueue(HOST_AUTHORED);
+    expect(row.textContent).toContain(HOST_AUTHORED);
+  });
+
+  it("tells the person what a failed decision means, never the wire's sentence", async () => {
+    showCard(HOST_AUTHORED, () => {
+      throw Object.assign(new Error("approval apr_desc not found for app app_9"), { code: "not-found" });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    const alert = await waitFor(() => screen.getByRole("alert"));
+    expect(alert.textContent).not.toContain("apr_desc");
+    expect(alert.textContent).not.toContain("app_9");
+    expect(alert.textContent).toMatch(/isn’t waiting on you any more/i);
+  });
+});
+
+/**
  * THE WIDENED AUDIT — every chrome surface, not just the cards.
  *
  * Two halves, because each catches what the other cannot: a RENDER sweep (what
@@ -291,7 +374,6 @@ describe("the widened audit — no chrome surface renders a developer string", (
    * this wave; the rest are named in the lane report.
    */
   const KNOWN_OPEN: Record<string, string> = {
-    "approval-card.tsx": "owned by another worker this wave — renders `reason.message` on a failed decision (line 117) AND `descriptor.description` as the plain-words line (line 89)",
     "thread/composer.tsx": "owned by another worker this wave — an attachment read error renders raw (line 141)",
     "embeds.tsx": "decided exception, documented at the render site: the BYO-agent embed's contract (embeds.test) is that the wire failure stays legible",
     "automations-panel.tsx": "a run-history row prints the run's own error code + message (line 568), and the disable-repair sentence folds the wire message in (line 275) — both need a product decision about what a failed unattended run may say to its owner",

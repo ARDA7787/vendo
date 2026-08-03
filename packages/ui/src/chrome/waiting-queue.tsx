@@ -16,7 +16,7 @@ import type { ApprovalRequest } from "@vendoai/core";
 import { useVendoContext } from "../context.js";
 import { useAttention } from "../hooks/use-approvals.js";
 import { formatAuditTime } from "./activity-semantics.js";
-import { consentClassLine, toolPresentation } from "./build-beat.js";
+import { admissibleDescription, consentClassLine, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -52,8 +52,14 @@ function WaitingRow({ approval, onDecide }: {
   );
   // A destructive ask reads as ceremony — the amber edge, same as in-thread.
   const ceremony = approval.descriptor.risk === "destructive" || approval.descriptor.critical === true;
-  const description = (presentation.description ?? approval.descriptor.description).trim();
   const title = presentation.title;
+  // The SAME plain-words ladder the in-thread card uses (ruling 11): a
+  // descriptor sentence is admissible only in consumer voice, so the card and
+  // its queue row cannot say different things about one ask.
+  const described = admissibleDescription(
+    presentation.description ?? approval.descriptor.description,
+    title,
+  );
   return (
     <CardShell label={`Approval for ${title}`} ceremony={ceremony}>
       <CardHead
@@ -64,9 +70,7 @@ function WaitingRow({ approval, onDecide }: {
         title={title}
       />
       <CardLine>
-        {description.length > 0 && description !== title
-          ? description
-          : consentClassLine(approval.call.tool, approval.descriptor.risk)}
+        {described ?? consentClassLine(approval.call.tool, approval.descriptor.risk)}
       </CardLine>
       <CardFields rows={fieldRows(approval.call.args, approval.descriptor.inputSchema, meta)} />
       {/* The server's own preview is a debugging aid, not consumer copy. */}

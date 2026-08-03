@@ -7,7 +7,7 @@ import {
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
-import { consentClassLine, toolPresentation } from "./build-beat.js";
+import { admissibleDescription, consentClassLine, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -93,6 +93,21 @@ export interface ApprovalCardProps {
   venueName?: string;
 }
 
+/** The consumer's half of a refusal (spec §16 law 3) — the same defect the
+ *  connect and standing-access cards carried: this card rendered whatever
+ *  `onDecide` threw, and the wire's sentences carry approval and app ids. The
+ *  developer sentence keeps its home in the server's own error; the person
+ *  looking at the card is told what it means for them. `refusalCopy` in
+ *  adoption-card.tsx is the pattern. */
+function refusalCopy(reason: unknown): string {
+  const code = (reason as { code?: unknown } | null)?.code;
+  if (code === "not-found") return "This request isn’t waiting on you any more — it may have expired.";
+  if (code === "conflict") return "This request was already answered.";
+  if (code === "forbidden") return "This request isn’t yours to answer.";
+  if (code === "cloud-required") return "Answering this isn’t turned on for this workspace yet.";
+  return "That didn’t go through — nothing was approved. Try again in a moment.";
+}
+
 function approvalDate(grantedAt: string): string {
   return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(
     new Date(grantedAt),
@@ -121,7 +136,6 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
     approval.descriptor.inputSchema,
   );
   const title = presentation.title;
-  const description = (presentation.description ?? approval.descriptor.description).trim();
   const rows = fieldRows(approval.call.args, approval.descriptor.inputSchema, meta);
   // Law 3's precedence for the mandatory line, most local authority first (the
   // same ladder as `toolTitle`):
@@ -129,12 +143,18 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   //   2. else the consequence synthesized from the REAL inputs (lane pick 1-A —
   //      more specific than any generic sentence: it names the actual money and
   //      counterparty);
-  //   3. else the authored/synthesized description that rode along;
+  //   3. else the authored/synthesized description that rode along — ONLY when
+  //      it reads as consumer copy (`admissibleDescription`); a descriptor is
+  //      written for the model, and one that sounds like it is dropped;
   //   4. else the consequence CLASS — never the tool's own label.
   const hostSentence = meta?.description?.trim();
   const written = hostSentence !== undefined && hostSentence.length > 0 && hostSentence !== title
     ? hostSentence
     : undefined;
+  const described = admissibleDescription(
+    presentation.description ?? approval.descriptor.description,
+    title,
+  );
   const consequence = written === undefined ? presentation.consequence : undefined;
   // The FOLD is the separate call: the raw fields tuck behind a "Details"
   // disclosure only on an ordinary ask. Critical/destructive keeps every input
@@ -161,7 +181,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
     try {
       await onDecide(decision);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(refusalCopy(reason));
     } finally {
       setBusy(false);
     }
@@ -202,9 +222,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
           </CardLine>
         ) : (
           <CardLine>
-            {written ?? (description.length > 0 && description !== title
-              ? description
-              : consentClassLine(approval.descriptor.name, approval.descriptor.risk))}
+            {written ?? described ?? consentClassLine(approval.descriptor.name, approval.descriptor.risk)}
           </CardLine>
         )}
         {/* The consequence sentence carries the meaning; the mechanical rows
