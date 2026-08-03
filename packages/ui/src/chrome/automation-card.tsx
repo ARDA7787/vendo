@@ -117,7 +117,7 @@ export function AutomationCard({ name, enabled, trigger, description, pendingGra
   const waiting = enabled && pendingGrants > 0;
   const runsAs = sponsorLabel(sponsor, editors);
   return (
-    <ChromeRoot automaticPolicyNotice={false}>
+    <ChromeRoot>
       <CardShell label={`Automation — ${name}`} className="fl-automation" data-vendo-automation-card="">
         <CardHead
           icon={<ToolkitLogo fallback={BOLT_GLYPH} />}

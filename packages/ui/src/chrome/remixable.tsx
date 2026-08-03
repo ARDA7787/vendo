@@ -233,7 +233,7 @@ function RemixedFork({ appId, slot, review, liveProps, menuOpen, onMenuToggle, o
   return (
     <>
       {staged?.kind === "tree" && !underReview ? (
-        <ChromeRoot automaticPolicyNotice={false}>
+        <ChromeRoot>
           <FluidReveal stateKey={`fork:${appId}`} initialExit={original}>
             <PinMount slot={slot} fallback={Original}>
               <AppFrame
@@ -245,7 +245,7 @@ function RemixedFork({ appId, slot, review, liveProps, menuOpen, onMenuToggle, o
           </FluidReveal>
         </ChromeRoot>
       ) : original}
-      <ChromeRoot className="fl-remixable-chrome" automaticPolicyNotice={false}>
+      <ChromeRoot className="fl-remixable-chrome">
         <span className="fl-remix-seed" aria-hidden="true">✦</span>
         <div className="fl-remix-menu-wrap" ref={menuRef}>
           <button
@@ -383,11 +383,7 @@ export function Remixable({ review = false, children }: RemixableProps) {
       ) : (
         <>
           {children}
-          {/* automaticPolicyNotice={false}: an affordance drawn over the host's
-              own markup must never grow the "running without a policy" banner
-              inside it — the panel the fork is managed from carries that
-              warning. */}
-          <ChromeRoot className="fl-remixable-chrome" automaticPolicyNotice={false}>
+          <ChromeRoot className="fl-remixable-chrome">
             <span className="fl-remix-seed" aria-hidden="true">✦</span>
             <button
               type="button"
