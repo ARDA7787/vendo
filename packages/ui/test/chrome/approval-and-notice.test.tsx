@@ -176,28 +176,33 @@ describe("ApprovalCard and NoPolicyNotice exports", () => {
     expect(await screen.findByRole("region", { name: "Vendo is running without a policy" })).toBeTruthy();
   });
 
-  it("automatically renders the notice on every standalone chrome surface", async () => {
+  // ⚠️ These three used to pin the AUTOMATIC banner (C1's defect): they asserted
+  // that ActivityPanel / AutomationsPanel / VendoStage / VendoPage each grew the
+  // developer banner on their own, which is the same code path that put it on a
+  // customer's thread, slot, embed and voice stage. They now pin the guarantee
+  // instead — no chrome surface renders it, the host's explicit mount does.
+  it("no workspace surface grows the banner on its own — the host's mount is the one source", async () => {
     wire.state.posture = "unconfigured";
-    // VendoPalette is headless now (one-surface ⌘K, ui-lane-entry): it renders
-    // no chrome of its own, so it is no longer a notice-bearing surface.
     const surfaces = [<ActivityPanel />, <AutomationsPanel />, <VendoStage />];
 
     for (const surface of surfaces) {
-      render(<VendoProvider client={client}>{surface}</VendoProvider>);
-      expect(await screen.findByRole("region", { name: "Vendo is running without a policy" })).toBeTruthy();
+      render(<VendoProvider client={client}><NoPolicyNotice />{surface}</VendoProvider>);
+      await screen.findByRole("region", { name: "Vendo is running without a policy" });
+      expect(screen.getAllByRole("region", { name: "Vendo is running without a policy" })).toHaveLength(1);
       cleanup();
     }
   });
 
-  it("renders exactly one automatic notice across nested chrome roots", async () => {
+  it("renders exactly one notice beside a page full of nested chrome roots", async () => {
     wire.state.posture = "unconfigured";
-    render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
+    render(<VendoProvider client={client}><NoPolicyNotice /><VendoPage /></VendoProvider>);
     await waitFor(() => expect(screen.getAllByRole("region", { name: "Vendo is running without a policy" })).toHaveLength(1));
   });
 
-  it("renders no automatic notice on any chrome surface under rules posture", async () => {
+  it("renders no notice on any chrome surface under rules posture", async () => {
     render(
       <VendoProvider client={client}>
+        <NoPolicyNotice />
         <ActivityPanel />
         <AutomationsPanel />
         <VendoPalette />
@@ -205,7 +210,7 @@ describe("ApprovalCard and NoPolicyNotice exports", () => {
         <VendoPage />
       </VendoProvider>,
     );
-    await waitFor(() => expect(wire.requests.filter(request => request.path === "/status").length).toBeGreaterThanOrEqual(4));
+    await waitFor(() => expect(wire.requests.some(request => request.path === "/status")).toBe(true));
     expect(screen.queryByRole("region", { name: "Vendo is running without a policy" })).toBeNull();
   });
 });
