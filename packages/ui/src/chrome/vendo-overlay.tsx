@@ -7,6 +7,7 @@ import { themeCssVariables } from "../theme.js";
 import { PayloadView } from "../tree/renderer.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { hasSeen, markSeen, type VendoDiscoverability, type VendoGreeting } from "./discoverability.js";
+import { LauncherFace, LauncherToast, useLauncherStatus } from "./launcher-status.js";
 import { deliverPrefill, PrefillScopeContext, registerOverlayOpener } from "./overlay-registry.js";
 import { usePinAction } from "./pin-ceremony.js";
 import {
@@ -527,6 +528,18 @@ export function VendoOverlay({
     }
   }), [setOpen, open]);
 
+  // LANE D (spec §2, §3, §4) — what the pill says while the user is elsewhere:
+  // the live beat of a run that kept going after they left, the result toast
+  // that leads back into the record, the badge of asks and the dot of unseen
+  // results. The panel's own thread id scopes the toast to runs this panel can
+  // actually show.
+  const [panelThreadId, setPanelThreadId] = useState<string>();
+  const status = useLauncherStatus({
+    open,
+    ...(panelThreadId === undefined ? {} : { threadId: panelThreadId }),
+    onOpen: () => setOpen(true),
+  });
+
   const newConversation = () => {
     setConversationEpoch(epoch => epoch + 1);
     // The remounted thread lands on the empty composer — put focus there so
@@ -692,7 +705,12 @@ export function VendoOverlay({
             </div>
             <div className="fl-split-rail" key="rail">
               <PrefillScopeContext.Provider value={prefillScope.current}>
-                <Thread key={`${conversationKey ?? 0}:${conversationEpoch}`} discoverability={dial} firstRunGreeting={greeting} />
+                <Thread
+                  key={`${conversationKey ?? 0}:${conversationEpoch}`}
+                  discoverability={dial}
+                  firstRunGreeting={greeting}
+                  onThreadId={setPanelThreadId}
+                />
               </PrefillScopeContext.Provider>
             </div>
           </div>
@@ -727,15 +745,19 @@ export function VendoOverlay({
           // Present only while the whisper is live: keys the one-time pulse
           // (suppressed under prefers-reduced-motion — the caption still shows).
           {...(whisperActive && !open ? { "data-vendo-whisper": "" } : {})}
+          // Keys the live-progress treatment (label swap + ring) in the sheet.
+          {...(status.working ? { "data-vendo-run": "" } : {})}
           type="button"
           aria-expanded={open}
           aria-controls="vendo-overlay-dialog"
-          // The visible label names the button; the orb needs an explicit one.
-          {...(launcherLabel === null ? { "aria-label": "AI agent" } : {})}
+          // The button's NAME is pinned: the pill's text changes while a run
+          // narrates, and a name that moves under the user's cursor (or their
+          // voice command) is a worse trade than a name that stays the entry
+          // point it always was. The beat is announced by the live region below.
+          aria-label={launcherLabel ?? "AI agent"}
           onClick={() => setOpen(!open)}
         >
-          {launcherConfig.icon ?? <span className="fl-launcher-blob" aria-hidden="true" />}
-          {launcherLabel}
+          <LauncherFace status={status} label={launcherLabel} {...(launcherConfig.icon === undefined ? {} : { icon: launcherConfig.icon })} />
         </button>
       )}
       {/* The whisper caption rides above the pill and auto-dismisses; opening
@@ -746,6 +768,17 @@ export function VendoOverlay({
           <strong>You can reshape this app</strong>
           <span>Ask Vendo to build the view you need.</span>
         </div>
+      ) : null}
+      {/* The run finished while the user was elsewhere: one line, one way back
+          into the conversation where the record sits (§3). Ignored, it
+          withdraws and leaves the quiet dot. */}
+      {!launcherHidden && status.toast !== undefined ? (
+        <LauncherToast
+          result={status.toast}
+          position={launcherPosition}
+          onView={status.view}
+          onDismiss={status.dismissToast}
+        />
       ) : null}
       {portal}
     </ChromeRoot>

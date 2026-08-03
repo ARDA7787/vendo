@@ -2321,4 +2321,55 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
    onError fallback), so its size rides the CSS instead of img attributes. */
 .fl-morph-logo img, .fl-morph-logo svg { display: block; width: 18px; height: 18px; object-fit: contain; }
 
+/* ---------- LANE D — background attention (spec §2 G1, §3 H1, §4 N1) ---------- */
+/* The pill while a run keeps going without the user: the morph blob gives way
+   to a progress ring and the label to the live beat. Nothing here opens or
+   folds a surface — the pill only tells the truth about what is happening. */
+.fl-launcher-ring { width: 18px; height: 18px; flex: none; border-radius: 50%;
+  /* One element, two rings: --fl-ring is the filled fraction (determinate),
+     and the indeterminate variant below swaps in a fixed arc that turns. */
+  background: conic-gradient(var(--vendo-accent) var(--fl-ring, 0%), var(--vendo-border-strong) 0);
+  mask: radial-gradient(closest-side, transparent 60%, #000 62%);
+  -webkit-mask: radial-gradient(closest-side, transparent 60%, #000 62%);
+  transition: background var(--vendo-duration) var(--vendo-ease); }
+.fl-launcher-ring[data-vendo-ring="indeterminate"] {
+  background: conic-gradient(var(--vendo-accent) 0 22%, var(--vendo-border-strong) 22% 100%); }
+.fl-launcher-beat { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The two standing signals. A count is a decision waiting on you; the dot is
+   only "there is something new" — so the count always wins the corner. */
+.fl-launcher-badge { min-width: 18px; height: 18px; padding: 0 5px; flex: none;
+  display: inline-grid; place-items: center; border-radius: 999px;
+  background: var(--vendo-accent); color: var(--vendo-accent-fg);
+  font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.fl-launcher-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--vendo-accent); }
+/* Blob-only orb (label: null): the signals ride the corner instead of widening
+   the circle. The fixed corner variants are their own containing block. */
+.fl-launcher[data-vendo-launcher-bare] .fl-launcher-badge { position: absolute; top: -3px; right: -3px; }
+.fl-launcher[data-vendo-launcher-bare] .fl-launcher-dot { position: absolute; top: 3px; right: 3px; }
+/* The completion toast rides above the pill it came from, in the corner the
+   user last saw working — never a center-screen modal. */
+.fl-launcher-toast { display: flex; align-items: center; gap: 10px; max-width: 300px;
+  padding: 10px 10px 10px 14px; border: 1px solid var(--vendo-border); border-radius: 14px;
+  background: var(--vendo-surface); box-shadow: var(--vendo-shadow-float);
+  font-size: 12.5px; line-height: 1.45; color: var(--vendo-fg);
+  position: fixed; z-index: 2147482999; bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+.fl-launcher-toast[data-vendo-launcher="bottom-right"] { right: calc(20px + env(safe-area-inset-right, 0px)); }
+.fl-launcher-toast[data-vendo-launcher="bottom-left"] { left: calc(20px + env(safe-area-inset-left, 0px)); }
+.fl-launcher-toast-head { flex: 1; min-width: 0; font-weight: 550;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.fl-launcher-toast-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.fl-launcher-toast-x { display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
+  border: 0; border-radius: 8px; background: none; color: var(--vendo-fg-muted); cursor: pointer; }
+.fl-launcher-toast-x:hover { color: var(--vendo-fg); background: var(--vendo-accent-soft); }
+@media (prefers-reduced-motion: no-preference) {
+  /* The ONE moving part of the closed-panel state: the indeterminate arc. */
+  .fl-launcher-ring[data-vendo-ring="indeterminate"] { animation: fl-ring-turn 1.4s linear infinite; }
+  .fl-launcher-beat { animation: fl-beat-in var(--vendo-duration) var(--vendo-ease) both; }
+  .fl-launcher-toast { animation: fl-toast-in var(--vendo-duration) var(--vendo-ease) both; }
+}
+@keyframes fl-ring-turn { to { transform: rotate(360deg); } }
+@keyframes fl-beat-in { from { opacity: 0; filter: blur(4px); } to { opacity: 1; filter: none; } }
+@keyframes fl-toast-in { from { opacity: 0; transform: translateY(10px); filter: blur(5px); }
+  to { opacity: 1; transform: none; filter: none; } }
+
 `;
