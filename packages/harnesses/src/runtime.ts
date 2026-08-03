@@ -285,7 +285,9 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
       // instead of leaving a second copy of the same reply. (`generateId` is
       // called exactly once by the SDK, for the response message id.)
       const assistantMessageId = globalThis.crypto.randomUUID();
-      let checkpointed = false;
+      /** Calls already checkpointed — a turn can park more than once, and the
+       *  second ask deserves the save the first one got. */
+      const checkpointed = new Set<string>();
 
       const stream = createUIMessageStream<UIMessage>({
         originalMessages: messages,
@@ -477,8 +479,10 @@ export function createHarnessRuntime(deps: HarnessRuntimeDeps): HarnessRuntime {
             message: { id: assistantMessageId, role: "assistant", parts: [] },
             stream: toCheckpoint,
           })) {
-            if (checkpointed || !message.parts.some(isParkedApproval)) continue;
-            checkpointed = true;
+            const parked = message.parts.filter(isParkedApproval)
+              .map((part) => (part as { toolCallId: string }).toolCallId);
+            if (parked.every((toolCallId) => checkpointed.has(toolCallId))) continue;
+            for (const toolCallId of parked) checkpointed.add(toolCallId);
             await persistTurn(deps.transcript, input, [...messages, message], pristine);
           }
         } catch {

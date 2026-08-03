@@ -507,4 +507,36 @@ describe("C6 — a parked turn keeps its record", () => {
     const saved = await transcript.list({ kind: "user", subject: "u1" } as never, THREAD);
     expect(saved.filter((message) => message.role === "assistant")).toHaveLength(1);
   });
+
+  it("checkpoints a SECOND park too — one save per ask, not one per turn", async () => {
+    const guard = testGuard({ pay: "ask", wire: "ask" });
+    const registry = boundRegistry(
+      {
+        pay: { descriptor: readTool("pay", "destructive"), execute: () => ({ sent: true }) },
+        wire: { descriptor: readTool("wire", "destructive"), execute: () => ({ sent: true }) },
+      },
+      guard,
+    );
+    const saves: number[] = [];
+    const { run, transcript } = runtimeFor({ registry, guard, approvalWaitMs: 400 });
+    const seen = async (): Promise<number> => {
+      const rows = await transcript.list({ kind: "user", subject: "u1" } as never, THREAD);
+      const assistant = rows.find((message) => message.role === "assistant");
+      return (assistant?.parts ?? []).filter((part) => part.type === "data-vendo-approval").length;
+    };
+    await run(
+      defineHarness({
+        name: "payer",
+        async *run(turn) {
+          await turn.tools.call("pay", { amount: 10 });
+          saves.push(await seen());
+          await turn.tools.call("wire", { amount: 20 });
+          saves.push(await seen());
+        },
+      }),
+    );
+    // After the first ask the transcript carries one approval; after the second
+    // it carries both. A single-shot checkpoint would leave the second at 1.
+    expect(saves).toEqual([1, 2]);
+  });
 });

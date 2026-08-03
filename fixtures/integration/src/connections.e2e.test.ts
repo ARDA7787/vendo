@@ -261,15 +261,17 @@ describe("connected accounts over the wire", () => {
     const connectCard = connectParts[0]?.data as { toolCallId?: unknown; connector?: unknown; toolkit?: unknown };
     expect(typeof connectCard.toolCallId).toBe("string");
     expect(connectCard).toMatchObject({ connector: "composio", toolkit: "gmail" });
-    // Build contract §1.1: the runtime narrows the five core outcome statuses to
-    // three for the model/wire (ok/error/denied) — a refusal is its own affordance
-    // (`tool-output-denied`, no failure banner), not a structured `output.status`
-    // the OLD `createAgent` pass-through carried. The connect card above is the
-    // structured half now; this just proves the SAME call correlates to a refusal.
+    // §1.1's narrowing to ok/error/denied is what the MODEL reads. The screen
+    // reads the typed outcome off the native part — the shipped ConnectCard is
+    // rendered from `output.status === "connect-required"` and nothing else — so
+    // the wire has to carry it here exactly as the `createAgent` path does.
+    // Mirroring only the narrowed result left the user a silent dead end with no
+    // card to click (proven in a real browser by connections.spec.ts).
     const bobOutcome = bobRead.parts.find(
-      (part) => part.type === "tool-output-denied" && part.toolCallId === connectCard.toolCallId,
-    );
-    expect(bobOutcome).toBeDefined();
+      (part) => part.type === "tool-output-available" && part.toolCallId === connectCard.toolCallId,
+    ) as { output?: { status?: string; connect?: { toolkit?: string } } } | undefined;
+    expect(bobOutcome?.output?.status).toBe("connect-required");
+    expect(bobOutcome?.output?.connect?.toolkit).toBe("gmail");
 
     // Ada: active connection → the same tool executes.
     const adaTurn = await stack.wireFetch("/threads", {
