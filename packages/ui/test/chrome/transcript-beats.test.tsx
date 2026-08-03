@@ -15,6 +15,7 @@ import { VendoProvider, createVendoClient, type VendoClient } from "../../src/in
 import { VendoThread } from "../../src/chrome/index.js";
 import { toolResultSummary } from "../../src/chrome/build-beat.js";
 import { SplitViewContext, type SplitViewContextValue } from "../../src/chrome/split-view.js";
+import { ThreadMessage } from "../../src/chrome/thread/message.js";
 import { ThreadPart } from "../../src/chrome/thread/parts.js";
 import { createWireServer } from "../wire-server.js";
 
@@ -359,5 +360,164 @@ describe("the V4 display hint", () => {
     const afterBack = split();
     rerender(tree(afterBack));
     expect(afterBack.expandTo).not.toHaveBeenCalled();
+  });
+});
+
+/** Spec §8 (build calm + D1) and §15 over the BUILD WINDOW, not just the
+ *  settled state — the two states the wave E2E caught wrong:
+ *
+ *  · MID-BUILD the step narrated TWICE (a "Build an app…" beat AND the card's
+ *    own "Building your view…" bar), because the beat suppression only fired
+ *    once the finished view part existed while the card goes up at build START.
+ *  · A FAILED build left the card sweeping its hairline over a skeleton on a
+ *    turn that was over — and held the split view's stage on that skeleton. */
+describe("a build in flight, and a build that dies", () => {
+  afterEach(cleanup);
+
+  const PAYLOAD = {
+    formatVersion: "vendo-genui/v2",
+    name: "Where my money went",
+    root: "root",
+    nodes: [{ id: "root", component: "Text", props: { text: "Assembling." } }],
+  };
+
+  /** The skeleton the card shows mid-build; `display` is the V4 hint that also
+      puts it on the stage. */
+  const forming = (display?: "stage") => ({
+    type: "data-vendo-view",
+    data: {
+      appId: "app_money",
+      payload: { ...PAYLOAD, streaming: true, ...(display === undefined ? {} : { display }) },
+    },
+  });
+
+  /** The turn as it stands mid-build: one settled host read, the create call
+      still working, and the skeleton the card is showing for it. */
+  const midBuild = (display?: "stage"): UIMessage => ({
+    id: "msg_build",
+    role: "assistant",
+    parts: [
+      doneTool("call_read", { transactions: new Array(6).fill({}) }),
+      {
+        type: "dynamic-tool",
+        toolName: "vendo_apps_create",
+        toolCallId: "call_build",
+        state: "input-available",
+        input: { prompt: "where did my money go" },
+      },
+      forming(display),
+    ] as unknown as UIMessage["parts"],
+  });
+
+  /** The same turn after the build failed: the create call errored, the last
+      view part ever emitted is still the streaming skeleton, and the runtime's
+      build-failed part plus the agent's own prose close the turn. */
+  const deadBuild = (display?: "stage"): UIMessage => ({
+    id: "msg_build",
+    role: "assistant",
+    parts: [
+      doneTool("call_read", { transactions: new Array(6).fill({}) }),
+      {
+        type: "dynamic-tool",
+        toolName: "vendo_apps_create",
+        toolCallId: "call_build",
+        state: "output-error",
+        input: { prompt: "where did my money go" },
+        errorText: "app build failed: generation failed",
+      },
+      forming(display),
+      {
+        type: "data-vendo-build-failed",
+        data: { toolCallId: "call_build", reason: "app build failed: generation failed" },
+      },
+      { type: "text", text: "I couldn't get that view to hold together, and nothing was changed." },
+    ] as unknown as UIMessage["parts"],
+  });
+
+  function splitValue(overrides: Partial<SplitViewContextValue> = {}): SplitViewContextValue {
+    return {
+      expanded: false,
+      featuredAppId: undefined,
+      feature: vi.fn(),
+      expandTo: vi.fn(),
+      registerEmbed: vi.fn(),
+      removeEmbed: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  function turnTree(message: UIMessage, busy: boolean, value: SplitViewContextValue | null) {
+    return (
+      <VendoProvider>
+        <SplitViewContext.Provider value={value}>
+          <ThreadMessage
+            message={message}
+            restored={false}
+            risks={new Map()}
+            busy={busy}
+            activeAssistantId={busy ? message.id : undefined}
+            lastAssistantId={message.id}
+            onEditLast={() => undefined}
+            onRegenerateLast={() => undefined}
+          />
+        </SplitViewContext.Provider>
+      </VendoProvider>
+    );
+  }
+
+  // D1 over the window that actually matters: while the build runs the card bar
+  // is the ONE narration of that step. The other call in the turn keeps its beat
+  // — the suppression is aimed at the build, not at beats.
+  it("narrates a running build exactly once — the card bar, never a beat beside it", () => {
+    render(turnTree(midBuild(), true, null));
+    const bar = document.querySelector(".fl-appcard-bar");
+    expect(bar?.getAttribute("data-state")).toBe("building");
+    expect(bar?.querySelector(".fl-boot-building")?.textContent).toContain("Building your view");
+    // The build's beat must not exist DURING the build (the double-narration bug).
+    expect(document.querySelector("[data-vendo-tool='vendo_apps_create']")).toBeNull();
+    expect(screen.queryByText(/Build an app/)).toBeNull();
+    // Exactly one beat in the turn, and it belongs to the host read.
+    const beats = document.querySelectorAll(".fl-beat");
+    expect(beats).toHaveLength(1);
+    expect(beats[0]?.getAttribute("data-vendo-tool")).toBe("host_list_transactions");
+  });
+
+  // §8 build calm applies to the SETTLED turn too: a dead build may not leave a
+  // sweeping hairline or a skeleton behind. §15 says what replaces it — the ✕
+  // beat and the agent's prose, no new furniture.
+  it("clears the building card when the build dies: no hairline, no skeleton, just the ✕ and the prose", () => {
+    render(turnTree(deadBuild(), false, null));
+    expect(document.querySelector(".fl-appcard-bar")).toBeNull();
+    expect(document.querySelector(".fl-boot-hairline")).toBeNull();
+    expect(document.querySelector("[data-vendo-app-embed]")).toBeNull();
+    expect(screen.queryByText(/Building your view/)).toBeNull();
+    // The record of the failure: the ✕ beat is back (a failed call is content),
+    // the runtime's own line, and the agent's sentence.
+    expect(document.querySelector("[data-vendo-tool='vendo_apps_create']")?.className)
+      .toContain("fl-beat-error");
+    expect(document.body.textContent).toContain("nothing was changed");
+    // No retry furniture grew in the process (§15).
+    for (const button of Array.from(document.querySelectorAll("button"))) {
+      expect(button.textContent ?? "", button.outerHTML).not.toMatch(/try again|re-?run|fix it/i);
+    }
+  });
+
+  // The stage is the other half: it can only show an embed the split knows
+  // about, so the dead skeleton has to be WITHDRAWN or the workspace sits on it
+  // forever (the frame the E2E captured).
+  it("takes the dead skeleton off the split view's stage too", () => {
+    const value = splitValue({ expanded: true, featuredAppId: "app_money" });
+    const { rerender } = render(turnTree(midBuild("stage"), true, value));
+    expect(value.registerEmbed).toHaveBeenCalledWith("app_money", expect.objectContaining({ streaming: true }));
+    expect(value.removeEmbed).not.toHaveBeenCalled();
+    rerender(turnTree(deadBuild("stage"), false, value));
+    expect(value.removeEmbed).toHaveBeenCalledWith("app_money");
+  });
+
+  // A live build is NOT a dead one: the card stays while the turn is still
+  // working, even though the payload is streaming.
+  it("leaves a still-running build's skeleton alone", () => {
+    render(turnTree(midBuild(), true, null));
+    expect(document.querySelector("[data-vendo-app-embed='app_money']")).toBeTruthy();
   });
 });

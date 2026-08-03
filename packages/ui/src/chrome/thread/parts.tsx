@@ -20,8 +20,8 @@ import { SentAttachment } from "./attachments.js";
 import { buildApprovalRequest } from "./approval-wire.js";
 import {
   appTitle,
+  narratedByAppCard,
   partData,
-  producedAppCard,
   toolCallIsContent,
   toolName,
   VENDO_ERROR_PREFIX,
@@ -141,11 +141,11 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     //   · the settled turn folds its beats into one summary row (hideBeats) —
     //     but a failed or declined call is content, not progress, so its ✕ beat
     //     stays visible either way (spec §15: the ✕ stays in the record);
-    //   · D1 — an app-building call renders no beat, because its card IS that
-    //     step (the summary still counts it).
+    //   · D1 — an app-building call renders no beat, from the moment the build
+    //     starts, because its card IS that step (the summary still counts it).
     const risk = risks.get(part.toolCallId) ?? "read";
     if (toolCallIsContent(part)) return <BuildBeat part={part} risk={risk} count={count} />;
-    if (hideBeats || producedAppCard(part, siblingParts ?? [])) return null;
+    if (hideBeats || narratedByAppCard(part, siblingParts ?? [])) return null;
     return <BuildBeat part={part} risk={risk} count={count} />;
   }
   if (part.type === "data-vendo-build-failed") {
