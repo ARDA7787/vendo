@@ -128,7 +128,12 @@ describe("the center rail", () => {
     mount(stubClient());
     const tabs = await screen.findByRole("tablist", { name: "Workspace sections" });
     expect(tabs.getAttribute("aria-orientation")).toBe("vertical");
-    for (const name of ["New chat", "Apps", "Automations"]) {
+    // ⚠️ TEST EDIT — "New chat" is no longer a TAB. It is an act (it discards
+    // the open conversation and its draft), so it is a plain button ABOVE the
+    // tablist; only real views are tabs.
+    expect(screen.getByRole("button", { name: "New chat" })).toBeTruthy();
+    expect(within(tabs).queryByRole("tab", { name: "New chat" })).toBeNull();
+    for (const name of ["Apps", "Automations"]) {
       expect(within(tabs).getByRole("tab", { name })).toBeTruthy();
     }
     // §12 — the host's app supplies its own chrome: we bring neither identity
@@ -153,47 +158,52 @@ describe("the center rail", () => {
     expect(await screen.findByRole("heading", { name: "Connected accounts" })).toBeTruthy();
   });
 
-  // APG MANUAL activation (H18). This case previously asserted the opposite —
-  // that an arrow key activated the row it landed on — which is the destructive
-  // behavior itself: "New chat" is an ACT (it discards the open conversation and
-  // the composer's draft), so arrowing past it threw the user's work away.
-  it("keeps roving tab semantics: arrows move focus, Enter activates, the panel is labelled", async () => {
+  // ⚠️ TEST EDIT — APG AUTOMATIC activation. This asserted MANUAL activation
+  // (arrows move focus, Enter chooses), which the rail only needed because an
+  // ACT sat inside the tablist: an arrow that selected as it passed "New chat"
+  // threw the user's draft away (H18). The act is out of the list now, every
+  // remaining row is a view whose panel appears instantly, and selection
+  // follows focus — which is what a tablist that reports a selection at all
+  // has to do.
+  it("selection follows the arrow keys, and the panel is labelled by the selected tab", async () => {
     mount(stubClient());
-    const chat = await screen.findByRole("tab", { name: "New chat" });
-    expect(chat.getAttribute("aria-selected")).toBe("true");
-    expect(chat.getAttribute("tabindex")).toBe("0");
-    const apps = screen.getByRole("tab", { name: "Apps" });
-    expect(apps.getAttribute("tabindex")).toBe("-1");
-    chat.focus();
-    fireEvent.keyDown(chat, { key: "ArrowDown" });
-    // Focus moved, and the roving stop moved with it — but NOTHING was chosen.
-    expect(document.activeElement).toBe(apps);
-    expect(apps.getAttribute("tabindex")).toBe("0");
-    expect(apps.getAttribute("aria-selected")).toBe("false");
-    expect(chat.getAttribute("aria-selected")).toBe("true");
-    // Enter is what chooses (Space too — it is a real <button>).
+    const apps = await screen.findByRole("tab", { name: "Apps" });
+    const automations = screen.getByRole("tab", { name: "Automations" });
     fireEvent.click(apps);
     expect(apps.getAttribute("aria-selected")).toBe("true");
-    expect(chat.getAttribute("aria-selected")).toBe("false");
+    expect(apps.getAttribute("tabindex")).toBe("0");
+    expect(automations.getAttribute("tabindex")).toBe("-1");
+    apps.focus();
+    fireEvent.keyDown(apps, { key: "ArrowDown" });
+    // Focus moved AND the selection moved with it, and the roving stop follows.
+    expect(document.activeElement).toBe(automations);
+    expect(automations.getAttribute("aria-selected")).toBe("true");
+    expect(automations.getAttribute("tabindex")).toBe("0");
+    expect(apps.getAttribute("aria-selected")).toBe("false");
     const panel = screen.getByRole("tabpanel");
-    expect(panel.getAttribute("aria-labelledby")).toBe(apps.getAttribute("id"));
+    expect(panel.getAttribute("aria-labelledby")).toBe(automations.getAttribute("id"));
   });
 
+  // ⚠️ TEST EDIT — H18 is now STRUCTURAL, so this proves the structure instead
+  // of the keyboard handler's memory. The arrow keys cannot start a new chat
+  // because "New chat" is not in the tablist they walk; wrapping from the first
+  // row reaches the LAST view, never the act.
   it("an arrow key never starts a new chat: the open conversation survives (H18)", async () => {
     mount(stubClient({ threads: [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[] }));
     const row = await screen.findByRole("button", { name: "Where did July go?" });
     await waitFor(() => expect(row.getAttribute("aria-current")).toBe("page"));
-    fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
     const apps = screen.getByRole("tab", { name: "Apps" });
+    fireEvent.click(apps);
     apps.focus();
-    // ArrowUp lands on "New chat". Under automatic activation this fired
-    // conversation.choose(undefined) — the open conversation and the draft in
-    // its composer, gone, from a keystroke that was only meant to move.
+    // ArrowUp from the FIRST tab wraps to the last one. It used to land on
+    // "New chat" and fire conversation.choose(undefined) — the open
+    // conversation and the draft in its composer, gone, from a keystroke that
+    // was only meant to move.
     fireEvent.keyDown(apps, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "New chat" }));
+    expect(screen.getByRole("button", { name: "New chat" })).not.toBe(document.activeElement);
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Automations" }));
+    // The conversation is untouched: it is still the open one.
     expect(row.getAttribute("aria-current")).toBe("page");
-    expect(apps.getAttribute("aria-selected")).toBe("true");
-    expect(await screen.findByRole("heading", { name: "Apps" })).toBeTruthy();
   });
 
   it("every tab's aria-controls resolves — there is ONE panel, not one per tab (M39)", async () => {
@@ -201,7 +211,9 @@ describe("the center rail", () => {
     const more = await screen.findByRole("button", { name: "More sections" });
     fireEvent.click(more);
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.length).toBe(5);
+    // ⚠️ TEST EDIT — four VIEWS (apps, automations, activity, accounts). The
+    // fifth was "New chat", which is an act and no longer a tab.
+    expect(tabs.length).toBe(4);
     const panel = screen.getByRole("tabpanel");
     for (const tab of tabs) {
       const controls = tab.getAttribute("aria-controls")!;
@@ -293,7 +305,9 @@ describe("a run the user walked away from (M27)", () => {
     const toast = await screen.findByText("July is ready");
     expect(row.hasAttribute("data-vendo-running")).toBe(false);
     fireEvent.click(within(toast.closest(".fl-launcher-toast") as HTMLElement).getByRole("button", { name: "View" }));
-    expect(screen.getByRole("tab", { name: "New chat" }).getAttribute("aria-selected")).toBe("true");
+    // ⚠️ TEST EDIT — a nav BUTTON says "you are here" with aria-current, which
+    // is what the rail's own stylesheet has always keyed the selected look off.
+    expect(screen.getByRole("button", { name: "New chat" }).getAttribute("aria-current")).toBe("page");
   });
 
   it("the pulse no longer requires the row to be the one you are viewing", async () => {

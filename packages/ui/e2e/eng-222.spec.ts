@@ -38,10 +38,10 @@ async function newConversationAppears(page: import("@playwright/test").Page) {
   // conversation shows the one-time greeting-as-tutorial instead
   // (discoverability §6), so mark it already seen for this origin.
   await page.evaluate(() => localStorage.setItem("vendo:discoverability:greeting", "1"));
-  await page.getByRole("button", { name: "New conversation" }).click();
+  await page.getByRole("button", { name: "New chat" }).click();
   await expect(page.getByRole("heading", { name: "What can I help you build?" })).toBeVisible();
   await page.getByRole("textbox", { name: "Message" }).fill("Plan my week");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
   // The freshly minted conversation is pulled into the sidebar by the refresh.
   await expect(list).toHaveCount(before + 1);
 }

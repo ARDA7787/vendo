@@ -70,7 +70,7 @@ test("a sent conversation persists across a reload (the P0 regression guard)", a
   // Start a NEW conversation so the send mints a fresh server thread (rather
   // than appending to the seeded one), then send a turn the server persists
   // under that minted id (ENG-211/222).
-  await page.getByRole("button", { name: "New conversation" }).click();
+  await page.getByRole("button", { name: "New chat" }).click();
   await send(page, "what happened to my money this month");
   await expect(page.getByText("what happened to my money this month")).toBeVisible();
   await expect(page.getByText("Turn complete").first()).toBeVisible();
