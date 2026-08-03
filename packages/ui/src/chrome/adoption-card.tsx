@@ -1,4 +1,4 @@
-import { VendoError, type ApprovalRequest } from "@vendoai/core";
+import { VendoError, type ApprovalRequest, type RiskLabel } from "@vendoai/core";
 import { useState } from "react";
 import { useVendoContext, useVendoTools } from "../context.js";
 import type { AdoptionVenue } from "../wire-types.js";
@@ -37,7 +37,15 @@ const STOPPED_BECAUSE: Record<AdoptionVenue["reason"], (sponsor: string | undefi
     `${sponsor ?? "The person who set it up"}'s permissions for this app were removed, so it is paused.`,
 };
 
-const RISK_WORD = { read: "Reads", write: "Changes", destructive: "Changes" } as const;
+/** `ungraded` says what is true — nobody graded this tool — instead of guessing
+ *  "Reads" or "Changes" for the person about to take the automation on. Same
+ *  wording as the approval card's chip, so one state reads one way everywhere. */
+const RISK_WORD: Record<RiskLabel, string> = {
+  read: "Reads",
+  write: "Changes",
+  destructive: "Changes",
+  ungraded: "Not reviewed",
+};
 
 /**
  * The consumer's half of a refusal (design §3, the consumer-voice law). Every

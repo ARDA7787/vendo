@@ -56,7 +56,7 @@ detection precedence and the non-interactive `--framework` fallback.
 `dir` is the app to initialize and defaults to the current directory.
 
 Init also adds idempotent `predev`/`prebuild` `vendo sync` hooks to
-`package.json` and writes critical-tool risk answers to `.vendo/overrides.json`,
+`package.json` and writes confirm-each risk answers to `.vendo/overrides.json`,
 which future sync runs respect.
 
 Options:
@@ -67,9 +67,10 @@ Options:
   `{ file, lines, why }`) plus the same lines in `manualSteps`, `extraction`
   (deterministic extraction runs first,
   against a throwaway directory, so the plan carries the extracted tools),
-  and `riskRecommendations` (per-tool advice: destructive tools should be
-  marked critical, disabled tools reviewed before enabling). It is a read-only
-  plan, not a scaffolding step; scaffold with `--yes`.
+  `riskRecommendations` (per-tool advice: destructive tools should be marked
+  confirmEach, disabled tools reviewed before enabling), and an `aiPolish`
+  delegation contract. It is a read-only plan, not a scaffolding step; scaffold
+  with `--yes`.
 - `--yes` skips the interactive prompts (auth confirm, theme review, Cloud
   offer) and scaffolds non-interactively, ending with an `Agent tail:` block
   naming the files left to hand-edit.

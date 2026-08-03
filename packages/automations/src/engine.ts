@@ -71,13 +71,18 @@ const appRowSchema = z.object({
   doc: appDocumentSchema,
 });
 
+/** The guard's approval row as this engine reads it. `passthrough`, because the
+ *  guard owns this shape and keeps adding to it (`deniedBy`, `voidedAt`): a
+ *  stripping parse would silently drop those on the write-back below, erasing
+ *  who said no and whether it was taken back. */
 const approvalRowSchema = z.object({
   request: approvalRequestSchema,
   status: z.enum(["pending", "approved", "denied"]),
   sessionId: z.string().optional(),
   decidedAt: z.string().optional(),
   consumedAt: z.string().optional(),
-});
+  voidedAt: z.string().optional(),
+}).passthrough();
 
 const captureSchema = z.object({
   appId: z.string(),
@@ -1006,7 +1011,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     return ids.filter((value): value is RunId => value !== undefined);
   };
 
-  const mintGrant = async (request: ApprovalRequest): Promise<void> => {
+  const mintGrant = async (request: ApprovalRequest): Promise<string> => {
     const grant: PermissionGrant = {
       id: id("grt_"),
       subject: request.ctx.principal.subject,
@@ -1027,14 +1032,36 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         ...(grant.appId === undefined ? {} : { app_id: grant.appId }),
       },
     });
+    return grant.id;
   };
 
-  const markConsumed = async (record: VendoRecord): Promise<void> => {
+  /**
+   * Spends the approval this consent moment rode in on — through the guard when
+   * it offers the seam, so the spend contends with a concurrent
+   * `approvals.revoke` on the one transition instead of racing beside it. False
+   * means DO NOT grant: the person took the yes back, or someone else already
+   * spent it.
+   *
+   * KNOWN LIMIT — the fallback cannot linearize. A custom Guard that does not
+   * offer `spendApproval` exposes no way to claim the approval's one-time
+   * transition, so this path is back to reading the row and writing it: it
+   * refuses a take-back it can see and writes the row back whole (no stripped
+   * `deniedBy`/`voidedAt`), but a revoke landing inside that window can still
+   * lose to the grant mint. Every Guard in this repo — the only one hosts get
+   * unless they write their own — has the seam, and a host that replaces the
+   * guard wholesale already owns its own consent bookkeeping. Not chased.
+   */
+  const spendApproval = async (record: VendoRecord): Promise<boolean> => {
     const data = approvalRowSchema.parse(record.data);
+    if (config.guard.spendApproval !== undefined) {
+      return await config.guard.spendApproval(record.id, data.request.ctx.principal) === "spent";
+    }
+    if (data.voidedAt !== undefined) return false;
     await config.store.records(APPROVALS).put({
       id: record.id,
       data: { ...data, consumedAt: iso() },
     });
+    return true;
   };
 
   const resumeRun = async (approvalId: string, approved: boolean): Promise<void> => {
@@ -1155,6 +1182,10 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       let trigger: Trigger;
       let step: Step;
       let outcome: ToolOutcome;
+      // Hoisted so the catch can take the grant back too: a throw between the
+      // mint and the dispatch would otherwise strand exactly the standing
+      // authority this section exists to keep from outliving its yes.
+      let armed: string | undefined;
       try {
         // §9.9 — the fire-time gate AGAIN, here, because a resume is a second
         // firing through a different door: the run parked, time passed, and the
@@ -1187,14 +1218,43 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
           await dropPark();
           return;
         }
-        await mintGrant(approvalData.request);
         trigger = validateTrigger(appFound.row.doc.trigger);
         if (trigger.run.kind !== "steps") throw new VendoError("validation", "parked agentic run is invalid");
         const parkedStep = trigger.run.steps[state.stepIndex];
         if (parkedStep === undefined) throw new VendoError("validation", "parked step is missing");
         step = parkedStep;
+        // This path cannot call `spendApproval`: the REPLAY below is the spend,
+        // on the same `consumed:<id>` transition, and one approval cannot be
+        // spent twice (a pre-spend makes the guard refuse its own replay and the
+        // step re-parks forever — verified against the confirmEach resume case).
+        // The grant must also exist BEFORE the dispatch: an away call acts as the
+        // user only through captured authority (05 §6). So the grant is minted
+        // first and TAKEN BACK when the replay did not win — the receipt is the
+        // arbiter, which is the only thing that can tell "the person revoked it
+        // mid-resume" from "we read the row a moment too early". Deleted rather
+        // than tombstoned with a `revokedAt`, symmetric with the mint (which
+        // writes no audit event either): a revoked-grant row for authority the
+        // person never actually held would read as history that did not happen.
+        //
+        // KNOWN LIMIT — this holds for every outcome the process lives through,
+        // including a throw, but NOT for a crash between the mint and the
+        // take-back: a kill there leaves the grant behind, and nothing sweeps it.
+        // It is visible in `grants.list`, pinned to this tool's `descriptorHash`,
+        // app-bound and away-only, and the person can revoke it. Closing it needs
+        // the mint and the delete in one transaction, which the store's
+        // record-at-a-time seam does not offer.
+        armed = await mintGrant(approvalData.request);
         outcome = await executeCall(run.appId, step, state.call, ctx);
+        if (outcome.status === "pending-approval" || outcome.status === "blocked") {
+          await config.store.records(GRANTS).delete(armed);
+        }
       } catch (error) {
+        // Same law as a refused replay: the yes was never spent, so it leaves no
+        // standing authority. Best-effort — a failed delete must not replace the
+        // real failure below with its own.
+        if (armed !== undefined) {
+          await config.store.records(GRANTS).delete(armed).catch(() => undefined);
+        }
         await terminal(run, ctx, "error", `stopped at resume: ${message(error)}`, {
           code: "validation",
           message: message(error),
@@ -1279,8 +1339,9 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       const approval = await config.store.records(APPROVALS).get(approvalId);
       if (approved && approval !== null) {
         const data = approvalRowSchema.parse(approval.data);
-        await mintGrant(data.request);
-        await markConsumed(approval);
+        // Spend before granting: a yes the person took back at this instant
+        // must arm nothing, and only one of the two can win the transition.
+        if (await spendApproval(approval)) await mintGrant(data.request);
       }
       await config.store.records(CAPTURES).delete(approvalId);
       if (!approved) {
@@ -1318,8 +1379,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       // AgentRunReport has no continuation token in v0. Approval arms the
       // app-bound authority for the next agentic firing instead of replaying
       // and duplicating the completed prefix of an agent run.
-      await mintGrant(data.request);
-      await markConsumed(approval);
+      if (await spendApproval(approval)) await mintGrant(data.request);
     }
   };
 
@@ -1963,8 +2023,8 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       const descriptor = byName.get(tool);
       if (descriptor === undefined) throw new VendoError("validation", `unknown tool in automation: ${tool}`);
       const granted = await liveGrant(found.row.subject, appId, descriptor);
-      plan.steps.push({ id: stepId, tool, wouldAsk: descriptor.critical === true || !granted });
-      if (!descriptor.critical && !granted && !plan.grantsMissing.includes(tool)) plan.grantsMissing.push(tool);
+      plan.steps.push({ id: stepId, tool, wouldAsk: descriptor.confirmEach === true || !granted });
+      if (!descriptor.confirmEach && !granted && !plan.grantsMissing.includes(tool)) plan.grantsMissing.push(tool);
     };
     if (trigger.run.kind === "agentic") {
       for (const descriptor of byName.values()) await add(descriptor.name, descriptor.name);
