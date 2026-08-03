@@ -1,7 +1,7 @@
 import type { Json, JsonSchema } from "@vendoai/core";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import { useEffect, useRef, useState } from "react";
-import { consumerVoiceViolation } from "../consumer-voice.js";
+import { consumerVoiceViolation, isConsumerSafe } from "../consumer-voice.js";
 import { useVendoContext } from "../context.js";
 import { developmentMode } from "./dev-mode.js";
 import { argProperties, argValue, humanizeToolName, toolTitle, type ArgProperties, type ToolMeta } from "./humanize.js";
@@ -126,12 +126,12 @@ export function consentClassLine(name: string, risk: string): string {
 export function admissibleDescription(description: string | undefined, title: string): string | undefined {
   const text = description?.trim();
   if (text === undefined || text.length === 0 || text === title) return undefined;
-  const violation = consumerVoiceViolation(text);
-  if (violation === undefined) return text;
+  if (isConsumerSafe(text)) return text;
   if (developmentMode()) {
     console.warn(
-      `[vendo] "${title}": dropped the tool description from its card — it reads as ${violation}.`
-      + " Give the tool a consumer sentence in its ToolMeta to show one.",
+      `[vendo] "${title}": dropped the tool description from its card — it reads as`
+      + ` ${consumerVoiceViolation(text)}. Give the tool a consumer sentence in its`
+      + " ToolMeta to show one.",
     );
   }
   return undefined;
