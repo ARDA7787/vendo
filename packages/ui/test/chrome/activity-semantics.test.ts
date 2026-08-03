@@ -206,6 +206,9 @@ describe("activityDetail — the values are consumer copy too", () => {
     });
     expect(detail).toBeDefined();
     expect(detail!.length).toBeLessThanOrEqual(121);
+  });
+});
+
 describe("decidedByLabel", () => {
   it("says what actually happened: an older no is still standing", () => {
     // Raw, the ledger read "blocked by denied", which sounds like a fresh

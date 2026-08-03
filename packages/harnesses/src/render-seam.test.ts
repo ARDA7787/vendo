@@ -262,6 +262,9 @@ describe("the plan's display hint", () => {
     const { emitted, save } = seam();
     await save(APP_VENDO, GOOD_APP);
     expect(emitted[0]!.part.payload).not.toHaveProperty("display");
+  });
+});
+
 describe("the app half of an app.vendo commit (§1.6)", () => {
   /** The wire the E2E defect was found on: a value that only exists once the
    *  query has run. Painted with no data it reads "—". */
