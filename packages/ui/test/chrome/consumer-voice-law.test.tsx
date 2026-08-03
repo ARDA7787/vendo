@@ -65,6 +65,7 @@ const FORBIDDEN: Array<[string, RegExp]> = [
   ["a dotted identifier path", /\b[a-z]{2,}[A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]+)+\b/],
   ["an environment variable", /\b[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+\b/],
   ["a configuration instruction", /pass a |set VENDO_|createVendo\(/],
+  ["a model instruction", /\be\.g\.|\bdivide by \d|\bdo not\b|\binteger cents\b/i],
 ];
 
 /** Everything a person can READ or HEAR from a rendered surface: every text node

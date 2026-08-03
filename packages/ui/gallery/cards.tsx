@@ -13,7 +13,9 @@
  * documenting) as the card shell is restyled underneath it.
  */
 import type { ApprovalRequest, Json, JsonSchema, Trigger } from "@vendoai/core";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { createVendoClient } from "../src/client.js";
+import { VendoProvider } from "../src/context.js";
 import {
   AdoptionCard,
   AdoptionVenueCard,
@@ -84,19 +86,72 @@ function approval(over: {
 }
 
 const PERMISSIONS: GrantSetPermission[] = [
+  { approvalId: "apr_g1", tool: "host_invoices_list", risk: "read" },
+  { approvalId: "apr_g2", tool: "slack_SLACK_SEND_MESSAGE", risk: "write" },
+];
+
+/** demo-bank's OWN catalog sentence for `host_getSpendingInsights`, as it read
+ *  on 2026-08-03 — a line written for the MODEL that the grant row printed at a
+ *  bank customer (spec §16 law 3, LEAK 1). The wire part carries a description
+ *  and `thread/parts.tsx` casts it into these props, so the cast is the real
+ *  path and the case renders through it. */
+const MODEL_INSTRUCTION_PERMISSIONS = ([
   {
-    approvalId: "apr_g1",
-    tool: "host_invoices_list",
-    description: "Read the invoices it summarizes.",
+    approvalId: "apr_m1",
+    tool: "host_getSpendingInsights",
+    description: "Spending by category for the current period. Amounts are integer cents"
+      + " (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying,"
+      + " including any totals you compute.",
     risk: "read",
   },
   {
-    approvalId: "apr_g2",
-    tool: "slack_SLACK_SEND_MESSAGE",
-    description: "Post the summary to #finance.",
-    risk: "write",
+    approvalId: "apr_m2",
+    tool: "host_transferMoney",
+    description: "Send money to a person from the user's checking account. This IRREVERSIBLY"
+      + " MOVES MONEY: it debits checking and appends a transfer. There is no undo.",
+    risk: "destructive",
   },
-];
+] as unknown) as GrantSetPermission[];
+
+/** The keyless (default OSS) connect refusal, exactly as the wire throws it —
+ *  a TypeScript call and an environment variable (LEAK 2). The card must answer
+ *  it in the consumer's voice, so this case CLICKS Connect on mount: the failed
+ *  state in the PNG is the real error path, not a prop. */
+function RefusedConnect() {
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    host.current?.querySelector("button")?.click();
+  }, []);
+  const client = useMemo(() => {
+    const base = createVendoClient({ baseUrl: "http://127.0.0.1:9" });
+    return {
+      ...base,
+      connections: {
+        ...base.connections,
+        initiate: async () => {
+          throw Object.assign(
+            new Error("connected accounts are not configured: pass a Composio connector"
+              + " (composioConnector) to createVendo({ connectors }) or set VENDO_API_KEY"
+              + " for the Vendo Cloud broker"),
+            { code: "not-implemented" },
+          );
+        },
+      },
+    } as typeof base;
+  }, []);
+  return (
+    <div ref={host}>
+      <VendoProvider client={client} tools={GALLERY_TOOLS}>
+        <ConnectCard
+          connector="composio"
+          toolkit="slack"
+          message="Connect Slack so the summary can post to #finance."
+          onConnected={noop}
+        />
+      </VendoProvider>
+    </div>
+  );
+}
 
 const SCHEDULE: Trigger = {
   on: { kind: "schedule", cron: "0 9 * * 1" },
@@ -217,6 +272,35 @@ export const CARD_CASES: CardCase[] = [
     ),
   },
   {
+    id: "approval-nested-money",
+    label: "Approval — money INSIDE a nested object",
+    note: "Maple's live host_createOrder shape: a declared-cents amount one level down reads as money, not as 1850 (LEAK 3)",
+    node: (
+      <ApprovalCard
+        approval={approval({
+          id: "apr_nested_money",
+          tool: "host_createOrder",
+          title: "Place an order",
+          args: { merchant: "DoorDash", charge: { amount_cents: 1850, descriptor: "DOORDASH SF" }, undeclared: { amount: 1850 } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              merchant: { type: "string" },
+              charge: {
+                type: "object",
+                properties: {
+                  amount_cents: { type: "integer", description: "Charge amount in integer cents" },
+                  descriptor: { type: "string" },
+                },
+              },
+            },
+          },
+        })}
+        onDecide={noop}
+      />
+    ),
+  },
+  {
     id: "approval-many-fields",
     label: "Approval — DEGRADED: more than eight fields",
     note: "nine primitive args exceed the field-row cap and fall to the raw preview",
@@ -316,6 +400,12 @@ export const CARD_CASES: CardCase[] = [
     node: <GrantSetCard name="Friday spending summary" permissions={PERMISSIONS} state="denied" />,
   },
   {
+    id: "grantset-model-instruction",
+    label: "Standing access — HOSTILE: the catalog's model-facing sentences",
+    note: "demo-bank's own descriptions (integer cents, divide by 100, IRREVERSIBLY MOVES MONEY) reach the card and never the screen (LEAK 1)",
+    node: <GrantSetCard name="Spending watcher" permissions={MODEL_INSTRUCTION_PERMISSIONS} state="parked" onDecide={noop} />,
+  },
+  {
     id: "grantset-slug-tools",
     label: "Standing access — DEGRADED: slug tools, no ToolMeta",
     note: "raw connector slugs in every row; titles must still read as words",
@@ -397,6 +487,12 @@ export const CARD_CASES: CardCase[] = [
     label: "Connect — known toolkit",
     note: "proper-case toolkit name and its real mark, never the raw slug",
     node: <ConnectCard connector="slack" toolkit="slack" message="Connect Slack so the summary can post to #finance." onConnected={noop} />,
+  },
+  {
+    id: "connect-refused",
+    label: "Connect — REFUSED on a keyless deployment",
+    note: "the wire's sentence names createVendo({ connectors }) and VENDO_API_KEY; the card says what it means for the person (LEAK 2)",
+    node: <RefusedConnect />,
   },
   {
     id: "connect-slug-toolkit",
