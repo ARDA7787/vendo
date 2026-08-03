@@ -25,7 +25,7 @@ import { z } from "zod";
 import { defineHarness } from "../define.js";
 import { harnessAdapters, type ToolDoorPort } from "../harness-sandbox.js";
 import { checkoutWorkspace, type SyncFile } from "../materialize.js";
-import { HOT_PATH_FILES } from "../render-seam.js";
+import { HOT_PATH_WATCH } from "../render-seam.js";
 import type { SessionMachine } from "./machine.js";
 import { localMachine } from "./local.js";
 import { boxMachine, type SandboxAdapterLike } from "./box.js";
@@ -60,20 +60,6 @@ const optionsSchema = z.object({
 export interface ClaudeCodeDeps {
   sandbox?: SandboxAdapterLike;
 }
-
-/**
- * §3.5's hot paths as SHAPES: the two files that sync mid-turn, under any app —
- * including one whose id the turn is about to invent. The seam owns the frozen
- * layout (`hotPathAppId`) and drops anything else that comes back.
- *
- * These used to be read on a 1.2s TIMER. They are now read when the SDK's native
- * `PostToolUse` hook says something was written — sync on write, not sync on
- * tick. The shape matters as much as it ever did: enumerating from files that
- * already existed watched nothing at all on the one ask the skeleton exists for
- * ("make me an app"), because a brand-new appId has no directory yet — measured
- * 52.8s of silence against 5.0s when the file happened to pre-exist.
- */
-const HOT_WATCH = HOT_PATH_FILES.map((name) => `/user/apps/*/${name}`);
 
 /** The recorded v0 inference exception (design §9): a boxed harness must reach a
  *  model to think, and that is the ONLY credential in the machine. */
@@ -375,7 +361,7 @@ export function claudeCode(
         const syncHotNow = (): void => {
           if (finished) return;
           void serialize(async () => {
-            const hot = await machine.collect(HOT_WATCH);
+            const hot = await machine.collect(HOT_PATH_WATCH);
             await checkout.syncHot(hot);
           }).catch(() => undefined);
         };

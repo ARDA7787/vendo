@@ -24,8 +24,7 @@ import path from "node:path";
 import { VendoError } from "@vendoai/core";
 import type { ClaudeTurnEvent } from "@vendoai/apps/claude-turn";
 import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
-import { emptyTree } from "../materialize.js";
-import { pathAccess } from "../materialize.js";
+import { emptyTree, inWritableMount } from "../materialize.js";
 import type { SessionMachine, SessionMessage } from "./machine.js";
 
 /** The session runner is shared with the box — one implementation, two homes. Its
@@ -193,7 +192,11 @@ export async function localMachine(options: LocalMachineOptions): Promise<Sessio
       const files: SyncFile[] = [];
       for (const diskPath of await walk(root)) {
         const workspacePath = toWorkspace(root, diskPath);
-        if (pathAccess(workspacePath) !== "rw") continue;
+        // A walk of a real disk has no store to ask, so it answers the only
+        // question a shape can: `/user` and `/orgs` come home, `/host` never
+        // does. WHETHER a carried path may land is the sync-back seam's
+        // `canCommit`, per file — the box door's own walk keeps the same rule.
+        if (!inWritableMount(workspacePath)) continue;
         files.push({ path: workspacePath, bytes: await readFile(diskPath) });
       }
       return files;

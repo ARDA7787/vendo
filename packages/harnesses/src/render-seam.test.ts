@@ -12,7 +12,7 @@
  */
 import { vendoViewPartSchema, vendoViewStreamId, type VendoViewPart } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
-import { HOT_PATH_FILES, hotPathAppId, wrapWorkspaceForRender } from "./render-seam.js";
+import { HOT_PATH_FILES, HOT_PATH_WATCH, hotPathAppId, wrapWorkspaceForRender } from "./render-seam.js";
 import { testWorkspace } from "./test-doubles.test-util.js";
 
 const APP = "app_1";
@@ -55,6 +55,21 @@ describe("hot paths", () => {
     expect(hotPathAppId("/user/scratch/app_1/app.vendo")).toBeUndefined();
     // Not an appId the store would ever mint.
     expect(hotPathAppId("/user/apps/nope/app.vendo")).toBeUndefined();
+  });
+
+  it("watches BOTH mounts — a team app's skeleton has to paint mid-turn too", () => {
+    expect([...HOT_PATH_WATCH]).toEqual([
+      "/user/apps/*/app.vendo",
+      "/user/apps/*/plan.vendo",
+      "/orgs/*/apps/*/app.vendo",
+      "/orgs/*/apps/*/plan.vendo",
+    ]);
+    // Every watch shape must resolve to a path the seam itself calls hot, or the
+    // mid-turn collect asks for files the sync would then drop.
+    for (const pattern of HOT_PATH_WATCH) {
+      expect(hotPathAppId(pattern.replace("/orgs/*/", "/orgs/acme/").replace("/apps/*/", "/apps/app_1/")))
+        .toBe("app_1");
+    }
   });
 });
 

@@ -46,6 +46,22 @@ export const HOT_PATH_FILES = ["app.vendo", "plan.vendo"] as const;
  *  keep painting the skeleton mid-turn like a personal one's. */
 const HOT_PATH = /^\/(?:user|orgs\/[^/]+)\/apps\/(app_[^/]+)\/(app\.vendo|plan\.vendo)$/;
 
+/**
+ * §3.5's hot paths as WATCH SHAPES — what a machine's mid-turn collect asks for,
+ * where `*` stands for exactly one segment (both machines' rule).
+ *
+ * BOTH mounts, for the same reason `HOT_PATH` reads either: a team app's
+ * skeleton has to paint mid-turn like a personal one's. Watching only
+ * `/user/apps/*` left an `/orgs` app with nothing to sync until turn end — a
+ * blank pane for the length of the turn instead of a skeleton in seconds.
+ *
+ * Shapes, never a list of files that already exist: on the one ask the skeleton
+ * exists for ("make me an app") the appId is invented DURING the turn, so an
+ * enumeration watches nothing at all — measured 52.8s of silence against 5.0s.
+ */
+export const HOT_PATH_WATCH: readonly string[] = ["/user/apps/*", "/orgs/*/apps/*"]
+  .flatMap((prefix) => HOT_PATH_FILES.map((name) => `${prefix}/${name}`));
+
 /** The appId a hot-path write belongs to, or undefined if this is not one. */
 export function hotPathAppId(path: string): AppId | undefined {
   const match = HOT_PATH.exec(path);

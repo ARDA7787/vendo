@@ -4,9 +4,18 @@
  * A sandboxed harness gets a real disk, so the workspace has to leave the store
  * and come back. Checkout writes the caller's visible files out; sync-back is
  * **diff-based, per file, never wholesale** — only paths whose content hash
- * changed are committed. `/user/scratch/**` never syncs. The hot paths
+ * changed are committed. Each mount's `scratch/` never syncs. The hot paths
  * (`app.vendo`, `plan.vendo`) sync MID-TURN, which is what puts the skeleton on
  * screen; everything else lands at turn end.
+ *
+ * **Permission is the workspace's, never this file's** (§9.3, design §8): every
+ * question about who may write what is `workspace.canCommit(path)`, asked
+ * per file at the two moments `can()` runs on the sandbox path — checkout, to
+ * decide whether a file lands read-only on the disk, and sync-back, against live
+ * rows, to decide whether a changed file goes home. A hardcoded path table
+ * stood here through wave 3 and answered for `/orgs/**` mounts it had never
+ * heard of, which made every team file invisible to `claudeCode()` and dropped
+ * every edit to one with no error anywhere.
  *
  * This file is deliberately harness-agnostic and transport-agnostic: it moves
  * bytes between a `WorkspaceFs` and a plain path→bytes list. `claudeCode()` is
@@ -20,14 +29,29 @@ import { createHash } from "node:crypto";
 import type { WorkspaceFs } from "@vendoai/core";
 import { hotPathAppId } from "./render-seam.js";
 
-/** §3.1, frozen: no other top-level mounts exist. */
-const USER_MOUNT = "/user";
-const HOST_MOUNT = "/host";
-/** §3.1: intra-turn junk. Visible on the box's disk, never in the store. */
-const SCRATCH_MOUNT = "/user/scratch";
+/** §3.1's frozen mounts: `/host`, `/user`, and one `/orgs/<org>` per asserted
+ *  membership. A path outside them is not the workspace and never reaches a
+ *  machine's disk, whatever a `getAllPaths()` reports. */
+const IN_MOUNT = /^\/(?:host|user|orgs\/[^/]+)(?:\/|$)/;
 
-const under = (path: string, prefix: string): boolean =>
-  path === prefix || path.startsWith(`${prefix}/`);
+/**
+ * Does a machine's whole-tree walk carry this path home? `/host` is the
+ * deployment's own files, projected per turn, so it never comes back.
+ *
+ * A SHAPE, and deliberately not a permission — it is the only question a walk of
+ * a real disk can answer, because a disk has no store to ask. Both machines ask
+ * it: `claude-code/local.ts` here, and the box door's own copy in
+ * `packages/apps/box/turn-routes.mjs`. Whether a carried path may LAND is
+ * `canCommit`'s, per file, against live rows.
+ */
+export const inWritableMount = (path: string): boolean =>
+  /^\/(?:user|orgs\/[^/]+)\//.test(normalize(path));
+
+/** §3.1: intra-turn junk. Visible on the machine's disk, never in the store —
+ *  one per writable mount, because a turn working in an org mount has the same
+ *  throwaway files a personal turn does and committing them would publish them
+ *  to the whole team. Identical to the façade's own rule (`workspace-fs.ts`). */
+const SCRATCH = /^(?:\/user|\/orgs\/[^/]+)\/scratch(?:\/|$)/;
 
 /**
  * Resolve `.`/`..` and collapse slashes, exactly as the store façade's own
@@ -45,29 +69,20 @@ function normalize(path: string): string {
   return `/${segments.join("/")}`;
 }
 
-/**
- * **The one seam function.** Wave-1 `can()` exactly as build contract §8 freezes
- * it: a path under `/user/` belongs to its subject, `/host/` is read-only for
- * everyone, and nothing else is a mount. Wave 3 repoints THIS function at the
- * real `can(principal, level, thing)` — that is the entire diff, which is why
- * checkout and commit both ask it and nothing else in the sandbox path decides a
- * permission.
- */
-export type Access = "rw" | "ro" | "none";
-
-export function pathAccess(path: string): Access {
-  const resolved = normalize(path);
-  if (under(resolved, HOST_MOUNT)) return "ro";
-  if (under(resolved, USER_MOUNT)) return "rw";
-  return "none";
-}
-
 /** SHA-256 of the bytes — the §3.5 diff key. */
 export function contentHash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** One file as the box receives it. `/host` lands as a read-only bind (§3.5). */
+/**
+ * One file as the box receives it.
+ *
+ * `readOnly` is PER FILE, not per mount (§3.5 over §9.7): `/host` is read-only
+ * for everyone, and inside an org mount a file the caller holds only viewer on
+ * lands read-only beside an editable one. That is what stops the model doing
+ * work the sync-back would have to throw away — it meets the refusal when it
+ * reaches for the file, not after it has rewritten it.
+ */
 export interface CheckoutFile {
   path: string;
   bytes: Uint8Array;
@@ -124,10 +139,6 @@ export interface WorkspaceCheckout {
   syncAll(files: readonly SyncFile[]): Promise<string[]>;
 }
 
-/** Never leaves the box: scratch, plus anything the seam does not call writable. */
-const syncable = (path: string): boolean =>
-  pathAccess(path) === "rw" && !under(path, SCRATCH_MOUNT);
-
 /**
  * The box door's whole-tree walk skips files over this to protect the proxy's
  * body limit (`packages/apps/box/turn-routes.mjs`), so a machine can report a
@@ -162,9 +173,16 @@ export async function checkoutWorkspace(
     oversized.clear();
   }
 
+  /** May a path the machine hands back actually LAND? The workspace is the only
+   *  authority; scratch is the one thing above it, because a throwaway file is
+   *  writable and still must never reach the store (§3.1). */
+  const syncable = async (path: string): Promise<boolean> =>
+    !SCRATCH.test(path) && await workspace.canCommit(path);
+
   for (const path of workspace.getAllPaths()) {
-    const access = pathAccess(path);
-    if (access === "none") continue;
+    // A path in no mount is not the workspace — a `getAllPaths()` that reports
+    // one (a test double, a future alias) must not put it on a machine's disk.
+    if (!IN_MOUNT.test(path)) continue;
     let bytes: Uint8Array;
     try {
       bytes = await workspace.readFileBuffer(path);
@@ -174,8 +192,11 @@ export async function checkoutWorkspace(
       // about — a file it cannot read simply is not on its disk.
       continue;
     }
-    files.push({ path, bytes, readOnly: access === "ro" });
-    if (reseed && syncable(path)) {
+    // Per FILE, from the real `can()`: an org app the caller holds viewer on
+    // lands read-only beside a team file they may edit.
+    const writable = await workspace.canCommit(path);
+    files.push({ path, bytes, readOnly: !writable });
+    if (reseed && writable && !SCRATCH.test(path)) {
       hashes.set(path, contentHash(bytes));
       if (bytes.length > WALK_SKIP_BYTES) oversized.add(path);
     }
@@ -192,7 +213,14 @@ export async function checkoutWorkspace(
       // store is keyed by — one canonical name, whoever wrote it (§3.1).
       const path = normalize(entry.path);
       seen.add(path);
-      if (!syncable(path)) continue;
+      // Live rows, per path — the SECOND of the two moments `can()` runs on the
+      // sandbox path (design §8/§9.3). It re-asks rather than trusting the
+      // checkout because a grant revoked mid-session must bite here, and because
+      // a process running as the file's owner can chmod a read-only checkout
+      // back. The refusal the model MEETS is the read-only mode on its disk;
+      // this is the backstop that makes it true, and it stays a skip so one
+      // refused org path can never take the caller's own work down with it.
+      if (!(await syncable(path))) continue;
       if (options.hotOnly && hotPathAppId(path) === undefined) continue;
       const hash = contentHash(entry.bytes);
       if (hashes.get(path) === hash) continue;
@@ -207,6 +235,11 @@ export async function checkoutWorkspace(
         // Absent because the walk cannot carry it, not because anyone deleted
         // it — see WALK_SKIP_BYTES.
         if (oversized.has(path)) continue;
+        // A deletion is a write, so it asks the same live question. Only a
+        // mid-session revoke can fail here (the baseline holds nothing that was
+        // not writable at checkout), and `commit()` would refuse it by THROWING
+        // — taking the caller's own landed work down with it.
+        if (!(await syncable(path))) continue;
         await workspace.rm(path, { force: true });
         removed.push(path);
       }

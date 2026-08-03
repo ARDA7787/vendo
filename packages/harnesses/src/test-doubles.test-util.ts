@@ -181,6 +181,11 @@ export type TestWorkspace = WorkspaceFs & {
   commits: Array<{ message?: string; changed: string[] }>;
   /** Force the next commit to answer `conflict` for these paths (a stale base). */
   conflictOn?: string[];
+  /** Paths the caller may READ but not write — the shape a viewer-level grant on
+   *  an org app produces. The real façade answers this from `can()` against live
+   *  rows; here it is stated, so a harness suite can pin the per-file behaviour
+   *  without a store. */
+  readOnlyPaths?: string[];
 };
 
 export function testWorkspace(files: Record<string, string> = {}): TestWorkspace {
@@ -188,6 +193,12 @@ export function testWorkspace(files: Record<string, string> = {}): TestWorkspace
   const workspace = fs as unknown as TestWorkspace;
   const staged = new Set<string>();
   workspace.commits = [];
+
+  /** The façade's own rule (`WorkspaceStoreFs.canCommit`): `/host` and anything
+   *  outside the mounts are never writable; inside them the caller's grants
+   *  decide, which `readOnlyPaths` stands in for. */
+  workspace.canCommit = async (path: string): Promise<boolean> =>
+    /^\/(?:user|orgs\/[^/]+)\//.test(path) && !(workspace.readOnlyPaths ?? []).includes(path);
 
   for (const method of ["writeFile", "appendFile"] as const) {
     const original = workspace[method].bind(workspace) as (...args: unknown[]) => Promise<void>;
