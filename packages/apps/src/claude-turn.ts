@@ -35,11 +35,26 @@
  *
  * One permission law still lives here (design §3, "claudeCode() specifics"): the
  * box is AUTO-ALLOW for its own file/bash work (the box IS the permission —
- * copies only, no credentials, reality happens at commit), so those tools are
- * pre-approved. Our guard's asks are no longer delivered through the SDK's
- * native permission hook, because the guard now decides at the DOOR: a refusal
- * arrives as the tool's own in-band error text, which is still something the
- * model narrates and never a throw.
+ * copies only, no credentials, domain-filtered egress at the provider's network
+ * layer, reality happens at commit), so those tools are pre-approved. Our
+ * guard's asks are no longer delivered through the SDK's native permission hook,
+ * because the guard now decides at the DOOR: a refusal arrives as the tool's own
+ * in-band error text, which is still something the model narrates and never a
+ * throw.
+ *
+ * Two limits on how far that law reaches.
+ *
+ * The egress half is weaker than it sounds: the provider filters by DOMAIN, so
+ * an ordinary client is held to the allowlist and a client that omits SNI is
+ * not (`docs/verification/box-egress/README.md`). The box is filtered, not
+ * jailed.
+ *
+ * And the law is about a BOX at all, which this module's other home —
+ * `machine: "local"` — does not have: there the same auto-allow is a real shell
+ * on the host's own server, with no network boundary of any kind. The mode is an
+ * explicit deployment opt-in and warns the operator on its first turn
+ * (`claude-code/local.ts`), but nothing in THIS file makes it safe, and reading
+ * the paragraph above as if it did is the mistake to avoid.
  */
 
 /** The MCP server name our projected tools live under (`mcp__vendo__<tool>`). */
@@ -177,6 +192,10 @@ export interface SdkModule {
  * what let a guard denial come back as the SDK's native `{behavior:"deny"}`.
  * All of that moved to the door. What is left is the one law that was always
  * local: the box may use its own hands, and nothing else.
+ *
+ * "Its own hands" is only a safe grant where there is a BOX. On the
+ * `machine: "local"` path these same names are the host server's shell and
+ * filesystem — see this module's header.
  *
  * `mcp__vendo__*` is allowed here because the DOOR is the permission for those
  * — the guard decides there, on the host, with the turn's own context. A denial

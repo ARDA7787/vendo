@@ -136,6 +136,21 @@ export interface BoxMachineOptions {
   sandbox: SandboxAdapterLike;
   threadId: string;
   env: Record<string, string>;
+  /**
+   * The outbound-domain allowlist this box boots with, filtered at the
+   * PROVIDER's domain layer. Required, and never optional: the seam reads
+   * `allowedDomains: undefined` as UNRESTRICTED egress (`SandboxAdapter.create`
+   * in `@vendoai/apps`), so a caller that simply forgot would hand a box driven
+   * by user text an unfiltered internet. Unnamed must mean denied — the same law
+   * `boxPermission` states for tools. An empty list is the strictest policy
+   * expressible here.
+   *
+   * "Strictest expressible" is not "airtight": the provider's filter keys on the
+   * requested server name, so a client that omits SNI is not matched and is let
+   * through. `docs/verification/box-egress/README.md` has the measurement and
+   * why it is not closable from this side.
+   */
+  allowedDomains: string[];
   /** Provider template; defaults to `VENDO_BOX_TEMPLATE`. */
   template?: string;
   /** Test seam; production uses {@link BOX_IDLE_TTL_MS}. */
@@ -167,6 +182,7 @@ export async function boxMachine(options: BoxMachineOptions): Promise<SessionMac
     const machine = await options.sandbox.create({
       ...(template === undefined ? {} : { template }),
       env: { ...options.env, VENDO_BOX_TOKEN: token, VENDO_WORKSPACE_ROOT: "/workspace" },
+      allowedDomains: [...options.allowedDomains],
     });
     if (!await hello(machine, token)) {
       await machine.destroy().catch(() => undefined);

@@ -11,7 +11,7 @@ import { assertHarnessComposable } from "../compose.js";
 import { createTurnState } from "../harness-state.js";
 import { provideHarnessAdapters } from "../harness-sandbox.js";
 import { testWorkspace, unusedModels, userMessage } from "../test-doubles.test-util.js";
-import { claudeCode, inferenceEnv, promptFor, truncated } from "./index.js";
+import { boxEgress, claudeCode, inferenceEnv, promptFor, truncated } from "./index.js";
 import { boxMachine, disposeSessionMachines, type SandboxAdapterLike, type SandboxMachineLike } from "./box.js";
 
 const decoder = new TextDecoder();
@@ -77,10 +77,17 @@ afterEach(() => {
 const diskPath = (root: string, workspacePath: string): string =>
   path.join(root, workspacePath.replace(/^\/+/, ""));
 
-function fakeSandbox(script: BoxScript): SandboxAdapterLike & { boxes: FakeBox[] } {
+type CreateSpec = { template?: string; env: Record<string, string>; allowedDomains?: string[] };
+
+function fakeSandbox(script: BoxScript): SandboxAdapterLike & { boxes: FakeBox[]; specs: CreateSpec[] } {
   const adapter = {
     boxes: [] as FakeBox[],
-    async create(spec: { env: Record<string, string> }) {
+    /** Every create SPEC, verbatim. The network policy is a create-time argument
+     *  and nothing observable inside the box reflects it, so the spec is the only
+     *  place the allowlist can be seen. */
+    specs: [] as CreateSpec[],
+    async create(spec: CreateSpec) {
+      adapter.specs.push(spec);
       return makeBox(adapter, script, spec.env);
     },
     async destroy() { /* teardown by ref; nothing to do here */ },
@@ -233,6 +240,48 @@ const drain = async (harness: ReturnType<typeof claudeCode>, turn: Turn<never>):
   return events;
 };
 
+/** Pin the process env for one body — `inferenceEnv()` reads it, and so does the
+ *  egress allowlist derived from it. */
+const withEnv = <T>(vars: Record<string, string | undefined>, body: () => T): T => {
+  const source = process.env as Record<string, string | undefined>;
+  const before = Object.fromEntries(Object.keys(vars).map((key) => [key, source[key]]));
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === undefined) delete source[key];
+    else source[key] = value;
+  }
+  try {
+    return body();
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete source[key];
+      else source[key] = value;
+    }
+  }
+};
+
+/** The same, for a body that AWAITS: `withEnv`'s synchronous `finally` would put
+ *  the real environment back the moment the body returned its promise — before
+ *  the work under test ever read the pinned one. */
+const withEnvAsync = async (
+  vars: Record<string, string | undefined>,
+  body: () => Promise<void>,
+): Promise<void> => {
+  const source = process.env as Record<string, string | undefined>;
+  const before = Object.fromEntries(Object.keys(vars).map((key) => [key, source[key]]));
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === undefined) delete source[key];
+    else source[key] = value;
+  }
+  try {
+    await body();
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete source[key];
+      else source[key] = value;
+    }
+  }
+};
+
 describe("the boot gate — a spawned harness with no machine to live on (design §9)", () => {
   test("FAILS closed: claudeCode() with no sandbox adapter is a boot error", () => {
     expect(() => assertHarnessComposable(claudeCode() as never, {})).toThrow(VendoError);
@@ -271,23 +320,6 @@ describe("options — declared, then overridable per turn", () => {
 });
 
 describe("E7 · the credential law — build list item 8", () => {
-  const withEnv = <T>(vars: Record<string, string | undefined>, body: () => T): T => {
-    const source = process.env as Record<string, string | undefined>;
-    const before = Object.fromEntries(Object.keys(vars).map((key) => [key, source[key]]));
-    for (const [key, value] of Object.entries(vars)) {
-      if (value === undefined) delete source[key];
-      else source[key] = value;
-    }
-    try {
-      return body();
-    } finally {
-      for (const [key, value] of Object.entries(before)) {
-        if (value === undefined) delete source[key];
-        else source[key] = value;
-      }
-    }
-  };
-
   test("only the recorded v0 inference exception enters the machine", () => {
     const env = withEnv({
       ANTHROPIC_API_KEY: "sk-test",
@@ -331,6 +363,78 @@ describe("E7 · the credential law — build list item 8", () => {
   });
 });
 
+// These pin WHAT WE SEND the provider, which is all this repo controls. How
+// strongly the provider then enforces it is a separate question with a real
+// gap: docs/verification/box-egress/README.md.
+describe("the box's egress allowlist — what the provider is asked to filter", () => {
+  /** The env a box gets when nothing about inference is configured on the host. */
+  const NO_INFERENCE = {
+    ANTHROPIC_API_KEY: undefined,
+    ANTHROPIC_BASE_URL: undefined,
+    VENDO_INFERENCE_KEY: undefined,
+    VENDO_INFERENCE_URL: undefined,
+  };
+  const DOOR = "https://app.example.com/api/vendo/mcp";
+
+  test("the minimum set is the inference host and the door origin — assembled from what the box is actually given", () => {
+    expect(boxEgress({ ANTHROPIC_BASE_URL: "https://gateway.example" }, DOOR))
+      .toEqual(["gateway.example", "app.example.com"]);
+  });
+
+  test("no configured base URL means the SDK's own default host, and nothing else", () => {
+    expect(boxEgress({}, undefined)).toEqual(["api.anthropic.com"]);
+  });
+
+  test("a host's declared domains ADD to the minimum — normalized and deduped, never replacing it", () => {
+    expect(boxEgress({}, DOOR, [" API.Stripe.COM ", "app.example.com", ""]))
+      .toEqual(["api.anthropic.com", "app.example.com", "api.stripe.com"]);
+  });
+
+  test("a conversational box is provisioned WITH an allowlist — undefined would be unrestricted internet", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const harness = claudeCode({ sandbox });
+    provideHarnessAdapters(harness, {
+      toolDoor: { url: DOOR, mint: () => "vtk_1", revoke: () => undefined },
+    });
+    await withEnvAsync(NO_INFERENCE, async () => {
+      await drain(harness, makeTurn({ threadId: "thr_egress_min" }).turn);
+    });
+    expect(sandbox.specs).toHaveLength(1);
+    // EXACT, not "contains": an extra entry here is an extra hole in the box.
+    expect(sandbox.specs[0]?.allowedDomains).toEqual(["api.anthropic.com", "app.example.com"]);
+  });
+
+  test("with no door composed the box still gets an allowlist — the inference host alone", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    await withEnvAsync(NO_INFERENCE, async () => {
+      await drain(claudeCode({ sandbox }), makeTurn({ threadId: "thr_egress_nodoor" }).turn);
+    });
+    expect(sandbox.specs[0]?.allowedDomains).toEqual(["api.anthropic.com"]);
+  });
+
+  test("the HOST may widen it — one additive option on the constructor", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const harness = claudeCode({ sandbox, egress: ["api.stripe.com"] });
+    provideHarnessAdapters(harness, {
+      toolDoor: { url: DOOR, mint: () => "vtk_2", revoke: () => undefined },
+    });
+    await withEnvAsync(NO_INFERENCE, async () => {
+      await drain(harness, makeTurn({ threadId: "thr_egress_widen" }).turn);
+    });
+    expect(sandbox.specs[0]?.allowedDomains)
+      .toEqual(["api.anthropic.com", "app.example.com", "api.stripe.com"]);
+  });
+
+  test("`egress` is construction-time only — a wire caller cannot widen the box's network boundary", async () => {
+    const sandbox = fakeSandbox(async () => undefined);
+    const { turn } = makeTurn({ threadId: "thr_egress_smuggle" });
+    // A request smuggling the deployment's network policy into a per-turn option.
+    (turn as unknown as { options: unknown }).options = { egress: ["evil.example.net"] };
+    await withEnvAsync(NO_INFERENCE, async () => { await drain(claudeCode({ sandbox }), turn); });
+    expect(sandbox.specs[0]?.allowedDomains).toEqual(["api.anthropic.com"]);
+  });
+});
+
 describe("promptFor — the truth is ours", () => {
   test("a resumed session is asked only what the user just said", () => {
     const messages = [userMessage("m1", "first"), userMessage("m2", "second")];
@@ -353,7 +457,7 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
     // no cold start to optimise away, so the box simply goes, and the store plus
     // our transcript are what the next message recovers from.
     const sandbox = fakeSandbox(async () => undefined);
-    const first = await boxMachine({ sandbox, threadId: "thr_idle", env: {}, idleTtlMs: 5 });
+    const first = await boxMachine({ sandbox, threadId: "thr_idle", env: {}, allowedDomains: [], idleTtlMs: 5 });
     await first.release();
     await wait(60);
 
@@ -366,7 +470,7 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
 
   test("a box whose conversation is mid-message is NOT destroyed", async () => {
     const sandbox = fakeSandbox(async () => undefined);
-    await boxMachine({ sandbox, threadId: "thr_busy", env: {}, idleTtlMs: 5 });
+    await boxMachine({ sandbox, threadId: "thr_busy", env: {}, allowedDomains: [], idleTtlMs: 5 });
     // Never released: the message is still running.
     await wait(60);
     expect(sandbox.boxes[0]?.destroyed).toBe(false);
@@ -374,26 +478,26 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
 
   test("a WARM box carries the conversation, so the next message neither re-materializes nor re-seeds", async () => {
     const sandbox = fakeSandbox(async () => undefined);
-    const first = await boxMachine({ sandbox, threadId: "thr_warm", env: {}, idleTtlMs: 5_000 });
+    const first = await boxMachine({ sandbox, threadId: "thr_warm", env: {}, allowedDomains: [], idleTtlMs: 5_000 });
     // A box only becomes warm once it has answered a message.
     expect(first.carriesSession).toBe(false);
     await first.send({ prompt: "hi", emit: () => undefined });
     await first.release();
 
-    const second = await boxMachine({ sandbox, threadId: "thr_warm", env: {} });
+    const second = await boxMachine({ sandbox, threadId: "thr_warm", env: {}, allowedDomains: [] });
     expect(second.carriesSession).toBe(true);
     expect(sandbox.boxes).toHaveLength(1);
   });
 
   test("a box the provider reaped is replaced, and the replacement says it carries nothing", async () => {
     const sandbox = fakeSandbox(async () => undefined);
-    const first = await boxMachine({ sandbox, threadId: "thr_reaped", env: {}, idleTtlMs: 5_000 });
+    const first = await boxMachine({ sandbox, threadId: "thr_reaped", env: {}, allowedDomains: [], idleTtlMs: 5_000 });
     await first.send({ prompt: "hi", emit: () => undefined });
     await first.release();
     // Gone without us asking — a provider reap, an idle policy on their side.
     sandbox.boxes[0]!.destroyed = true;
 
-    const second = await boxMachine({ sandbox, threadId: "thr_reaped", env: {} });
+    const second = await boxMachine({ sandbox, threadId: "thr_reaped", env: {}, allowedDomains: [] });
     // The harness must re-materialize and re-seed rather than resume a session
     // no disk holds, and `carriesSession: false` is what tells it to.
     expect(second.carriesSession).toBe(false);
@@ -433,7 +537,7 @@ describe("one box per conversation, destroyed when it goes idle (design §9)", (
     // resumes on the same session), worse for cost. The lane's close note calls
     // it out as a deviation; this test is what stops it being invisible.
     const sandbox = fakeSandbox(async () => undefined);
-    const machine = await boxMachine({ sandbox, threadId: "thr_lease", env: {}, idleTtlMs: 20 });
+    const machine = await boxMachine({ sandbox, threadId: "thr_lease", env: {}, allowedDomains: [], idleTtlMs: 20 });
     const box = sandbox.boxes[0]!;
     const request = box.request.bind(box);
     let slowPollDone = false;
