@@ -16,7 +16,7 @@ import type { ApprovalRequest } from "@vendoai/core";
 import { useVendoContext } from "../context.js";
 import { useAttention } from "../hooks/use-approvals.js";
 import { formatAuditTime } from "./activity-semantics.js";
-import { admissibleDescription, consentClassLine, toolPresentation } from "./build-beat.js";
+import { consentWords, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -53,13 +53,11 @@ function WaitingRow({ approval, onDecide }: {
   // A destructive ask reads as ceremony — the amber edge, same as in-thread.
   const ceremony = approval.descriptor.risk === "destructive" || approval.descriptor.critical === true;
   const title = presentation.title;
-  // The SAME plain-words ladder the in-thread card uses (ruling 11): a
-  // descriptor sentence is admissible only in consumer voice, so the card and
-  // its queue row cannot say different things about one ask.
-  const described = admissibleDescription(
-    presentation.description ?? approval.descriptor.description,
-    title,
-  );
+  // The SAME plain-words ladder the card uses, from the same function (ruling
+  // 14): host sentence → consequence from the real inputs → our own synthesized
+  // sentence → the consequence class, and never the descriptor's own line. A
+  // card and its queue row cannot say different things about one ask.
+  const words = consentWords(approval.call.tool, approval.descriptor.risk, presentation, meta);
   return (
     <CardShell label={`Approval for ${title}`} ceremony={ceremony}>
       <CardHead
@@ -69,9 +67,7 @@ function WaitingRow({ approval, onDecide }: {
         eyebrow={presentation.eyebrow}
         title={title}
       />
-      <CardLine>
-        {described ?? consentClassLine(approval.call.tool, approval.descriptor.risk)}
-      </CardLine>
+      <CardLine>{words.sentence}</CardLine>
       <CardFields rows={fieldRows(approval.call.args, approval.descriptor.inputSchema, meta)} />
       {/* The server's own preview is a debugging aid, not consumer copy. */}
       {developmentMode() ? <CardByline>{approval.inputPreview}</CardByline> : null}

@@ -264,19 +264,21 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
 
   /** The queue row goes through the real hook, so the ask arrives the way the
    *  wire delivers it. */
-  const showQueue = (description: string) => {
+  const showQueueAsk = (pending: ApprovalRequest, tools: Record<string, { description: string }> = {}) => {
     const base = createVendoClient({ baseUrl: wire.url });
     const bound = {
       ...base,
-      approvals: { ...base.approvals, pending: async () => [ask(description)] },
+      approvals: { ...base.approvals, pending: async () => [pending] },
     } as unknown as VendoClient;
     render(
-      <VendoProvider client={bound}>
+      <VendoProvider client={bound} tools={tools}>
         <WaitingQueue pollMs={0} />
       </VendoProvider>,
     );
     return waitFor(() => screen.getByRole("article", { name: /Approval for/ }));
   };
+
+  const showQueue = (description: string) => showQueueAsk(ask(description));
 
   it("drops a model-instruction descriptor from the card and says what the call does instead", () => {
     showCard(MODEL_INSTRUCTION);
@@ -307,6 +309,75 @@ describe("LEAK 5 — a descriptor sentence may never be the card's plain-words l
     cleanup();
     const row = await showQueue(HOST_AUTHORED);
     expect(row.textContent).toContain(HOST_AUTHORED);
+  });
+
+  /** H6 + ruling 14 — ONE ladder, so the card and the row are the same sentence
+   *  on the same fixture, at every rung. */
+  describe("the card and its queue row read from one ladder", () => {
+    const money = (): ApprovalRequest => ({
+      id: "apr_money",
+      call: {
+        id: "call_money",
+        tool: "host_transferMoney",
+        args: { amount_cents: 4750, recipient_name: "Acme Utilities" },
+      },
+      descriptor: {
+        name: "host_transferMoney",
+        title: "Send money",
+        // The wire's own sentence rides along and must reach neither surface.
+        description: MODEL_INSTRUCTION,
+        inputSchema: {},
+        risk: "write",
+      },
+      inputPreview: 'host_transferMoney {"amount_cents":4750}',
+      ctx: { principal: { kind: "user", subject: "user_1" }, venue: "chat", presence: "present" },
+      createdAt: "2026-08-03T12:00:00.000Z",
+    } as unknown as ApprovalRequest);
+
+    it("tier 2 — the same synthesized consequence, word for word", async () => {
+      render(
+        <VendoProvider client={client}>
+          <ApprovalCard approval={money()} onDecide={() => undefined} />
+        </VendoProvider>,
+      );
+      const onCard = cardLine();
+      expect(onCard).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+      cleanup();
+      const row = await showQueueAsk(money());
+      expect(cardLine()).toBe(onCard);
+      expect(row.textContent).not.toContain("integer cents");
+    });
+
+    it("tier 1 — the host's own sentence, on both", async () => {
+      const tools = { host_transferMoney: { description: "Pays your water bill from checking." } };
+      render(
+        <VendoProvider client={client} tools={tools}>
+          <ApprovalCard approval={money()} onDecide={() => undefined} />
+        </VendoProvider>,
+      );
+      const onCard = cardLine();
+      expect(onCard).toBe("Pays your water bill from checking.");
+      cleanup();
+      await showQueueAsk(money(), tools);
+      expect(cardLine()).toBe(onCard);
+    });
+
+    it("tier 4 — the same class sentence when nothing truthful can be said", async () => {
+      const bare = (): ApprovalRequest => ({
+        ...money(),
+        call: { id: "call_bare", tool: "host_transferMoney", args: { note: "hi" } },
+      } as unknown as ApprovalRequest);
+      render(
+        <VendoProvider client={client}>
+          <ApprovalCard approval={bare()} onDecide={() => undefined} />
+        </VendoProvider>,
+      );
+      const onCard = cardLine();
+      expect(onCard).toBe("This moves money, as you.");
+      cleanup();
+      await showQueueAsk(bare());
+      expect(cardLine()).toBe(onCard);
+    });
   });
 
   it("tells the person what a failed decision means, never the wire's sentence", async () => {

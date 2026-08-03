@@ -7,7 +7,7 @@ import {
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
-import { admissibleDescription, consentClassLine, toolPresentation } from "./build-beat.js";
+import { consentWords, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -137,25 +137,12 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
   );
   const title = presentation.title;
   const rows = fieldRows(approval.call.args, approval.descriptor.inputSchema, meta);
-  // Law 3's precedence for the mandatory line, most local authority first (the
-  // same ladder as `toolTitle`):
-  //   1. the HOST's own sentence for this tool (in-code `ToolMeta`);
-  //   2. else the consequence synthesized from the REAL inputs (lane pick 1-A —
-  //      more specific than any generic sentence: it names the actual money and
-  //      counterparty);
-  //   3. else the authored/synthesized description that rode along — ONLY when
-  //      it reads as consumer copy (`admissibleDescription`); a descriptor is
-  //      written for the model, and one that sounds like it is dropped;
-  //   4. else the consequence CLASS — never the tool's own label.
-  const hostSentence = meta?.description?.trim();
-  const written = hostSentence !== undefined && hostSentence.length > 0 && hostSentence !== title
-    ? hostSentence
-    : undefined;
-  const described = admissibleDescription(
-    presentation.description ?? approval.descriptor.description,
-    title,
-  );
-  const consequence = written === undefined ? presentation.consequence : undefined;
+  // Ruling 14 — ONE plain-words ladder, shared with the queue row (`consentWords`
+  // in build-beat.tsx): host sentence → consequence from the real inputs → our
+  // own synthesized sentence → the consequence class. The descriptor's own
+  // description is never on it.
+  const words = consentWords(approval.descriptor.name, approval.descriptor.risk, presentation, meta);
+  const consequence = words.consequence;
   // The FOLD is the separate call: the raw fields tuck behind a "Details"
   // disclosure only on an ordinary ask. Critical/destructive keeps every input
   // in plain sight — maximum scrutiny — and still gets the sentence (a money
@@ -218,9 +205,7 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             {consequence.post}
           </CardLine>
         ) : (
-          <CardLine>
-            {written ?? described ?? consentClassLine(approval.descriptor.name, approval.descriptor.risk)}
-          </CardLine>
+          <CardLine>{words.sentence}</CardLine>
         )}
         {/* The consequence sentence carries the meaning; the mechanical rows
             fold but never leave the DOM (the a11y contract keeps its name). */}
