@@ -189,7 +189,11 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
           (`.fl-takeover`) instead of fighting the host layout for width,
           portaled to body so transformed host ancestors cannot capture it. */}
       <TakeoverPortal active={takeover.active}>
-      <main
+      {/* §12 — the center is a PAGE INSIDE the host's app, so the host's own
+          <main> is the document's main landmark. This used to be a second one,
+          which is a landmark the host never asked for and a duplicate for anyone
+          navigating by landmark. A named region is what we actually are. */}
+      <section
         className={`fl-page fl-center${takeover.active ? " fl-center--mobile fl-takeover" : ""}`}
         style={takeover.style}
         aria-label="Vendo workspace"
@@ -246,7 +250,7 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
         {takeover.active && chatsOpen
           ? <CenterSheet view={view} onView={goto} onClose={() => setChatsOpen(false)}>{chats}</CenterSheet>
           : null}
-      </main>
+      </section>
       </TakeoverPortal>
     </ChromeRoot>
   );

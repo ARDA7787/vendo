@@ -7,6 +7,7 @@ import { themeCssVariables } from "../theme.js";
 import { PayloadView } from "../tree/renderer.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { hasSeen, markSeen, type VendoDiscoverability, type VendoGreeting } from "./discoverability.js";
+import { inertBehind } from "./inert-behind.js";
 import { LauncherFace, LauncherToast, useLauncherStatus } from "./launcher-status.js";
 import { deliverPrefill, PrefillScopeContext, registerOverlayOpener } from "./overlay-registry.js";
 import { usePinAction } from "./pin-ceremony.js";
@@ -469,37 +470,13 @@ export function VendoOverlay({
   // close AND on unmount-while-open via the effect cleanup.
   useEffect(() => {
     if (!open) return;
-    const wrapper = portalRoot.current;
     const { body } = document;
     const previousOverflow = body.style.overflow;
     body.style.overflow = "hidden";
-    const inerted: Element[] = [];
-    const inert = (child: Element) => {
-      if (child === wrapper || child.tagName === "SCRIPT" || child.tagName === "STYLE" || child.hasAttribute("inert")) return;
-      // Never inert another modal surface: the palette's takeover portal can
-      // mount above this overlay (Cmd/Ctrl+K while open) and must stay
-      // interactive — an inert ancestor would freeze the whole dialog.
-      if (child.matches('[aria-modal="true"]') || child.querySelector('[aria-modal="true"]')) return;
-      child.setAttribute("inert", "");
-      inerted.push(child);
-    };
-    for (const child of Array.from(body.children)) inert(child);
-    // ENG-228: body children can also appear WHILE the overlay is open — the
-    // page/palette TakeoverPortals mount on a breakpoint flip, hosts mint
-    // toast portals. The open-time snapshot alone would leave those
-    // interactive behind the modal scrim, so keep watching.
-    const observer = new MutationObserver(records => {
-      for (const record of records) {
-        for (const node of record.addedNodes) {
-          if (node instanceof Element && node.parentElement === body) inert(node);
-        }
-      }
-    });
-    observer.observe(body, { childList: true });
+    const release = inertBehind(portalRoot.current);
     return () => {
-      observer.disconnect();
+      release();
       body.style.overflow = previousOverflow;
-      for (const element of inerted) element.removeAttribute("inert");
     };
   }, [open]);
 

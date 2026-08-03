@@ -122,7 +122,7 @@ describe("mobile takeover (ENG-228)", () => {
   it("stamps fl-takeover on the page surface and portals it over the host (transformed ancestors)", () => {
     installMatchMedia(true);
     const { container } = render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
-    const page = screen.getByRole("main", { name: "Vendo workspace" });
+    const page = screen.getByRole("region", { name: "Vendo workspace" });
     expect(page.classList.contains("fl-takeover")).toBe(true);
     // position:fixed is captured by any transformed/filtered host ancestor
     // (page-transition animations are everywhere), so full-bleed is only real
@@ -133,10 +133,44 @@ describe("mobile takeover (ENG-228)", () => {
     expect(wrapper.className).toContain("vendo-root");
   });
 
+  // H12 — the takeover COVERS the host page, so the host page must be inert:
+  // fixed positioning stops the mouse and nothing else. Same promise the
+  // overlay panel already keeps (see the late-portal case below).
+  it("inerts the host page behind the mobile takeover, and releases it on the way out", async () => {
+    const media = installMatchMedia(false);
+    const host = document.createElement("div");
+    const hostLink = document.createElement("a");
+    hostLink.href = "/somewhere";
+    hostLink.textContent = "Host navigation";
+    host.appendChild(hostLink);
+    document.body.appendChild(host);
+    render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
+    expect(host.hasAttribute("inert")).toBe(false);
+
+    media.setMobile(true);
+    await waitFor(() => expect(host.hasAttribute("inert")).toBe(true));
+    // The takeover's own portal wrapper is never inerted by itself.
+    const page = screen.getByRole("region", { name: "Vendo workspace" });
+    expect(page.closest(".fl-overlay-portal")!.hasAttribute("inert")).toBe(false);
+
+    media.setMobile(false);
+    await waitFor(() => expect(host.hasAttribute("inert")).toBe(false));
+    host.remove();
+  });
+
+  // §12 — the center is a page INSIDE the host's app, so the host's own <main>
+  // stays the document's main landmark; ours was a second one.
+  it("brings no second <main> landmark to the host document", () => {
+    installMatchMedia(false);
+    const { container } = render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
+    expect(container.querySelector("main")).toBeNull();
+    expect(document.querySelectorAll("main").length).toBe(0);
+  });
+
   it("keeps the desktop page in-tree in the host layout", () => {
     installMatchMedia(false);
     const { container } = render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
-    const page = screen.getByRole("main", { name: "Vendo workspace" });
+    const page = screen.getByRole("region", { name: "Vendo workspace" });
     expect(page.classList.contains("fl-takeover")).toBe(false);
     expect(container.contains(page)).toBe(true);
   });
