@@ -131,16 +131,18 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
   }, []);
 
   // One apps list feeds the shelf and the Apps door. A build that lands
-  // mid-conversation would otherwise leave both stale, so re-read the list
-  // whenever one of them comes back into view (useResource already fetched on
-  // mount, hence the ref's initial `true`).
-  const looking = view === "apps" || (view === "chat" && home);
-  const wasLooking = useRef(true);
+  // mid-conversation would otherwise leave both stale, so re-read the list on
+  // every ARRIVAL at either of them — a boolean "am I looking at apps" cannot
+  // tell the shelf→door hop from standing still, and silently skipped the
+  // refresh (proof round 1: the ghosts survived a real build).
+  const station = view === "apps" ? "apps" : view === "chat" && home ? "home" : "elsewhere";
+  const arrivedAt = useRef(station);
   const refreshApps = appsApi.refresh;
   useEffect(() => {
-    if (looking && !wasLooking.current) void refreshApps();
-    wasLooking.current = looking;
-  }, [looking, refreshApps]);
+    // useResource already fetched on mount; only transitions refresh.
+    if (station !== arrivedAt.current && station !== "elsewhere") void refreshApps();
+    arrivedAt.current = station;
+  }, [station, refreshApps]);
 
   const goto = useCallback((next: CenterView) => {
     setView(next);

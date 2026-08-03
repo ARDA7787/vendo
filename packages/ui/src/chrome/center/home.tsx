@@ -47,10 +47,28 @@ export function AppTile({ app, onOpen, children }: {
   /** Secondary actions (the Apps page's change/share/remove row). */
   children?: React.ReactNode;
 }) {
+  // Not every app HAS a view: an automation is a schedule and a plan, and its
+  // `open` refuses ("tree app has no ui payload" — two of Maple's four). Say so
+  // instead of mounting a load that will fail three times and leave a skeleton
+  // sitting there forever pretending to be a view.
+  const viewless = app.ui === undefined;
   return (
     <article className="fl-tile">
-      <div className="fl-tile-view" aria-hidden="true"><TilePreview appId={app.id} /></div>
-      <button type="button" className="fl-tile-hit" aria-label={`Open ${app.name}`} onClick={onOpen} />
+      <div className="fl-tile-view" aria-hidden="true">
+        {viewless
+          ? (
+            <span className="fl-tile-none">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m13 2-9 12h8l-1 8 9-12h-8l1-8Z" />
+              </svg>
+              {app.trigger === undefined ? "No view" : "Runs in the background"}
+            </span>
+          )
+          : <TilePreview appId={app.id} />}
+      </div>
+      {/* Nothing to open is nothing to offer: a viewless app's tile is a status
+          card, not a dead end that answers a tap with a refusal. */}
+      {viewless ? null : <button type="button" className="fl-tile-hit" aria-label={`Open ${app.name}`} onClick={onOpen} />}
       <div className="fl-tile-cap">
         <span className="fl-tile-name">{app.name}</span>
         {children}

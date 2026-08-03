@@ -2330,7 +2330,8 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 @keyframes fl-rail-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 /* ---- the column ---- */
-.fl-center-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.fl-center-main { position: relative; flex: 1; display: flex; flex-direction: column;
+  min-width: 0; min-height: 0; }
 .fl-center-main > [hidden] { display: none; }
 .fl-center-col { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .fl-center-thread { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -2343,6 +2344,10 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 /* Suggestions are ROWS on the home, never generic chips (§11): a noticing reads
    as a line you could have said, with its icon, full width. Restyled in place —
    the thread keeps rendering the host's own \`suggestions\`. */
+/* On the home the greeting and its rows GATHER above the shelf rather than
+   floating in the middle of the column: everything the eye needs sits in one
+   block over the composer. */
+.fl-center-home .fl-landing { justify-content: flex-end; padding-bottom: 18px; }
 .fl-center-home .fl-cards { display: flex; flex-direction: column; gap: 6px; max-width: none; }
 .fl-center-home .fl-card { flex-direction: row; align-items: center; gap: 10px; width: 100%;
   padding: 12px 14px; border-radius: var(--vendo-radius-card); }
@@ -2395,7 +2400,16 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-center-ask { display: flex; align-items: flex-end; gap: 8px; margin-top: auto; padding-top: 22px; }
 .fl-center-ask-field { flex: 1; display: flex; flex-direction: column; }
 .fl-center-ask-field .fl-picker-group { margin: 0 2px 7px; }
-.fl-tile-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Room to breathe (§10 "with room to breathe"): the per-app verbs are quiet
+   until the tile is hovered or holds focus — the same reveal the transcript's
+   turn actions use. Always present for touch, where there is no hover. */
+.fl-tile-acts { display: flex; flex-wrap: wrap; gap: 6px; opacity: 0; transition: opacity .14s; }
+.fl-tile:hover .fl-tile-acts, .fl-tile:focus-within .fl-tile-acts { opacity: 1; }
+@media (pointer: coarse) { .fl-tile-acts { opacity: 1; } }
+/* An app with no view of its own (an automation) says so, rather than resting
+   forever on a skeleton that pretends one is coming. */
+.fl-tile-none { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 7px; height: 100%; color: var(--vendo-fg-muted); font-size: 11.5px; }
 .fl-tile-act { border: 1px solid var(--vendo-border); border-radius: 999px; padding: 4px 10px;
   background: transparent; color: var(--vendo-fg-muted); font: 500 11.5px/1.4 var(--vendo-font);
   cursor: pointer; transition: color .14s, border-color .14s; }
@@ -2437,7 +2451,8 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-center-sheet .fl-rail-nav { margin-top: 18px; padding-top: 12px;
   border-top: 1px solid var(--vendo-border); }
 /* Stacked home: two tiles across at phone widths, shorter previews. */
-.fl-center--mobile .fl-shelf { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; padding: 0 14px 4px; }
+.fl-center--mobile .fl-shelf { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px;
+  max-width: none; padding: 0 14px 4px; }
 .fl-center--mobile .fl-tile-view, .fl-center--mobile .fl-tile-skel { height: 92px; }
 .fl-center--mobile .fl-tile--ghost .fl-tile-skel { height: 66px; }
 .fl-center--mobile .fl-center-page { padding: 18px 16px 26px; }
