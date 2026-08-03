@@ -1250,6 +1250,23 @@ const DOOR_WELL_KNOWN_PATHS: ReadonlySet<string> = new Set([
   "/.well-known/mcp-server-card",
 ]);
 
+/** Is this origin THIS machine, and only this machine? The one question that
+ *  makes a request-derived origin safe to hand a turn credential: a loopback
+ *  address cannot carry the credential off the host, whoever set the Host
+ *  header. `URL` throws on opaque origins (the literal string "null"), which
+ *  are likewise not loopback. */
+function isLoopbackOrigin(origin: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    return false;
+  }
+  // IPv6 hostnames arrive bracketed (`[::1]`).
+  const host = hostname.replace(/^\[|\]$/g, "");
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
 function isDoorPath(pathname: string): boolean {
   if (pathname === MCP_MOUNT || pathname.startsWith(`${MCP_MOUNT}/`)) return true;
   return DOOR_WELL_KNOWN_PATHS.has(pathname);
@@ -2419,22 +2436,36 @@ export function createVendo(config: CreateVendoConfig): Vendo {
    */
   const internalDoorOnly = mcpOptions === undefined && harness.requires?.toolDoor === true;
   /**
+   * The one origin a machine-less thinker may dial when the operator named
+   * none — learned from the wire, and deliberately NOT the same learned value
+   * route bindings use.
+   *
+   * A request origin is the Host header, which the caller controls. Route
+   * binding tolerates that in development because a wrong base there costs a
+   * failed fetch; the tool door cannot, because what rides to that origin is a
+   * live turn credential and every tool call the agent makes. So this one is
+   * LOOPBACK-ONLY and fixed by the first request that qualifies: a spoofed
+   * `Host: attacker.evil` is never a candidate, and a second loopback Host
+   * cannot displace the first. Loopback is exactly where a machine-less
+   * thinker's subprocess lives, so zero-config development loses nothing.
+   */
+  let learnedLoopbackOrigin: string | undefined;
+  /**
    * Where the harness's thinker dials the door.
    *
    * The operator-set public origin is the only one a MACHINE may ever be given:
-   * a learned origin comes from the Host header, and a box holding a live turn
-   * credential must never be pointed at one. A harness that needs NO machine
-   * thinks inside this host's own process, so it may also dial the origin the
-   * wire itself was reached at — which is what lets
-   * `claudeCode({ machine: "local" })` run with nothing configured at all. The
-   * trust rule is route-binding's own (04 §4): learned origins are trusted in
-   * development and nowhere else.
+   * a box holding a live turn credential must never be pointed anywhere a
+   * request header could name, and loopback is not reachable from a box in any
+   * case. A harness that needs NO machine thinks inside this host's own
+   * process, so it may fall back to the learned loopback origin — which is what
+   * lets `claudeCode({ machine: "local" })` run with nothing configured at all.
+   *
+   * This rule is about the HARNESS's door target, so it applies identically to
+   * an `mcp: true` composition and to an internal-only one.
    */
   const doorBase = (): string | undefined => mcpOptions?.baseUrl
     ?? configuredBaseUrl
-    ?? (harness.requires?.sandbox === true || actionsConfig.baseUrlTrusted !== true
-      ? undefined
-      : actionsConfig.baseUrl);
+    ?? (harness.requires?.sandbox === true ? undefined : learnedLoopbackOrigin);
 
   const harnessTurns = createHarnessTurns({
     harness: harness as Harness<never>,
@@ -2892,6 +2923,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
         // before, so a spoofed Host on any early request can never turn it
         // into a credential-exfiltration target (04 §4).
         actionsConfig.baseUrlTrusted = isDevelopmentEnv;
+      }
+      // The TOOL DOOR's own learned origin, on a much tighter rule than the one
+      // above: loopback only, first one wins, development only. See
+      // `learnedLoopbackOrigin` — a live turn credential rides to this origin,
+      // so a Host header must never be able to name it or move it.
+      if (learnedLoopbackOrigin === undefined && isDevelopmentEnv && isLoopbackOrigin(origin)) {
+        learnedLoopbackOrigin = origin;
       }
     },
   });

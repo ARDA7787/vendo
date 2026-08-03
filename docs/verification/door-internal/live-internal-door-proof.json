@@ -1,6 +1,6 @@
 {
-  "at": "2026-08-02T23:23:30.997Z",
-  "publicUrl": "https://lounge-prisoners-justify-hook.trycloudflare.com",
+  "at": "2026-08-03T00:36:01.350Z",
+  "publicUrl": "https://verbal-yourself-eugene-proposition.trycloudflare.com",
   "template": "h5pf20fap7ows6io81kr",
   "results": [
     {
@@ -26,7 +26,7 @@
     {
       "name": "3 · an approval card reached the user's queue while the turn waited",
       "pass": true,
-      "detail": "approval apr_d438da4b-fd4d-425a-92b1-75e16f4ec78e"
+      "detail": "approval apr_0c02eef9-3b80-4ac6-9ae5-23f66df25ac5"
     },
     {
       "name": "3 · the tap EXECUTED the call — not 'resolve it there, then retry'",

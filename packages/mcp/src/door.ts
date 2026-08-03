@@ -237,9 +237,12 @@ export function createMcpDoorWithState(config: McpDoorConfig, state: McpDoorStat
 
 class Door {
   readonly #config: McpDoorConfig;
-  /** The OUTSIDE credential space. Undefined on an `internal` door, which is
-   *  the whole of what "internal" means: there is no other space to serve. */
+  /** The OUTSIDE credential space, as this door holds it: the protocol server
+   *  and the host's own adapter, present or absent TOGETHER. Both are undefined
+   *  on an `internal` door — which is the whole of what "internal" means, and
+   *  the reason the flag cannot be contradicted by anything else in the config. */
   readonly #oauth: OAuthServer | undefined;
+  readonly #hostOAuth: HostOAuthAdapter | undefined;
   readonly #remoteAs: RemoteAsVerifier | undefined;
   readonly #state: McpDoorState;
   /** Last mount an MCP request actually arrived at — a server-card hint only.
@@ -257,15 +260,24 @@ class Door {
   constructor(config: McpDoorConfig, state: McpDoorState) {
     this.#config = config;
     this.#state = state;
-    if (config.internal !== true && config.oauth === undefined) {
+    // `internal` WINS, and it wins here rather than at each route, so there is
+    // exactly one place that can decide whether an outside space exists. An
+    // adapter passed alongside it is dropped rather than rejected: the flag is
+    // an explicit opt-in nobody types by accident, dropping fails CLOSED (the
+    // caller gets the locked door they named), and throwing would turn a safe
+    // misconfiguration — one config bag reused for both door shapes — into a
+    // boot crash.
+    const outside = config.internal === true ? undefined : config.oauth;
+    if (config.internal !== true && outside === undefined) {
       throw new TypeError(
         "an outside-serving MCP door requires a HostOAuthAdapter (10-mcp §3); "
         + "pass `internal: true` for a door that serves only live turns",
       );
     }
-    this.#oauth = config.oauth === undefined
+    this.#hostOAuth = outside;
+    this.#oauth = outside === undefined
       ? undefined
-      : new OAuthServer({ ...config, oauth: config.oauth });
+      : new OAuthServer({ ...config, oauth: outside });
     this.#remoteAs = config.remoteAs === undefined ? undefined : new RemoteAsVerifier(config.remoteAs);
     this.#publicOrigin = config.baseUrl === undefined ? undefined : publicOriginOf(config.baseUrl);
     this.#shimHtml = shimHtml(config.theme);
@@ -291,9 +303,10 @@ class Door {
 
     // 10-mcp §3b — an INTERNAL door has no outside credential space, so none of
     // the routes below (which exist only to get an outsider one) are served.
-    // The host's adapter and the protocol server are present or absent together.
+    // Read off the door's OWN fields, never `config.oauth`: an internal door may
+    // have been handed an adapter, and the config is not the authority.
     const oauth = this.#oauth;
-    const hostOAuth = this.#config.oauth;
+    const hostOAuth = this.#hostOAuth;
     if (oauth === undefined || hostOAuth === undefined) return this.#internalOnly(req, path);
 
     if (path.startsWith(PRM_PREFIX)) {

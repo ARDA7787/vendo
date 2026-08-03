@@ -235,14 +235,25 @@ describe("the INTERNAL-only door — one credential space, and no way into the o
  *
  * A door that exists and cannot be reached is the same as no door, so the goal
  * is only met if a machine-less `claudeCode()` finds its own host with nothing
- * set. It does, by dialling the origin the wire was reached at — under exactly
- * the trust rule route bindings already use (04 §4), because a learned origin
- * comes from the Host header and a live turn credential rides to whatever it
- * names.
+ * set. It does that by learning the origin the wire was reached at — and that
+ * origin is derived from the HOST HEADER, which is attacker-controllable.
+ *
+ * The first shipping of this rule was poisonable: in development with no
+ * `VENDO_BASE_URL`, ONE request carrying `Host: attacker.evil` fixed the origin
+ * process-wide, after which the harness sent `Authorization: Bearer vtk_…` and
+ * every tool call to the attacker. It also reached `mcp: true` compositions,
+ * because the rule is about the HARNESS's door target, not about which door
+ * shape was mounted.
+ *
+ * So the learned origin is now LOOPBACK-ONLY, and the first qualifying request
+ * fixes it: a non-loopback Host is never a candidate, and a later loopback Host
+ * cannot replace an earlier one. `localhost` is where a machine-less thinker's
+ * subprocess actually lives, so nothing about zero-config dev is lost.
  */
 async function dialledDoorUrl(
   requires: { toolDoor: true; sandbox?: true },
   config: Record<string, unknown> = {},
+  origins: string[] = [ORIGIN],
 ): Promise<string | undefined> {
   const store = await tempStore();
   let dialled: string | undefined;
@@ -266,35 +277,91 @@ async function dialledDoorUrl(
     ...config,
   } as Parameters<typeof createVendo>[0]);
   await store.ensureSchema();
-  await runHarnessTurn(vendo, "thr_door_url", "hi");
+  // Every origin but the last only teaches; the last one runs the probe turn.
+  // A Host header is exactly what an `origin` is here — this IS the attack.
+  for (const [index, origin] of origins.entries()) {
+    const response = await vendo.handler(new Request(`${origin}/api/vendo/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        threadId: `thr_door_url_${index}`,
+        message: { id: `m_${index}`, role: "user", parts: [{ type: "text", text: "hi" }] },
+      }),
+    }));
+    await response.text();
+  }
   return dialled;
 }
 
-describe("where an internal door is dialled — zero config, without ever trusting a Host header", () => {
-  it("a harness with no machine and no configured base dials the origin the wire was reached at", async () => {
+const LOOPBACK = "http://127.0.0.1:3000";
+const ATTACKER = "https://attacker.evil";
+
+describe("where an internal door is dialled — zero config, and not poisonable by a Host header", () => {
+  it("ZERO CONFIG: a machine-less harness with no configured base dials this host's own LOOPBACK origin", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("VENDO_BASE_URL", "");
-    expect(await dialledDoorUrl({ toolDoor: true })).toBe(`${ORIGIN}/api/vendo/mcp`);
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [LOOPBACK]))
+      .toBe(`${LOOPBACK}/api/vendo/mcp`);
+  });
+
+  it("ATTACK: a spoofed non-loopback Host NEVER becomes the tool-door origin", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    // One request was all it took: the credential and every tool call would have
+    // gone to `https://attacker.evil/api/vendo/mcp`.
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [ATTACKER])).toBeUndefined();
+    // Not even a plausible-looking public origin — nothing but loopback counts.
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [ORIGIN])).toBeUndefined();
+  });
+
+  it("ATTACK: a spoofed Host cannot REPLACE an origin already learned, in either order", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    // Poison after: the real origin was learned first and is fixed.
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [LOOPBACK, ATTACKER]))
+      .toBe(`${LOOPBACK}/api/vendo/mcp`);
+    // Poison first: it was never a candidate, so the real origin still lands.
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [ATTACKER, LOOPBACK]))
+      .toBe(`${LOOPBACK}/api/vendo/mcp`);
+    // And one loopback port cannot be swapped for another.
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [LOOPBACK, "http://127.0.0.1:9999"]))
+      .toBe(`${LOOPBACK}/api/vendo/mcp`);
+  });
+
+  it("the SAME rule governs an `mcp: true` composition — this is about the harness, not the door shape", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    const withDoor = {
+      mcp: true,
+      oauth: {
+        async authorize() { return { subject: SUBJECT }; },
+        async principal(subject: string) { return { kind: "user", subject }; },
+      },
+    };
+    expect(await dialledDoorUrl({ toolDoor: true }, withDoor, [ATTACKER])).toBeUndefined();
+    expect(await dialledDoorUrl({ toolDoor: true }, withDoor, [LOOPBACK]))
+      .toBe(`${LOOPBACK}/api/vendo/mcp`);
   });
 
   it("a harness that needs a MACHINE is NEVER handed a learned origin — only an operator-set one", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("VENDO_BASE_URL", "");
     // The deployment gap this lane keeps: a box cannot dial a door nobody can
-    // name, and the request's own origin is not a name anyone may trust it with.
-    expect(await dialledDoorUrl({ toolDoor: true, sandbox: true })).toBeUndefined();
+    // name, and loopback is not an origin a box could reach anyway.
+    expect(await dialledDoorUrl({ toolDoor: true, sandbox: true }, {}, [LOOPBACK])).toBeUndefined();
   });
 
   it("outside development a learned origin is not trusted for the door either", async () => {
     vi.stubEnv("VENDO_BASE_URL", "");
-    expect(await dialledDoorUrl({ toolDoor: true })).toBeUndefined();
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [LOOPBACK])).toBeUndefined();
   });
 
-  it("an operator-set base wins on both legs, learned or not", async () => {
+  it("an operator-set base wins on both legs, and over anything learned", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("VENDO_BASE_URL", "https://app.example.com");
-    expect(await dialledDoorUrl({ toolDoor: true })).toBe("https://app.example.com/api/vendo/mcp");
-    expect(await dialledDoorUrl({ toolDoor: true, sandbox: true }))
+    expect(await dialledDoorUrl({ toolDoor: true }, {}, [LOOPBACK]))
+      .toBe("https://app.example.com/api/vendo/mcp");
+    expect(await dialledDoorUrl({ toolDoor: true, sandbox: true }, {}, [LOOPBACK]))
       .toBe("https://app.example.com/api/vendo/mcp");
   });
 });

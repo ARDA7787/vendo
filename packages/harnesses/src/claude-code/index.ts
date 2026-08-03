@@ -204,6 +204,28 @@ const readState = (raw: string | undefined): ClaudeState => {
  */
 const doorTokens = new Map<string, string>();
 
+/**
+ * A door nobody can dial is a deployment fact, not a per-turn event.
+ *
+ * Only the LOCAL leg reaches this: a box with no origin refuses the turn
+ * outright (below), which is loud by itself. A local thinker keeps running —
+ * a workspace-only assistant is a legitimate deployment — so without this the
+ * operator would have no signal at all that their agent lost every product
+ * action. That silence is what door-internal's first round shipped.
+ */
+let noOriginWarned = false;
+function warnNoOriginOnce(): void {
+  if (noOriginWarned) return;
+  noOriginWarned = true;
+  console.error(
+    "[vendo] claudeCode() has no origin to reach the MCP door, so this agent has "
+    + "NONE of your product's actions — only its own workspace. Set VENDO_BASE_URL "
+    + "(or `mcp: { baseUrl }`) to an origin this machine can reach. In development "
+    + "the wire learns its own LOOPBACK origin instead, so seeing this locally means "
+    + "NODE_ENV is not \"development\" or the host is not served over localhost.",
+  );
+}
+
 /** A callback-driven producer, consumed by the generator that must `yield`. */
 function eventQueue<T>() {
   const buffered: T[] = [];
@@ -317,6 +339,9 @@ export function claudeCode(
       // origin, and a subprocess on this machine is a legitimate
       // workspace-only assistant. It runs with its own hands and no product
       // actions — the same turn a composition with no door has always served.
+      // The operator still hears about it once, because they are the only one
+      // who can change it and the user must never be quietly under-served.
+      if (doorPort !== undefined && doorUrl === undefined) warnNoOriginOnce();
       let door: { url: string; token: string } | undefined;
       if (doorPort !== undefined && doorUrl !== undefined) {
         const conversation = threadOf(turn);

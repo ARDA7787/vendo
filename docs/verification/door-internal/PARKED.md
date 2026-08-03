@@ -1,7 +1,9 @@
 # PARKED — door-internal
 
-One item. Not a blocker: a defensible default was taken and the lane completed.
-Recorded here with the evidence so the ruling can be revisited cheaply.
+One item. **RESOLVED in fix round 1** — the open question below went to Yousef,
+who ruled the learned origin a DEFECT rather than a posture choice. The record
+of the original ruling is kept because the measured evidence about the base head
+is still the reason the whole three-step rule exists.
 
 ---
 
@@ -70,11 +72,24 @@ of the clause and the lane's stated GOAL ("works with ZERO extra config"):
 **What a different ruling would cost.** Reverting (1) is one predicate in
 `doorBase()` in `packages/vendo/src/server.ts`; reverting (3) is one predicate
 in `packages/harnesses/src/claude-code/index.ts`. Both are pinned
-(`mcp-door-internal.e2e.test.ts` "where an internal door is dialled", and the
-two `§1.3` live cases), so a reversal is visible immediately.
+(`mcp-door-internal.e2e.test.ts` "where an internal door is dialled", plus
+`claude-code-local.test.ts` for the warn-not-refuse half since round 1), so a
+reversal is visible immediately.
 
-**The open question for a human:** is a learned (Host-header-derived) origin
-acceptable as a door target for a same-process thinker in development? It is
-already accepted for route-binding credential forwarding under exactly the same
-rule, which is why it was taken — but it is a security-posture call, not a
-factual one.
+**The open question for a human — ANSWERED.** Is a learned
+(Host-header-derived) origin acceptable as a door target for a same-process
+thinker in development? **No.** The independent checker demonstrated the attack:
+one request carrying `Host: attacker.evil` fixed the origin process-wide, and
+the harness then sent `Authorization: Bearer vtk_…` and every tool call there —
+on `mcp: true` compositions as well as internal-only ones. Yousef ruled it a
+defect.
+
+Round 1 closed it with the smallest fix that keeps zero-config dev working: the
+tool door keeps its **own** learned origin, **loopback-only** and **fixed by the
+first qualifying request**, never route binding's. Step 2 above now reads
+"loopback origin" rather than "learned origin"; steps 1 and 3 are unchanged.
+Pinned as three attack cases in `mcp-door-internal.e2e.test.ts`.
+
+Route binding's own learned base is still Host-derived and still dev-trusted —
+deliberately untouched, and named in the close note's §8, because a poisoned
+base there costs a failed fetch rather than a leaked credential.

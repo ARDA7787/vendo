@@ -1,4 +1,4 @@
-[proof] public origin: https://lounge-prisoners-justify-hook.trycloudflare.com
+[proof] public origin: https://verbal-yourself-eugene-proposition.trycloudflare.com
 [vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
 [proof] host listening on :8788
 [proof] tunnel is reachable from the public internet
@@ -11,10 +11,10 @@ PASS · 1 · the model answered with the HOST's data — stream mentions inv_778
 PASS · 2 · the transcript mirror carries the call — ["tool-input-start:maple_invoices_list","tool-input-available:maple_invoices_list","tool-output-available"]
 
 [proof] 3/7 · a parked write: the card must reach the queue MID-turn
-PASS · 3 · an approval card reached the user's queue while the turn waited — approval apr_d438da4b-fd4d-425a-92b1-75e16f4ec78e
+PASS · 3 · an approval card reached the user's queue while the turn waited — approval apr_0c02eef9-3b80-4ac6-9ae5-23f66df25ac5
 PASS · 3 · the tap EXECUTED the call — not 'resolve it there, then retry' — [{"outcome":"ok","decidedBy":"grant","venue":"chat"}]
 PASS · 3 · exactly ONE executed row for one intent — ok rows: 1
-[proof] pay stream tail: "\"},\"dynamic\":true}\n\ndata: {\"type\":\"text-start\",\"id\":\"txt_1_52654356-8b97-4ccd-acf0-64d72183fbb1\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_52654356-8b97-4ccd-acf0-64d72183fbb1\",\"delta\":\"Paid invoice in\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_52654356-8b97-4ccd-acf0-64d72183fbb1\",\"delta\":\"v_7781.\\n\\nDONE\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_1_52654356-8b97-4ccd-acf0-64d72183fbb1\"}\n\ndata: [DONE]\n\n"
+[proof] pay stream tail: "\"},\"dynamic\":true}\n\ndata: {\"type\":\"text-start\",\"id\":\"txt_2_b81bd3ad-2eed-4cac-a42e-2bf88436426b\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_b81bd3ad-2eed-4cac-a42e-2bf88436426b\",\"delta\":\"Pa\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_b81bd3ad-2eed-4cac-a42e-2bf88436426b\",\"delta\":\"id invoice inv_7781.\\n\\nDONE\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_2_b81bd3ad-2eed-4cac-a42e-2bf88436426b\"}\n\ndata: [DONE]\n\n"
 
 [proof] 4/7 · commit: a file the box wrote is readable through the host
 PASS · 4 · the box's write reached the host's workspace — "DOOR-INTERNAL-4417\n"
@@ -22,7 +22,7 @@ PASS · 4 · the box's write reached the host's workspace — "DOOR-INTERNAL-441
 [proof] 5/7 · an unattended turn is judged ABSENT
 PASS · 5 · the unattended turn's rows say away/automation — [{"kind":"run","venue":"automation","presence":"away"},{"kind":"approval","tool":"maple_invoices_list","venue":"automation","presence":"away","outcome":"pending-approval"}]
 PASS · 5 · nothing was EXECUTED for the absent run — executed rows: 0
-[proof] absent stream tail: " not make any payment. Let me know if you'd like me to try\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_f6788eb4-a805-47fc-bd62-07e7311ec094\",\"delta\":\" something else, or if you can connect a payment service.\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_2_f6788eb4-a805-47fc-bd62-07e7311ec094\"}\n\ndata: [DONE]\n\n"
+[proof] absent stream tail: "\", which isn't set up right now.\\n\\nNothing was charged or sent. If you connect a payment service\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_f60d2306-0e77-4f97-8530-b9d1f1487008\",\"delta\":\", I can try again.\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_2_f60d2306-0e77-4f97-8530-b9d1f1487008\"}\n\ndata: [DONE]\n\n"
 
 [proof] 6/7 · a credential outside a turn is a 401
 PASS · 6 · an unregistered turn credential is refused at the public door — status 401
