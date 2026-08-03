@@ -9,11 +9,22 @@
  * DEVELOPER have a different home (the model's own context, the server log, the
  * dev-mode console) and must not arrive on a bank customer's screen.
  */
-
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
-import { AdoptionCard, ConnectCard, GrantSetCard, type GrantSetPermission } from "../../src/chrome/index.js";
+import {
+  ActivityPanel,
+  AdoptionCard,
+  AutomationCard,
+  AutomationsPanel,
+  ConnectCard,
+  ConnectedAccountsPanel,
+  GrantSetCard,
+  WaitingQueue,
+  type GrantSetPermission,
+} from "../../src/chrome/index.js";
 import { createWireServer } from "../wire-server.js";
 
 let wire: Awaited<ReturnType<typeof createWireServer>>;
@@ -45,6 +56,42 @@ const wirePermissions = (description: string): GrantSetPermission[] => ([
   { approvalId: "apr_1", tool: "host_getSpendingInsights", description, risk: "read" },
   { approvalId: "apr_2", tool: "host_transferMoney", description, risk: "destructive" },
 ] as unknown as GrantSetPermission[]);
+
+/** The widened audit's vocabulary: what a developer string LOOKS like. Every
+ *  one of these was seen on a consumer surface in this wave. */
+const FORBIDDEN: Array<[string, RegExp]> = [
+  ["an id-shaped token", /\b[a-z]{2,6}_[A-Za-z0-9]{4,}/],
+  ["code-call syntax", /\b[A-Za-z_$][\w$]*\(\s*[\w$"'{[]/],
+  ["a dotted identifier path", /\b[a-z]{2,}[A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]+)+\b/],
+  ["an environment variable", /\b[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+\b/],
+  ["a configuration instruction", /pass a |set VENDO_|createVendo\(/],
+];
+
+/** Everything a person can READ or HEAR from a rendered surface: every text node
+ *  plus every accessible name, one per line so adjacent nodes cannot glue into a
+ *  token neither of them contains. The `title` attribute is deliberately
+ *  excluded — the consent honesty contract keeps the RAW argument value one hover
+ *  away, on purpose.
+ *
+ *  Real user content is not our plumbing: an email address or a URL a person
+ *  typed (or a tool is sending) belongs on the screen, so those are lifted out
+ *  before the dotted-path check. */
+function readable(root: ParentNode): string {
+  const lines: string[] = [];
+  const walker = (root.ownerDocument ?? (root as Document))
+    .createTreeWalker(root as Node, 4 /* NodeFilter.SHOW_TEXT */);
+  while (walker.nextNode()) lines.push(walker.currentNode.textContent ?? "");
+  for (const node of root.querySelectorAll("[aria-label]")) lines.push(node.getAttribute("aria-label") ?? "");
+  return lines.join("\n").replace(/[\w.+-]+@[\w.-]+|https?:\/\/\S+/g, " ");
+}
+
+function auditReadable(root: ParentNode, surface: string): void {
+  const text = readable(root);
+  for (const [label, pattern] of FORBIDDEN) {
+    const hit = pattern.exec(text);
+    expect(hit === null ? "" : `${surface} rendered ${label}: ${hit[0]}`).toBe("");
+  }
+}
 
 describe("LEAK 1 — the standing-access card rendered model instructions", () => {
   it("never prints a model-authored descriptor description on a grant row", () => {
@@ -186,5 +233,112 @@ describe("LEAK 2, the sibling — the standing-access card's own refusal", () =>
     expect(alert.textContent).not.toContain("gset_1");
     expect(alert.textContent).not.toContain("app_9");
     expect(alert.textContent).toMatch(/isn’t available/i);
+  });
+});
+
+/**
+ * THE WIDENED AUDIT — every chrome surface, not just the cards.
+ *
+ * Two halves, because each catches what the other cannot: a RENDER sweep (what
+ * actually reaches the screen, with hostile data pushed through the real
+ * components) and a SOURCE sweep (the shapes that let developer strings onto a
+ * screen in the first place, so the class cannot come back through a file this
+ * wave never looked at).
+ */
+describe("the widened audit — no chrome surface renders a developer string", () => {
+  /** Every surface a person can reach, mounted the way a host mounts it. The
+   *  wire fixture is deliberately full of our plumbing (app_auto, apr_set_1,
+   *  gset_1, grt_1, tool slugs, canonical previews), so a surface that prints
+   *  any of it fails here. */
+  const SURFACES: Array<[string, React.ReactNode]> = [
+    ["standing access", <GrantSetCard name="Invoice watcher" permissions={wirePermissions(MODEL_INSTRUCTION)} state="parked" />],
+    ["standing access, settled", <GrantSetCard name="Invoice watcher" permissions={wirePermissions(MODEL_INSTRUCTION)} state="approved" />],
+    ["connect", <ConnectCard connector="composio" toolkit="googlecalendar" message="Connect Google Calendar to check your day." onConnected={() => undefined} />],
+    ["automation", <AutomationCard name="Low balance alert" enabled description="Emails you when checking dips." />],
+    ["paused adoption", <AdoptionCard card={{
+      appId: "app_7f3a2b41",
+      automation: "Weekly sweep",
+      reason: "grants",
+      sponsor: "Dana",
+      needs: [
+        { tool: "host_getSpendingInsights", title: "host_getSpendingInsights", description: MODEL_INSTRUCTION, risk: "read" },
+        { tool: "gmail_GMAIL_SEND_EMAIL", title: "Send email", risk: "write" },
+      ],
+    }} />],
+    ["waiting strip", <WaitingQueue pollMs={0} />],
+    ["activity", <ActivityPanel />],
+    ["automations panel", <AutomationsPanel />],
+    ["connected accounts", <ConnectedAccountsPanel />],
+  ];
+
+  it("sweeps every surface for ids, code, dotted paths, env vars and config instructions", async () => {
+    for (const [surface, node] of SURFACES) {
+      const view = render(<VendoProvider client={client}>{node}</VendoProvider>);
+      // Let the wire-backed surfaces paint their real content before auditing.
+      await waitFor(() => expect(view.container.textContent?.length ?? 0).toBeGreaterThan(0));
+      auditReadable(view.container, surface);
+      cleanup();
+    }
+  });
+
+  /**
+   * The SHAPES that produce the leak, across every chrome and voice source —
+   * widened from the wave's ten-file card list to the whole tree, recursively.
+   *
+   * `KNOWN_OPEN` is not an excuse list: each entry is a live violation this lane
+   * could not close, with the reason. Two are in files owned by other workers in
+   * this wave; the rest are named in the lane report.
+   */
+  const KNOWN_OPEN: Record<string, string> = {
+    "approval-card.tsx": "owned by another worker this wave — renders `reason.message` on a failed decision (line 117) AND `descriptor.description` as the plain-words line (line 89)",
+    "thread/composer.tsx": "owned by another worker this wave — an attachment read error renders raw (line 141)",
+    "embeds.tsx": "decided exception, documented at the render site: the BYO-agent embed's contract (embeds.test) is that the wire failure stays legible",
+    "automations-panel.tsx": "a run-history row prints the run's own error code + message (line 568), and the disable-repair sentence folds the wire message in (line 275) — both need a product decision about what a failed unattended run may say to its owner",
+  };
+
+  const chromeSources = (): string[] => {
+    const collect = (dir: string): string[] =>
+      readdirSync(join("src", dir), { recursive: true, encoding: "utf8" })
+        .filter(name => /\.tsx?$/.test(name) && !name.endsWith(".d.ts"))
+        .map(name => `${dir}/${name}`);
+    return [...collect("chrome"), ...collect("voice")];
+  };
+
+  it("has no NEW raw-error render anywhere under src/chrome or src/voice", () => {
+    // Two shapes: the JSX render of a failure's own sentence (`{error.message}`,
+    // never a `${...}` interpolation or a consumer-authored `message` prop), and
+    // the state write that feeds one (`setError(reason instanceof Error ? …)`).
+    const RAW_RENDER = /(?<![$`])\{[^{}\n]*\b(?:error|err|reason|failure|cause)\.message\s*\}/i;
+    const RAW_STATE = /set\w*Error\w*\(\s*\w+\s+instanceof\s+Error\s*\?/;
+    const offenders = chromeSources().filter(file => {
+      // Comments and dev-mode console rails are the developer's own channel.
+      const source = readFileSync(join("src", file), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, " ")
+        .replace(/^\s*\/\/.*$/gm, " ")
+        .replace(/console\.\w+\([\s\S]*?\);/g, " ");
+      return RAW_RENDER.test(source) || RAW_STATE.test(source);
+    });
+    const unexpected = offenders.filter(file => KNOWN_OPEN[file.replace(/^chrome\//, "")] === undefined);
+    expect(unexpected).toEqual([]);
+    // And the list stays honest: an entry that stops being a violation must be
+    // deleted, so the table can never rot into a blanket exemption.
+    const stale = Object.keys(KNOWN_OPEN)
+      .filter(name => !offenders.some(file => file.replace(/^chrome\//, "") === name));
+    expect(stale).toEqual([]);
+  });
+
+  it("has no developer configuration sentence in any chrome copy", () => {
+    // The exact phrases the wire's own refusals use. A component may only ever
+    // hand these to the dev-mode console, never to a rendered string, so the
+    // console lines are stripped before the scan.
+    const CONFIG_PHRASE = /(?:pass a |set VENDO_|createVendo\()/;
+    const offenders = chromeSources().filter(file => {
+      const source = readFileSync(join("src", file), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, " ")
+        .replace(/^\s*\/\/.*$/gm, " ")
+        .replace(/console\.\w+\([\s\S]*?\);/g, " ");
+      return CONFIG_PHRASE.test(source);
+    });
+    expect(offenders).toEqual([]);
   });
 });

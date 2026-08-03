@@ -61,7 +61,10 @@ export function OpenApp({ appId, onClose }: { appId: string; onClose(): void }) 
     : error && !isLoading
       ? (
         <div role="alert" className="fl-error">
-          This app didn’t open — {error.message}
+          {/* spec §16 law 3 — the wire's sentence is the developer's (one names
+              an env var, another carries an app id); the pane says what it
+              means for the person. */}
+          This app didn’t open. {refusalSentence(error)}
           <button type="button" className="fl-error-retry" onClick={() => void refresh()}>Try again</button>
         </div>
       )
