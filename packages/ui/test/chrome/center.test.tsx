@@ -64,9 +64,12 @@ function stubClient(over: {
   threads?: ThreadSummary[];
   apps?: AppDocument[];
   pending?: () => ApprovalRequest[];
+  /** Every app read this client is asked for, in order (H16 boot accounting). */
+  log?: string[];
 } = {}): VendoClient {
   const apps = over.apps ?? [];
   const pending = over.pending ?? (() => []);
+  const log = over.log ?? [];
   return {
     baseUrl: "http://vendo.test",
     headers: {},
@@ -78,8 +81,12 @@ function stubClient(over: {
     },
     apps: {
       async list() { return apps; },
-      async get(id: string) { return apps.find(app => app.id === id) ?? apps[0]!; },
+      async get(id: string) {
+        log.push(`get:${id}`);
+        return apps.find(app => app.id === id) ?? apps[0]!;
+      },
       async open(id: string) {
+        log.push(`open:${id}`);
         const app = apps.find(item => item.id === id) ?? apps[0]!;
         return { kind: "tree", payload: (app as { tree: unknown }).tree };
       },
@@ -487,6 +494,62 @@ describe("mobile P1 (§12)", () => {
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Conversations" })).toBeNull());
     expect(document.activeElement).toBe(chats);
+  });
+});
+
+// H16 (round C's mechanism, adopted here): TilePreview is the ONE place both the
+// home shelf and the Apps grid boot an app, so the gate belongs there — the grid
+// maps the FULL list, and every tile is a real `apps.get` + `apps.open` (often an
+// iframe too). jsdom has no IntersectionObserver, so this case installs one.
+describe("the app boot gate on the Apps grid (H16)", () => {
+  type Watcher = { node: Element; fire(entries: { isIntersecting: boolean }[]): void };
+  class Observer {
+    static watchers: Watcher[] = [];
+    #callback: (entries: { isIntersecting: boolean }[]) => void;
+    constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
+      this.#callback = callback;
+    }
+    observe(node: Element) { Observer.watchers.push({ node, fire: this.#callback }); }
+    disconnect() {}
+  }
+  /** Scroll one tile into view: every watcher standing on that node answers. */
+  const scrollTo = (node: Element) => act(() => {
+    for (const watcher of Observer.watchers.filter(entry => entry.node === node)) {
+      watcher.fire([{ isIntersecting: true }]);
+    }
+  });
+  /** Previews being watched RIGHT NOW (the home shelf's own tiles were watched
+   *  and then unmounted when the Apps door opened). */
+  const watched = () => new Set(Observer.watchers.map(entry => entry.node).filter(node => node.isConnected));
+  beforeEach(() => {
+    Observer.watchers = [];
+    Object.defineProperty(globalThis, "IntersectionObserver", { configurable: true, writable: true, value: Observer });
+  });
+  afterEach(() => Reflect.deleteProperty(globalThis, "IntersectionObserver"));
+
+  it("boots nothing for a tile nobody has scrolled to, then exactly one when they do", async () => {
+    const log: string[] = [];
+    mount(stubClient({
+      log,
+      apps: [appDoc("app_1", "Invoices"), appDoc("app_2", "Payroll"), appDoc("app_3", "Receipts")],
+    }));
+    // Land on the Apps door FIRST (the home shelf caps itself at four tiles for
+    // the same reason; the grid is the unbounded one).
+    fireEvent.click(await screen.findByRole("tab", { name: "Apps" }));
+    await screen.findByRole("heading", { name: "Apps", exact: true });
+    // Three tiles, three watched previews, and not one app booted.
+    await waitFor(() => expect(watched().size).toBe(3));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(log).toEqual([]);
+    expect(document.querySelectorAll(".fl-tile-skel").length).toBe(3);
+
+    // The reader scrolls the first tile into view.
+    scrollTo(document.querySelectorAll(".fl-tile")[0]!.querySelector(".fl-tile-skel")!);
+    await waitFor(() => expect(log).toEqual(["get:app_1", "open:app_1"]));
+    expect(await screen.findByText("Invoices app surface")).toBeTruthy();
+    // The two below the fold still cost nothing.
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(log).toEqual(["get:app_1", "open:app_1"]);
   });
 });
 

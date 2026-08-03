@@ -16,6 +16,7 @@ import type { AppDocument } from "@vendoai/core";
 import { useMemo } from "react";
 import { useVendoContext } from "../../context.js";
 import { useApp } from "../../hooks/use-app.js";
+import { useInViewport } from "../../hooks/use-in-viewport.js";
 import { AppFrame } from "../../tree/frames.js";
 import { defaultSlotSuggestions } from "../discoverability.js";
 import { deliverPrefill } from "../overlay-registry.js";
@@ -28,14 +29,22 @@ const SHELF_LIMIT = 4;
 
 /** One tile's inert preview: the app's own surface, mounted through the same
  *  frame every other Vendo surface uses, and made unreachable — the tile's
- *  affordance is "open this", never "use this at 55%". */
+ *  affordance is "open this", never "use this at 55%".
+ *
+ *  H16 — a tile pays for itself only once the reader scrolls to it. Every tile is
+ *  a REAL mounted app (an `apps.get`, an `apps.open`, sometimes an iframe), and
+ *  this component is the ONE place both the home shelf and the Apps grid boot
+ *  one, so gating here bounds the whole grid: thirty apps below the fold cost
+ *  nothing. The gate is sticky (scrolling back past a live app never tears it
+ *  down) and it fails OPEN where IntersectionObserver is missing. */
 function TilePreview({ appId }: { appId: string }) {
   const { components } = useVendoContext();
-  const { surface } = useApp(appId);
-  if (!surface) return <span className="fl-tile-skel" />;
+  const { ref, seen } = useInViewport<HTMLSpanElement>();
+  const { surface } = useApp(appId, { enabled: seen });
+  if (!surface) return <span ref={ref} className="fl-tile-skel" />;
   // No keepalive and no action handler: a preview must not hold a machine warm
   // (or accept a click) on behalf of an app nobody has opened yet.
-  return <span className="fl-tile-scale"><AppFrame surface={surface} components={components} /></span>;
+  return <span ref={ref} className="fl-tile-scale"><AppFrame surface={surface} components={components} /></span>;
 }
 
 /** A live app tile. The preview is `inert` — which both takes it out of the
