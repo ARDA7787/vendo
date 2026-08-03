@@ -83,8 +83,8 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   --vendo-warn-edge: #b3822f;
   /* DEAD as of Lane B: the .fl-btn-critical alias it existed for is gone
      (critical IS ceremony now) and nothing reads this token. It survives only
-     because test/theme-tokens.test.tsx pins its literal #a97e2f to exactly one
-     definition — retire the pin and the token together. */
+     because test/theme-tokens.test.tsx pins its amber literal to exactly one
+     definition — retire that pin and this token together. */
   --vendo-warn-fill-critical: light-dark(#a97e2f, #b3822f);
   --vendo-warn-on-fill: light-dark(#fff, #14151a);
   --vendo-warn-tint: #f0b429;
