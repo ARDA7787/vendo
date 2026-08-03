@@ -338,31 +338,39 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
     observer.observe(canvas);
     return () => observer.disconnect();
   }, [compact]);
+  // V4 (spec §5) — the brain's plan-time display hint. It knows the shape
+  // before the fill, so a "stage" view opens the workspace at BUILD START,
+  // where instant()'s skeleton is actually visible; absent hint keeps today's
+  // inline card.
+  const staged = (payload as { display?: unknown }).display === "stage";
   // Register the finished view with the workspace stage; a re-stream of the
   // same app (regenerate) re-registers when streaming flips back off. The
   // registration carries the payload snapshot at settle time.
+  //
+  // A STAGED view also registers its FIRST streaming snapshot: the stage can
+  // only feature an embed the split already knows, so without it the auto-open
+  // below would land on an empty stage and hide the very skeleton the hint
+  // exists to show. Only the first snapshot — the effect is keyed on the
+  // streaming flip, never the payload, because re-registering per render would
+  // dispatch a fresh state object every render.
   const registerEmbed = split?.registerEmbed;
   const removeEmbed = split?.removeEmbed;
   useEffect(() => {
-    if (!registerEmbed || streaming) return;
+    if (!registerEmbed || (streaming && !staged)) return;
     registerEmbed(appId, payload);
     // payload is a fresh object every render (destructured from the part);
     // keying the effect on it would re-register per render. appId + the
     // streaming flip are the real identity edges.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registerEmbed, appId, streaming]);
+  }, [registerEmbed, appId, streaming, staged]);
   useEffect(() => {
     if (!removeEmbed) return;
     return () => removeEmbed(appId);
   }, [removeEmbed, appId]);
-  // V4 (spec §5) — the brain's plan-time display hint. It knows the shape
-  // before the fill, so a "stage" view opens the workspace at BUILD START,
-  // where instant()'s skeleton is actually visible; absent hint keeps today's
-  // inline card. Live turns only (restored history never reopens a stage), and
-  // never against an already-open workspace. The ref makes it fire once per
-  // card: a wrong hint costs one tap, so once the user takes Back-to-chat the
-  // hint doesn't fight them for the rest of the turn.
-  const staged = (payload as { display?: unknown }).display === "stage";
+  // Live turns only (restored history never reopens a stage), and never against
+  // an already-open workspace. The ref makes it fire once per card: a wrong hint
+  // costs one tap, so once the user takes Back-to-chat the hint doesn't fight
+  // them for the rest of the turn.
   const autoStaged = useRef(false);
   useEffect(() => {
     if (!staged || restored || autoStaged.current) return;

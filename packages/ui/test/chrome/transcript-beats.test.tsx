@@ -262,7 +262,7 @@ describe("the transcript's beats", () => {
 describe("the V4 display hint", () => {
   afterEach(cleanup);
 
-  function viewPart(display?: "inline" | "stage"): UIMessage["parts"][number] {
+  function viewPart(display?: "inline" | "stage", streaming = false): UIMessage["parts"][number] {
     return {
       type: "data-vendo-view",
       data: {
@@ -272,6 +272,7 @@ describe("the V4 display hint", () => {
           name: "Cash flow",
           root: "root",
           nodes: [{ id: "root", component: "Text", props: { text: "Assembling." } }],
+          ...(streaming ? { streaming: true } : {}),
           ...(display === undefined ? {} : { display }),
         },
       },
@@ -304,6 +305,20 @@ describe("the V4 display hint", () => {
     const value = split();
     mountCard(viewPart("stage"), value);
     expect(value.expandTo).toHaveBeenCalledWith("app_big");
+  });
+
+  // The stage can only feature an embed the split knows about, so a staged view
+  // registers its FIRST streaming snapshot — otherwise the auto-open lands on an
+  // empty stage and hides the skeleton the hint exists to show. An unhinted
+  // build still registers only once it settles (today's behavior).
+  it("registers a staged view's skeleton at build start, an inline one only at settle", () => {
+    const staged = split();
+    mountCard(viewPart("stage", true), staged);
+    expect(staged.registerEmbed).toHaveBeenCalledWith("app_big", expect.objectContaining({ streaming: true }));
+    cleanup();
+    const inline = split();
+    mountCard(viewPart(undefined, true), inline);
+    expect(inline.registerEmbed).not.toHaveBeenCalled();
   });
 
   it("leaves an unhinted (or inline) view exactly as it is today", () => {
