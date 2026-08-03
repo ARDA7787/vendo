@@ -14,6 +14,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
 import { ApprovalCard } from "../../src/chrome/index.js";
+import { venueByline } from "../../src/chrome/approval-card.js";
 import { fieldRows } from "../../src/chrome/field-rows.js";
 import { buildApprovalRequest } from "../../src/chrome/thread/approval-wire.js";
 import { createWireServer } from "../wire-server.js";
@@ -130,6 +131,71 @@ describe("degraded data never changes the card", () => {
     const rows = fieldRows({ blob: "x".repeat(5_000) });
     expect(rows[0]!.value.length).toBeLessThan(500);
     expect(rows[0]!.value.endsWith("…")).toBe(true);
+  });
+});
+
+describe("a boolean field is an answer, never the literal", () => {
+  it("reads true/false as Yes/No on the card, whatever the key means", () => {
+    const container = show(ask({ args: { invoiceId: "inv_42", permanent: true, notifyOwner: false } }));
+    expect(rowsOf(container)).toEqual([
+      ["Invoice id", "inv_42"],
+      // The key carries the meaning ("Permanent") — the VALUE stays Yes/No.
+      ["Permanent", "Yes"],
+      ["Notify owner", "No"],
+    ]);
+    expect(screen.getByLabelText("Real tool inputs").textContent).not.toContain("true");
+    expect(screen.getByLabelText("Real tool inputs").textContent).not.toContain("false");
+  });
+
+  it("keeps the raw literal for dev mode, on the dd tooltip", () => {
+    const rows = fieldRows({ permanent: true, notifyOwner: false });
+    expect(rows.map(row => [row.value, row.raw])).toEqual([["Yes", "true"], ["No", "false"]]);
+    const container = show(ask({ args: { permanent: true } }));
+    expect(container.querySelector(".fl-card-field dd")!.getAttribute("title")).toBe("true");
+  });
+
+  it("reads a declared boolean and a NESTED boolean the same way", () => {
+    const declared = show(ask({
+      args: { permanent: true },
+      inputSchema: { type: "object", properties: { permanent: { type: "boolean" } } },
+    }));
+    expect(rowsOf(declared)).toEqual([["Permanent", "Yes"]]);
+    expect(fieldRows({ options: { permanent: true, dryRun: false } })[0]!.value)
+      .toBe("Permanent: Yes\nDry run: No");
+    expect(fieldRows({ flags: [true, false] })[0]!.value).toBe("Yes\nNo");
+  });
+});
+
+describe("the venue byline never prints an id", () => {
+  const inApp = (over: Partial<ApprovalRequest["ctx"]>): ApprovalRequest => ask({
+    ctx: { principal: { kind: "user", subject: "user_1" }, venue: "app", presence: "present", ...over },
+  } as Partial<ApprovalRequest>);
+
+  it("says the bare phrase when the only thing known about the app is its id", () => {
+    const container = show(inApp({ appId: "app_1" }));
+    const byline = container.querySelector(".fl-card-byline")!.textContent!;
+    expect(byline).toBe("Runs as you · asked in an app");
+    expect(byline).not.toContain("app_1");
+  });
+
+  it("uses a human venue name when the surface knows one", () => {
+    render(
+      <VendoProvider client={client}>
+        <ApprovalCard approval={inApp({ appId: "app_1" })} onDecide={() => undefined} venueName="Money HQ" />
+      </VendoProvider>,
+    );
+    expect(screen.getByText("Runs as you · asked in Money HQ")).toBeTruthy();
+  });
+
+  it("refuses an id-shaped token from ANY source, and never reads a raw venue slug", () => {
+    for (const token of ["app_1", "apr_9", "thr_x", "grt_7", "run_2"]) {
+      expect(venueByline("app", token)).toBe("Runs as you · asked in an app");
+      expect(venueByline("automation", token)).toBe("Runs as you · asked by an automation");
+    }
+    expect(venueByline("automation", "Weekly digest")).toBe("Runs as you · asked by Weekly digest");
+    // An unknown venue prints the one thing still true, never the slug.
+    expect(venueByline("app_1")).toBe("Runs as you");
+    expect(venueByline("some-new-venue")).toBe("Runs as you");
   });
 });
 
