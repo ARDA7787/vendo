@@ -1,18 +1,73 @@
 /**
- * The UI smoke pack — the four things that must never silently stop working,
- * and the only browser specs wired into the root gate (`pnpm test` →
- * `turbo run test:ui`).
+ * The UI smoke pack — the things that must never silently stop working, and the
+ * only browser specs wired into the root gate (`pnpm test` → `turbo run
+ * test:ui`).
  *
- * Deliberately shallow and deliberately class-free: it asserts on ROLES and
- * user-visible TEXT, never on `fl-*` internals, so a restyle passes and a
- * "nothing rendered / nothing responds" regression fails. Everything runs off
- * the scripted wire fixture (`test/wire-server.ts`) — no model calls, no
- * network, no clock dependence. Budget: under a minute, single worker.
+ * Deliberately shallow: it asserts on ROLES and user-visible TEXT wherever a
+ * role exists, so a restyle passes and a "nothing rendered / nothing responds"
+ * regression fails. Two of the redesign's laws are STRUCTURAL, not textual — a
+ * build may animate exactly one element (§8), and a settled turn folds its beats
+ * into one row (§1) — so those two use the minimum DOM hook and say why.
+ *
+ * Everything runs off the scripted wire fixture (`test/wire-server.ts`) — no
+ * model calls, no network, no clock dependence. Budget: under three minutes,
+ * single worker.
  *
  * The deep behavioural coverage stays in the full local suite (`test:browser`).
  */
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { openScenario } from "./helpers.js";
+
+/** The scripted multi-tool + build turn (`[smoke-build]` in the wire fixture). */
+const BUILD_TURN = "[smoke-build] a board showing where my money goes";
+
+async function send(scope: Page | Locator, text: string): Promise<void> {
+  await scope.getByRole("textbox", { name: "Message" }).fill(text);
+  await scope.getByRole("button", { name: "Send" }).click();
+}
+
+/**
+ * ONE ask waiting, served to whatever surface asks for it, and gone the moment
+ * it is decided. Stubbed here rather than driven off the wire's own queue: every
+ * spec in the run shares one wire server, so a fixture ask a neighbouring spec
+ * already approved would make these two tests order-dependent.
+ */
+async function oneAskWaiting(page: Page): Promise<void> {
+  let decided = false;
+  await page.route("**/api/vendo/approvals", async (route) => {
+    if (route.request().method() !== "GET") return await route.fallback();
+    await route.fulfill({ json: decided ? [] : [WAITING_ASK] });
+  });
+  await page.route("**/api/vendo/approvals/decide", async (route) => {
+    decided = true;
+    await route.fulfill({ json: { resolved: [{ id: WAITING_ASK.id, approved: true }] } });
+  });
+}
+
+/** The wire fixture's own pending ask, shape for shape (`approval()`). */
+const WAITING_ASK = {
+  id: "apr_smoke",
+  call: { id: "call_smoke_ask", tool: "host_email_send", args: { to: "a@example.com" } },
+  descriptor: { name: "host_email_send", description: "Send email", inputSchema: { type: "object" }, risk: "write" },
+  inputPreview: "to a@example.com",
+  ctx: { principal: { kind: "user", subject: "user_1" }, venue: "chat", presence: "present" },
+  createdAt: "2026-07-11T12:00:00.000Z",
+};
+
+/**
+ * Every element inside `scope` that is running a LOOPING animation, itself or
+ * through a pseudo-element. §8's "the build animates ONE thing" is a claim about
+ * exactly this set, and nothing else can measure it.
+ */
+async function looping(scope: Locator): Promise<string[]> {
+  return scope.locator("*").evaluateAll(nodes => nodes
+    .filter(node => ["", "::before", "::after"].some(pseudo => {
+      const style = getComputedStyle(node, pseudo === "" ? undefined : pseudo);
+      return style.animationName !== "none"
+        && style.animationIterationCount.split(",").some(count => count.trim() === "infinite");
+    }))
+    .map(node => node.className.toString().split(" ").at(-1) ?? node.tagName));
+}
 
 test("landing renders its greeting, suggestions and composer", async ({ page }) => {
   // The landing scenario is full-bleed (a host FRAME, not the harness card), so
@@ -30,8 +85,7 @@ test("landing renders its greeting, suggestions and composer", async ({ page }) 
 
 test("a scripted turn streams assistant text into the transcript", async ({ page }) => {
   await openScenario(page, "composer");
-  await page.getByRole("textbox", { name: "Message" }).fill("Say something back");
-  await page.getByRole("button", { name: "Send" }).click();
+  await send(page, "Say something back");
   await expect(page.getByText("Turn complete")).toBeVisible({ timeout: 20_000 });
 });
 
@@ -54,4 +108,118 @@ test("the overlay opens from the launcher and closes on Escape", async ({ page }
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(launcher).toBeFocused();
+});
+
+test("a multi-tool turn narrates its steps as beats, then folds into one settled summary", async ({ page }) => {
+  await openScenario(page, "composer");
+  await send(page, BUILD_TURN);
+
+  // §1 — one beat line per step, in the transcript, in the product's words.
+  const beats = page.locator(".fl-beat");
+  await expect(beats.filter({ hasText: /transactions/i })).toHaveCount(1);
+  await expect(beats.filter({ hasText: /spending insights/i })).toHaveCount(1);
+
+  // …and the turn closes into ONE reopenable row that counts every step —
+  // including the build, which never had a beat of its own (§8 D1).
+  const summary = page.getByRole("button", { name: /Did 3 things/ });
+  await expect(summary).toBeVisible({ timeout: 20_000 });
+  await expect(beats).toHaveCount(0);
+  await summary.click();
+  await expect(beats.filter({ hasText: /transactions/i })).toHaveCount(1);
+});
+
+test("a build animates exactly one thing, and the bar flips to the app's name", async ({ page }) => {
+  await openScenario(page, "composer");
+  await send(page, BUILD_TURN);
+
+  const list = page.locator(".fl-msglist");
+  await expect(page.getByText("Building your view…")).toBeVisible({ timeout: 20_000 });
+  // §8 — the hairline gliding across the card bar is the ONLY moving element:
+  // no pulsing beat orb, no pulsing card dot, no shimmering skeleton.
+  expect(await looping(list)).toEqual(["fl-boot-hairline"]);
+
+  await expect(page.getByText("Spending board").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("button", { name: /Did 3 things/ })).toBeVisible({ timeout: 20_000 });
+  // The settled turn is calm: nothing loops once the work is done.
+  expect(await looping(list)).toEqual([]);
+});
+
+test("the launcher pill works while the panel is closed, then offers the result", async ({ page }) => {
+  await openScenario(page, "overlay-manual");
+  const launcher = page.getByRole("button", { name: "AI agent" });
+  await launcher.click();
+  const dialog = page.getByRole("dialog", { name: "Vendo assistant" });
+  await send(dialog, BUILD_TURN);
+  // The close button, not Escape: a build expands the split workspace, and
+  // Escape's first job there is collapsing it (escapeIntent).
+  await page.getByRole("button", { name: "Close Vendo" }).click();
+  await expect(dialog).toBeHidden();
+
+  // Closing the panel is leaving, not stopping: the pill narrates the live step.
+  await expect(page.locator(".fl-launcher-beat")).toBeVisible();
+  // …and announces the finished run once, with the way back into it.
+  const toast = page.locator(".fl-launcher-toast");
+  await expect(toast).toContainText("Your spending board is ready.", { timeout: 20_000 });
+  await expect(toast.getByRole("button", { name: "View" })).toBeVisible();
+});
+
+test("the waiting strip counts the asks and clears when they are decided", async ({ page }) => {
+  await oneAskWaiting(page);
+  await openScenario(page, "waiting");
+  const strip = page.getByRole("group", { name: "Waiting on you" }).or(page.locator(".fl-waiting"));
+  await expect(page.getByText("Waiting on you · 1")).toBeVisible();
+  await page.locator(".fl-waiting-strip > summary").click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  // Nothing waiting means the strip is not there at all.
+  await expect(page.getByText("Waiting on you · 1")).toHaveCount(0);
+  await expect(strip.first()).toHaveCount(0);
+});
+
+test("the center carries its two doors and a needs-you section that clears", async ({ page }) => {
+  await oneAskWaiting(page);
+  await openScenario(page, "page-chat");
+  const rail = page.getByRole("navigation", { name: "Assistant" });
+  await expect(rail.getByRole("tab", { name: "New chat" })).toBeVisible();
+  await expect(rail.getByRole("tab", { name: "Apps" })).toBeVisible();
+  await expect(rail.getByRole("tab", { name: "Automations" })).toBeVisible();
+
+  // §4 — the attention section EXISTS only while asks are waiting, numbered.
+  const needs = page.getByRole("region", { name: /Needs you — 1 waiting/ });
+  await expect(needs).toBeVisible();
+  await expect(needs.getByRole("button")).toHaveCount(1);
+
+  // Deciding the ask in the strip above the conversation settles the rail too:
+  // one poller, one count, so the two surfaces cannot disagree.
+  await page.locator(".fl-waiting-strip > summary").click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await expect(needs).toHaveCount(0);
+  await expect(page.getByText("Waiting on you · 1")).toHaveCount(0);
+});
+
+test("§15 — a turn whose stream died offers no Retry component", async ({ page }) => {
+  test.fixme(
+    true,
+    "OPEN DEFECT, not a spec problem: conductor ruling 16 says the thread's error-banner Retry"
+    + " (chrome/thread/index.tsx:284-306) is a §15 violation and must go — the agent's prose plus the"
+    + " existing Regenerate turn action are the retry path. thread/index.tsx belongs to another"
+    + " post-check round; deleting this line is part of that commit, not of the smoke pack.",
+  );
+  await openScenario(page, "composer");
+  await send(page, "[stream-kill] break it");
+  await expect(page.getByText("the response didn’t finish")).toBeVisible();
+  // The retry path is the conversation itself, never a component of its own.
+  await expect(page.getByRole("button", { name: "Regenerate" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Retry$/ })).toHaveCount(0);
+});
+
+test("a failed build ends the turn in ✕ and prose, and offers no component to poke", async ({ page }) => {
+  await openScenario(page, "build-failed");
+  const failure = page.locator("[data-vendo-build-failed]");
+  await expect(failure).toBeVisible();
+  await expect(failure.getByText("Couldn't build the app")).toBeVisible();
+  // §15 — the ✕ and the agent's own words ARE the failure surface.
+  await expect(failure.getByRole("alert")).toBeVisible();
+  await expect(failure.getByRole("button")).toHaveCount(0);
+  // …and the developer's sentence never reaches the reader (§16 law 3).
+  await expect(failure).not.toContainText("DataTable");
 });

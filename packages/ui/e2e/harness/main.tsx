@@ -1276,6 +1276,19 @@ function ConcurrentScenario() {
   );
 }
 
+/** Post-check H15 — the realistic host: the center page (its waiting strip AND
+ *  the rail's needs-you section) beside the floating overlay launcher, so all
+ *  three attention surfaces read pending asks at once. The poller trace runs
+ *  here (e2e/approvals-poller-proof.spec.ts). */
+function AttentionSurfacesScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <VendoPage />
+      <VendoOverlay />
+    </VendoProvider>
+  );
+}
+
 function LandingScenario() {
   return (
     <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
@@ -1994,6 +2007,7 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/overlay-manual": return { title: "Overlay — manual launcher", content: <VendoOverlay /> };
     case "/concurrent": return { title: "Concurrent surfaces", content: <ConcurrentScenario />, ownProvider: true };
     case "/page": return { title: "Workspace — Apps tab", content: <AutoOpen selector="#vendo-tab-apps"><VendoPage /></AutoOpen> };
+    case "/attention-surfaces": return { title: "Attention surfaces — page + overlay", content: <AttentionSurfacesScenario />, ownProvider: true };
     case "/page-chat": return { title: "Workspace — Chat (thread sidebar)", theme: mapleTheme, content: <VendoPage /> };
     case "/page-chat-dark": return { title: "Workspace — Chat (dark)", theme: darkTheme, content: <VendoPage /> };
     case "/palette": return { title: "Command palette", content: <OpenPalette /> };
