@@ -367,6 +367,13 @@ export function toolPresentation(
 /** The live status ribbon above the composer: humanized label, live elapsed
     clock, "step N of M".
 
+    M32 — the raw slug used to ride this element's `title`, on a container that
+    is also `role="status" aria-live="polite"`: a tooltip is an end-user surface
+    (ruling 17a), and assistive tech reads a `title` as the live region's
+    description, so `host_getSpendingInsights` was announced to the one person
+    who could not see the humanized label beside it. Dev-mode only now, exactly
+    like the approval chip; `data-vendo-tool` stays for machines.
+
     Spec §1 (2026-08-03) retired its TOOL-NARRATION role — the transcript shows
     the work now, one beat per call — so the thread mounts it for exactly one
     moment: the hold while a parked call waits for the user's approval. The
@@ -410,7 +417,7 @@ export function StatusRibbon({ part, stepIndex, stepTotal, risk = "read" }: {
       aria-live="polite"
       data-vendo-tool={name}
       data-vendo-approval={risk}
-      title={name}
+      {...(developmentMode() ? { title: name } : {})}
     >
       <span className="fl-beat-orb" aria-hidden="true" />
       <span className="fl-ribbon-label" key={part.toolCallId}>
@@ -507,6 +514,8 @@ function countLabel(count: number, noun: string): string | undefined {
   return `${count.toLocaleString()} ${singular}`;
 }
 
+/** M32 — the beat's `title` carried the raw slug too, and it is the surface a
+    reader hovers. Same answer: dev-mode only, `data-vendo-tool` for machines. */
 export function BuildBeat({
   part,
   risk,
@@ -534,7 +543,7 @@ export function BuildBeat({
       className={`fl-beat ${state}`}
       data-vendo-approval={risk}
       data-vendo-tool={name}
-      title={name}
+      {...(developmentMode() ? { title: name } : {})}
     >
       {error || declined ? (
         // Same glyph, different register: the error beat is danger-colored
