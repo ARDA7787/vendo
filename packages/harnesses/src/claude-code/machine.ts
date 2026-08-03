@@ -37,9 +37,11 @@ export interface SessionOpen {
    * The host's MCP door and this conversation's credential — the ONLY way
    * anything reaches the world (10-mcp §3b).
    *
-   * Absent means the deployment opened no door, and the session runs with the
-   * box's own hands only. `claudeCode()` refuses the turn rather than pass a
-   * door it knows the machine cannot reach.
+   * Absent means the session runs with the machine's own hands only. A BOX gets
+   * there only by refusal — `claudeCode()` will not open a session against a
+   * door it knows the box cannot reach. A LOCAL machine does run that way, and
+   * the operator is warned once, because a subprocess on this host with no
+   * origin to dial is a workspace-only assistant rather than a broken box.
    */
   toolDoor?: { url: string; token: string };
 }

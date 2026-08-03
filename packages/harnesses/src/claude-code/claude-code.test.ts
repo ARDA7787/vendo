@@ -300,6 +300,17 @@ describe("the boot gate — a spawned harness with no machine to live on (design
   test("the harness names itself exactly what the compose fixture expects", () => {
     expect(claudeCode().name).toBe("claude-code");
   });
+
+  test("BOTH legs declare `requires.toolDoor` — the ask that makes composition mount a door", () => {
+    // The tools travel remote MCP whether the SDK runs in a box or as a
+    // subprocess here, so both legs need the door. Declaring it is the whole
+    // ask: `createVendo` mounts the internal-only half with no `mcp` option,
+    // which is why `harness: claudeCode()` needs no extra config at all. Unlike
+    // `sandbox` this can never be a boot error — composition always answers.
+    expect(claudeCode().requires?.toolDoor).toBe(true);
+    expect(claudeCode({ machine: "local" }).requires?.toolDoor).toBe(true);
+    expect(() => assertHarnessComposable(claudeCode({ machine: "local" }) as never, {})).not.toThrow();
+  });
 });
 
 describe("options — declared, then overridable per turn", () => {

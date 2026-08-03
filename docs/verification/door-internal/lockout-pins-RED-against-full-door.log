@@ -1,0 +1,147 @@
+
+ RUN  v2.1.9 /Users/yousefh/orca/workspaces/flowlet/doorint/packages/vendo
+
+stderr | src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > CONTROL · a live turn's credential goes straight through: the door is mounted and it works
+[vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
+
+stderr | src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > CONTROL · a live turn's credential goes straight through: the door is mounted and it works
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+ ❯ src/mcp-door-internal.e2e.test.ts (9 tests | 6 failed) 5925ms
+   ✓ the INTERNAL-only door — one credential space, and no way into the other > CONTROL · a live turn's credential goes straight through: the door is mounted and it works 894ms
+   × the INTERNAL-only door — one credential space, and no way into the other > no discovery: every document that would tell a client this door exists is 404 665ms
+     → /.well-known/oauth-protected-resource/api/vendo/mcp: expected 200 to be 404 // Object.is equality
+   × the INTERNAL-only door — one credential space, and no way into the other > no authorization server: register, authorize, token, revoke, federate and the connect page are all 404 635ms
+     → register: expected 201 to be 404 // Object.is equality
+   × the INTERNAL-only door — one credential space, and no way into the other > the ONLY way an outside bearer can exist — register → authorize → token — cannot even start 629ms
+     → promise resolved "'vmat_CL0YIYflXKAvgV8y9WtB5Jj5SxfD86dA…'" instead of rejecting
+   × the INTERNAL-only door — one credential space, and no way into the other > no bearer at the mount is a FLAT 401: no challenge, so nothing names a place to sign in 615ms
+     → expected 'Bearer resource_metadata="https://hos…' to be null
+   × the INTERNAL-only door — one credential space, and no way into the other > an invented bearer is the same flat 401 — including one shaped like a turn credential 618ms
+     → vtk_looks-like-a-turn-credential: expected 'Bearer resource_metadata="https://hos…' to be null
+   ✓ the INTERNAL-only door — one credential space, and no way into the other > no session, so no listing: tools/list without a turn credential never reaches a tool name 627ms
+   × the INTERNAL-only door — one credential space, and no way into the other > the product never advertises an MCP surface: `mcp: true` remains the ONLY thing that says so 621ms
+     → expected true to be false // Object.is equality
+   ✓ the INTERNAL-only door — one credential space, and no way into the other > a harness that needs no door gets NO door: the mount is simply not there 620ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > no discovery: every document that would tell a client this door exists is 404
+AssertionError: /.well-known/oauth-protected-resource/api/vendo/mcp: expected 200 to be 404 // Object.is equality
+
+- Expected
++ Received
+
+- 404
++ 200
+
+ ❯ src/mcp-door-internal.e2e.test.ts:140:37
+    138|     ]) {
+    139|       const answered = await vendo.handler(new Request(`${ORIGIN}${pat…
+    140|       expect(answered.status, path).toBe(404);
+       |                                     ^
+    141|     }
+    142|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > no authorization server: register, authorize, token, revoke, federate and the connect page are all 404
+AssertionError: register: expected 201 to be 404 // Object.is equality
+
+- Expected
++ Received
+
+- 404
++ 201
+
+ ❯ src/mcp-door-internal.e2e.test.ts:168:37
+    166|     for (const [name, request] of attempts) {
+    167|       const answered = await vendo.handler(request);
+    168|       expect(answered.status, name).toBe(404);
+       |                                     ^
+    169|     }
+    170|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > the ONLY way an outside bearer can exist — register → authorize → token — cannot even start
+AssertionError: promise resolved "'vmat_CL0YIYflXKAvgV8y9WtB5Jj5SxfD86dA…'" instead of rejecting
+
+- Expected: 
+[Error: rejected promise]
+
++ Received: 
+"vmat_CL0YIYflXKAvgV8y9WtB5Jj5SxfD86dAy7s-qumT0yA"
+
+ ❯ src/mcp-door-internal.e2e.test.ts:174:31
+    172|   it("the ONLY way an outside bearer can exist — register → authorize …
+    173|     const { vendo } = await internalHost();
+    174|     await expect(bearer(vendo)).rejects.toThrow();
+       |                               ^
+    175|   });
+    176| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > no bearer at the mount is a FLAT 401: no challenge, so nothing names a place to sign in
+AssertionError: expected 'Bearer resource_metadata="https://hos…' to be null
+
+- Expected: 
+null
+
++ Received: 
+"Bearer resource_metadata=\"https://host.test/.well-known/oauth-protected-resource/api/vendo/mcp\""
+
+ ❯ src/mcp-door-internal.e2e.test.ts:184:54
+    182|     // thread a client pulls to discover the authorization server and …
+    183|     // itself. There is no such thread here.
+    184|     expect(answered.headers.get("www-authenticate")).toBeNull();
+       |                                                      ^
+    185|   });
+    186| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > an invented bearer is the same flat 401 — including one shaped like a turn credential
+AssertionError: vtk_looks-like-a-turn-credential: expected 'Bearer resource_metadata="https://hos…' to be null
+
+- Expected: 
+null
+
++ Received: 
+"Bearer resource_metadata=\"https://host.test/.well-known/oauth-protected-resource/api/vendo/mcp\", error=\"invalid_token\""
+
+ ❯ src/mcp-door-internal.e2e.test.ts:192:66
+    190|       const answered = await vendo.handler(mcpRequest(invented));
+    191|       expect(answered.status, invented).toBe(401);
+    192|       expect(answered.headers.get("www-authenticate"), invented).toBeN…
+       |                                                                  ^
+    193|     }
+    194|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  src/mcp-door-internal.e2e.test.ts > the INTERNAL-only door — one credential space, and no way into the other > the product never advertises an MCP surface: `mcp: true` remains the ONLY thing that says so
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/mcp-door-internal.e2e.test.ts:210:32
+    208|     expect(answered.status).toBe(200);
+    209|     const status = (await answered.json()) as { blocks?: { mcp?: boole…
+    210|     expect(status.blocks?.mcp).toBe(false);
+       |                                ^
+    211|   });
+    212| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+ Test Files  1 failed (1)
+      Tests  6 failed | 3 passed (9)
+   Start at  16:02:00
+   Duration  7.07s (transform 610ms, setup 7ms, collect 971ms, tests 5.93s, environment 0ms, prepare 27ms)
+

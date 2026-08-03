@@ -1,0 +1,67 @@
+
+ RUN  v2.1.9 /Users/yousefh/orca/workspaces/flowlet/doorint/packages/vendo
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > E1/E7 · serves a real turn, runs a guarded call, and keeps audit ⊇ transcript
+[vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > E1/E7 · serves a real turn, runs a guarded call, and keeps audit ⊇ transcript
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+(node:47630) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+(Use `node --trace-warnings ...` to show where the warning was created)
+stdout | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > E1/E7 · serves a real turn, runs a guarded call, and keeps audit ⊇ transcript
+[composed turn] {"wire":"data: {\"type\":\"tool-input-start\",\"toolCallId\":\"hcall_1_0ce4a53e-88f6-4156-b16b-0bd0e5c7259a\",\"toolName\":\"maple_invoices_list\",\"dynamic\":true}\n\ndata: {\"type\":\"tool-input-available\",\"toolCallId\":\"hcall_1_0ce4a53e-88f6-4156-b16b-0bd0e5c7259a\",\"toolName\":\"maple_invoices_list\",\"input\":{},\"dynamic\":true}\n\ndata: {\"type\":\"tool-output-available\",\"toolCallId\":\"hcall_1_0ce4a53e-88f6-4156-b16b-0bd0e5c7259a\",\"output\":{\"invoices\":[{\"id\":\"inv_1\"},{\"id\":\"inv_2\"}]},\"dynamic\":true}\n\ndata: {\"type\":\"text-start\",\"id\":\"txt_1_44dfb2c6-3e07-4439-9c3d-6b74da48cdfc\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_44dfb2c6-3e07-4439-9c3d-6b74da48cdfc\",\"delta\":\"2\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_44dfb2c6-3e07-4439-9c3d-6b74da48cdfc\",\"delta\":\" invoices are open.\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_1_44dfb2c6-3e07-4439-9c3d-6b74da48cdfc\"}\n\ndata: [DONE]\n\n","calls":[{}]}
+[composed audit] {"kinds":["run","tool-call"],"toolRows":1,"transcriptToolParts":1}
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > door-internal · ZERO CONFIG: no `mcp`, no base URL, and the agent still runs the product's tools
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+(node:47630) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+stdout | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > door-internal · ZERO CONFIG: no `mcp`, no base URL, and the agent still runs the product's tools
+[zero-config turn] {"wire":"data: {\"type\":\"text-start\",\"id\":\"txt_1_8fd40666-1b10-4420-ad2d-1fad21f9cfa7\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_8fd40666-1b10-4420-ad2d-1fad21f9cfa7\",\"delta\":\"I'll check\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_8fd40666-1b10-4420-ad2d-1fad21f9cfa7\",\"delta\":\" your invoices.\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_1_8fd40666-1b10-4420-ad2d-1fad21f9cfa7\"}\n\ndata: {\"type\":\"tool-input-start\",\"toolCallId\":\"hcall_2_0df71521-68c3-4b2d-b92d-4f1e3b417fd6\",\"toolName\":\"maple_invoices_list\",\"dynamic\":true}\n\ndata: {\"type\":\"tool-input-available\",\"toolCallId\":\"hcall_2_0df71521-68c3-4b2d-b92d-4f1e3b417fd6\",\"toolName\":\"maple_invoices_list\",\"input\":{},\"dynamic\":true}\n\ndata: {\"type\":\"tool-output-available\",\"toolCallId\":\"hcall_2_0df71521-68c3-4b2d-b92d-4f1e3b417fd6\",\"output\":{\"invoices\":[{\"id\":\"inv_1\"},{\"id\":\"inv_2\"}]},\"dynamic\":true}\n\ndata: {\"type\":\"text-start\",\"id\":\"txt_2_a3f3c5da-79ed-4d2e-a16d-1f6fa0f5dabb\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_a3f3c5da-79ed-4d2e-a16d-1f6fa0f5dabb\",\"delta\":\"2\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_a3f3c5da-79ed-4d2e-a16d-1f6fa0f5dabb\",\"delta\":\" invoices are open.\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_2_a3f3c5da-79ed-4d2e-a16d-1f6fa0f5dabb\"}\n\ndata: [DONE]\n","calls":[{}]}
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > door-ctx · a guard DENIAL travels the door and is NARRATED, never crashed
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+(node:47630) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+stdout | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > door-ctx · a guard DENIAL travels the door and is NARRATED, never crashed
+[composed denial] {"calls":["maple_invoices_pay"],"tail":"8b88-48a2-bae9-705ac9c03fd6\",\"toolName\":\"maple_invoices_pay\",\"input\":{\"id\":\"inv_1\"},\"dynamic\":true}\n\ndata: {\"type\":\"tool-output-denied\",\"toolCallId\":\"hcall_3_7924e28c-8b88-48a2-bae9-705ac9c03fd6\"}\n\ndata: {\"type\":\"text-start\",\"id\":\"txt_2_ef18b9d6-6488-4b0c-bb18-606b5a56ff30\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_ef18b9d6-6488-4b0c-bb18-606b5a56ff30\",\"delta\":\"The payment for\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_ef18b9d6-6488-4b0c-bb18-606b5a56ff30\",\"delta\":\" invoice inv_1 requires your approval before it can be processed. You should see an approval prompt where\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_2_ef18b9d6-6488-4b0c-bb18-606b5a56ff30\",\"delta\":\" you can review and authorize the payment.\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_2_ef18b9d6-6488-4b0c-bb18-606b5a56ff30\"}\n\ndata: [DONE]\n\n"}
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · turn.state is DURABLE: a second composition on the same store resumes the session
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+(node:47630) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · turn.state is DURABLE: a second composition on the same store resumes the session
+[vendo] claudeCode() has no origin to reach the MCP door, so this agent has NONE of your product's actions — only its own workspace. Set VENDO_BASE_URL (or `mcp: { baseUrl }`) to an origin this machine can reach. In development the wire learns its own LOOPBACK origin instead, so seeing this locally means NODE_ENV is not "development" or the host is not served over localhost.
+
+stdout | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · turn.state is DURABLE: a second composition on the same store resumes the session
+[composed state] ["harness_state:thr_durable:user_claude_composed"]
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · turn.state is DURABLE: a second composition on the same store resumes the session
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+stdout | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · turn.state is DURABLE: a second composition on the same store resumes the session
+[composed resume] {"tail":"data: {\"type\":\"text-start\",\"id\":\"txt_1_74634bf2-3733-4d58-911c-2eb8ab4a49b3\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_74634bf2-3733-4d58-911c-2eb8ab4a49b3\",\"delta\":\"5591\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_1_74634bf2-3733-4d58-911c-2eb8ab4a49b3\"}\n\ndata: [DONE]\n\n"}
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · a mid-conversation SWAP continues the thread from our transcript
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+stderr | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · a mid-conversation SWAP continues the thread from our transcript
+[vendo] zero live host tools — every extracted tool is absent, disabled, or excluded, so the agent cannot act on this product's API. Review .vendo/tools.json, the judgments in .vendo/judgments.json, and the audience exclusions in .vendo/overrides.json, or re-run `vendo init` extraction. (Connector-only deployments can ignore this.)
+
+(node:47630) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Bash, Read, Write, Edit, Glob, Grep, TodoWrite. Bare allowedTools entries auto-approve the whole tool before the callback is consulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through to canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.
+stdout | src/claude-code-composed.live.test.ts > claudeCode() through createVendo > §1.3 · a mid-conversation SWAP continues the thread from our transcript
+[composed swap] {"tail":"data: {\"type\":\"text-start\",\"id\":\"txt_1_40f75a14-2e8e-4716-ac0e-716eec1d22df\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"txt_1_40f75a14-2e8e-4716-ac0e-716eec1d22df\",\"delta\":\"Teal.\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"txt_1_40f75a14-2e8e-4716-ac0e-716eec1d22df\"}\n\ndata: [DONE]\n\n"}
+
+ ✓ src/claude-code-composed.live.test.ts (5 tests) 39332ms
+   ✓ claudeCode() through createVendo > E1/E7 · serves a real turn, runs a guarded call, and keeps audit ⊇ transcript 9699ms
+   ✓ claudeCode() through createVendo > door-internal · ZERO CONFIG: no `mcp`, no base URL, and the agent still runs the product's tools 7360ms
+   ✓ claudeCode() through createVendo > door-ctx · a guard DENIAL travels the door and is NARRATED, never crashed 10029ms
+   ✓ claudeCode() through createVendo > §1.3 · turn.state is DURABLE: a second composition on the same store resumes the session 6935ms
+   ✓ claudeCode() through createVendo > §1.3 · a mid-conversation SWAP continues the thread from our transcript 5309ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  18:59:24
+   Duration  44.69s (transform 3.04s, setup 51ms, collect 4.95s, tests 39.33s, environment 0ms, prepare 87ms)
+

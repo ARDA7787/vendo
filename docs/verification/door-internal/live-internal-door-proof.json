@@ -1,0 +1,72 @@
+{
+  "at": "2026-08-03T00:36:01.350Z",
+  "publicUrl": "https://verbal-yourself-eugene-proposition.trycloudflare.com",
+  "template": "h5pf20fap7ows6io81kr",
+  "results": [
+    {
+      "name": "1 · the box's read reached the host through the door",
+      "pass": true,
+      "detail": "host executions: [\"maple_invoices_list\"]"
+    },
+    {
+      "name": "1 · the audit row carries the TURN's venue and presence, not the door's",
+      "pass": true,
+      "detail": "{\"venue\":\"chat\",\"presence\":\"present\",\"outcome\":\"ok\",\"decidedBy\":\"rule\"}"
+    },
+    {
+      "name": "1 · the model answered with the HOST's data",
+      "pass": true,
+      "detail": "stream mentions inv_7781: true"
+    },
+    {
+      "name": "2 · the transcript mirror carries the call",
+      "pass": true,
+      "detail": "[\"tool-input-start:maple_invoices_list\",\"tool-input-available:maple_invoices_list\",\"tool-output-available\"]"
+    },
+    {
+      "name": "3 · an approval card reached the user's queue while the turn waited",
+      "pass": true,
+      "detail": "approval apr_0c02eef9-3b80-4ac6-9ae5-23f66df25ac5"
+    },
+    {
+      "name": "3 · the tap EXECUTED the call — not 'resolve it there, then retry'",
+      "pass": true,
+      "detail": "[{\"outcome\":\"ok\",\"decidedBy\":\"grant\",\"venue\":\"chat\"}]"
+    },
+    {
+      "name": "3 · exactly ONE executed row for one intent",
+      "pass": true,
+      "detail": "ok rows: 1"
+    },
+    {
+      "name": "4 · the box's write reached the host's workspace",
+      "pass": true,
+      "detail": "\"DOOR-INTERNAL-4417\\n\""
+    },
+    {
+      "name": "5 · the unattended turn's rows say away/automation",
+      "pass": true,
+      "detail": "[{\"kind\":\"run\",\"venue\":\"automation\",\"presence\":\"away\"},{\"kind\":\"approval\",\"tool\":\"maple_invoices_list\",\"venue\":\"automation\",\"presence\":\"away\",\"outcome\":\"pending-approval\"}]"
+    },
+    {
+      "name": "5 · nothing was EXECUTED for the absent run",
+      "pass": true,
+      "detail": "executed rows: 0"
+    },
+    {
+      "name": "6 · an unregistered turn credential is refused at the public door",
+      "pass": true,
+      "detail": "status 401"
+    },
+    {
+      "name": "7 · every outside path on the public origin is 404 — there is no door to find",
+      "pass": true,
+      "detail": "[\"/.well-known/oauth-protected-resource/api/vendo/mcp → 404\",\"/.well-known/oauth-authorization-server/api/vendo/mcp → 404\",\"/.well-known/mcp/server-card.json → 404\",\"/.well-known/mcp-server-card → 404\",\"/api/vendo/mcp/authorize?response_type=code&client_id=x → 404\",\"/api/vendo/mcp/connect → 404\",\"POST /register → 404\"]"
+    },
+    {
+      "name": "7 · the mount's 401 names no way in: no www-authenticate challenge at all",
+      "pass": true,
+      "detail": "www-authenticate: null"
+    }
+  ]
+}

@@ -23,8 +23,16 @@ export interface Harness<Options = unknown> {
   readonly name: string;
   /** Declares the per-turn-overridable knobs. */
   readonly optionsSchema?: StandardSchemaV1;
-  /** Boot-time composition check — never a runtime surprise. */
-  readonly requires?: { sandbox?: boolean };
+  /**
+   * Boot-time composition check — never a runtime surprise.
+   *
+   * Amendment 2026-08-02: `toolDoor` joins `sandbox`. A harness whose thinker
+   * is not in this process reaches `turn.tools` over the host's own MCP door
+   * (10-mcp §3b), and composition is the only place that can mount one. Unlike
+   * `sandbox` this is never a boot ERROR — declaring it is how a harness asks
+   * composition for a door, and composition always answers.
+   */
+  readonly requires?: { sandbox?: boolean; toolDoor?: boolean };
   run(turn: Turn<Options>): AsyncGenerator<HarnessEvent, void, void>;
 }
 

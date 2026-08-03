@@ -1250,6 +1250,23 @@ const DOOR_WELL_KNOWN_PATHS: ReadonlySet<string> = new Set([
   "/.well-known/mcp-server-card",
 ]);
 
+/** Is this origin THIS machine, and only this machine? The one question that
+ *  makes a request-derived origin safe to hand a turn credential: a loopback
+ *  address cannot carry the credential off the host, whoever set the Host
+ *  header. `URL` throws on opaque origins (the literal string "null"), which
+ *  are likewise not loopback. */
+function isLoopbackOrigin(origin: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    return false;
+  }
+  // IPv6 hostnames arrive bracketed (`[::1]`).
+  const host = hostname.replace(/^\[|\]$/g, "");
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
 function isDoorPath(pathname: string): boolean {
   if (pathname === MCP_MOUNT || pathname.startsWith(`${MCP_MOUNT}/`)) return true;
   return DOOR_WELL_KNOWN_PATHS.has(pathname);
@@ -2407,6 +2424,50 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     : config.mcp === true
       ? {}
       : undefined;
+  /**
+   * THE COMPOSITION RULE — the two decisions are decoupled.
+   *
+   * `mcp` is the host saying "my users may connect third-party agents to my
+   * product", and it opens the whole door. A harness that thinks outside this
+   * process reaches `turn.tools` over the same door (10-mcp §3b) and needs one
+   * whether or not the host ever said that — so declaring `requires.toolDoor`
+   * mounts the INTERNAL half by itself, with no config value to write and
+   * nothing exposed. `mcp` set wins: the full door already serves both spaces.
+   */
+  const internalDoorOnly = mcpOptions === undefined && harness.requires?.toolDoor === true;
+  /**
+   * The one origin a machine-less thinker may dial when the operator named
+   * none — learned from the wire, and kept separate from the base route
+   * bindings resolve against because the two answer different questions.
+   *
+   * A request origin is the Host header, which the caller controls. Both
+   * learners are therefore fenced to LOOPBACK, and each is fixed by the first
+   * request that qualifies: a spoofed `Host: attacker.evil` is never a
+   * candidate, and a second loopback Host cannot displace the first. Loopback
+   * is exactly where a machine-less thinker's subprocess lives, so zero-config
+   * development loses nothing.
+   *
+   * This one gates whether a turn credential may be MINTED against an origin;
+   * `baseUrlTrusted` below gates whether the CALLER's cookie and bearer may
+   * ride one. Both were poisonable before they were fenced.
+   */
+  let learnedLoopbackOrigin: string | undefined;
+  /**
+   * Where the harness's thinker dials the door.
+   *
+   * The operator-set public origin is the only one a MACHINE may ever be given:
+   * a box holding a live turn credential must never be pointed anywhere a
+   * request header could name, and loopback is not reachable from a box in any
+   * case. A harness that needs NO machine thinks inside this host's own
+   * process, so it may fall back to the learned loopback origin — which is what
+   * lets `claudeCode({ machine: "local" })` run with nothing configured at all.
+   *
+   * This rule is about the HARNESS's door target, so it applies identically to
+   * an `mcp: true` composition and to an internal-only one.
+   */
+  const doorBase = (): string | undefined => mcpOptions?.baseUrl
+    ?? configuredBaseUrl
+    ?? (harness.requires?.sandbox === true ? undefined : learnedLoopbackOrigin);
 
   const harnessTurns = createHarnessTurns({
     harness: harness as Harness<never>,
@@ -2449,22 +2510,23 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // grant: without a credential minted from inside the turn there is nothing
     // to resolve, and the credential's authority window IS this publication.
     liveTurn: ({ threadId, ctx, tools }) => turnCredentials.publish(threadId, { ctx, tools }),
-    // The other half, for a harness whose thinker runs on a machine: where the
-    // door is, and how to mint one conversation's credential for it. `url` is
-    // undefined when the deployment set no public base — a machine cannot reach
-    // a door nobody can name, and the harness says so in the operator's voice
-    // rather than opening a session that would 401 on its first tool call.
-    ...(mcpOptions === undefined ? {} : {
+    // The other half, for a harness whose thinker is not in this process: where
+    // the door is, and how to mint one conversation's credential for it. `url`
+    // is undefined when nothing this harness may dial exists — a machine cannot
+    // reach a door nobody can name, and the harness says so in the operator's
+    // voice rather than opening a session that would 401 on its first tool call.
+    // Read per turn, not captured: with no operator base the origin is learned
+    // from the wire's first validated request, which is the one that arrives.
+    ...(mcpOptions !== undefined || internalDoorOnly ? {
       toolDoor: {
-        // The SAME origin the door itself is configured with, or a machine would
-        // be pointed at a URL discovery never advertises.
-        url: (mcpOptions.baseUrl ?? configuredBaseUrl) === undefined
-          ? undefined
-          : new URL(MCP_MOUNT, mcpOptions.baseUrl ?? configuredBaseUrl).toString(),
+        get url(): string | undefined {
+          const base = doorBase();
+          return base === undefined ? undefined : new URL(MCP_MOUNT, base).toString();
+        },
         mint: (threadId: string) => turnCredentials.mint(threadId),
         revoke: (token: string) => turnCredentials.revoke(token),
       },
-    }),
+    } : {}),
   });
   /**
    * THE harness door — one object, served two ways.
@@ -2757,6 +2819,21 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       ...(mcpOptions.federation === undefined ? {} : { federation: mcpOptions.federation }),
       ...(theme === undefined ? {} : { theme }),
     });
+  } else if (internalDoorOnly) {
+    // The INTERNAL half alone. It answers one live turn's credential and
+    // nothing else, so it is handed only what that leg reads: the credential
+    // registry and where it lives. No oauth (there is no space to sign into),
+    // no apps ride-alongs, no `surfaces.mcp` menu, no theme — a turn's tools,
+    // curation and rendering are all decided by the turn.
+    door = createMcpDoor({
+      internal: true,
+      tools: boundTools,
+      guard,
+      store,
+      turnCredentials,
+      mount: MCP_MOUNT,
+      ...(configuredBaseUrl === undefined ? {} : { baseUrl: configuredBaseUrl }),
+    });
   }
   // Minted on first request via the deps getter below — Workers forbids
   // generating random values in global scope, and createVendo runs at module
@@ -2842,12 +2919,24 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       if (actionsConfig.baseUrl === undefined) {
         actionsConfig.baseUrl = origin;
         // 09-vendo §2 install-dx wave 1.1: NODE_ENV=development trusts its own
-        // learned origin — credentials forward to the wire's own route
-        // bindings with zero config. Every other environment (including
-        // NODE_ENV=test) keeps the learned origin UNTRUSTED exactly as
-        // before, so a spoofed Host on any early request can never turn it
-        // into a credential-exfiltration target (04 §4).
-        actionsConfig.baseUrlTrusted = isDevelopmentEnv;
+        // learned origin, so present-mode calls forward the caller's `cookie`
+        // and `authorization` to it. That trust is fenced to LOOPBACK, because
+        // a request origin IS the Host header: without the fence, one request
+        // carrying `Host: attacker.evil` fixed the base process-wide and sent
+        // the caller's real session cookie and bearer to the attacker on every
+        // present-mode call after it (measured, `server.test.ts` SECURITY pins).
+        // Same rule and same predicate as the tool door below — one authority.
+        //
+        // Only the TRUST is fenced, never the base itself: resolving route
+        // bindings same-origin with zero config is what the learner is for, and
+        // an untrusted base still resolves, exactly as it does in production.
+        actionsConfig.baseUrlTrusted = isDevelopmentEnv && isLoopbackOrigin(origin);
+      }
+      // The TOOL DOOR's own learned origin, kept separate because it answers a
+      // different question — not "may credentials ride this?" but "may a turn
+      // credential be MINTED against this?". Same loopback rule, first one wins.
+      if (learnedLoopbackOrigin === undefined && isDevelopmentEnv && isLoopbackOrigin(origin)) {
+        learnedLoopbackOrigin = origin;
       }
     },
   });

@@ -101,6 +101,28 @@ function request(method: string, path: string, body?: unknown, headers: Record<s
   });
 }
 
+/**
+ * The same request arriving from a chosen ORIGIN — which is to say, carrying a
+ * chosen Host header. The wire learns its same-origin base from exactly this,
+ * so it is also how the poisoning attack is expressed.
+ */
+function requestFrom(
+  origin: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Request {
+  return new Request(`${origin}/api/vendo${path}`, {
+    method,
+    headers: {
+      ...(["POST", "PUT", "PATCH", "DELETE"].includes(method) ? { "content-type": "application/json" } : {}),
+      ...headers,
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
 function stubRouteBlocks(vendo: Vendo): void {
   vi.spyOn(vendo.agent, "stream").mockResolvedValue(new Response("event: done\n\n", {
     headers: { "content-type": "text/event-stream" },
@@ -1315,7 +1337,7 @@ describe("09 §2 composition", () => {
     });
   });
 
-  it("09-vendo §2 install-dx wave 1.1: NODE_ENV=development trusts its own learned origin — present credentials forward with zero VENDO_BASE_URL", async () => {
+  it("09-vendo §2 install-dx wave 1.1: NODE_ENV=development trusts its own learned LOOPBACK origin — present credentials forward with zero VENDO_BASE_URL", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("VENDO_BASE_URL", "");
     const { vendo } = await setup();
@@ -1327,8 +1349,15 @@ describe("09 §2 composition", () => {
     // Teach the zero-config route origin, then run the real present-forward
     // branch: unlike the untrusted-origin case above, the credentials MUST
     // reach the doctor's own echo route.
-    expect((await vendo.handler(request("GET", "/status"))).status).toBe(200);
-    const probe = await vendo.handler(request("POST", "/doctor/present", {}, {
+    //
+    // The origin moved from `https://host.test` to loopback when the poisoning
+    // fence landed, and the promise this test exists for is unchanged: in
+    // development, with zero VENDO_BASE_URL, the wire trusts the origin it was
+    // actually reached at. `next dev` serves localhost, which is that origin.
+    // A non-loopback learned origin is now untrusted in every environment,
+    // because a request origin is the Host header (see the SECURITY pins below).
+    expect((await vendo.handler(requestFrom("http://localhost:3000", "GET", "/status"))).status).toBe(200);
+    const probe = await vendo.handler(requestFrom("http://localhost:3000", "POST", "/doctor/present", {}, {
       authorization: "Bearer vendo-doctor-present",
       cookie: "vendo_doctor_present=1",
     }));
@@ -1342,6 +1371,81 @@ describe("09 §2 composition", () => {
       && event.detail !== null
       && "warning" in event.detail);
     expect(warnings).toHaveLength(0);
+  });
+
+  /**
+   * THE POISONING ATTACK on route binding's learned base.
+   *
+   * `install-dx wave 1.1` made a DEV-learned origin trusted, so present-mode
+   * calls forward the caller's `cookie` and `authorization` to it. The learner
+   * had no restriction on WHICH origin it would learn, and a request origin is
+   * the Host header. One request carrying `Host: attacker.evil` therefore fixed
+   * the base process-wide and sent the caller's real session cookie and bearer
+   * to the attacker on every present-mode host tool call after it.
+   *
+   * Measured by the independent checker, then reproduced here RED before the
+   * fence. Closed with the same rule the tool door uses: loopback only, first
+   * qualifying request wins.
+   */
+  it("SECURITY: a spoofed non-loopback Host never becomes the learned base, so present credentials cannot ride it", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    const { vendo } = await setup();
+    const reached: Array<{ url: string; cookie: string | null; authorization: string | null }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const target = input instanceof Request ? input : new Request(input, init);
+      reached.push({
+        url: target.url,
+        cookie: target.headers.get("cookie"),
+        authorization: target.headers.get("authorization"),
+      });
+      return vendo.handler(target);
+    }));
+
+    // The attacker's Host arrives FIRST — this is the whole attack.
+    expect((await vendo.handler(requestFrom("https://attacker.evil", "GET", "/status"))).status).toBe(200);
+    await vendo.handler(requestFrom("https://attacker.evil", "POST", "/doctor/present", {}, {
+      authorization: "Bearer the-callers-real-token",
+      cookie: "session=the-callers-real-session",
+    }));
+
+    // Nothing that reached the attacker's origin carried the caller's identity.
+    const toAttacker = reached.filter((entry) => entry.url.startsWith("https://attacker.evil"));
+    expect(toAttacker.every((entry) => entry.cookie === null && entry.authorization === null)).toBe(true);
+
+    // And the withholding was audited, exactly as an untrusted origin should be.
+    const events = await vendo.guard.audit.query({ principal });
+    const warnings = events.events.filter((event) =>
+      event.detail !== undefined
+      && typeof event.detail === "object"
+      && event.detail !== null
+      && "warning" in event.detail);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      detail: { warning: { code: "present-credentials-not-forwarded", reason: "untrusted-host-origin" } },
+    });
+  });
+
+  it("SECURITY: a loopback origin already learned cannot be REPLACED by a later spoofed Host", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    const { vendo } = await setup();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const target = input instanceof Request ? input : new Request(input, init);
+      return vendo.handler(target);
+    }));
+
+    // The real origin is learned first, then the attacker tries to move it.
+    expect((await vendo.handler(requestFrom("http://localhost:3000", "GET", "/status"))).status).toBe(200);
+    expect((await vendo.handler(requestFrom("https://attacker.evil", "GET", "/status"))).status).toBe(200);
+
+    // The base is still loopback, so the doctor's own echo route still answers
+    // and the credentials still reach it — the latch held.
+    const probe = await vendo.handler(requestFrom("http://localhost:3000", "POST", "/doctor/present", {}, {
+      authorization: "Bearer vendo-doctor-present",
+      cookie: "vendo_doctor_present=1",
+    }));
+    expect(await probe.json()).toEqual({ ok: true });
   });
 
   it("09-vendo §2 install-dx wave 1.1: logs one loud console.error at composition when NODE_ENV=production and VENDO_BASE_URL is unset", async () => {
