@@ -471,6 +471,8 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
             ...(keyPresent ? [] : ["E2B_API_KEY is not set"]),
             ...(installed ? [] : ["the e2b package does not resolve from this project"]),
           ].join(" and ");
+          // This reads doctor's OWN env and project root, not the server's, so
+          // a live e2b venue failing here means the two disagree.
           fail("live/venue", "E-LIVE-007", `the running wire selected the e2b execution venue but ${missing}; server-app builds will fail in an unusable sandbox. Fix: install the e2b package and set E2B_API_KEY, or remove E2B_API_KEY from the server env (with VENDO_API_KEY set, the managed Cloud sandbox takes over), then restart the dev server and re-run doctor`);
         }
       } else if (sandboxVenue === "cloud" || sandboxVenue === "custom") {

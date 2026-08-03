@@ -579,9 +579,22 @@ function selectSandbox(configured: SandboxAdapter | undefined): {
 
   // An env key only lights a venue when its optional SDK is actually
   // installed; otherwise /status would report a venue whose first
-  // create() dies on a missing module.
-  const e2bApiKey = environment("E2B_API_KEY");
-  if (e2bApiKey !== undefined && e2bInstalled()) {
+  // create() dies on a missing module. Half a BYO sandbox is a MISCONFIG,
+  // not a fallback: silently riding Cloud (or going dark) hides the missing
+  // install until the first server-app build fails somewhere else entirely.
+  // Trimmed, because a whitespace-only value is not a key: environment() only
+  // treats "" as unset, but doctor's E-LIVE-007 check trims before deciding one
+  // is present — and after the throw above, disagreeing with doctor about
+  // whether the operator set a key means one of them is lying to the operator.
+  const e2bKey = environment("E2B_API_KEY")?.trim();
+  const e2bApiKey = e2bKey === "" ? undefined : e2bKey;
+  if (e2bApiKey !== undefined) {
+    if (!e2bInstalled()) {
+      throw new VendoError(
+        "validation",
+        "E2B_API_KEY is set but the e2b package is not installed — install e2b, or unset E2B_API_KEY to use another sandbox",
+      );
+    }
     // Wave 4 — operator knob for the provider machine lifetime. The default
     // 5-minute TTL kills a box mid-way through a long in-box agent build
     // (the box agent loop runs for minutes). Explicit VENDO_E2B_TIMEOUT_MS
@@ -803,22 +816,21 @@ function hostedSessionOps(store: HostedStore, touchDebounceMs: number): SessionO
   // registered on the console; entries retire with the session (adopt/sweep),
   // so the map tracks at most the live anonymous sessions of this process.
   const wireTouched = new Map<string, number>();
-  // vendo-web@7cd0a02 (2026-07-19) removed the console's session doors per a
-  // newer spec (anonymous visitor = end_user row; adoption = PUT
-  // /users/{externalId}); against that console every door op meets a bare
-  // 404. The doors then go quiet for the process — one warn, no per-request
-  // failures, no per-interval sweep retries — because anonymous traffic must
-  // keep serving and there is nothing to retry INTO. The full contract catch-
-  // up (merge + TTL lifecycle on the new surface) is the vendo-web follow-up
-  // tracked in docs/verification/existing-agents/polish/hosted-sessions-404.md.
+  // A console that answers a BARE 404 (no error envelope) on a session door is
+  // not serving that surface at all. The doors then go quiet for the process —
+  // one warn, no per-request failures, no per-interval sweep retries — because
+  // anonymous traffic must keep serving and there is nothing to retry INTO.
+  // The latch is per-process and re-arms on the next composition, so a console
+  // that grows the doors back needs no client change (history:
+  // docs/verification/existing-agents/polish/hosted-sessions-404.md).
   let doorsMissing = false;
   const disableDoors = (): void => {
     if (doorsMissing) return;
     doorsMissing = true;
     console.warn(
-      "[vendo] Vendo Cloud console does not serve the hosted session doors (/api/v1/store/sessions/* was removed in vendo-web@7cd0a02): "
+      "[vendo] Vendo Cloud console did not serve the hosted session doors (/api/v1/store/sessions/* answered a bare 404): "
       + "anonymous-session registration, the anonymous→signed-in merge, and the hosted TTL sweep are disabled for this process. "
-      + "Hosted anonymous sessions will not be swept until the console grows a replacement surface.",
+      + "Hosted anonymous sessions will not be swept until the console serves those doors again.",
     );
   };
   return {
@@ -870,14 +882,35 @@ function hostedSessionOps(store: HostedStore, touchDebounceMs: number): SessionO
     // The HOST-driven sweep (hosted-store one-pager): list stale candidates,
     // claim each (the wire claim repeats the idleness predicate — a re-touch
     // defeats it, same serialization as sweepEphemeralSubjects), and finish
-    // every claimed subject through the erase cascade.
+    // every claimed subject through the erase cascade. A claim COMMITS by
+    // deleting the registry row, so a failed erase would leave the subject's
+    // rows unreachable by every later stale scan — compensated below.
     async sweep(idleMs, now) {
       if (doorsMissing) return [];
       const evicted: string[] = [];
       try {
         for (const subject of await store.sessions.stale(idleMs, now)) {
           if (!(await store.sessions.claim(subject, idleMs, now))) continue;
-          await store.erase.bySubject(subject);
+          try {
+            await store.erase.bySubject(subject);
+          } catch (error) {
+            // Put the claimed row back, stamped one tick past the idleness
+            // cutoff so the very next sweep re-claims it instead of waiting
+            // out another TTL. Best-effort: if the console is down for this
+            // too, the erase failure is the one worth reporting.
+            //
+            // RELIES ON a console guarantee: register/touch never moves a
+            // subject's touched_at BACKWARD (vendo-web
+            // apps/console/lib/core/session-registry.ts, `touch` bumps under
+            // `last_seen < seenAt`). Without that clamp this backdated write
+            // would overwrite the fresh stamp of a visitor who returned
+            // between the claim and here, and the next sweep would erase a
+            // LIVE session. The client cannot enforce it — only the registry
+            // can compare-and-set atomically. Pinned by "a fresh touch from a
+            // returning visitor survives the compensation" below.
+            await store.sessions.register(subject, now - idleMs - 1).catch(() => undefined);
+            throw error;
+          }
           wireTouched.delete(subject);
           evicted.push(subject);
         }
@@ -1133,16 +1166,16 @@ function createWireHandler(deps: WireDeps): (request: Request) => Promise<Respon
   // request that triggered it (same posture as the background timer leg) — a
   // failed sweep just means idle sessions live until the next interval.
   let lastSweepAt = deps.sessions.now();
-  const maybeSweep = async (): Promise<void> => {
-    if (!deps.sweepEnabled) return;
+  /** Starts a sweep pass and books the cadence, or answers undefined when the
+      interval has not elapsed. `force` is for a route that ASKED for the sweep
+      (POST /tick): a serverless process re-seeds lastSweepAt on every
+      invocation, so the interval gate would never let one of those through. */
+  const startSweep = (force: boolean): Promise<void> | undefined => {
+    if (!deps.sweepEnabled) return undefined;
     const now = deps.sessions.now();
-    if (now - lastSweepAt < deps.sessions.sweepIntervalMs) return;
+    if (!force && now - lastSweepAt < deps.sessions.sweepIntervalMs) return undefined;
     lastSweepAt = now;
-    try {
-      await deps.sweep();
-    } catch (error) {
-      console.warn(`[vendo] session sweep failed; will retry next interval: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    return deps.sweep();
   };
   // LOAD-BEARING per-request ordering relative to routing (kill-list B4 kept
   // it byte-identical to the old chain):
@@ -1161,7 +1194,15 @@ function createWireHandler(deps: WireDeps): (request: Request) => Promise<Respon
   //   9. withAnonCookie at the single exit — the minted Set-Cookie rides
   //      every response shape (JSON, error, SSE/stream).
   return async (request) => {
-    await maybeSweep();
+    // ONE sweep pass per request, shared with any route that drives the sweep
+    // itself (POST /tick) so a tick can never run two scans of the same
+    // registry. The amortized leg only WARNS — an innocent request must not
+    // 500 for a sweep it merely happened to trigger — but the pass keeps its
+    // rejection, so a route that asked for the sweep still answers with it.
+    let sweepPass = startSweep(false);
+    await sweepPass?.catch((error: unknown) => {
+      console.warn(`[vendo] session sweep failed; will retry next interval: ${error instanceof Error ? error.message : String(error)}`);
+    });
     // Per-request anonymous-session state + the one shared context-resolution
     // pass (see wire/shared.ts). Both MUST be minted per-invocation — the
     // handler closure is shared across requests.
@@ -1207,6 +1248,7 @@ function createWireHandler(deps: WireDeps): (request: Request) => Promise<Respon
         },
         params: {},
         context: (venue) => context(request, venue),
+        sweep: () => (sweepPass ??= startSweep(true) ?? Promise.resolve()),
         deps,
       };
 
@@ -2270,6 +2312,9 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     sessionStore: sessionOps,
     sweep: runSweep,
     sweepEnabled,
+    // Serverless hosts (the hosted store's typical deployment) fire no
+    // interval timer, so the authenticated tick carries the sweep for them.
+    sweepOnTick: sweepEnabled && hostedStoreComposed,
     ...(door === undefined ? {} : { door }),
     onRequestOrigin: (origin) => {
       // Same-origin default for route-binding execution (04): no VENDO_BASE_URL
