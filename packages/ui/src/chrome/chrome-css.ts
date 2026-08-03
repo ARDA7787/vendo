@@ -81,6 +81,9 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   --vendo-warn: light-dark(#7a5000, #d9a94e);
   --vendo-warn-text: light-dark(#8a6a2e, #d9a94e);
   --vendo-warn-edge: #b3822f;
+  /* Retained for the legacy .fl-btn-critical alias only (its own fill rule is
+     gone — critical IS ceremony now). Retires with the alias in Lane B. */
+  --vendo-warn-fill-critical: light-dark(#a97e2f, #b3822f);
   --vendo-warn-on-fill: light-dark(#fff, #14151a);
   --vendo-warn-tint: #f0b429;
   --vendo-warn-bg: color-mix(in srgb, var(--vendo-warn-tint) 12%, var(--vendo-surface));
