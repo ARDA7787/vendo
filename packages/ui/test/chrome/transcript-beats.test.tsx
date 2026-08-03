@@ -536,3 +536,63 @@ describe("a build in flight, and a build that dies", () => {
     expect(document.querySelector("[data-vendo-app-embed='app_money']")).toBeTruthy();
   });
 });
+
+/** M26 — the settled row's duration. A turn that was ALREADY RUNNING when this
+ *  surface first saw it (a reopened conversation, a reload mid-turn) is both
+ *  restored and pending, so the measured clock started when we arrived and the
+ *  row understated a thirty-second turn as "· 1.2s". */
+describe("the settled turn's duration (M26)", () => {
+  let wire: Awaited<ReturnType<typeof createWireServer>>;
+  let client: VendoClient;
+
+  beforeEach(async () => {
+    wire = await createWireServer();
+    client = createVendoClient({ baseUrl: wire.url });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    await wire.close();
+  });
+
+  const message = (state: "input-available" | "output-available"): UIMessage => ({
+    id: "msg_clock",
+    role: "assistant",
+    parts: [{
+      type: "dynamic-tool",
+      toolName: "host_list_transactions",
+      toolCallId: "call_1",
+      state,
+      input: {},
+      ...(state === "output-available" ? { output: { rows: [] } } : {}),
+    }],
+  } as unknown as UIMessage);
+
+  const view = (state: "input-available" | "output-available", restored: boolean) => (
+    <VendoProvider client={client}>
+      <ThreadMessage
+        message={message(state)}
+        restored={restored}
+        risks={new Map()}
+        busy={false}
+        onEditLast={() => undefined}
+        onRegenerateLast={() => undefined}
+      />
+    </VendoProvider>
+  );
+
+  it("shows the count ALONE when the turn was already running before we arrived", () => {
+    const { rerender } = render(view("input-available", true));
+    // Still working: nothing folded yet.
+    expect(document.querySelector(".fl-beatsummary")).toBeNull();
+    rerender(view("output-available", true));
+    expect(document.querySelector(".fl-beatsummary")?.textContent).toBe("Did 1 thing");
+  });
+
+  it("still measures a turn it watched start", () => {
+    const { rerender } = render(view("input-available", false));
+    rerender(view("output-available", false));
+    expect(document.querySelector(".fl-beatsummary")?.textContent)
+      .toMatch(/^Did 1 thing · \d+\.\d+s$/);
+  });
+});
