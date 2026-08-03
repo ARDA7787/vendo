@@ -81,8 +81,10 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   --vendo-warn: light-dark(#7a5000, #d9a94e);
   --vendo-warn-text: light-dark(#8a6a2e, #d9a94e);
   --vendo-warn-edge: #b3822f;
-  /* Retained for the legacy .fl-btn-critical alias only (its own fill rule is
-     gone — critical IS ceremony now). Retires with the alias in Lane B. */
+  /* DEAD as of Lane B: the .fl-btn-critical alias it existed for is gone
+     (critical IS ceremony now) and nothing reads this token. It survives only
+     because test/theme-tokens.test.tsx pins its literal #a97e2f to exactly one
+     definition — retire the pin and the token together. */
   --vendo-warn-fill-critical: light-dark(#a97e2f, #b3822f);
   --vendo-warn-on-fill: light-dark(#fff, #14151a);
   --vendo-warn-tint: #f0b429;
@@ -2291,5 +2293,8 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 /* The automation card's flow nodes are CONTENTS now: the panel's padded block
    loses its own box because the shell owns the padding. */
 .fl-cardshell > .fl-auto-flow { margin-top: 12px; padding: 12px 0 0; }
+/* The morph pill's mark comes from the shared <ToolkitLogo> (which owns the
+   onError fallback), so its size rides the CSS instead of img attributes. */
+.fl-morph-logo img, .fl-morph-logo svg { display: block; width: 18px; height: 18px; object-fit: contain; }
 
 `;
