@@ -40,7 +40,7 @@ const STATUS_COPY: Record<VoiceState, string> = {
  * 401 sentence. The driver's text is a developer's aid (dev mode); the person
  * gets the standing line, with Retry beside it.
  */
-function voiceErrorLine(error: VoiceDriverError | undefined): string {
+function voiceErrorLine(error: VoiceDriverError | null | undefined): string {
   const message = error?.message?.trim();
   return developmentMode() && message !== undefined && message.length > 0
     ? message
