@@ -23,6 +23,7 @@ import {
   ActivityPanel,
   ApprovalCard,
   AutomationsPanel,
+  ConnectCard,
   NoPolicyNotice,
   VendoOverlay,
   VendoPage,
@@ -195,6 +196,25 @@ const boundedThread: Thread = {
   ],
 };
 
+/** The connect card's own lifecycle, over the wire fixture: Connect → the
+ *  broker returns an active account → the card settles into its quiet Connected
+ *  record in place. Slack, because the fixture already reports gmail as
+ *  connected (that card would open already-settled). */
+function ConnectLifecycleScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <div style={{ width: 640, margin: "48px auto", display: "grid", justifyItems: "center" }}>
+        <ConnectCard
+          connector="composio"
+          toolkit="slack"
+          message="Connect Slack so the digest can post to your team channel."
+          onConnected={() => undefined}
+        />
+      </div>
+    </VendoProvider>
+  );
+}
+
 /** ENG-216 — host-supplied friendly tool metadata: labels, descriptions and a
  *  custom arg summarizer. Chips and the approval card read this over the raw
  *  slug / lifecycle string / raw JSON. */
@@ -212,6 +232,100 @@ const humanizedTools: ToolMetaMap = {
     },
   },
 };
+
+/** The ORDINARY consent register (spec §16) — every other approval fixture in
+ *  this harness is `destructive`, so every card proof we had was the amber
+ *  ceremony card, which reads alarming as a first impression. This is the plain
+ *  one: a `write` ask, the primary button, and boolean inputs (the row that used
+ *  to read `Permanent | true` at a bank customer). `apr_1` is the wire fixture's
+ *  own pending approval, so Approve genuinely decides over the wire. */
+const ordinaryConsentTools: ToolMetaMap = {
+  host_email_send: {
+    label: "Email the June statement",
+    description: "Sends your June statement to Dana at Ellis Books as a PDF attachment.",
+  },
+};
+
+const ordinaryConsentThread: Thread = {
+  id: "thr_ordinary",
+  subject: "browser-user",
+  createdAt: NOW,
+  updatedAt: NOW,
+  messages: [
+    {
+      id: "ord_u1",
+      role: "user",
+      parts: [{ type: "text", text: "Send my June statement to my accountant, Dana at Ellis Books." }],
+    },
+    {
+      id: "ord_a1",
+      role: "assistant",
+      parts: [
+        {
+          type: "text",
+          text: "I put your June statement together for Dana. It goes out as a PDF attachment — "
+            + "have a look and approve it below.",
+        },
+        {
+          type: "dynamic-tool",
+          toolName: "host_email_send",
+          toolCallId: "call_ordinary",
+          state: "approval-requested",
+          input: {
+            to: "dana@ellisbooks.com",
+            subject: "June statement",
+            include_transactions: true,
+            notify_recipient: false,
+          },
+          approval: { id: "apr_1" },
+        },
+        {
+          type: "data-vendo-approval",
+          data: { toolCallId: "call_ordinary", risk: "write", approvalId: "apr_1" },
+        },
+      ],
+    },
+  ],
+};
+
+function OrdinaryConsentScenario() {
+  return (
+    <VendoProvider
+      client={threadClient(baseClient, ordinaryConsentThread)}
+      components={components}
+      theme={mapleTheme}
+      tools={ordinaryConsentTools}
+    >
+      {/* A host-pane column, so the card is photographed at the proportions a
+          real product gives it rather than stretched across the viewport. */}
+      <div style={{ height: "100%", maxWidth: 820, margin: "0 auto", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <VendoThread threadId="thr_ordinary" />
+      </div>
+    </VendoProvider>
+  );
+}
+
+/** The one surface where a card's WHOLE lifecycle is the card's own: the BYO
+ *  approval embed polls the wire, so pending → Approve → the settled record
+ *  ("Approved — ran" + the executed result) all happen in place, over a real
+ *  decision. `apr_1` is the wire fixture's pending ask (`host_email_send`,
+ *  `write`), so this is the ordinary register, byline and all. */
+function ApprovalLifecycleScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme} tools={ordinaryConsentTools}>
+      {/* `.fl-cardshell` is `max-width: 88%` of its container (Lane A geometry),
+          so centre it — otherwise the embed's own canvas shows as a sliver down
+          one side and reads like a broken edge in a still. */}
+      <div style={{ width: 640, margin: "48px auto", display: "grid", justifyItems: "center" }}>
+        <VendoToolResult output={{
+          kind: "vendo/approval-ref@1",
+          approvalId: "apr_1",
+          summary: "Email the June statement",
+        }} />
+      </div>
+    </VendoProvider>
+  );
+}
 
 /** ENG-216 — a turn that exercises every humanization behavior at once: a chip
  *  with a host label + arg summary, a run of eight identical read chips that
@@ -1841,6 +1955,9 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/thread-extreme": return { title: "Thread — extreme content", content: <ExtremeThreadScenario />, ownProvider: true };
     case "/thread-landing": return { title: "Landing (Maple host)", content: <LandingScenario />, ownProvider: true };
     case "/thread-humanized": return { title: "Thread — humanized (host metadata)", content: <HumanizedThreadScenario />, ownProvider: true };
+    case "/thread-ordinary-consent": return { title: "Thread — ordinary consent (write)", content: <OrdinaryConsentScenario />, ownProvider: true };
+    case "/approval-lifecycle": return { title: "Approval — pending to settled", content: <ApprovalLifecycleScenario />, ownProvider: true };
+    case "/connect-lifecycle": return { title: "Connect — pending to connected", content: <ConnectLifecycleScenario />, ownProvider: true };
     case "/thread-citations": return { title: "Thread — knowledge citations (K1)", content: <ThreadCitationsScenario />, ownProvider: true };
     case "/overlay": return { title: "Overlay", content: <AutoOpen selector='button[aria-controls="vendo-overlay-dialog"]'><VendoOverlay /></AutoOpen> };
     case "/overlay-manual": return { title: "Overlay — manual launcher", content: <VendoOverlay /> };
@@ -1914,8 +2031,17 @@ function Harness() {
     );
   // Full-bleed host-frame scenarios (the Maple frame IS the host chrome) render
   // edge-to-edge, not as a card on the harness canvas.
-  if (globalThis.location.pathname === "/thread-landing") {
-    return <div data-scenario="thread-landing" style={{ position: "fixed", inset: 0 }}>{content}</div>;
+  // `/thread-ordinary-consent` joins them because it exists to be PHOTOGRAPHED:
+  // a capture of a consent card may carry no harness text in frame.
+  if (globalThis.location.pathname === "/thread-landing"
+    || globalThis.location.pathname === "/thread-ordinary-consent"
+    || globalThis.location.pathname === "/approval-lifecycle"
+    || globalThis.location.pathname === "/connect-lifecycle") {
+    return (
+      <div data-scenario={globalThis.location.pathname.slice(1)} style={{ position: "fixed", inset: 0 }}>
+        {content}
+      </div>
+    );
   }
   return (
     <main className={`harness-shell${globalThis.location.pathname === "/thread" || globalThis.location.pathname === "/activity-dark" ? " harness-dark" : ""}`} data-scenario={globalThis.location.pathname.slice(1)}>
