@@ -618,3 +618,22 @@ Persistence and transport are normative:
 - **Changed:** §14 adds the name-keyed `ComponentRegistry` form (`ComponentRegistryEntry`): keys are component names; each value holds `component` (a host component reference the server MUST IGNORE — it exists so the same object serves the client), `description`, optional `props` (the single schema), optional `examples`, optional `remixable`. Accepted anywhere the array form is (09 §2); the array form remains valid.
 - **Why:** the server-wiring DX brainstorm (decision 2): `propsJsonSchema` was one schema hand-expressed twice, and name-keying kills the mirror-two-maps catalog discipline. Deriving one JSON Schema that drives both the prompt and generated-props validation also closes 04 §1's disk-catalog permissive-validation gap for schema-bearing entries.
 - **Approved by:** Yousef, 2026-07-18 (server-wiring DX brainstorm, `docs/brainstorms/server-wiring-dx.md`, converged).
+
+### 2026-08-03 — Optional `payload.display` view hint (V4 auto-stage)
+
+- **Changed (additive):** the §8 UI payload gains an optional top-level
+  `display: "inline" | "stage"`, authored by the brain at PLAN time and carried
+  through both plan emitters onto the `data-vendo-view` part of §16. Absent means
+  `inline` — every stored payload and every existing emitter stays valid, and
+  validators MUST accept its absence.
+- **Semantics (presentation only):** `stage` tells the chrome to open its split
+  stage the moment the build STARTS, so the skeleton assembles where the user can
+  see it; `inline` lands the view as a compact in-thread app card. The hint sets
+  only the STARTING posture — inline cards keep Expand, staged views keep
+  Back-to-chat, and a wrong hint costs one tap. It grants no capability, changes
+  no data, and a renderer that ignores it is still correct.
+- **Why:** the shape is known at plan time and the size is not known until the
+  fill, so a measured-size rule decides too late to stage the build (design §5,
+  pick V4).
+- **Authorized by:** the Yousef-decided agentic-UI redesign design
+  (`docs/superpowers/specs/2026-08-02-agentic-ui-redesign-design.md`, §5).
