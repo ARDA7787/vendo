@@ -7,7 +7,7 @@ import {
 import { useState } from "react";
 import { useVendoTools } from "../context.js";
 import { ContainedNotice } from "../tree/notice.js";
-import { toolPresentation } from "./build-beat.js";
+import { consentClassLine, toolPresentation } from "./build-beat.js";
 import {
   CardActions,
   CardByline,
@@ -15,7 +15,6 @@ import {
   CardHead,
   CardLine,
   CardShell,
-  runsAsYouLine,
   SHIELD_GLYPH,
   ToolkitLogo,
 } from "./card-shell.js";
@@ -40,6 +39,34 @@ const VENUE_LABEL: Record<string, string> = {
   automation: "asked by an automation",
 };
 
+/** The same venues, once the surface can NAME the app or automation. */
+const VENUE_NAMED: Record<string, (name: string) => string> = {
+  app: name => `asked in ${name}`,
+  automation: name => `asked by ${name}`,
+};
+
+/** Every Vendo id family is `<prefix>_<rest>` (core `ids.ts`: app_, apr_, grt_,
+    run_, thr_). An id is not something a person can read, so the byline treats
+    any id-shaped token as no name at all — whatever passed it in. */
+const ID_SHAPED = /^[a-z]{2,6}_/;
+
+/** ENG-216 — who is asking, in the user's language.
+ *
+ *  THE DEFECT this exists for: the byline printed `approval.ctx.appId` verbatim,
+ *  so a bank customer read "Runs as you · asked in an app · app_1". The wire
+ *  carries only that id; a name arrives only when the SURFACE knows one (the
+ *  activities queue resolves it off the automations list), and without one the
+ *  bare phrase is the honest answer. An unknown venue drops the phrase rather
+ *  than print its slug. */
+export function venueByline(venue: string, venueName?: string): string {
+  const name = venueName?.trim();
+  const named = name !== undefined && name.length > 0 && !ID_SHAPED.test(name)
+    ? VENUE_NAMED[venue]?.(name)
+    : undefined;
+  const phrase = named ?? VENUE_LABEL[venue];
+  return phrase === undefined ? "Runs as you" : `Runs as you · ${phrase}`;
+}
+
 export interface ApprovalCardProps {
   approval: ApprovalRequest;
   onDecide(decision: ApprovalDecision): void | PromiseLike<void>;
@@ -51,12 +78,19 @@ export interface ApprovalCardProps {
    */
   allowRemember?: boolean;
   /**
-   * ENG-216 — show the `venue · presence · appId` context byline. Queue
-   * surfaces carry a real server `ctx` and keep it (default true); the
-   * in-thread card sets this false because the live conversation is already
-   * the context and the wire carries no ctx to display honestly.
+   * ENG-216 — show the venue context byline. Queue surfaces carry a real server
+   * `ctx` and keep it (default true); the in-thread card sets this false because
+   * the live conversation is already the context and the wire carries no ctx to
+   * display honestly.
    */
   showContext?: boolean;
+  /**
+   * A human name for the app/automation that asked, when the SURFACE knows one
+   * (the wire's `ctx` carries only an id). Absent ⇒ the bare venue phrase; an
+   * id-shaped value is refused, since an id in front of a user is the defect
+   * this prop exists to remove.
+   */
+  venueName?: string;
 }
 
 function approvalDate(grantedAt: string): string {
@@ -67,7 +101,7 @@ function approvalDate(grantedAt: string): string {
 
 /** 01-core §5; 08-ui §4; spec §16 — the one consent surface, on the one card
     shell, always showing the real inputs. */
-export function ApprovalCard({ approval, onDecide, allowRemember = true, showContext = true }: ApprovalCardProps) {
+export function ApprovalCard({ approval, onDecide, allowRemember = true, showContext = true, venueName }: ApprovalCardProps) {
   const [remember, setRemember] = useState(false);
   const [scope, setScope] = useState<"exact" | "tool">("exact");
   const [duration, setDuration] = useState<"session" | "standing">("session");
@@ -84,16 +118,29 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
     approval.call.args,
     meta,
     approval.descriptor.title,
+    approval.descriptor.inputSchema,
   );
   const title = presentation.title;
   const description = (presentation.description ?? approval.descriptor.description).trim();
   const rows = fieldRows(approval.call.args, approval.descriptor.inputSchema, meta);
-  // Lane pick 1-A — consequence-first: when the presentation can truthfully
-  // say what approving does in one sentence, that sentence leads and the raw
-  // fields fold behind a "Details" disclosure (still the same real inputs,
-  // one tap away). Critical/destructive asks are exempt: maximum scrutiny
-  // keeps every input in plain sight.
-  const consequence = !critical ? presentation.consequence : undefined;
+  // Law 3's precedence for the mandatory line, most local authority first (the
+  // same ladder as `toolTitle`):
+  //   1. the HOST's own sentence for this tool (in-code `ToolMeta`);
+  //   2. else the consequence synthesized from the REAL inputs (lane pick 1-A —
+  //      more specific than any generic sentence: it names the actual money and
+  //      counterparty);
+  //   3. else the authored/synthesized description that rode along;
+  //   4. else the consequence CLASS — never the tool's own label.
+  const hostSentence = meta?.description?.trim();
+  const written = hostSentence !== undefined && hostSentence.length > 0 && hostSentence !== title
+    ? hostSentence
+    : undefined;
+  const consequence = written === undefined ? presentation.consequence : undefined;
+  // The FOLD is the separate call: the raw fields tuck behind a "Details"
+  // disclosure only on an ordinary ask. Critical/destructive keeps every input
+  // in plain sight — maximum scrutiny — and still gets the sentence (a money
+  // ask is exactly where "Vendo will run Send money as you." used to land).
+  const foldFields = consequence !== undefined && !critical;
 
   const decide = async (approve: boolean) => {
     const decision: ApprovalDecision = { approve };
@@ -154,22 +201,21 @@ export function ApprovalCard({ approval, onDecide, allowRemember = true, showCon
             {consequence.post}
           </CardLine>
         ) : (
-          <CardLine>{description.length > 0 && description !== title ? description : runsAsYouLine(title)}</CardLine>
+          <CardLine>
+            {written ?? (description.length > 0 && description !== title
+              ? description
+              : consentClassLine(approval.descriptor.name, approval.descriptor.risk))}
+          </CardLine>
         )}
         {/* The consequence sentence carries the meaning; the mechanical rows
             fold but never leave the DOM (the a11y contract keeps its name). */}
-        {consequence ? (
+        {foldFields ? (
           <details className="fl-approval-details">
             <summary>Details — real inputs</summary>
             {inputs}
           </details>
         ) : inputs}
-        {showContext ? (
-          <CardByline>
-            Runs as you · {VENUE_LABEL[approval.ctx.venue] ?? approval.ctx.venue}
-            {approval.ctx.appId ? ` · ${approval.ctx.appId}` : ""}
-          </CardByline>
-        ) : null}
+        {showContext ? <CardByline>{venueByline(approval.ctx.venue, venueName)}</CardByline> : null}
         {allowRemember ? (
           <details className="fl-auto-details">
             <summary>Remember this decision</summary>

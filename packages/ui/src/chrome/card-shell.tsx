@@ -39,12 +39,10 @@ export const CARD_EYEBROWS = {
   waiting: "Waiting on you",
 } as const;
 
-/** Law 3's fallback: with no host description, no authored description and no
-    synthesizable consequence, the one thing always true of a Vendo call is
-    that it runs as the person approving it. */
-export function runsAsYouLine(title: string): string {
-  return `Vendo will run ${title} as you.`;
-}
+/* Law 3's fallback used to live here as `runsAsYouLine(title)` — "Vendo will
+   run Send money as you.", the tool's label read back at the user. It is now
+   `consentClassLine(name, risk)` in build-beat.tsx, which says what an approval
+   DOES by class and never names the tool. */
 
 const glyph = (path: ReactNode, size = 15): ReactNode => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"

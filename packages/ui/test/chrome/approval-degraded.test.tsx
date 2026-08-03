@@ -14,6 +14,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
 import { ApprovalCard } from "../../src/chrome/index.js";
+import { venueByline } from "../../src/chrome/approval-card.js";
 import { fieldRows } from "../../src/chrome/field-rows.js";
 import { buildApprovalRequest } from "../../src/chrome/thread/approval-wire.js";
 import { createWireServer } from "../wire-server.js";
@@ -60,8 +61,10 @@ const rowsOf = (container: HTMLElement): Array<[string, string]> =>
 describe("degraded data never changes the card", () => {
   it("keeps the mandatory line with an empty schema, no description and no host metadata", () => {
     const container = show(ask({ args: { note: "hi" } }));
-    // Law 3 — no described tool still gets a sentence, not a blank card.
-    expect(container.querySelector(".fl-card-line")!.textContent).toBe("Vendo will run Thing do as you.");
+    // Law 3 — no described tool still gets a sentence, not a blank card. It
+    // used to pin "Vendo will run Thing do as you." — the tool's label read
+    // back at the user; now it is the consequence CLASS.
+    expect(container.querySelector(".fl-card-line")!.textContent).toBe("This changes something in your account, as you.");
     expect(rowsOf(container)).toEqual([["Note", "hi"]]);
     // The prettified id, never the raw slug (ENG-216).
     expect(screen.queryByText("host_thing_do")).toBeNull();
@@ -133,6 +136,137 @@ describe("degraded data never changes the card", () => {
   });
 });
 
+describe("a boolean field is an answer, never the literal", () => {
+  it("reads true/false as Yes/No on the card, whatever the key means", () => {
+    const container = show(ask({ args: { invoiceId: "inv_42", permanent: true, notifyOwner: false } }));
+    expect(rowsOf(container)).toEqual([
+      ["Invoice id", "inv_42"],
+      // The key carries the meaning ("Permanent") — the VALUE stays Yes/No.
+      ["Permanent", "Yes"],
+      ["Notify owner", "No"],
+    ]);
+    expect(screen.getByLabelText("Real tool inputs").textContent).not.toContain("true");
+    expect(screen.getByLabelText("Real tool inputs").textContent).not.toContain("false");
+  });
+
+  it("keeps the raw literal for dev mode, on the dd tooltip", () => {
+    const rows = fieldRows({ permanent: true, notifyOwner: false });
+    expect(rows.map(row => [row.value, row.raw])).toEqual([["Yes", "true"], ["No", "false"]]);
+    const container = show(ask({ args: { permanent: true } }));
+    expect(container.querySelector(".fl-card-field dd")!.getAttribute("title")).toBe("true");
+  });
+
+  it("reads a declared boolean and a NESTED boolean the same way", () => {
+    const declared = show(ask({
+      args: { permanent: true },
+      inputSchema: { type: "object", properties: { permanent: { type: "boolean" } } },
+    }));
+    expect(rowsOf(declared)).toEqual([["Permanent", "Yes"]]);
+    expect(fieldRows({ options: { permanent: true, dryRun: false } })[0]!.value)
+      .toBe("Permanent: Yes\nDry run: No");
+    expect(fieldRows({ flags: [true, false] })[0]!.value).toBe("Yes\nNo");
+  });
+});
+
+describe("the plain-words line says what happens, not which tool", () => {
+  const money = (over: { critical?: boolean; schema?: boolean; meta?: boolean } = {}) => ask({
+    call: {
+      id: "call_send",
+      tool: "host_transferMoney",
+      args: { amount: 4750, recipient_name: "Acme Utilities", memo: "July water bill" },
+    },
+    descriptor: {
+      name: "host_transferMoney",
+      title: "Send money",
+      description: "",
+      inputSchema: over.schema === false
+        ? {}
+        : { type: "object", properties: { amount: { type: "integer", description: "Amount in integer cents" } } },
+      risk: over.critical === false ? "write" : "destructive",
+    },
+  } as Partial<ApprovalRequest>);
+
+  const line = (container: HTMLElement): string => container.querySelector(".fl-card-line")!.textContent!;
+
+  it("tier 1 — the host's own description wins over anything synthesized", () => {
+    const container = show(money(), {
+      host_transferMoney: { label: "Send money", description: "Pays your water bill from checking." },
+    });
+    expect(line(container)).toBe("Pays your water bill from checking.");
+  });
+
+  it("tier 2 — synthesizes one truthful sentence from the REAL inputs", () => {
+    const container = show(money());
+    expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+    // A destructive ask gets the sentence AND keeps every input in plain sight:
+    // the sentence is the meaning, the fold is a separate (non-critical) call.
+    expect(container.querySelector(".fl-approval-details")).toBeNull();
+    expect(rowsOf(container)).toHaveLength(3);
+  });
+
+  it("tier 2 — works off the host's field formatter when no schema rides along", () => {
+    // The live in-thread case: `inputSchema: {}`, money declared only by the
+    // host's ToolMeta formatter (Maple's own approval card).
+    const container = show(money({ schema: false }), {
+      host_transferMoney: { label: "Send money", formatField: (key, value) => key === "amount" && typeof value === "number" ? `$${(value / 100).toFixed(2)}` : undefined },
+    });
+    expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+  });
+
+  it("tier 3 — falls back to the consequence CLASS, never the tool name", () => {
+    // Nothing to synthesize from: no description, no declared money.
+    const bare = show(money({ schema: false }));
+    expect(line(bare)).toBe("This moves money, as you.");
+    expect(line(bare)).not.toContain("Send money");
+    expect(line(bare)).not.toContain("Vendo will run");
+    cleanup();
+    // A tool whose words name no known verb still never reads its own label
+    // back at the person: the risk class carries the sentence.
+    const unknown = show(ask({ args: { note: "hi" } }));
+    expect(line(unknown)).toBe("This changes something in your account, as you.");
+    expect(line(unknown)).not.toContain("Thing do");
+  });
+
+  it("keeps folding the fields behind Details on an ORDINARY consequence ask", () => {
+    const container = show(money({ critical: false }));
+    expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
+    expect(container.querySelector(".fl-approval-details")).not.toBeNull();
+  });
+});
+
+describe("the venue byline never prints an id", () => {
+  const inApp = (over: Partial<ApprovalRequest["ctx"]>): ApprovalRequest => ask({
+    ctx: { principal: { kind: "user", subject: "user_1" }, venue: "app", presence: "present", ...over },
+  } as Partial<ApprovalRequest>);
+
+  it("says the bare phrase when the only thing known about the app is its id", () => {
+    const container = show(inApp({ appId: "app_1" }));
+    const byline = container.querySelector(".fl-card-byline")!.textContent!;
+    expect(byline).toBe("Runs as you · asked in an app");
+    expect(byline).not.toContain("app_1");
+  });
+
+  it("uses a human venue name when the surface knows one", () => {
+    render(
+      <VendoProvider client={client}>
+        <ApprovalCard approval={inApp({ appId: "app_1" })} onDecide={() => undefined} venueName="Money HQ" />
+      </VendoProvider>,
+    );
+    expect(screen.getByText("Runs as you · asked in Money HQ")).toBeTruthy();
+  });
+
+  it("refuses an id-shaped token from ANY source, and never reads a raw venue slug", () => {
+    for (const token of ["app_1", "apr_9", "thr_x", "grt_7", "run_2"]) {
+      expect(venueByline("app", token)).toBe("Runs as you · asked in an app");
+      expect(venueByline("automation", token)).toBe("Runs as you · asked by an automation");
+    }
+    expect(venueByline("automation", "Weekly digest")).toBe("Runs as you · asked by Weekly digest");
+    // An unknown venue prints the one thing still true, never the slug.
+    expect(venueByline("app_1")).toBe("Runs as you");
+    expect(venueByline("some-new-venue")).toBe("Runs as you");
+  });
+});
+
 describe("the in-thread approval carries the real descriptor", () => {
   it("formats money IN-THREAD once the wire part's schema rides along", () => {
     const part = {
@@ -155,7 +289,10 @@ describe("the in-thread approval carries the real descriptor", () => {
     expect(rowsOf(container)).toEqual([["Amount", "$47.50"], ["Recipient name", "Acme Utilities"]]);
     expect(screen.getByLabelText("Real tool inputs").textContent).not.toContain("4750");
     expect(container.querySelector(".fl-card-title")!.textContent).toBe("Send money");
-    expect(container.querySelector(".fl-card-line")!.textContent).toBe("Send money from your checking account.");
+    // This line used to pin the authored descriptor sentence. The consequence
+    // synthesized from the real inputs is MORE specific (it names the money and
+    // the counterparty), so it now leads — see the plain-words precedence.
+    expect(container.querySelector(".fl-card-line")!.textContent).toBe("Sends $47.50 to Acme Utilities — now, as you.");
   });
 
   it("still builds a usable ask when the wire carries no descriptor at all", () => {

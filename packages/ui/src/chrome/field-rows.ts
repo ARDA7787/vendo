@@ -9,7 +9,7 @@
  *  list is simply a long list — never a fallback to raw JSON.
  */
 import type { Json, JsonSchema } from "@vendoai/core";
-import { argProperties, argValue, humanizeToolName, type ToolMeta } from "./humanize.js";
+import { argProperties, argValue, humanizeToolName, yesNo, type ToolMeta } from "./humanize.js";
 import { truncateHead } from "./truncate.js";
 
 export interface CardFieldRow {
@@ -35,7 +35,10 @@ const bound = (text: string): string =>
 
 function leaf(value: unknown): string {
   if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  // A nested boolean reads as an answer too, or the same `true` leaks one level
+  // down ("Options — Permanent: true").
+  if (typeof value === "boolean") return yesNo(value);
+  if (typeof value === "number") return String(value);
   if (value === null) return "null";
   try {
     return JSON.stringify(value) ?? String(value);

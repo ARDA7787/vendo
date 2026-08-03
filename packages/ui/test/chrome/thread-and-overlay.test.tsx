@@ -51,6 +51,11 @@ describe("VendoThread and VendoOverlay exports", () => {
     expect(beat?.classList.contains("fl-beat")).toBe(true);
     expect(beat?.textContent).toContain("Email send");
     expect(beat?.getAttribute("data-vendo-approval")).toBe("write");
+    // Four lines here used to assert the RIBBON narrating the PARKED call
+    // ("Email send — waiting for your approval") directly above the card that
+    // says "NEEDS YOUR APPROVAL / Email send" — the same words twice. A parked
+    // ask is narrated ONCE, by its card: the ribbon must be gone.
+    expect(document.querySelector(".fl-ribbon")).toBeNull();
     const card = await screen.findByLabelText("Approval for Email send");
     expect(card.textContent).toContain("a@example.com");
     expect(card.textContent).toContain(
