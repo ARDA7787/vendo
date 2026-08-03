@@ -99,7 +99,7 @@ describe("the grade drives the sentence", () => {
     for (const ungraded of ["ungraded", "", "nonsense"]) {
       expect(consentClassLine(ungraded)).toBe(UNGRADED_LINE);
       expect(consentClassLine(ungraded)).not.toBe(BY_GRADE.read);
-      expect(grantRowWord(ungraded)).toBe("Unchecked");
+      expect(grantRowWord(ungraded)).toBe("Not reviewed");
       expect(grantRowWord(ungraded)).not.toBe(WORD_BY_GRADE.read);
     }
   });

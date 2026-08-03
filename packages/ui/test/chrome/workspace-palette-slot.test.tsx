@@ -22,17 +22,19 @@ describe("VendoPage, VendoPalette, and VendoSlot exports", () => {
   });
 
   // Roving tabindex with APG MANUAL activation: arrows move focus, Enter/Space
-  // activate. (This case used to assert that ArrowRight activated the row it
-  // landed on — see H18: arrowing onto "New chat" ACTS, discarding the open
-  // conversation and its draft.)
-  it("uses roving manual tabs, swaps panels, and lists and opens fixture apps", async () => {
+  // ⚠️ TEST EDIT — this asserted MANUAL activation ("New chat" was a tab, and
+  // arrowing onto it ACTED, discarding the open conversation and its draft —
+  // H18). The act is a plain button outside the tablist now, so the arrows
+  // cannot reach it and the remaining VIEW tabs select as focus moves, per APG.
+  it("uses roving tabs, swaps panels, and lists and opens fixture apps", async () => {
     render(<VendoProvider client={client}><VendoPage /></VendoProvider>);
-    const chat = screen.getByRole("tab", { name: "New chat" });
-    chat.focus();
-    fireEvent.keyDown(chat, { key: "ArrowRight" });
+    expect(screen.getByRole("button", { name: "New chat" })).toBeTruthy();
     const apps = screen.getByRole("tab", { name: "Apps" });
-    expect(document.activeElement).toBe(apps);
-    expect(apps.getAttribute("aria-selected")).toBe("false");
+    apps.focus();
+    fireEvent.keyDown(apps, { key: "ArrowRight" });
+    const automations = screen.getByRole("tab", { name: "Automations" });
+    expect(document.activeElement).toBe(automations);
+    expect(automations.getAttribute("aria-selected")).toBe("true");
     fireEvent.click(apps);
     expect(apps.getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByText("Invoices")).toBeTruthy();

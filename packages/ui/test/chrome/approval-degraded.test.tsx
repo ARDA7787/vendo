@@ -336,13 +336,19 @@ describe("the plain-words line says what happens, not which tool", () => {
     // consequence sentence folded the real inputs behind Details and the
     // ceremony edge was dropped. Scrutiny must not be reduced on a grade
     // nobody supplied.
+    //
+    // ⚠️ TEST EDIT (#747): the ceremony is unchanged and still asserted below.
+    // What changed is where it comes from. The wave approximated the state as
+    // `write` + `critical: true`; `ungraded` is a first-class RiskLabel now, so
+    // the wire carries it as itself and each card derives ceremony from the
+    // GRADE. The old assertion pinned the approximation.
     const approval = buildApprovalRequest({
       approvalId: "apr_ungraded",
       toolCallId: "call_ungraded",
       tool: "host_transferMoney",
       args: { amount_cents: 4750, recipient_name: "Acme Utilities" },
     }, {});
-    expect(approval.descriptor.critical).toBe(true);
+    expect(approval.descriptor.risk).toBe("ungraded");
     const container = show(approval);
     expect(line(container)).toBe("Sends $47.50 to Acme Utilities — now, as you.");
     expect(container.querySelector(".fl-approval-details")).toBeNull();
@@ -438,9 +444,11 @@ describe("the in-thread approval carries the real descriptor", () => {
       tools,
     );
     expect(approval.descriptor.inputSchema).toEqual({});
-    // ⚠️ TEST EDIT (ruling 15): this pinned "read" for an ask the wire never
-    // graded — the chip then said "Read-only" about a call we know nothing about.
-    expect(approval.descriptor.risk).toBe("write");
+    // ⚠️ TEST EDIT (ruling 15, then #747): this pinned "read" for an ask the
+    // wire never graded — the chip then said "Read-only" about a call we know
+    // nothing about. Ruling 15 made it the cautious `write`; #747 gave the
+    // state its own name, so it is carried rather than approximated.
+    expect(approval.descriptor.risk).toBe("ungraded");
     // Never the server's `tool slug + canonical JSON`.
     expect(approval.inputPreview).toBe("To: a@example.com");
     const container = show(approval, tools);
