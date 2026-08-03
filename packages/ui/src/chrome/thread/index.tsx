@@ -267,8 +267,7 @@ export function VendoThread({
   // ENG-214 — a broken turn (failed send, mid-stream drop, any thread.error)
   // surfaces VISIBLY in the thread, not only through the hidden status span.
   // The copy stays friendly — raw transport errors are announced to assistive
-  // tech below but never printed to end users. Retry regenerates the failed
-  // turn from the preserved user message (no duplication).
+  // tech below but never printed to end users.
   // A "Vendo: " prefixed message is the agent's OWN safe error (VendoError
   // code + operator-crafted text, wireErrorMessage in @vendoai/agent) — the
   // ONE error shape end users may see in detail. Raw transport/provider

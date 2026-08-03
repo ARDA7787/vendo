@@ -197,13 +197,6 @@ test("the center carries its two doors and a needs-you section that clears", asy
 });
 
 test("§15 — a turn whose stream died offers no Retry component", async ({ page }) => {
-  test.fixme(
-    true,
-    "OPEN DEFECT, not a spec problem: conductor ruling 16 says the thread's error-banner Retry"
-    + " (chrome/thread/index.tsx:284-306) is a §15 violation and must go — the agent's prose plus the"
-    + " existing Regenerate turn action are the retry path. thread/index.tsx belongs to another"
-    + " post-check round; deleting this line is part of that commit, not of the smoke pack.",
-  );
   await openScenario(page, "composer");
   await send(page, "[stream-kill] break it");
   await expect(page.getByText("the response didn’t finish")).toBeVisible();
