@@ -10,7 +10,7 @@ import { MorphToast, type MorphToastProps } from "../morph-toast.js";
 import { Composer, dragHasFiles, useComposer } from "./composer.js";
 import { MessageList } from "./message-list.js";
 import { useMessageWindow, useStickToBottom } from "./scrolling.js";
-import { approvalByCall, grantSetByCall, riskByCall, userText, VENDO_ERROR_PREFIX } from "./message-data.js";
+import { approvalByCall, grantSetByCall, riskByCall, turnErrorSentence, userText } from "./message-data.js";
 
 /** Lane pick 4B — a rich landing suggestion: two-line starter card. */
 export interface VendoSuggestionCard {
@@ -278,14 +278,12 @@ export function VendoThread({
   // already saying it, the banner keeps only its headline + Retry so the same
   // sentence isn't printed twice.
   const turnErrorInThread = activeAssistant?.parts.some(part => part.type === "data-vendo-turn-error") ?? false;
-  const errorDetail = !turnErrorInThread && thread.error?.message?.startsWith(VENDO_ERROR_PREFIX) === true
-    ? thread.error.message.slice(VENDO_ERROR_PREFIX.length)
-    : null;
+  const errorDetail = turnErrorInThread ? undefined : turnErrorSentence(thread.error?.message);
   const errorBanner = thread.error ? (
     <div className="fl-error">
       <span>
         Something went wrong and the response didn&rsquo;t finish.
-        {errorDetail !== null && <span className="fl-error-detail">{errorDetail}</span>}
+        {errorDetail === undefined ? null : <span className="fl-error-detail">{errorDetail}</span>}
       </span>
       <button
         type="button"

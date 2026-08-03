@@ -26,7 +26,7 @@ import {
   partData,
   toolCallIsContent,
   toolName,
-  VENDO_ERROR_PREFIX,
+  turnErrorSentence,
   type ApprovalWireMeta,
 } from "./message-data.js";
 
@@ -193,9 +193,11 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     // our OWN safe text — the reader gets the sentence, not the plumbing).
     const data = partData(part) as Partial<VendoTurnErrorPart>;
     if (typeof data.message !== "string" || data.message.length === 0) return null;
-    const message = data.message.startsWith(VENDO_ERROR_PREFIX)
-      ? data.message.slice(VENDO_ERROR_PREFIX.length)
-      : data.message;
+    // One shared reader with the banner (message-data): the prefix and the
+    // trailing code token come off, and an UNPREFIXED string — a raw
+    // provider/transport sentence — yields no detail line at all. The headline
+    // is the record either way.
+    const message = turnErrorSentence(data.message);
     return (
       <div className="fl-buildfail" data-vendo-turn-error="">
         <div className="fl-beat fl-beat-error">
@@ -206,7 +208,7 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
           </span>
           <span className="fl-beat-label">The response didn&rsquo;t finish</span>
         </div>
-        <div className="fl-approval-more" role="alert">{message}</div>
+        {message === undefined ? null : <div className="fl-approval-more" role="alert">{message}</div>}
       </div>
     );
   }
