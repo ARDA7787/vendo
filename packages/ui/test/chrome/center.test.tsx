@@ -17,11 +17,12 @@
  *    overlay.
  */
 import type { ApprovalRequest, AppDocument } from "@vendoai/core";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, type VendoClient } from "../../src/index.js";
 import { VendoPage } from "../../src/chrome/index.js";
 import { markSeen } from "../../src/chrome/discoverability.js";
+import { publishThreadRun, resetRunActivity } from "../../src/chrome/run-activity.js";
 import type { ThreadSummary } from "../../src/wire-types.js";
 
 const DAY_MS = 86_400_000;
@@ -251,6 +252,59 @@ describe("the center rail", () => {
     const today = groups.find(group => group.textContent?.startsWith("Today"))!;
     expect(within(today).getByRole("button", { name: "Where did July go?" })).toBeTruthy();
     expect(within(today).queryByRole("button", { name: "An old question" })).toBeNull();
+  });
+});
+
+describe("a run the user walked away from (M27)", () => {
+  const surface = Symbol("test-thread-surface");
+  const thread = (): ThreadSummary[] => [{ id: "thr_1", title: "Where did July go?", updatedAt: iso(0) }] as ThreadSummary[];
+  afterEach(() => resetRunActivity());
+
+  it("pulses the running conversation's row and narrates the finish", async () => {
+    mount(stubClient({ threads: thread() }));
+    const row = await screen.findByRole("button", { name: "Where did July go?" });
+    await waitFor(() => expect(row.getAttribute("aria-current")).toBe("page"));
+    // Walk away from the conversation — the run keeps going (§2 G1).
+    fireEvent.click(screen.getByRole("tab", { name: "Apps" }));
+    await screen.findByRole("heading", { name: "Apps" });
+
+    act(() => publishThreadRun(surface, { threadId: "thr_1", status: "streaming", messages: [] }));
+    // The row says a turn is live — from the run store, not from "is this the
+    // row you happen to be viewing".
+    await waitFor(() => expect(row.hasAttribute("data-vendo-running")).toBe(true));
+
+    act(() => publishThreadRun(surface, {
+      threadId: "thr_1",
+      status: "ready",
+      messages: [{ id: "m1", role: "assistant", parts: [{ type: "text", text: "July is ready" }] }] as never,
+    }));
+    // …and the finish is announced where the user actually is, with one way back.
+    const toast = await screen.findByText("July is ready");
+    expect(row.hasAttribute("data-vendo-running")).toBe(false);
+    fireEvent.click(within(toast.closest(".fl-launcher-toast") as HTMLElement).getByRole("button", { name: "View" }));
+    expect(screen.getByRole("tab", { name: "New chat" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("the pulse no longer requires the row to be the one you are viewing", async () => {
+    const { CHROME_CSS } = await import("../../src/chrome/chrome-css.js");
+    expect(CHROME_CSS).toContain(".fl-rail-chat[data-vendo-running] .fl-rail-pulse { display: block; }");
+    expect(CHROME_CSS).not.toMatch(/aria-current="page"\] \.fl-rail-pulse/);
+  });
+
+  it("switching conversations remounts the column instead of re-labelling a live one", async () => {
+    mount(stubClient({
+      threads: [
+        { id: "thr_1", title: "Where did July go?", updatedAt: iso(0) },
+        { id: "thr_2", title: "An older question", updatedAt: iso(DAY_MS) },
+      ] as ThreadSummary[],
+    }));
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(composer, { target: { value: "half-typed question" } });
+    fireEvent.click(screen.getByRole("button", { name: "An older question" }));
+    // A fresh conversation surface: without the key, the same instance kept the
+    // previous thread's draft — and its in-flight turn.
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe(""));
+    expect(screen.getByRole("textbox", { name: "Message" })).not.toBe(composer);
   });
 });
 

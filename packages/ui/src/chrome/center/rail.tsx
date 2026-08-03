@@ -266,13 +266,17 @@ function groupThreads(threads: ThreadSummary[], now: number): ThreadGroup[] {
 export interface CenterChatsProps {
   threads: ThreadSummary[];
   activeId: string | undefined;
+  /** The conversation a turn is running in, if any (§10 "a running background
+   *  turn shows a quiet pulse on its row"). Read from the run-activity store by
+   *  the page — the row it marks does NOT have to be the one you are viewing. */
+  runningId?: string | undefined;
   onSelect(id: string): void;
 }
 
 /** The conversation rows. A row's title is the conversation's opening line (the
  *  wire's own thread title), ellipsized by CSS — never truncated in JS, so the
  *  full line stays available to assistive tech and to a wider rail. */
-export function CenterChats({ threads, activeId, onSelect }: CenterChatsProps) {
+export function CenterChats({ threads, activeId, runningId, onSelect }: CenterChatsProps) {
   // Not memoized on [threads]: "today" is a fact about the CLOCK, and a rail
   // left open across midnight kept yesterday's answer (the grouping is three
   // comparisons over a short list — there was nothing to save).
@@ -287,14 +291,16 @@ export function CenterChats({ threads, activeId, onSelect }: CenterChatsProps) {
               type="button"
               className="fl-rail-chat"
               aria-current={activeId === thread.id ? "page" : undefined}
+              {...(runningId === thread.id ? { "data-vendo-running": "" } : {})}
               key={thread.id}
               onClick={() => onSelect(thread.id)}
             >
               {thread.title}
               {/* The running-turn pulse (§10 "a running background turn shows a
-                  quiet pulse on its row"). Painted by CSS only while the
-                  column's composer is mid-turn — the honest signal, since a
-                  turn only ever runs on the conversation that is open. */}
+                  quiet pulse on its row"), painted from the run store rather
+                  than from "is this the row you are looking at" — the CSS used
+                  to require aria-current, so the one row it could never mark was
+                  a background one. */}
               <span className="fl-rail-pulse" aria-hidden="true" />
             </button>
           ))}

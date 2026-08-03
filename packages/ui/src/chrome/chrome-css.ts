@@ -2330,13 +2330,16 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-rail-chat:hover { background: color-mix(in srgb, var(--vendo-fg) 4%, transparent); }
 .fl-rail-chat[aria-current="page"] { background: color-mix(in srgb, var(--vendo-fg) 6%, transparent); }
 .fl-rail-need { color: var(--vendo-fg-muted); }
-/* The running-turn pulse: shown only while the column's composer is mid-turn
-   (.fl-stop mounts for the duration), on the row that turn belongs to. */
+/* The running-turn pulse, on the row the turn belongs to — marked by the page
+   from the run-activity store (data-vendo-running). It used to require
+   aria-current="page", which meant the ONE row it could never mark was a
+   BACKGROUND one: §10's promise ("a running background turn shows a quiet pulse
+   on its row") was undeliverable as written. */
 .fl-rail-pulse { display: none; position: absolute; top: 50%; right: 9px; width: 6px; height: 6px;
   margin-top: -3px; border-radius: 50%; background: var(--vendo-accent); }
-.fl-center:has(.fl-stop) .fl-rail-chat[aria-current="page"] .fl-rail-pulse { display: block; }
+.fl-rail-chat[data-vendo-running] .fl-rail-pulse { display: block; }
 @media (prefers-reduced-motion: no-preference) {
-  .fl-center:has(.fl-stop) .fl-rail-chat[aria-current="page"] .fl-rail-pulse {
+  .fl-rail-chat[data-vendo-running] .fl-rail-pulse {
     animation: fl-rail-pulse 1.6s ease-in-out infinite; }
 }
 @keyframes fl-rail-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }

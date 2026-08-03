@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useApps } from "../hooks/use-apps.js";
 import { useMobileTakeover } from "../hooks/use-mobile-takeover.js";
 import { useThreads } from "../hooks/use-threads.js";
@@ -9,7 +9,9 @@ import { AppShelf } from "./center/home.js";
 import { CENTER_PANEL_ID, CenterChats, CenterHeader, CenterSheet, NeedsYou, RailNav, centerViewLabel, railRows, type CenterView } from "./center/rail.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { ConnectedAccountsPanel } from "./connected-accounts-panel.js";
+import { LauncherToast, useLauncherStatus } from "./launcher-status.js";
 import { ACTIVITY_BUMP_EVENT } from "./morph-toast.js";
+import { IDLE_RUN_ACTIVITY, runActivity, subscribeRunActivity } from "./run-activity.js";
 import { PrefillScopeContext } from "./overlay-registry.js";
 import { TakeoverPortal } from "./takeover-portal.js";
 import { VendoThread, type VendoThreadProps } from "./thread/index.js";
@@ -172,6 +174,22 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
     setChatsOpen(false);
   }, [landInColumn]);
 
+  // What the center says about a run the user has walked away from (§2 G1: the
+  // panel's promise, which the center never kept — LauncherToast and the run
+  // narration were overlay-only, so a turn that finished while the user was on
+  // Apps or Automations finished in silence). Same hook, same store; "open" here
+  // means the conversation column is what they are actually looking at.
+  const looking = view === "chat" && !chatsOpen;
+  const status = useLauncherStatus({
+    open: looking,
+    ...(conversation.activeId === undefined ? {} : { threadId: conversation.activeId }),
+    onOpen: openConversation,
+  });
+  // Which conversation row pulses. The store knows a turn is live; the page
+  // knows whose it is.
+  const activity = useSyncExternalStore(subscribeRunActivity, runActivity, () => IDLE_RUN_ACTIVITY);
+  const runningId = activity.running ? conversation.activeId : undefined;
+
   // The shelf rides the composer's accessory seam, and ONLY while the column is
   // actually showing: every tile is a real mounted app, so a shelf sitting
   // behind another door would boot machines nobody is looking at.
@@ -190,7 +208,12 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
     <>
       {/* §4 — the numbered attention section, present only while asks wait. */}
       <NeedsYou onOpen={openConversation} />
-      <CenterChats threads={conversation.threads} activeId={conversation.activeId} onSelect={select} />
+      <CenterChats
+        threads={conversation.threads}
+        activeId={conversation.activeId}
+        runningId={runningId}
+        onSelect={select}
+      />
     </>
   );
 
@@ -235,6 +258,9 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
                 : { "aria-label": centerViewLabel(view) }),
             })}
         >
+          {/* The spoken half of a run the user has walked away from: the pill's
+              narration, for a surface that has no pill. */}
+          <p className="fl-sr-only" role="status">{status.working ? `${status.label}…` : ""}</p>
           {/* The conversation stays MOUNTED behind the other doors: visiting
               Apps must not abandon a running turn (or lose the transcript). */}
           <div className="fl-center-col" hidden={view !== "chat"}>
@@ -243,7 +269,12 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
             <WaitingQueue />
             <div className={`fl-center-thread${home ? " fl-center-home" : ""}`}>
               <PrefillScopeContext.Provider value={scope}>
+                {/* keyed on the conversation: switching threads is a NEW
+                    conversation surface, and re-using the instance handed the
+                    next thread a live transport still streaming the last one's
+                    turn — the running turn's UI simply went missing. */}
                 <VendoThread
+                  key={conversation.selected ?? "new"}
                   threadId={conversation.selected}
                   onThreadId={conversation.onThreadId}
                   {...(thread?.suggestions === undefined ? {} : { suggestions: thread.suggestions })}
@@ -263,6 +294,19 @@ export function VendoPage({ thread }: VendoPageProps = {}) {
         {takeover.active && chatsOpen
           ? <CenterSheet view={view} onView={goto} onClose={() => setChatsOpen(false)}>{chats}</CenterSheet>
           : null}
+        {/* §3 H1 — the completion toast is the way back INTO the conversation
+            that produced the result; the record itself stays the thread. Same
+            component the overlay raises, so there is one of these, not two. */}
+        {status.toast === undefined
+          ? null
+          : (
+            <LauncherToast
+              result={status.toast}
+              position="bottom-right"
+              onView={status.view}
+              onDismiss={status.dismissToast}
+            />
+          )}
       </section>
       </TakeoverPortal>
     </ChromeRoot>
