@@ -297,6 +297,7 @@ describe("the V4 display hint", () => {
       featuredAppId: undefined,
       feature: vi.fn(),
       expandTo: vi.fn(),
+      autoStage: vi.fn(),
       registerEmbed: vi.fn(),
       removeEmbed: vi.fn(),
       ...overrides,
@@ -316,7 +317,10 @@ describe("the V4 display hint", () => {
   it("stages the view at build start when the brain hinted stage", () => {
     const value = split();
     mountCard(viewPart("stage"), value);
-    expect(value.expandTo).toHaveBeenCalledWith("app_big");
+    expect(value.autoStage).toHaveBeenCalledWith("app_big");
+    // Never `expandTo` — that is the USER's gesture and carries no one-shot
+    // ledger. A hint that borrowed it fought the user (H9).
+    expect(value.expandTo).not.toHaveBeenCalled();
   });
 
   // The stage can only feature an embed the split knows about, so a staged view
@@ -336,28 +340,42 @@ describe("the V4 display hint", () => {
   it("leaves an unhinted (or inline) view exactly as it is today", () => {
     const bare = split();
     mountCard(viewPart(), bare);
-    expect(bare.expandTo).not.toHaveBeenCalled();
+    expect(bare.autoStage).not.toHaveBeenCalled();
     cleanup();
     const inline = split();
     mountCard(viewPart("inline"), inline);
-    expect(inline.expandTo).not.toHaveBeenCalled();
+    expect(inline.autoStage).not.toHaveBeenCalled();
   });
 
-  it("never reopens a stage for restored history, and never re-stages an already-open workspace", () => {
+  it("never reopens a stage for restored history", () => {
     const restored = split();
     mountCard(viewPart("stage"), restored, true);
-    expect(restored.expandTo).not.toHaveBeenCalled();
-    cleanup();
+    expect(restored.autoStage).not.toHaveBeenCalled();
+  });
+
+  // The discriminating case for H9 (round B built the mechanism, this is its
+  // caller). The old card-local ref returned early on `split.expanded` and left
+  // the shot UNSPENT, so the next Back-to-chat re-ran the effect against a
+  // collapsed split and re-opened the panel. The card must hand the hint over
+  // unconditionally and let the split's ledger decide.
+  it("spends the hint's shot even against an already-open workspace", () => {
     const open = split({ expanded: true, featuredAppId: "app_big" });
     mountCard(viewPart("stage"), open);
+    expect(open.autoStage).toHaveBeenCalledWith("app_big");
+    // It records the shot; it does NOT re-open anything.
     expect(open.expandTo).not.toHaveBeenCalled();
   });
 
-  it("respects Back-to-chat for the rest of the turn (fires once, never again)", () => {
+  // §2 G1 lives in the split, not here: idempotence per app across the surface's
+  // life is proven in split-view.test.tsx ("the stage hint opens the workspace
+  // ONCE and Back-to-chat is final"). What this card owes is that it keeps no
+  // bookkeeping of its own — one call per identity of the seam, no ref to go
+  // stale.
+  it("keeps no one-shot bookkeeping of its own — the split owns the ledger", () => {
     const part = viewPart("stage");
-    const collapsed = split();
-    const { rerender } = mountCard(part, collapsed);
-    expect(collapsed.expandTo).toHaveBeenCalledTimes(1);
+    const first = split();
+    const { rerender } = mountCard(part, first);
+    expect(first.autoStage).toHaveBeenCalledTimes(1);
     const tree = (value: SplitViewContextValue) => (
       <VendoProvider>
         <SplitViewContext.Provider value={value}>
@@ -365,12 +383,11 @@ describe("the V4 display hint", () => {
         </SplitViewContext.Provider>
       </VendoProvider>
     );
-    // The stage opened…
-    rerender(tree(split({ expanded: true, featuredAppId: "app_big" })));
-    // …and the user took Back-to-chat: the hint does not drag them back.
-    const afterBack = split();
-    rerender(tree(afterBack));
-    expect(afterBack.expandTo).not.toHaveBeenCalled();
+    // A stable seam (the real overlay's `autoStage` is `useCallback([])`) never
+    // re-fires — not on expand, not on collapse.
+    rerender(tree({ ...first, expanded: true, featuredAppId: "app_big" }));
+    rerender(tree({ ...first, expanded: false }));
+    expect(first.autoStage).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -451,6 +468,7 @@ describe("a build in flight, and a build that dies", () => {
       featuredAppId: undefined,
       feature: vi.fn(),
       expandTo: vi.fn(),
+      autoStage: vi.fn(),
       registerEmbed: vi.fn(),
       removeEmbed: vi.fn(),
       ...overrides,

@@ -448,17 +448,19 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
     if (!removeEmbed) return;
     return () => removeEmbed(appId);
   }, [removeEmbed, appId]);
-  // Live turns only (restored history never reopens a stage), and never against
-  // an already-open workspace. The ref makes it fire once per card: a wrong hint
-  // costs one tap, so once the user takes Back-to-chat the hint doesn't fight
-  // them for the rest of the turn.
-  const autoStaged = useRef(false);
+  // Live turns only — restored history never reopens a stage. The one-shot
+  // ledger lives in the split, not here: `autoStage` is idempotent per app, so
+  // the hint's shot is spent even when it arrives against an ALREADY-OPEN
+  // workspace. A card-local ref could not record that — it returned early on
+  // `split.expanded`, left the shot unspent, and the first Back-to-chat re-ran
+  // this effect and re-opened the panel on the user's behalf (H9, §2 G1).
+  // `autoStage` is identity-stable, so keying on it (not on `split`) also stops
+  // every expand/collapse from re-running the effect.
+  const autoStage = split?.autoStage;
   useEffect(() => {
-    if (!staged || restored || autoStaged.current) return;
-    if (split === null || split.expanded) return;
-    autoStaged.current = true;
-    split.expandTo(appId);
-  }, [staged, restored, split, appId]);
+    if (!staged || restored || !autoStage) return;
+    autoStage(appId);
+  }, [staged, restored, autoStage, appId]);
   const featured = split?.expanded === true && split.featuredAppId === appId;
   // The compact card's activation: expanded → feature on the stage;
   // collapsed → expand the workspace WITH this app staged. Clicking the card
