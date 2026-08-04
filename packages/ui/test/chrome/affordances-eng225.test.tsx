@@ -171,19 +171,28 @@ describe("toasts (ENG-225)", () => {
     const wire = await createWireServer();
     const client = createVendoClient({ baseUrl: wire.url });
     render(<VendoProvider client={client}><VendoToasts /></VendoProvider>);
+    // ⚠️ THE BUDGET IS THE TEST'S OWN, not the runner's. These two cases used
+    // `durationMs: 80`, which made the SETUP a race: everything between minting
+    // the toast and pausing it (an async `findByRole`) had to finish inside
+    // 80ms of wall clock, or the countdown had already elapsed and the toast
+    // was gone before the pause could hold anything. Under coverage
+    // instrumentation on a loaded CI runner it does not, and the keyboard case
+    // failed exactly that way (`expected null not to be null`). 800ms of
+    // headroom to arrange, then a wait that still OUTLASTS the countdown — so
+    // the assertion continues to prove the pause, not merely the delay.
     act(() => {
-      vendoToast({ text: "Invoice watcher finished", actions: [{ label: "View", onAction: () => undefined }], durationMs: 80 });
+      vendoToast({ text: "Invoice watcher finished", actions: [{ label: "View", onAction: () => undefined }], durationMs: 800 });
     });
     const region = await screen.findByRole("region", { name: "Notifications" });
 
     fireEvent.mouseEnter(region);
     // Well past the countdown: it is held, and so is the action.
-    await new Promise(resolve => setTimeout(resolve, 250));
+    await new Promise(resolve => setTimeout(resolve, 1_200));
     expect(screen.queryByText("Invoice watcher finished")).not.toBeNull();
     expect(within(region).getByRole("button", { name: "View" })).toBeTruthy();
 
     fireEvent.mouseLeave(region);
-    await waitFor(() => expect(screen.queryByText("Invoice watcher finished")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Invoice watcher finished")).toBeNull(), { timeout: 3_000 });
     dismissAllVendoToasts();
     await wire.close();
   });
@@ -193,11 +202,12 @@ describe("toasts (ENG-225)", () => {
     const client = createVendoClient({ baseUrl: wire.url });
     render(<VendoProvider client={client}><VendoToasts /></VendoProvider>);
     act(() => {
-      vendoToast({ text: "Payroll run finished", actions: [{ label: "View", onAction: () => undefined }], durationMs: 80 });
+      vendoToast({ text: "Payroll run finished", actions: [{ label: "View", onAction: () => undefined }], durationMs: 800 });
     });
     const region = await screen.findByRole("region", { name: "Notifications" });
     fireEvent.focus(within(region).getByRole("button", { name: "View" }));
-    await new Promise(resolve => setTimeout(resolve, 250));
+    // Outlasts the countdown, so this proves the HOLD (see the note above).
+    await new Promise(resolve => setTimeout(resolve, 1_200));
     expect(screen.queryByText("Payroll run finished")).not.toBeNull();
     dismissAllVendoToasts();
     await wire.close();

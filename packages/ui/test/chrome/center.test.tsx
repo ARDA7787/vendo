@@ -260,21 +260,34 @@ describe("the center rail", () => {
     expect(panel.getAttribute("aria-labelledby")).toBeNull();
   });
 
+  // ⚠️ THE CLOCK IS PINNED, and it has to be. This read the REAL time and put
+  // its "today" thread an hour before it, so between local midnight and 01:00
+  // that thread belonged to YESTERDAY and the "Today" group did not exist. It
+  // failed on CI at 00:26 UTC for exactly that reason, and reproduces on demand
+  // with `TZ=UTC pnpm vitest run test/chrome/center.test.tsx -t "groups
+  // conversations"` inside that window. A test that passes 23 hours a day is a
+  // test that fails at random. Midday, so no offset crosses a boundary.
   it("groups conversations by recency and titles each row with its opening line", async () => {
-    mount(stubClient({
-      threads: [
-        { id: "thr_today", title: "Where did July go?", updatedAt: iso(3_600_000) },
-        { id: "thr_week", title: "Build me a spending breakdown", updatedAt: iso(3 * DAY_MS) },
-        { id: "thr_old", title: "An old question", updatedAt: iso(90 * DAY_MS) },
-      ] as ThreadSummary[],
-    }));
-    expect(await screen.findByText("Today")).toBeTruthy();
-    expect(screen.getByText("Previous 7 days")).toBeTruthy();
-    expect(screen.getByText("Earlier")).toBeTruthy();
-    const groups = screen.getAllByRole("group");
-    const today = groups.find(group => group.textContent?.startsWith("Today"))!;
-    expect(within(today).getByRole("button", { name: "Where did July go?" })).toBeTruthy();
-    expect(within(today).queryByRole("button", { name: "An old question" })).toBeNull();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 7, 3, 12, 0));
+      mount(stubClient({
+        threads: [
+          { id: "thr_today", title: "Where did July go?", updatedAt: iso(3_600_000) },
+          { id: "thr_week", title: "Build me a spending breakdown", updatedAt: iso(3 * DAY_MS) },
+          { id: "thr_old", title: "An old question", updatedAt: iso(90 * DAY_MS) },
+        ] as ThreadSummary[],
+      }));
+      expect(await screen.findByText("Today")).toBeTruthy();
+      expect(screen.getByText("Previous 7 days")).toBeTruthy();
+      expect(screen.getByText("Earlier")).toBeTruthy();
+      const groups = screen.getAllByRole("group");
+      const today = groups.find(group => group.textContent?.startsWith("Today"))!;
+      expect(within(today).getByRole("button", { name: "Where did July go?" })).toBeTruthy();
+      expect(within(today).queryByRole("button", { name: "An old question" })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
