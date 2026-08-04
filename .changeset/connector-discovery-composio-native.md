@@ -58,6 +58,31 @@ Both new tools exist only when a connector adapter can actually serve them
 connector implementing the new capabilities, `list_connections` needs only a
 configured connector.
 
+**The Composio adapter's tool plane now speaks one API version, so a tool the
+search finds is a tool that runs.** Discovery is Composio's tool-router, which
+exists only at `v3.1`; execution and the `apps`-scoped listing were still on
+`v3`. Those are two different catalogs, not two doors onto one — so the model
+would find a slug and the executor would answer `Tool <SLUG> not found`, an
+opaque connector error rather than a connect card or a hint to search again.
+Live-measured against their catalog 2026-08-03, 19 of the 42 slugs a `v3.1`
+search returned for eight ordinary needs did not exist on `v3` at all: every
+Outlook mail and calendar action (`OUTLOOK_SEND_EMAIL`, `OUTLOOK_CREATE_DRAFT`,
+`OUTLOOK_SEND_DRAFT`, `OUTLOOK_CALENDAR_CREATE_EVENT`), every `COMPOSIO_SEARCH_*`,
+five `TEXT_TO_PDF_*`, `GOOGLECALENDAR_EVENTS_GET` and
+`WEATHERMAP_GEOCODE_LOCATION`. It only stayed hidden because Gmail and Slack
+happen to exist in both. Connector tools that used to fail now run.
+
+The skew ran the other way too, so the listing moved with the executor: `v3`
+carries legacy names `v3.1` has renamed (`OUTLOOK_OUTLOOK_CREATE_DRAFT`,
+`COMPOSIO_SEARCH_NEWS_SEARCH`), and a `v3` listing feeding a `v3.1` executor
+breaks identically. An `apps`-scoped host therefore sees the larger, current
+`v3.1` catalog — Gmail goes from 23 tools to 63, Outlook from 43 to 305 — and
+more of those tools arrive `ungraded`, which is ask-by-default.
+
+Connected accounts and auth configs stay on `v3` deliberately: live-verified
+identical on both versions, and that plane has no catalog to skew against.
+Both versions are named in one constant each at the top of the adapter.
+
 **Removed public surface.** All of it existed to serve lazy expansion:
 
 - `@vendoai/core`: `ToolListingContext.listingScope` and

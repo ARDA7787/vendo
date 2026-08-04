@@ -58,13 +58,30 @@ const NO_CONNECTED_ACCOUNT_SLUG = "ActionExecute_ConnectedAccountNotFound";
  * tool-output cap even trimmed. */
 const MAX_MATCHES = 10;
 
-/** Composio's tool-router — sessions, semantic search, connect links — exists
- * ONLY at v3.1; there is no v3 path for it. The rest of this adapter has
- * spoken v3 since it was written and its live-probed pagination quirks are
- * calibrated against v3, so the two versions coexist here on purpose: the
- * pre-existing calls stay on v3, everything the tool-router era added is v3.1.
- * Their changelog (2026-04-27) supports both; v1 and v2 answer 410. */
-const TOOL_ROUTER_BASE = "/api/v3.1";
+/** THE TOOL PLANE SPEAKS ONE VERSION. Every call that names a tool — the
+ * tool-router session, its search, the schema reads, the listing walk and the
+ * EXECUTOR — goes through this constant, because v3 and v3.1 are different
+ * catalogs and reading one while executing on the other is a live defect: the
+ * search hands the model a slug and the executor answers "Tool X not found".
+ * Live-measured 2026-08-03, of 42 slugs their v3.1 search returned for eight
+ * ordinary needs, 19 (45%) do not execute on v3 at all — every Outlook mail
+ * action, every `COMPOSIO_SEARCH_*`, five `TEXT_TO_PDF_*`. It runs the other
+ * way too: v3 carries legacy names (`OUTLOOK_OUTLOOK_CREATE_DRAFT`,
+ * `COMPOSIO_SEARCH_NEWS_SEARCH`) that v3.1 has renamed, so a v3 listing feeding
+ * a v3.1 executor breaks just as badly. v3.1 is the side that has the
+ * tool-router at all, so v3.1 is the side everything moves to.
+ *
+ * Do not add a tool-plane call that does not use this constant. */
+const TOOLS_BASE = "/api/v3.1";
+
+/** The ACCOUNTS plane stays pinned to v3 (connected accounts, auth configs).
+ * Live-probed 2026-08-03: v3 and v3.1 answer these byte-identically — same
+ * fields, same 50-item clamp with a page-number cursor, same link/delete
+ * behaviour, same `user_ids` isolation — so there is nothing to gain, and this
+ * plane has no catalog to skew against: an account is an account in either
+ * version, and the toolkit slugs it is keyed by are shared. Moving it would
+ * only put the cross-principal ownership check on a freshly-changed path. */
+const ACCOUNTS_BASE = "/api/v3";
 
 /** Composio ships documentation for PEOPLE inside the machine schema —
  * `examples`, and a `human_parameter_*` restatement of every description — and
@@ -207,7 +224,7 @@ export function composioConnector(config: {
   }
 
   async function fetchTools(app?: string): Promise<ComposioTool[]> {
-    const items = await paginate("/api/v3/tools", "Composio tools", (cursor) => ({
+    const items = await paginate(`${TOOLS_BASE}/tools`, "Composio tools", (cursor) => ({
       // Composio's real catalog is 1,000+ toolkits and 20,000+ tools
       // (docs.composio.dev/toolkits). An unscoped fetch (bare `apps`)
       // walks that whole catalog, so every page requests the API's max
@@ -224,7 +241,7 @@ export function composioConnector(config: {
   /** Connected accounts scoped to ONE subject. Every Composio read filters by
    * user_ids=subject so one principal can never observe another's accounts. */
   async function listAccounts(subject: string, connectedAccountId?: string): Promise<ConnectorAccount[]> {
-    const items = await paginate("/api/v3/connected_accounts", "Composio connected-accounts", (cursor) => ({
+    const items = await paginate(`${ACCOUNTS_BASE}/connected_accounts`, "Composio connected-accounts", (cursor) => ({
       user_ids: subject,
       ...(connectedAccountId === undefined ? {} : { connected_account_ids: connectedAccountId }),
       ...(cursor === undefined ? {} : { cursor }),
@@ -267,7 +284,7 @@ export function composioConnector(config: {
     let session = sessions.get(subject);
     if (session === undefined) {
       session = (async () => {
-        const response = await composioFetch(`${TOOL_ROUTER_BASE}/tool_router/session`, {
+        const response = await composioFetch(`${TOOLS_BASE}/tool_router/session`, {
           method: "POST",
           body: { user_id: subject },
         });
@@ -328,7 +345,7 @@ export function composioConnector(config: {
    * alone. Unknown slugs are simply absent from the answer. */
   async function loadTools(slugs: string[]): Promise<void> {
     if (slugs.length === 0) return;
-    const response = await composioFetch(`${TOOL_ROUTER_BASE}/tools`, {
+    const response = await composioFetch(`${TOOLS_BASE}/tools`, {
       query: { tool_slugs: slugs.join(",") },
     });
     if (!response.ok) {
@@ -344,7 +361,7 @@ export function composioConnector(config: {
   async function toolDetails(slug: string): Promise<{ toolkit: string; tags?: string[] } | undefined> {
     const cached = slugCache.get(slug);
     if (cached !== undefined) return cached;
-    const response = await composioFetch(`${TOOL_ROUTER_BASE}/tools/${encodeURIComponent(slug)}`);
+    const response = await composioFetch(`${TOOLS_BASE}/tools/${encodeURIComponent(slug)}`);
     if (!response.ok) return undefined;
     return rememberTool(response.payload as ComposioTool) === undefined ? undefined : slugCache.get(slug);
   }
@@ -368,7 +385,7 @@ export function composioConnector(config: {
     let itemsSeen = 0;
 
     for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const response = await composioFetch("/api/v3/auth_configs", {
+      const response = await composioFetch(`${ACCOUNTS_BASE}/auth_configs`, {
         query: { limit: "100", cursor: String(page) },
       });
       if (!response.ok) {
@@ -404,7 +421,7 @@ export function composioConnector(config: {
     const entityId = config.entityId?.(ctx) ?? ctx.principal.subject;
     const identity: ConnectorAccountIdentity = { connector: "composio", toolkit, entityId };
     try {
-      const response = await composioFetch(`/api/v3/tools/execute/${encodeURIComponent(slug)}`, {
+      const response = await composioFetch(`${TOOLS_BASE}/tools/execute/${encodeURIComponent(slug)}`, {
         method: "POST",
         body: { user_id: entityId, arguments: args },
       });
@@ -450,7 +467,7 @@ export function composioConnector(config: {
       const subject = config.entityId?.(ctx) ?? ctx.principal.subject;
       const session = await sessionFor(subject);
       const response = await composioFetch(
-        `${TOOL_ROUTER_BASE}/tool_router/session/${encodeURIComponent(session)}/search`,
+        `${TOOLS_BASE}/tool_router/session/${encodeURIComponent(session)}/search`,
         // `use_case` is their field for an intent phrase. `known_fields` is a
         // "key:value, …" STRING, not an object, and we have nothing to put in
         // it — the model's arguments are not known until it has the schema.
@@ -589,7 +606,7 @@ export function composioConnector(config: {
       listConnectable,
 
       async initiate(subject, toolkit, options) {
-        const configs = await composioFetch("/api/v3/auth_configs", { query: { toolkit_slug: toolkit } });
+        const configs = await composioFetch(`${ACCOUNTS_BASE}/auth_configs`, { query: { toolkit_slug: toolkit } });
         if (!configs.ok) {
           const { message } = responseErrorParts(configs.payload);
           throw new Error(`Composio auth-config lookup failed with ${configs.status}: ${message ?? ""}`.trim());
@@ -602,7 +619,7 @@ export function composioConnector(config: {
             `No Composio auth config exists for toolkit ${toolkit}; create one in the Composio dashboard first.`,
           );
         }
-        const linked = await composioFetch("/api/v3/connected_accounts/link", {
+        const linked = await composioFetch(`${ACCOUNTS_BASE}/connected_accounts/link`, {
           method: "POST",
           body: {
             auth_config_id: enabled.id,
@@ -634,7 +651,7 @@ export function composioConnector(config: {
         if (!owned.some((account) => account.id === connectionId)) {
           throw new VendoError("not-found", `connection not found: ${connectionId}`);
         }
-        const response = await composioFetch(`/api/v3/connected_accounts/${encodeURIComponent(connectionId)}`, {
+        const response = await composioFetch(`${ACCOUNTS_BASE}/connected_accounts/${encodeURIComponent(connectionId)}`, {
           method: "DELETE",
         });
         if (!response.ok) {

@@ -53,11 +53,16 @@ interface StubOptions {
   connected?: boolean;
   tools?: Record<string, { toolkit: string; description?: string; tags?: string[]; input?: unknown }>;
   execute?: (slug: string, body: Record<string, unknown>) => { status: number; payload: unknown };
+  /** Slugs their v3 executor does not have. v3 and v3.1 are DIFFERENT
+   * catalogs: live-measured 2026-08-03, 19 of the 42 slugs a v3.1 search
+   * returned for eight ordinary needs 404 on v3 with `Tool_ToolNotFound`. */
+  v31Only?: string[];
 }
 
 function composioStub(options: StubOptions = {}) {
   const counts = { session: 0, search: 0, batch: 0, single: 0, execute: 0 };
   const seenSessionUsers: string[] = [];
+  const paths: string[] = [];
   const tools = options.tools ?? {
     GMAIL_SEND_EMAIL: {
       toolkit: "gmail",
@@ -80,6 +85,7 @@ function composioStub(options: StubOptions = {}) {
 
   const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? "/", "http://stub");
+    paths.push(url.pathname);
     res.setHeader("content-type", "application/json");
 
     if (req.method === "POST" && url.pathname === "/api/v3.1/tool_router/session") {
@@ -107,16 +113,30 @@ function composioStub(options: StubOptions = {}) {
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/v3.1/tools") {
+    // Both versions are served, so a version assertion below fails on the
+    // ASSERTION rather than on an unstubbed route — the test proves we chose
+    // v3.1, not merely that v3 was unreachable.
+    const toolsPath = /^\/api\/(v3|v3\.1)\/tools(?:\/(.+))?$/.exec(url.pathname);
+
+    if (req.method === "GET" && toolsPath && toolsPath[2] === undefined) {
+      const requested = url.searchParams.get("tool_slugs");
+      // No `tool_slugs` is the LISTING walk `descriptors()` makes; with it, the
+      // batch read search makes.
+      if (requested === null) {
+        const toolkit = url.searchParams.get("toolkit_slug");
+        const listed = Object.keys(tools).filter((slug) => toolkit === null || tools[slug]!.toolkit === toolkit);
+        res.end(JSON.stringify({ items: listed.map(item) }));
+        return;
+      }
       counts.batch += 1;
-      const slugs = (url.searchParams.get("tool_slugs") ?? "").split(",").filter(Boolean);
+      const slugs = requested.split(",").filter(Boolean);
       res.end(JSON.stringify({ items: slugs.filter((slug) => tools[slug] !== undefined).map(item) }));
       return;
     }
 
-    if (req.method === "GET" && url.pathname.startsWith("/api/v3.1/tools/")) {
+    if (req.method === "GET" && toolsPath && toolsPath[2] !== undefined) {
       counts.single += 1;
-      const slug = decodeURIComponent(url.pathname.slice("/api/v3.1/tools/".length));
+      const slug = decodeURIComponent(toolsPath[2]);
       if (tools[slug] === undefined) {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: { message: "Tool not found", code: 404 } }));
@@ -126,10 +146,17 @@ function composioStub(options: StubOptions = {}) {
       return;
     }
 
-    if (req.method === "POST" && url.pathname.startsWith("/api/v3/tools/execute/")) {
+    const executePath = /^\/api\/(v3|v3\.1)\/tools\/execute\/(.+)$/.exec(url.pathname);
+    if (req.method === "POST" && executePath) {
       counts.execute += 1;
-      const slug = decodeURIComponent(url.pathname.slice("/api/v3/tools/execute/".length));
+      const slug = decodeURIComponent(executePath[2]!);
       const body = await readBody(req);
+      if (executePath[1] === "v3" && (options.v31Only ?? []).includes(slug)) {
+        // Composio's real v3 answer for a slug only v3.1 carries, verbatim.
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: { message: `Tool ${slug} not found`, slug: "Tool_ToolNotFound", code: 2401 } }));
+        return;
+      }
       const answer = options.execute?.(slug, body) ?? { status: 200, payload: { successful: true, data: { id: "m_1" } } };
       res.statusCode = answer.status;
       res.end(JSON.stringify(answer.payload));
@@ -140,13 +167,16 @@ function composioStub(options: StubOptions = {}) {
     res.end(JSON.stringify({ error: { message: `unstubbed ${req.method} ${url.pathname}` } }));
   };
 
-  return { handler, counts, seenSessionUsers };
+  return { handler, counts, seenSessionUsers, paths };
 }
 
-async function connectorOn(stub: { handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> }) {
+async function connectorOn(
+  stub: { handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> },
+  config: { apps?: string[] } = {},
+) {
   const server = await startServer(stub.handler);
   closers.push(server.close);
-  return composioConnector({ apiKey: "key_test", baseUrl: server.url });
+  return composioConnector({ apiKey: "key_test", baseUrl: server.url, ...config });
 }
 
 describe("find_service_tools rides Composio's own search", () => {
@@ -392,5 +422,80 @@ describe("use_service_tool grades and runs one slug", () => {
 
     expect(stub.counts.batch).toBe(batchAfterSearch);
     expect(stub.counts.single).toBe(0);
+  });
+});
+
+/**
+ * v3 and v3.1 are DIFFERENT CATALOGS, not two doors onto one. Discovering on
+ * one and executing on the other is why a model could find `OUTLOOK_SEND_EMAIL`
+ * and get back "Tool OUTLOOK_SEND_EMAIL not found" — 19 of 42 slugs a real v3.1
+ * search returned were absent from v3 (live-measured 2026-08-03).
+ */
+describe("the tool plane discovers and executes on ONE catalog version", () => {
+  it("runs a slug on v3.1 — the version its schema and risk grade were read from", async () => {
+    const stub = composioStub();
+    const connector = await connectorOn(stub);
+
+    await connector.executeSlug!("GMAIL_SEND_EMAIL", { to: "a@b.c" }, ctx());
+
+    expect(stub.paths).toContain("/api/v3.1/tools/execute/GMAIL_SEND_EMAIL");
+    expect(stub.paths.filter((path) => path.startsWith("/api/v3/tools/execute/"))).toEqual([]);
+  });
+
+  it("runs a slug v3 does not carry at all, instead of answering the model 'not found'", async () => {
+    const stub = composioStub({
+      tools: { OUTLOOK_SEND_EMAIL: { toolkit: "outlook", description: "Send an email with Outlook" } },
+      v31Only: ["OUTLOOK_SEND_EMAIL"],
+    });
+    const connector = await connectorOn(stub);
+
+    const outcome = await connector.executeSlug!("OUTLOOK_SEND_EMAIL", { to: "a@b.c" }, ctx());
+    expect(outcome).toMatchObject({
+      status: "ok",
+      output: { id: "m_1" },
+      connectorAccount: { connector: "composio", toolkit: "outlook", entityId: "user_alice" },
+    });
+  });
+
+  it("still reads a missing connection as connect-required on the v3.1 executor", async () => {
+    // Composio's answer verbatim, live-verified on v3.1 2026-08-03: HTTP 404,
+    // `error.slug` ActionExecute_ConnectedAccountNotFound, `error.code` 1810.
+    // The connect card depends on that mapping surviving the version move.
+    const stub = composioStub({
+      tools: { OUTLOOK_SEND_EMAIL: { toolkit: "outlook", description: "Send an email with Outlook" } },
+      v31Only: ["OUTLOOK_SEND_EMAIL"],
+      execute: (slug) => ({
+        status: 404,
+        payload: {
+          error: {
+            message: `No connected account found for user ID user_alice for toolkit outlook (${slug})`,
+            slug: "ActionExecute_ConnectedAccountNotFound",
+            code: 1810,
+          },
+        },
+      }),
+    });
+    const connector = await connectorOn(stub);
+
+    const outcome = await connector.executeSlug!("OUTLOOK_SEND_EMAIL", { to: "a@b.c" }, ctx());
+    expect(outcome).toMatchObject({
+      status: "connect-required",
+      connect: { connector: "composio", toolkit: "outlook" },
+      connectorAccount: { connector: "composio", toolkit: "outlook", entityId: "user_alice" },
+    });
+  });
+
+  it("lists an apps-scoped host's tools from the catalog it will execute them on", async () => {
+    // The same skew in the other direction: v3 carries legacy names v3.1 has
+    // renamed, so a v3 listing feeding a v3.1 executor breaks too.
+    const stub = composioStub({ tools: { GMAIL_SEND_EMAIL: { toolkit: "gmail", description: "Send email" } } });
+    const connector = await connectorOn(stub, { apps: ["gmail"] });
+
+    const descriptors = await connector.descriptors();
+    expect(descriptors.map((descriptor) => descriptor.name)).toEqual(["gmail_GMAIL_SEND_EMAIL"]);
+    expect(stub.paths.filter((path) => /^\/api\/v3(\.1)?\/tools$/.test(path))).toEqual(["/api/v3.1/tools"]);
+
+    await connector.execute({ id: "call_1", tool: "gmail_GMAIL_SEND_EMAIL", args: {} }, ctx());
+    expect(stub.paths).toContain("/api/v3.1/tools/execute/GMAIL_SEND_EMAIL");
   });
 });
