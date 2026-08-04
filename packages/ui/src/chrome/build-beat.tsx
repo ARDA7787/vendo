@@ -1,6 +1,7 @@
 import { declaredMoneyUnit, type Json, type JsonSchema } from "@vendoai/core";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import { useEffect, useRef, useState } from "react";
+import { USE_SERVICE_TOOL } from "@vendoai/core";
 import { useVendoContext } from "../context.js";
 import { developmentMode } from "./dev-mode.js";
 import { memberSchema } from "./field-rows.js";
@@ -235,15 +236,24 @@ export function toolPresentation(
       the synthesized sentence is only ever a DECLARED unit. */
   inputSchema?: JsonSchema,
 ): ToolPresentation {
-  const toolkit = toolkitFromToolName(name);
-  const logoUrl = toolkit ? toolkitLogoUrl(toolkit) : undefined;
   const flat = (typeof args === "object" && args !== null ? args : {}) as Record<string, unknown>;
+  // A connector dispatch names its real action in `slug`, never in the tool
+  // name: one name stands in for the broker's whole catalog, so presenting the
+  // name would read "Use an outside service" for every service in it — and two
+  // permissions on one consent card would be indistinguishable. The authored
+  // title is dropped with it, for the same reason.
+  const slug = name === USE_SERVICE_TOOL && typeof flat.slug === "string" ? flat.slug : undefined;
+  const presented = slug ?? name;
+  const toolkit = toolkitFromToolName(presented);
+  const logoUrl = toolkit ? toolkitLogoUrl(toolkit) : undefined;
   const trigger = typeof flat.trigger === "string" ? flat.trigger
     : typeof flat.every === "string" ? `every ${flat.every}`
     : typeof flat.schedule === "string" ? flat.schedule
     : undefined;
   const eyebrow = trigger ? "Automation · needs your approval" : "Needs your approval";
-  const title = toolTitle(name, meta, descriptorTitle);
+  const title = slug === undefined
+    ? toolTitle(name, meta, descriptorTitle)
+    : toolTitle(slug, meta);
 
   let description = meta?.description;
   let sub: string | undefined;

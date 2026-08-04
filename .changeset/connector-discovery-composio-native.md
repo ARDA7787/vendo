@@ -1,8 +1,11 @@
 ---
 "@vendoai/actions": minor
 "@vendoai/agent": minor
+"@vendoai/automations": minor
 "@vendoai/core": minor
+"@vendoai/guard": minor
 "@vendoai/mcp": minor
+"@vendoai/ui": minor
 "@vendoai/vendo": minor
 ---
 
@@ -65,3 +68,46 @@ backend today — so a Cloud-default deployment that does not scope
 `connectorApps` reaches connectors through the connect dock only until the
 console broker exposes a search endpoint. Filling that with keyword scoring or
 name-based risk inference is exactly what this change removes.
+
+**Automations can run connector tools, through the consent they already use.**
+`use_service_tool` is one tool name standing in for the broker's whole catalog,
+so its descriptor cannot carry a real grade — it is `ungraded`, and design §12
+withholds `ungraded` from an unattended run the same way it withholds
+`destructive`. Left there, arming an automation on a connector would have been a
+narrowing: before this wave an individually-graded `read` connector tool WAS
+offered to an automation.
+
+The fix reuses declare-then-accrete consent rather than inventing a mechanism.
+An automation's steps declare the service actions they will call; the person
+arming it approves those specific actions, in the enable card they already see;
+the unattended run may then call exactly those slugs.
+
+- **`@vendoai/core`**: `GrantScope` gains a third member,
+  `{ kind: "service-tool", slug }` — the missing middle between "this whole
+  tool" (twenty thousand actions on this one name) and "this exact payload"
+  (useless on the next run). Plus `USE_SERVICE_TOOL`, `serviceToolSlug`,
+  `serviceToolPhrase`, `withResolvedRisk`, and `RiskResolver` (moved here from
+  `@vendoai/guard`, which re-exports it unchanged).
+- **`@vendoai/guard`**: a `service-tool` grant matches a call by its slug.
+  `tool` and `exact` grants are untouched, and nothing attended mints the new
+  scope, so chat behaviour is unchanged.
+- **`@vendoai/automations`**: `AutomationsConfig.resolveRisk` — the SAME
+  resolver the composition gives the guard. Arm-time capture grades a declared
+  connector call with it, so the consent card states the grade the call will
+  really run under and the grant it mints carries the descriptor hash the guard
+  recomputes at fire time. Capture is per service action, and its consent
+  sentence names the action in a person's words ("Allow "Morning digest" to
+  fetch emails in Gmail while you're away").
+- **`@vendoai/ui`**: a consent row for a connector permission reads as its
+  service action with the service's own logo, instead of "Use an outside
+  service" once per row.
+
+What did NOT change: §12 still withholds the dispatcher from every unattended
+listing, and a granted service action the broker grades `destructive` is still
+refused away — the same answer a granted `host_*` send has always got.
+
+**Second known limit.** An agentic automation declares no slug, so it captures
+no connector grant at arm time: its connector calls park at fire time and
+accrete a per-slug grant when a person approves them. The alternative would have
+been a tool-wide grant on the dispatcher, which is the whole catalog behind one
+card.

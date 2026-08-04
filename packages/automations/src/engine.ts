@@ -4,13 +4,18 @@ import {
   appDocumentSchema,
   descriptorHash,
   permissionGrantSchema,
+  serviceToolPhrase,
+  serviceToolSlug,
   triggerSchema,
+  USE_SERVICE_TOOL,
+  withResolvedRisk,
   webhookSubject,
   type AppDocument,
   type ApprovalRequest,
   type AuditEvent,
   type Json,
   type PermissionGrant,
+  type GrantScope,
   type Principal,
   type RecordStore,
   type RunContext,
@@ -88,6 +93,10 @@ const captureSchema = z.object({
   appId: z.string(),
   subject: z.string(),
   tool: z.string(),
+  /** The service action this ask is for, when the tool is the connector
+   *  dispatcher — the thing consented to, since its tool name is not its
+   *  action. Absent for every host tool. */
+  slug: z.string().optional(),
   descriptorHash: z.string(),
   /** The grant SET this pending ask belongs to (07 §3 grant capture; one
    *  enable() = one set). Optional: rows minted before sets existed have
@@ -322,6 +331,44 @@ const stepArgs = async (
   return args;
 };
 
+/** One thing a person is asked to allow at arm time. A host tool is named by
+ *  its tool; the connector dispatcher is named by the SERVICE ACTION it will
+ *  call, because its tool name is not its action (01-core §5 `service-tool`). */
+interface ConsentItem {
+  tool: string;
+  slug?: string;
+}
+
+/** The identity of a consent item — what "already asked for this" means, and
+ *  therefore what two different service actions must NOT collapse into. */
+const consentKey = (item: ConsentItem): string =>
+  item.slug === undefined ? item.tool : `${item.tool}\u0000${item.slug}`;
+
+/** Whether a standing automation grant already covers this consent item. A
+ *  host tool wants the tool-wide grant it has always minted; a service action
+ *  wants its own slug and is not covered by any other. */
+const scopeCovers = (scope: GrantScope, slug?: string): boolean =>
+  slug === undefined ? scope.kind === "tool" : scope.kind === "service-tool" && scope.slug === slug;
+
+/** The service action a step declares, when it declares one.
+ *
+ *  Step args are JSONata, so the slug is only a declaration when it is a
+ *  CONSTANT — an expression that needs the event resolves to nothing here. That
+ *  is the right line rather than a limitation: an action nobody can name while
+ *  the person is present is not one they can pre-approve, so that step parks at
+ *  fire time and accretes its grant from a real approval instead. */
+const declaredSlug = async (step: Step): Promise<string | undefined> => {
+  if (step.tool !== USE_SERVICE_TOOL) return undefined;
+  const expression = step.args?.["slug"];
+  if (expression === undefined) return undefined;
+  try {
+    const value = await evaluate(expression, { event: null, steps: {} });
+    return serviceToolSlug({ tool: step.tool, args: { slug: value } });
+  } catch {
+    return undefined;
+  }
+};
+
 const outcomeDetail = (outcome: ToolOutcome): string | undefined => {
   if (outcome.status === "error") return outcome.error.message;
   if (outcome.status === "blocked") return outcome.reason;
@@ -505,6 +552,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     subject: string,
     appId: string,
     descriptor: ToolDescriptor,
+    slug?: string,
   ): Promise<boolean> => {
     const records = await allRecords(config.store.records(GRANTS), {
       refs: { subject, tool: descriptor.name, app_id: appId },
@@ -520,7 +568,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         && grant.appId === appId
         && grant.source === "automation"
         && grant.duration === "standing"
-        && grant.scope.kind === "tool"
+        && scopeCovers(grant.scope, slug)
         && grant.revokedAt === undefined
         && (grant.expiresAt === undefined || Date.parse(grant.expiresAt) > at);
     });
@@ -1012,12 +1060,17 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
   };
 
   const mintGrant = async (request: ApprovalRequest): Promise<string> => {
+    // A connector dispatch is granted at the width of its SLUG, never its tool
+    // name: "allow use_service_tool" would be consent to the broker's whole
+    // catalog. Every other tool keeps the tool-wide grant an automation has
+    // always minted — the slug is the only thing that narrows here.
+    const slug = serviceToolSlug(request.call);
     const grant: PermissionGrant = {
       id: id("grt_"),
       subject: request.ctx.principal.subject,
       tool: request.call.tool,
       descriptorHash: descriptorHash(request.descriptor),
-      scope: { kind: "tool" },
+      scope: slug === undefined ? { kind: "tool" } : { kind: "service-tool", slug },
       duration: "standing",
       ...(request.ctx.appId === undefined ? {} : { appId: request.ctx.appId }),
       source: "automation",
@@ -1326,7 +1379,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
         && grant.appId === appId
         && grant.source === "automation"
         && grant.duration === "standing"
-        && grant.scope.kind === "tool"
+        && grant.scope.kind !== "exact"
         && grant.revokedAt === undefined
         && (grant.expiresAt === undefined || Date.parse(grant.expiresAt) > at);
     });
@@ -1412,7 +1465,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
    *  capture under a different subject. */
   const captureGrants = async (
     doc: AppDocument,
-    surface: readonly string[],
+    surface: readonly ConsentItem[],
     byName: Map<string, ToolDescriptor>,
     ctx: RunContext,
   ): Promise<{ missing: ApprovalRequest[]; grantSetId: string }> => {
@@ -1424,17 +1477,30 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     const pendingForApp = new Map(
       (await pendingCaptures(subject))
         .filter((capture) => capture.data.appId === appId)
-        .map((capture) => [capture.data.tool, capture]),
+        .map((capture) => [consentKey(capture.data), capture]),
     );
     const grantSetId = [...pendingForApp.values()]
       .map((capture) => capture.data.grantSetId)
       .find((value) => value !== undefined) ?? id("gset_");
     const missing: ApprovalRequest[] = [];
-    for (const tool of surface) {
-      const descriptor = byName.get(tool);
-      if (descriptor === undefined) throw new VendoError("validation", `unknown tool in automation: ${tool}`);
-      if (await liveGrant(subject, appId, descriptor)) continue;
-      const pending = pendingForApp.get(tool);
+    for (const item of surface) {
+      const { tool, slug } = item;
+      const authored = byName.get(tool);
+      if (authored === undefined) throw new VendoError("validation", `unknown tool in automation: ${tool}`);
+      // The descriptor the GUARD will see at fire time, not the authored one:
+      // the dispatcher's own label is `ungraded` and the broker's per-slug tag
+      // arrives through the risk resolver. Grading it here is what makes the
+      // consent card show the real grade AND makes the minted grant's
+      // descriptorHash the one the guard recomputes on the away call — hash the
+      // authored label instead and the grant is invalidated on first use.
+      const descriptor = slug === undefined
+        ? authored
+        : withResolvedRisk(
+            authored,
+            await config.resolveRisk?.({ id: id("call_"), tool, args: { slug } }, authored, ctx),
+          );
+      if (await liveGrant(subject, appId, descriptor, slug)) continue;
+      const pending = pendingForApp.get(consentKey(item));
       if (pending !== undefined) {
         const approval = await config.store.records(APPROVALS).get(pending.id);
         const parsed = approval === null ? undefined : approvalRowSchema.safeParse(approval.data);
@@ -1457,9 +1523,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       }
       const request: ApprovalRequest = {
         id: id("apr_"),
-        call: { id: id("call_"), tool, args: {} },
+        // The slug rides on the CALL, not on the descriptor: it is what the
+        // grant is scoped to, and the descriptor is hashed.
+        call: { id: id("call_"), tool, args: slug === undefined ? {} : { slug } },
         descriptor: clone(descriptor),
-        inputPreview: `Allow "${doc.name}" to use ${tool} while you're away (standing, this app only)`,
+        inputPreview: `Allow "${doc.name}" to ${slug === undefined ? `use ${tool}` : serviceToolPhrase(slug)}`
+          + " while you're away (standing, this app only)",
         ctx: {
           principal: clone(ctx.principal),
           venue: "automation",
@@ -1474,7 +1543,14 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       });
       await config.store.records(CAPTURES).put({
         id: request.id,
-        data: { appId, subject, tool, descriptorHash: descriptorHash(descriptor), grantSetId },
+        data: {
+          appId,
+          subject,
+          tool,
+          ...(slug === undefined ? {} : { slug }),
+          descriptorHash: descriptorHash(descriptor),
+          grantSetId,
+        },
         refs: captureRefs(subject, appId),
       });
       missing.push(request);
@@ -1484,9 +1560,35 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
 
   /** The tools a consent moment covers. Steps DECLARE their surface; without a
    *  model seat, agentic capture conservatively exposes every bound descriptor
-   *  (PR flag, unchanged). */
-  const consentSurface = (trigger: Trigger, byName: Map<string, ToolDescriptor>): string[] =>
-    trigger.run.kind === "steps" ? declaredSurface(trigger) : [...byName.keys()];
+   *  (PR flag, unchanged).
+   *
+   *  The connector dispatcher is the one tool that never enters as itself. A
+   *  steps run contributes one item per SERVICE ACTION it names; an agentic run
+   *  names none, so it contributes none — a tool-wide grant there would be
+   *  consent to the broker's whole catalog behind a single card. An agentic
+   *  connector call therefore parks at fire time like any ungranted away step,
+   *  and its approval accretes the per-slug grant. */
+  const consentSurface = async (
+    trigger: Trigger,
+    byName: Map<string, ToolDescriptor>,
+  ): Promise<ConsentItem[]> => {
+    if (trigger.run.kind !== "steps") {
+      return [...byName.keys()]
+        .filter((tool) => tool !== USE_SERVICE_TOOL)
+        .map((tool) => ({ tool }));
+    }
+    const items = new Map<string, ConsentItem>();
+    for (const tool of declaredSurface(trigger)) {
+      if (tool !== USE_SERVICE_TOOL) items.set(tool, { tool });
+    }
+    for (const step of trigger.run.steps) {
+      const slug = await declaredSlug(step);
+      if (slug === undefined) continue;
+      const item: ConsentItem = { tool: USE_SERVICE_TOOL, slug };
+      items.set(consentKey(item), item);
+    }
+    return [...items.values()];
+  };
 
   const enable: AutomationsEngine["enable"] = async (appId, ctx) => {
     const found = await editableApp(appId, ctx);
@@ -1510,7 +1612,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     const byName = await descriptors(ctx);
     const { missing, grantSetId } = await captureGrants(
       found.row.doc,
-      consentSurface(trigger, byName),
+      await consentSurface(trigger, byName),
       byName,
       ctx,
     );
@@ -1728,7 +1830,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     // approvals door, and the grant set is minted under their subject.
     const { missing, grantSetId } = await captureGrants(
       found.row.doc,
-      consentSurface(trigger, byName),
+      await consentSurface(trigger, byName),
       byName,
       ctx,
     );

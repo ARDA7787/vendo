@@ -83,7 +83,7 @@ import {
   type ToolRegistry,
   type VendoTheme,
 } from "@vendoai/core";
-import { createGuard, type Judge, type PolicyConfig, type PolicyFile, type VendoGuard } from "@vendoai/guard";
+import { createGuard, type Judge, type PolicyConfig, type PolicyFile, type RiskResolver, type VendoGuard } from "@vendoai/guard";
 import {
   bindKnowledgeStore,
   cloudKnowledge,
@@ -1678,17 +1678,23 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       directions: config.profile.policy.directions ?? [],
     }
   );
+  // The resolver is installed immediately after createApps below. Keeping the
+  // hook in guard means chat/SSE and the MCP door reach the same decision.
+  //
+  // Two resolvers, chained, app first: an app's own tool grade is a decision a
+  // person made in this deployment, so it outranks a broker's catalog tag —
+  // and the two can never collide anyway, since only `use_service_tool`
+  // reaches the second leg.
+  //
+  // Named rather than inlined because the automations engine takes the SAME
+  // function: arm-time capture has to grade a declared connector call exactly
+  // as the away call will be graded, or the grant it mints is hashed against a
+  // label the guard never sees and is invalidated on first use.
+  const resolveRisk: RiskResolver = async (call, _descriptor, ctx) =>
+    (await resolveAppToolRisk?.(call, ctx)) ?? await serviceToolRisk(call);
   const guard = createGuard({
     store,
-    // The resolver is installed immediately after createApps below. Keeping the
-    // hook in guard means chat/SSE and the MCP door reach the same decision.
-    //
-    // Two resolvers, chained, app first: an app's own tool grade is a decision a
-    // person made in this deployment, so it outranks a broker's catalog tag —
-    // and the two can never collide anyway, since only `use_service_tool`
-    // reaches the second leg.
-    resolveRisk: async (call, _descriptor, ctx) =>
-      (await resolveAppToolRisk?.(call, ctx)) ?? await serviceToolRisk(call),
+    resolveRisk,
     ...(configPolicy === undefined ? {} : { policy: configPolicy }),
     // cse lane 3 — a cloud policy.json body, consulted by the resolver STRICTLY
     // AFTER the local file and only within its existing opt-in path (decision
@@ -2925,6 +2931,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     guard,
     store,
     runner: agent.asRunner(),
+    resolveRisk,
     // Build contract §9.3 — the fire-time sponsorship gate and the adoption
     // card ask `can(editor)` through this seam. Unwired it would silently fall
     // back to ownership and an editor-adopted automation would stop dead at its

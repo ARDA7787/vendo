@@ -238,6 +238,47 @@ describe("createMcpDoor routing and OAuth", () => {
     await connected.client.close();
   });
 
+  it("keeps the standalone SSE slot reachable when a stream dies unread", async () => {
+    // The door's 409 recovery survived the connector-discovery cutover, but its
+    // only coverage did not: those tests drove it through `search_connectors`'
+    // `list_changed` announcement, which was deleted with the tool. The recovery
+    // is what it always was — measured live 2026-08-03, a standalone stream died
+    // silently, the client's reconnects came back 409 "Only one SSE stream is
+    // allowed per session", it gave up, and the session had no notification
+    // channel left for the rest of its life. The transport frees a slot only
+    // through the body's `cancel`, and a socket that just dies never fires it;
+    // an unread, uncancelled body is exactly that state.
+    //
+    // Raw HTTP, not the SDK client: the client owns its own reconnect policy and
+    // would never leave a session sitting in this state.
+    const harness = makeHarness();
+    const registration = await register(harness.door);
+    const tokens = await issue(harness.door, registration.body.client_id);
+    const initialized = await harness.door.handler(mcpRequest(tokens.access_token));
+    const sessionId = initialized.headers.get("mcp-session-id")!;
+
+    // Every dead stream is HELD, and that is load-bearing: a body the runtime
+    // collects has its `cancel` fired for it, which frees the slot by accident
+    // and would prove nothing about the door. Held, the only thing that can free
+    // it is the door's own recovery.
+    const dead: Response[] = [await harness.door.handler(sseRequest(tokens.access_token, sessionId))];
+    expect(dead[0]!.status).toBe(200);
+
+    // Twice, because one recovery is not the property: the release has to leave
+    // the DOOR holding the reconnected stream, or the second death is the
+    // permanent one — a 409 nothing can free.
+    for (let death = 0; death < 2; death += 1) {
+      const reconnected = await harness.door.handler(sseRequest(tokens.access_token, sessionId));
+      expect(reconnected.status).toBe(200);
+      expect(reconnected.headers.get("content-type")).toContain("text/event-stream");
+      dead.push(reconnected);
+    }
+    expect(dead).toHaveLength(3);
+
+    // And none of it disturbed the session itself.
+    expect((await harness.door.handler(mcpRequest(tokens.access_token, sessionId))).status).toBe(200);
+  });
+
   it("returns the exact RFC 9728 challenge for missing and invalid bearer tokens", async () => {
     const harness = makeHarness();
     const missing = await harness.door.handler(new Request(BASE, { method: "POST" }));

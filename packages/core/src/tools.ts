@@ -116,6 +116,17 @@ export type GradedRiskLabel = "read" | "write" | "destructive";
  *  it. */
 export const ASK_USER_TOOL = "ask_user";
 
+/** The connector dispatcher (connector-discovery design 2026-08-03) — the one
+ *  tool whose real action is an ARGUMENT rather than its name, because a single
+ *  name stands in for a third-party catalog of ~20,000 tools.
+ *
+ *  It lives here for the same reason `ASK_USER_TOOL` does, and one more: the
+ *  grant law below has to recognise it. "Allow this tool" means twenty thousand
+ *  actions on this one name and nothing like that on any other, so consent is
+ *  keyed on the slug (see {@link GrantScope}'s `service-tool`) — a rule three
+ *  packages read and none of them may spell differently. */
+export const USE_SERVICE_TOOL = "use_service_tool";
+
 /**
  * Design §12 / build contract §8 (clarification 2026-07-31) — WHO wrote this
  * tool's `risk` label, as a mark the tool itself carries.
@@ -257,6 +268,31 @@ export const toolCallSchema = z.object({
   tool: z.string(),
   args: requiredJsonValueSchema,
 }).passthrough() satisfies z.ZodType<ToolCall>;
+
+/** Additive composition hook: resolve a call's effective risk before policy
+ * rules, grants, breakers, and approvals evaluate it. Throwing, returning an
+ * unknown value, or returning undefined preserves the descriptor's risk.
+ *
+ * In core rather than in the guard because the guard is not its only reader:
+ * the automations engine grades a DECLARED call at arm time with the same
+ * resolver, so the consent card shows the grade the call will really run under
+ * and the grant it mints carries the descriptor hash the guard will compute. */
+export type RiskResolver = (
+  call: ToolCall,
+  descriptor: ToolDescriptor,
+  ctx: RunContext,
+) => RiskLabel | undefined | Promise<RiskLabel | undefined>;
+
+/** The descriptor a {@link RiskResolver}'s answer produces. Unchanged when the
+ *  resolver declined or agreed, so `descriptorHash` stays stable for every tool
+ *  whose grade is authored — and identical on both sides for the one whose
+ *  grade is not, which is what keeps a minted grant matchable. */
+export function withResolvedRisk(descriptor: ToolDescriptor, resolved: unknown): ToolDescriptor {
+  const parsed = riskLabelSchema.safeParse(resolved);
+  if (!parsed.success) return descriptor;
+  // `{ ...descriptor }` keeps the enumerable VENDO_AUTHORED symbol on purpose.
+  return parsed.data === descriptor.risk ? descriptor : { ...descriptor, risk: parsed.data };
+}
 
 /** 01-core §4 — a connector call that needs a per-user connected account first
  * (04-actions §3). `connector`/`toolkit` key the umbrella's /connections

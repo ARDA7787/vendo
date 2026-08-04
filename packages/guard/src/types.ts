@@ -12,6 +12,7 @@ import type {
   PermissionGrant,
   Principal,
   RiskLabel,
+  RiskResolver,
   RunContext,
   StoreAdapter,
   ToolCall,
@@ -38,14 +39,9 @@ export type PolicyFn = (
   ctx: RunContext,
 ) => GuardDecision | undefined;
 
-/** Additive composition hook: resolve a call's effective risk before policy
- * rules, grants, breakers, and approvals evaluate it. Throwing, returning an
- * unknown value, or returning undefined preserves the descriptor's risk. */
-export type RiskResolver = (
-  call: ToolCall,
-  descriptor: ToolDescriptor,
-  ctx: RunContext,
-) => RiskLabel | undefined | Promise<RiskLabel | undefined>;
+/** Re-exported: the hook is defined in core because the automations engine
+ * grades an arm-time declaration with the same resolver the guard runs. */
+export type { RiskResolver };
 
 /** Named policy presets: pure sugar that expands to rules before evaluation
  *  (00-overview decision 8). "cautious" asks before write/destructive and

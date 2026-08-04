@@ -132,7 +132,8 @@ The grant machinery the app-format spec pins ("exact or tool-wide scopes, critic
 ```ts
 export type GrantScope =
   | { kind: "tool" }                                             // the whole tool
-  | { kind: "exact"; inputHash: string; inputPreview: string };  // these args only; inputHash = `sha256:${sha256Hex(canonicalJson(args))}`
+  | { kind: "exact"; inputHash: string; inputPreview: string }   // these args only; inputHash = `sha256:${sha256Hex(canonicalJson(args))}`
+  | { kind: "service-tool"; slug: string };                      // one service action, any args  <!-- amended 2026-08-03: connector discovery put a ~20,000-tool catalog behind ONE tool name (`use_service_tool`), for which "the whole tool" is not a width anyone can consent to and "these args only" expires on the next run. Code grants.ts. -->
 
 export type GrantDuration = "standing" | "session" | "task";
 
