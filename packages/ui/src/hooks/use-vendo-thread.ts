@@ -11,6 +11,7 @@ import {
 } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVendoContext } from "../context.js";
+import { publishThreadRun, retireThreadRun } from "../chrome/run-activity.js";
 
 export type VendoThreadApproval = ToolUIPart | DynamicToolUIPart | VendoApprovalPart;
 
@@ -161,6 +162,18 @@ export function useVendoThread(threadId?: string) {
       active = false;
     };
   }, [client, threadId, chat.setMessages]);
+
+  // LANE D (spec §2) — surfaces OUTSIDE the conversation (the launcher pill,
+  // the badge) must be able to narrate a run whose state lives in here: the
+  // panel hides itself on close and keeps streaming, and the pill is in a
+  // different React tree. Every thread surface publishes its turn to the
+  // run-activity store, keyed per hook instance so an idle surface can never
+  // clobber a running one.
+  const runKey = useRef(Symbol("vendo-run")).current;
+  useEffect(() => () => retireThreadRun(runKey), [runKey]);
+  useEffect(() => {
+    publishThreadRun(runKey, { threadId: effectiveThreadId, status: chat.status, messages: chat.messages });
+  }, [runKey, effectiveThreadId, chat.status, chat.messages]);
 
   const approvals = useMemo<VendoThreadApproval[]>(
     () => {

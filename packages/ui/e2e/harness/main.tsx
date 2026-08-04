@@ -23,6 +23,7 @@ import {
   ActivityPanel,
   ApprovalCard,
   AutomationsPanel,
+  ConnectCard,
   NoPolicyNotice,
   VendoOverlay,
   VendoPage,
@@ -195,6 +196,25 @@ const boundedThread: Thread = {
   ],
 };
 
+/** The connect card's own lifecycle, over the wire fixture: Connect → the
+ *  broker returns an active account → the card settles into its quiet Connected
+ *  record in place. Slack, because the fixture already reports gmail as
+ *  connected (that card would open already-settled). */
+function ConnectLifecycleScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <div style={{ width: 640, margin: "48px auto", display: "grid", justifyItems: "center" }}>
+        <ConnectCard
+          connector="composio"
+          toolkit="slack"
+          message="Connect Slack so the digest can post to your team channel."
+          onConnected={() => undefined}
+        />
+      </div>
+    </VendoProvider>
+  );
+}
+
 /** ENG-216 — host-supplied friendly tool metadata: labels, descriptions and a
  *  custom arg summarizer. Chips and the approval card read this over the raw
  *  slug / lifecycle string / raw JSON. */
@@ -212,6 +232,100 @@ const humanizedTools: ToolMetaMap = {
     },
   },
 };
+
+/** The ORDINARY consent register (spec §16) — every other approval fixture in
+ *  this harness is `destructive`, so every card proof we had was the amber
+ *  ceremony card, which reads alarming as a first impression. This is the plain
+ *  one: a `write` ask, the primary button, and boolean inputs (the row that used
+ *  to read `Permanent | true` at a bank customer). `apr_1` is the wire fixture's
+ *  own pending approval, so Approve genuinely decides over the wire. */
+const ordinaryConsentTools: ToolMetaMap = {
+  host_email_send: {
+    label: "Email the June statement",
+    description: "Sends your June statement to Dana at Ellis Books as a PDF attachment.",
+  },
+};
+
+const ordinaryConsentThread: Thread = {
+  id: "thr_ordinary",
+  subject: "browser-user",
+  createdAt: NOW,
+  updatedAt: NOW,
+  messages: [
+    {
+      id: "ord_u1",
+      role: "user",
+      parts: [{ type: "text", text: "Send my June statement to my accountant, Dana at Ellis Books." }],
+    },
+    {
+      id: "ord_a1",
+      role: "assistant",
+      parts: [
+        {
+          type: "text",
+          text: "I put your June statement together for Dana. It goes out as a PDF attachment — "
+            + "have a look and approve it below.",
+        },
+        {
+          type: "dynamic-tool",
+          toolName: "host_email_send",
+          toolCallId: "call_ordinary",
+          state: "approval-requested",
+          input: {
+            to: "dana@ellisbooks.com",
+            subject: "June statement",
+            include_transactions: true,
+            notify_recipient: false,
+          },
+          approval: { id: "apr_1" },
+        },
+        {
+          type: "data-vendo-approval",
+          data: { toolCallId: "call_ordinary", risk: "write", approvalId: "apr_1" },
+        },
+      ],
+    },
+  ],
+};
+
+function OrdinaryConsentScenario() {
+  return (
+    <VendoProvider
+      client={threadClient(baseClient, ordinaryConsentThread)}
+      components={components}
+      theme={mapleTheme}
+      tools={ordinaryConsentTools}
+    >
+      {/* A host-pane column, so the card is photographed at the proportions a
+          real product gives it rather than stretched across the viewport. */}
+      <div style={{ height: "100%", maxWidth: 820, margin: "0 auto", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <VendoThread threadId="thr_ordinary" />
+      </div>
+    </VendoProvider>
+  );
+}
+
+/** The one surface where a card's WHOLE lifecycle is the card's own: the BYO
+ *  approval embed polls the wire, so pending → Approve → the settled record
+ *  ("Approved — ran" + the executed result) all happen in place, over a real
+ *  decision. `apr_1` is the wire fixture's pending ask (`host_email_send`,
+ *  `write`), so this is the ordinary register, byline and all. */
+function ApprovalLifecycleScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme} tools={ordinaryConsentTools}>
+      {/* `.fl-cardshell` is `max-width: 88%` of its container (Lane A geometry),
+          so centre it — otherwise the embed's own canvas shows as a sliver down
+          one side and reads like a broken edge in a still. */}
+      <div style={{ width: 640, margin: "48px auto", display: "grid", justifyItems: "center" }}>
+        <VendoToolResult output={{
+          kind: "vendo/approval-ref@1",
+          approvalId: "apr_1",
+          summary: "Email the June statement",
+        }} />
+      </div>
+    </VendoProvider>
+  );
+}
 
 /** ENG-216 — a turn that exercises every humanization behavior at once: a chip
  *  with a host label + arg summary, a run of eight identical read chips that
@@ -1043,6 +1157,90 @@ function ApprovalScenario() {
     : <ApprovalCard approval={destructiveApproval} onDecide={decide} />;
 }
 
+/** Ruling 11 / §16 law 3 — the descriptor hole, in a real browser: the SAME ask,
+ *  carrying the sentence demo-bank's `.vendo/tools.json` wrote for the MODEL.
+ *  The card must print its own words instead, and its queue row must agree. */
+const modelInstructionApproval: ApprovalRequest = {
+  id: "apr_descriptor",
+  call: { id: "call_descriptor", tool: "host_getSpendingInsights", args: { period: "month" } },
+  descriptor: {
+    name: "host_getSpendingInsights",
+    description: "Spending by category for the current period. Amounts are integer cents"
+      + " (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying,"
+      + " including any totals you compute. Do not re-divide.",
+    inputSchema: { type: "object", properties: { period: { type: "string" } } },
+    risk: "read",
+  },
+  inputPreview: "host_getSpendingInsights {\"period\":\"month\"}",
+  ctx: {
+    principal: { kind: "user", subject: "browser-user", display: "Browser User" },
+    venue: "chat",
+    presence: "present",
+  },
+  createdAt: NOW,
+};
+
+function DescriptorHoleScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <ApprovalCard approval={modelInstructionApproval} onDecide={async () => undefined} />
+    </VendoProvider>
+  );
+}
+
+/** C5 (post-check) — the two-money-field ask, in a real browser: a fee BESIDE
+ *  the amount. The old rule took the first numeric field whose display changed,
+ *  so this card read "Sends $1.99 to Acme Utilities" and folded the true rows
+ *  behind Details. With no single declared amount there is no sentence, and
+ *  nothing folds. */
+const twoMoneyApproval: ApprovalRequest = {
+  id: "apr_two_money",
+  call: {
+    id: "call_two_money",
+    tool: "host_transferMoney",
+    args: { fee_cents: 199, amount_cents: 4750, recipient_name: "Acme Utilities", memo: "July water bill" },
+  },
+  descriptor: {
+    name: "host_transferMoney",
+    title: "Send money",
+    description: "Amounts are integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once.",
+    inputSchema: { type: "object", properties: { amount_cents: { type: "integer" }, fee_cents: { type: "integer" } } },
+    risk: "write",
+  },
+  inputPreview: 'host_transferMoney {"amount_cents":4750,"fee_cents":199}',
+  ctx: {
+    principal: { kind: "user", subject: "browser-user", display: "Browser User" },
+    venue: "chat",
+    presence: "present",
+  },
+  createdAt: NOW,
+};
+
+function TwoMoneyScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <ApprovalCard approval={twoMoneyApproval} onDecide={async () => undefined} />
+    </VendoProvider>
+  );
+}
+
+/** C1 (post-check) — every surface a person reaches, under the UNCONFIGURED
+ *  guard posture. The developer banner ("Vendo is running without a policy ·
+ *  Configure .vendo/policy.json") used to auto-prepend itself inside every one
+ *  of these chrome boundaries; the host's own `NoPolicyNotice` is the only place
+ *  it may appear, and it is deliberately NOT mounted here. */
+function UnconfiguredPostureScenario() {
+  return (
+    <VendoProvider client={unconfiguredClient} components={components} theme={mapleTheme}>
+      <div style={{ display: "grid", gap: 18 }}>
+        <div style={{ height: 420, display: "flex" }}><VendoThread threadId="thr_1" /></div>
+        <WaitingQueue pollMs={0} />
+        <ActivityPanel />
+      </div>
+    </VendoProvider>
+  );
+}
+
 function TreeThemeBoundary({ children }: { children: ReactNode }) {
   const theme = useVendoTheme();
   return <div className="tree-theme-boundary" style={themeCssVariables(theme) as CSSProperties}>{children}</div>;
@@ -1214,6 +1412,19 @@ function ConcurrentScenario() {
         <VendoPalette />
         <VendoOverlay />
       </div>
+    </VendoProvider>
+  );
+}
+
+/** Post-check H15 — the realistic host: the center page (its waiting strip AND
+ *  the rail's needs-you section) beside the floating overlay launcher, so all
+ *  three attention surfaces read pending asks at once. The poller trace runs
+ *  here (e2e/approvals-poller-proof.spec.ts). */
+function AttentionSurfacesScenario() {
+  return (
+    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
+      <VendoPage />
+      <VendoOverlay />
     </VendoProvider>
   );
 }
@@ -1928,16 +2139,23 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/thread-extreme": return { title: "Thread — extreme content", content: <ExtremeThreadScenario />, ownProvider: true };
     case "/thread-landing": return { title: "Landing (Maple host)", content: <LandingScenario />, ownProvider: true };
     case "/thread-humanized": return { title: "Thread — humanized (host metadata)", content: <HumanizedThreadScenario />, ownProvider: true };
+    case "/thread-ordinary-consent": return { title: "Thread — ordinary consent (write)", content: <OrdinaryConsentScenario />, ownProvider: true };
+    case "/approval-lifecycle": return { title: "Approval — pending to settled", content: <ApprovalLifecycleScenario />, ownProvider: true };
+    case "/connect-lifecycle": return { title: "Connect — pending to connected", content: <ConnectLifecycleScenario />, ownProvider: true };
     case "/thread-citations": return { title: "Thread — knowledge citations (K1)", content: <ThreadCitationsScenario />, ownProvider: true };
     case "/overlay": return { title: "Overlay", content: <AutoOpen selector='button[aria-controls="vendo-overlay-dialog"]'><VendoOverlay /></AutoOpen> };
     case "/overlay-manual": return { title: "Overlay — manual launcher", content: <VendoOverlay /> };
     case "/concurrent": return { title: "Concurrent surfaces", content: <ConcurrentScenario />, ownProvider: true };
-    case "/page": return { title: "Workspace — Apps tab", content: <AutoOpen selector='[role="tab"][aria-controls="vendo-panel-apps"]'><VendoPage /></AutoOpen> };
+    case "/page": return { title: "Workspace — Apps tab", content: <AutoOpen selector="#vendo-tab-apps"><VendoPage /></AutoOpen> };
+    case "/attention-surfaces": return { title: "Attention surfaces — page + overlay", content: <AttentionSurfacesScenario />, ownProvider: true };
     case "/page-chat": return { title: "Workspace — Chat (thread sidebar)", theme: mapleTheme, content: <VendoPage /> };
     case "/page-chat-dark": return { title: "Workspace — Chat (dark)", theme: darkTheme, content: <VendoPage /> };
     case "/palette": return { title: "Command palette", content: <OpenPalette /> };
     case "/palette-host": return { title: "Palette — host input collision", content: <PaletteHostInputScenario /> };
     case "/approval": return { title: "Destructive approval", content: <ApprovalScenario /> };
+    case "/approval-descriptor": return { title: "Approval — model-instruction descriptor", content: <DescriptorHoleScenario />, ownProvider: true };
+    case "/approval-two-money": return { title: "Approval — a fee beside the amount (C5)", content: <TwoMoneyScenario />, ownProvider: true };
+    case "/unconfigured-posture": return { title: "Unconfigured posture — every consumer surface (C1)", content: <UnconfiguredPostureScenario />, ownProvider: true };
     case "/activity": return { title: "Activity", content: <ActivityPanel /> };
     case "/activity-dark": return { title: "Activity — dark", theme: darkTheme, content: <ActivityPanel /> };
     case "/automations": return { title: "Automations", content: <AutomationsPanel /> };
@@ -1979,6 +2197,11 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/appframe": return { title: "App execution planes", content: <AppFrameScenario /> };
     case "/byo-embed-app": return { title: "BYO chat — inline generated app", content: <ByoEmbedScenario appId="app_island" title="Weather dashboard" />, ownProvider: true };
     case "/byo-embed-building": return { title: "BYO chat — app mid-build", content: <ByoEmbedScenario appId="app_building_lands" title="Trip planner" />, ownProvider: true };
+    // §16 law 3 — the embed's terminal build failure. The wire fixture serves
+    // this app the WORST real reason we have (the wave E2E's own leaked
+    // sentence, seeded in vite.config.ts), so the browser proof is about what
+    // the person actually reads, not about a tidy fixture string.
+    case "/byo-embed-failed": return { title: "BYO chat — build failed", content: <ByoEmbedScenario appId="app_build_failed" title="Spending board" />, ownProvider: true };
     case "/affordances": return { title: "Affordances (Maple) — copy, attach, connect dock", content: <AffordancesScenario theme={mapleTheme} />, ownProvider: true };
     case "/affordances-dark": return { title: "Affordances — dark", content: <AffordancesScenario theme={darkTheme} />, ownProvider: true };
     case "/waiting": return { title: "Waiting on you", content: <WaitingScenario />, ownProvider: true };
@@ -2002,8 +2225,17 @@ function Harness() {
     );
   // Full-bleed host-frame scenarios (the Maple frame IS the host chrome) render
   // edge-to-edge, not as a card on the harness canvas.
-  if (globalThis.location.pathname === "/thread-landing") {
-    return <div data-scenario="thread-landing" style={{ position: "fixed", inset: 0 }}>{content}</div>;
+  // `/thread-ordinary-consent` joins them because it exists to be PHOTOGRAPHED:
+  // a capture of a consent card may carry no harness text in frame.
+  if (globalThis.location.pathname === "/thread-landing"
+    || globalThis.location.pathname === "/thread-ordinary-consent"
+    || globalThis.location.pathname === "/approval-lifecycle"
+    || globalThis.location.pathname === "/connect-lifecycle") {
+    return (
+      <div data-scenario={globalThis.location.pathname.slice(1)} style={{ position: "fixed", inset: 0 }}>
+        {content}
+      </div>
+    );
   }
   return (
     <main className={`harness-shell${globalThis.location.pathname === "/thread" || globalThis.location.pathname === "/activity-dark" ? " harness-dark" : ""}`} data-scenario={globalThis.location.pathname.slice(1)}>

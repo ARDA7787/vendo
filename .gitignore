@@ -82,6 +82,7 @@ packages/*/.vendo/data/
 # type-surface test fixtures (packages/vendo/src/type-surface.test.ts) — cleaned
 # in afterEach; ignored so an interrupted run can never dirty a commit.
 packages/vendo/.type-surface.*.ts
+packages/vendo/.wire-parity.*.ts
 
 # chrome export-surface test fixtures (packages/ui/test/chrome/export-surface.test.ts)
 # — same afterEach cleanup, same interrupted-run hazard.
@@ -118,6 +119,9 @@ docs/superpowers/evidence/
 docs/superpowers/plans/
 docs/superpowers/lanes/
 docs/eval/runs/
+
+# Red gate runs (scripts/serial-gate.sh) — logs kept for inspection, never evidence.
+.gate-failures/
 
 # Per-PID scratch fixtures written by wire-type-parity.test.ts (a killed run leaves them behind)
 packages/vendo/.wire-parity.*

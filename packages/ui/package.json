@@ -65,6 +65,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest:browser": "pnpm run build:jail",
     "test:browser": "playwright test",
+    "pretest:ui": "pnpm run build:jail",
+    "test:ui": "playwright test e2e/smoke.spec.ts",
     "test:mcp-shim": "playwright test --config e2e/mcp-shim.config.ts",
     "build:mcp-shim": "node scripts/build-mcp-app-shim.mjs",
     "build:onest-font": "node scripts/build-onest-font.mjs",

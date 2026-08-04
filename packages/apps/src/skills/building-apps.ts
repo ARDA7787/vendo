@@ -104,7 +104,7 @@ Writing everything once at the end works and feels dead. Don't.
 The plan names the data to read and the groups of parts that show it:
 
 \`\`\`
-<Plan name="Invoices workspace">
+<Plan name="Invoices workspace" display="stage">
   <Query id="invoices" tool="maple_invoices_list" input={{ limit: 50 }}/>
   <Group tab="Overview" title="Health" layout="grid">
     <Leaf component="Stat" query="invoices" purpose="Total outstanding across every open invoice" col="1"/>
@@ -116,6 +116,12 @@ The plan names the data to read and the groups of parts that show it:
   <Cannot>This product has no way to send email, so reminders land in the app's own log instead.</Cannot>
 </Plan>
 \`\`\`
+
+\`display="stage"\` is for what the person asked you to BUILD when it takes
+several groups: the app opens full-width and assembles there while you fill it
+in. Leave it out (or write \`display="inline"\`) when the view is really an
+answer, a part or two — that arrives as a card in the conversation, and it is
+the common case.
 
 A group is the handful of parts — five at most — that tell one story together.
 Tabs come from the groups' tab labels in order of first appearance; you never

@@ -625,6 +625,24 @@ Persistence and transport are normative:
 - **Why:** the server-wiring DX brainstorm (decision 2): `propsJsonSchema` was one schema hand-expressed twice, and name-keying kills the mirror-two-maps catalog discipline. Deriving one JSON Schema that drives both the prompt and generated-props validation also closes 04 §1's disk-catalog permissive-validation gap for schema-bearing entries.
 - **Approved by:** Yousef, 2026-07-18 (server-wiring DX brainstorm, `docs/brainstorms/server-wiring-dx.md`, converged).
 
+### 2026-08-03 — Optional `payload.display` view hint (V4 auto-stage)
+
+- **Changed (additive):** the §8 UI payload gains an optional top-level
+  `display: "inline" | "stage"`, authored by the brain at PLAN time and carried
+  through both plan emitters onto the `data-vendo-view` part of §16. Absent means
+  `inline` — every stored payload and every existing emitter stays valid, and
+  validators MUST accept its absence.
+- **Semantics (presentation only):** `stage` tells the chrome to open its split
+  stage the moment the build STARTS, so the skeleton assembles where the user can
+  see it; `inline` lands the view as a compact in-thread app card. The hint sets
+  only the STARTING posture — inline cards keep Expand, staged views keep
+  Back-to-chat, and a wrong hint costs one tap. It grants no capability, changes
+  no data, and a renderer that ignores it is still correct.
+- **Why:** the shape is known at plan time and the size is not known until the
+  fill, so a measured-size rule decides too late to stage the build (design §5,
+  pick V4).
+- **Authorized by:** the Yousef-decided agentic-UI redesign design
+  (`docs/superpowers/specs/2026-08-02-agentic-ui-redesign-design.md`, §5).
 ### 2026-08-03 — a listing belongs to ONE run (lazy connector expansion is no longer process-wide)
 
 - **Changed:** §4's `ToolRegistry.descriptors(ctx?)` parameter is named: `ToolListingContext = Pick<RunContext, "venue" | "presence">`, which every `RunContext` already satisfies. No field is added and no caller changes shape. What is now normative is that the context object also IDENTIFIES the run, and a registry may narrow a listing by it — so a caller must pass a run's OWN context object through rather than rebuilding an equivalent one per call.

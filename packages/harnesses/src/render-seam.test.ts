@@ -228,6 +228,43 @@ describe("a save to plan.vendo", () => {
   });
 });
 
+/** Redesign spec §5: the brain declares the arrival posture at PLAN time, so the
+ *  stage can open at build start. The seam is the only thing that carries it to
+ *  the client, on the same part the skeleton rides. */
+describe("the plan's display hint", () => {
+  const planWith = (head: string) => `<${head}>
+  <Group title="Unpaid">
+    <Leaf component="Table" />
+  </Group>
+</Plan>`;
+
+  it("rides the view part as top-level payload.display", async () => {
+    const { emitted, save } = seam();
+    await save(PLAN_VENDO, planWith('Plan name="Money HQ" display="stage"'));
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0]!.part.payload as { display?: string }).display).toBe("stage");
+  });
+
+  it("carries inline just as faithfully — a wrong hint costs one tap, a lost one costs the posture", async () => {
+    const { emitted, save } = seam();
+    await save(PLAN_VENDO, planWith('Plan name="Balance" display="inline"'));
+    expect((emitted[0]!.part.payload as { display?: string }).display).toBe("inline");
+  });
+
+  it("stays absent when the plan declares none", async () => {
+    const { emitted, save } = seam();
+    await save(PLAN_VENDO, planWith('Plan name="Balance"'));
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.part.payload).not.toHaveProperty("display");
+  });
+
+  it("is a plan-time hint only — an app.vendo save never invents one", async () => {
+    const { emitted, save } = seam();
+    await save(APP_VENDO, GOOD_APP);
+    expect(emitted[0]!.part.payload).not.toHaveProperty("display");
+  });
+});
+
 describe("the app half of an app.vendo commit (§1.6)", () => {
   /** The wire the E2E defect was found on: a value that only exists once the
    *  query has run. Painted with no data it reads "—". */

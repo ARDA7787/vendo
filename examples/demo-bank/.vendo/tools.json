@@ -96,7 +96,7 @@
         "method": "POST",
         "path": "/maple/api/orders"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_demo_chips_list",
@@ -175,7 +175,7 @@
         "method": "GET",
         "path": "/maple/api/accounts/{id}"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_getBudgets",
@@ -191,14 +191,48 @@
         "method": "GET",
         "path": "/maple/api/insights/budgets"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_getCashflowInsights",
-      "description": "Cash inflow/outflow summary. Amounts are integer cents (e.g. 1284000 = $12,840.00): divide by 100 exactly once before displaying, including any totals you compute.",
+      "description": "Cash inflow/outflow summary.",
       "inputSchema": {
         "type": "object",
         "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "The cashflow periods live under `data` — the array itself is `data`, never the response body.",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "One entry per period, oldest first.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "in": {
+                  "type": "integer",
+                  "description": "Money in for the period, in integer cents (e.g. 1284000 = $12,840.00): divide by 100 exactly once before displaying, including any totals you compute."
+                },
+                "out": {
+                  "type": "integer",
+                  "description": "Money out for the period, in integer cents: divide by 100 exactly once before displaying."
+                }
+              },
+              "required": [
+                "label",
+                "in",
+                "out"
+              ]
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
       },
       "risk": "ungraded",
       "binding": {
@@ -207,7 +241,7 @@
         "method": "GET",
         "path": "/maple/api/insights/cashflow"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_getProfile",
@@ -223,7 +257,7 @@
         "method": "GET",
         "path": "/maple/api/profile"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_getRecurringInsights",
@@ -239,11 +273,11 @@
         "method": "GET",
         "path": "/maple/api/insights/recurring"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_getSpendingInsights",
-      "description": "Spending by category for the current period. Amounts are integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying, including any totals you compute.",
+      "description": "Spending by category for the current period.",
       "inputSchema": {
         "type": "object",
         "properties": {}
@@ -275,7 +309,7 @@
                 },
                 "amount": {
                   "type": "integer",
-                  "description": "Amount spent in integer cents."
+                  "description": "Amount spent in integer cents (e.g. 285000 = $2,850.00): divide by 100 exactly once before displaying, including any totals you compute."
                 }
               },
               "required": [
@@ -296,7 +330,7 @@
         "method": "GET",
         "path": "/maple/api/insights/spending"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_getTransaction",
@@ -319,7 +353,7 @@
         "method": "GET",
         "path": "/maple/api/transactions/{id}"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listAccounts",
@@ -335,7 +369,7 @@
         "method": "GET",
         "path": "/maple/api/accounts"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listAccountTransactions",
@@ -359,7 +393,7 @@
         "method": "GET",
         "path": "/maple/api/accounts/{id}/transactions"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listCards",
@@ -375,7 +409,7 @@
         "method": "GET",
         "path": "/maple/api/cards"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listCardTransactions",
@@ -399,7 +433,7 @@
         "method": "GET",
         "path": "/maple/api/cards/{id}/transactions"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listGoals",
@@ -415,7 +449,7 @@
         "method": "GET",
         "path": "/maple/api/goals"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listNotifications",
@@ -431,7 +465,7 @@
         "method": "GET",
         "path": "/maple/api/notifications"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listPayees",
@@ -447,7 +481,7 @@
         "method": "GET",
         "path": "/maple/api/payees"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listScheduledPayments",
@@ -463,7 +497,7 @@
         "method": "GET",
         "path": "/maple/api/payments/scheduled"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_listTransactions",
@@ -521,7 +555,7 @@
         "method": "GET",
         "path": "/maple/api/transactions"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_proof_list",
@@ -572,7 +606,7 @@
         "method": "POST",
         "path": "/maple/api/transfers"
       },
-      "srcHash": "sha256:08a7f7a6ad93e85a49032d398199e943a4964320a8a634a606e4203ddd85b64e"
+      "srcHash": "sha256:c14456332b72acfeaff76b13e07c4bbccbf087e767fe8e744dc576b5e263cf5a"
     },
     {
       "name": "host_voice_create",

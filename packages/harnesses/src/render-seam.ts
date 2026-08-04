@@ -185,9 +185,17 @@ export async function viewForWrite(
     // The plan format IS the render format: its skeleton is the view.
     const skeleton = skeletonFromPlan(compiled.plan);
     if (!renders(skeleton.tree)) return undefined;
-    payload = stripServerAuthoritativeFields(
-      assembleTree({ tree: skeleton.tree }),
-    ) as unknown as UIPayload;
+    // Redesign spec §5: the plan's arrival posture, forwarded the moment the plan
+    // file parses — which is the whole point of hinting at plan time, since the
+    // stage has to be open while the skeleton is still worth watching. Absent
+    // stays absent: the client reads undefined as inline, so a plan written
+    // before this field existed keeps behaving exactly as it did. Only the plan
+    // carries it; later `app.vendo` saves say nothing about display and must not
+    // be read as a retraction.
+    payload = stripServerAuthoritativeFields(assembleTree({
+      tree: skeleton.tree,
+      ...(compiled.plan.display === undefined ? {} : { display: compiled.plan.display }),
+    })) as unknown as UIPayload;
   }
 
   // A plan IS the mid-build state: its skeleton stays streaming until the app

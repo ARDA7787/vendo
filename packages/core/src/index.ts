@@ -72,6 +72,7 @@ export { compilePlan, type PlanCompileResult, type PlanFacts } from "./genui/pla
 export {
   planTabs,
   type AppPlan,
+  type PlanDisplay,
   type PlanGroup,
   type PlanIsland,
   type PlanLeaf,

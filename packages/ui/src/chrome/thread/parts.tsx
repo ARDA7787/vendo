@@ -1,4 +1,4 @@
-import type { ApprovalRequest, Json, RiskLabel, UIPayload, VendoAutomationPart, VendoBuildFailedPart, VendoConnectPart, VendoGrantSetPart, VendoTurnErrorPart, VendoViewPart } from "@vendoai/core";
+import { riskLabelSchema, type ApprovalRequest, type Json, type RiskLabel, type UIPayload, type VendoAutomationPart, type VendoBuildFailedPart, type VendoConnectPart, type VendoGrantSetPart, type VendoTurnErrorPart, type VendoViewPart } from "@vendoai/core";
 import { isToolUIPart, type UIMessage } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoContext } from "../../context.js";
@@ -17,13 +17,17 @@ import type { MorphToastProps } from "../morph-toast.js";
 import { usePinAction } from "../pin-ceremony.js";
 import { LONG_TEXT_CAP, truncateHead } from "../truncate.js";
 import { SentAttachment } from "./attachments.js";
+import { buildApprovalRequest } from "./approval-wire.js";
 import {
   appTitle,
+  BUILD_FAILURE_COPY,
+  isAgentContext,
+  narratedByAppCard,
   partData,
-  preview,
-  SYNTHESIZED_CREATED_AT,
+  toolCallIsContent,
   toolName,
-  VENDO_ERROR_PREFIX,
+  turnErrorSentence,
+  type ApprovalWireMeta,
 } from "./message-data.js";
 
 /** ENG-218 — a plain user turn (rendered verbatim, not markdown) collapses when
@@ -108,13 +112,21 @@ function ThreadConnect({ ask, live, sendMessage }: {
 /** One stream part in a turn: text (user verbatim / assistant markdown with the
     ENG-217 caret choreography), assistant files, tool build beats, and the
     jailed generated-view app card (06-apps §§8–9). */
-export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, sendMessage, siblingParts, respond }: {
+export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, hideBeats = false, turnPending = true, sendMessage, siblingParts, respond }: {
   part: UIMessage["parts"][number];
   partKey: string;
   role: UIMessage["role"];
   restored: boolean;
   count?: number;
   risks: Map<string, RiskLabel>;
+  /** Spec §1 — the settled turn folded its beats into the summary row (see
+      ThreadMessage), so successful calls render nothing until it reopens. */
+  hideBeats?: boolean;
+  /** Spec §8 + §15 — whether this turn is still working. A view whose payload
+      is STILL `streaming` once the turn is over is a build that died: nothing
+      will ever flip it to ready. Defaults to pending so a part rendered on its
+      own (or by a host composing its own list) keeps today's behavior. */
+  turnPending?: boolean;
   /** Whether a connect-required outcome in this turn is still the actionable
       ask (this is the LATEST assistant turn). Stale turns render the quiet
       Connected record instead — see ConnectCard's `live`. */
@@ -129,6 +141,8 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
   respond?: (response: { id: string; approved: boolean }) => void;
 }) {
   if (part.type === "text") {
+    // The agent's grounding carrier is a text part nobody reads (message-data).
+    if (isAgentContext(part)) return null;
     if (role === "user") return <UserText text={part.text} restored={restored} />;
     // ENG-217 — lone caret while the streamed turn is still empty (stable
     // line box); once text flows, Markdown's .fl-md--streaming trailing
@@ -156,13 +170,21 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
       const ask = nativeConnectAsk(part.output);
       if (ask !== undefined) return <ThreadConnect ask={ask} live={connectLive} sendMessage={sendMessage} />;
     }
-    // Lane pick C1 — live progress moved to the StatusRibbon above the
-    // composer, so working/done calls leave NO transcript line (the
-    // mechanical record stays in the Activity panel). A FAILED call is
-    // content, not progress: it keeps the error beat so the failure stays
-    // readable after the turn settles.
-    if (part.state !== "output-error") return null;
+    // Spec §1 — THE TRANSCRIPT SHOWS THE WORK: every tool call leaves a beat at
+    // its position in the conversation (this reverses lane pick C1, which sent
+    // progress to the StatusRibbon and kept the transcript beat-free). Two
+    // exceptions:
+    //   · the settled turn folds its beats into one summary row (hideBeats) —
+    //     but a failed or declined call is content, not progress, so its ✕ beat
+    //     stays visible either way (spec §15: the ✕ stays in the record);
+    //   · D1 — an app-building call renders no beat, from the moment the build
+    //     starts, because its card IS that step (the summary still counts it).
     const risk = risks.get(part.toolCallId) ?? "read";
+    // The narration check runs FIRST: a failed build is content (its ✕ stays in
+    // the record), but its record is the build-failed block, not a second ✕.
+    if (narratedByAppCard(part, siblingParts ?? [])) return null;
+    if (toolCallIsContent(part)) return <BuildBeat part={part} risk={risk} count={count} />;
+    if (hideBeats) return null;
     return <BuildBeat part={part} risk={risk} count={count} />;
   }
   if (part.type === "data-vendo-connect") {
@@ -188,7 +210,14 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     // 0.4.4 cert defect B — a terminally failed app build is content, not
     // progress: the turn ends right after this part, so without it the thread
     // showed no trace of why nothing appeared. Same beat vocabulary as a
-    // failed tool call, plus the runtime's classified (provider-safe) reason.
+    // failed tool call, plus what the failure MEANS for the reader.
+    //
+    // §16 law 3 — the wire's `reason` is written for whoever can fix the build
+    // and it used to render verbatim: the wave E2E photographed an end user
+    // reading `amount / sum(spending.data.amount)`. The part's presence is what
+    // this branch reads; BUILD_FAILURE_COPY carries the person's half, and the
+    // developer's sentence keeps its home in the server's own log line
+    // (apps/runtime.ts) with every blocking finding beside it.
     const data = partData(part) as Partial<VendoBuildFailedPart>;
     if (typeof data.reason !== "string" || data.reason.length === 0) return null;
     return (
@@ -201,7 +230,7 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
           </span>
           <span className="fl-beat-label">Couldn&apos;t build the app</span>
         </div>
-        <div className="fl-approval-more" role="alert">{data.reason}</div>
+        <div className="fl-approval-more" role="alert">{BUILD_FAILURE_COPY}</div>
       </div>
     );
   }
@@ -213,9 +242,11 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     // our OWN safe text — the reader gets the sentence, not the plumbing).
     const data = partData(part) as Partial<VendoTurnErrorPart>;
     if (typeof data.message !== "string" || data.message.length === 0) return null;
-    const message = data.message.startsWith(VENDO_ERROR_PREFIX)
-      ? data.message.slice(VENDO_ERROR_PREFIX.length)
-      : data.message;
+    // One shared reader with the banner (message-data): the prefix and the
+    // trailing code token come off, and an UNPREFIXED string — a raw
+    // provider/transport sentence — yields no detail line at all. The headline
+    // is the record either way.
+    const message = turnErrorSentence(data.message);
     return (
       <div className="fl-buildfail" data-vendo-turn-error="">
         <div className="fl-beat fl-beat-error">
@@ -226,7 +257,7 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
           </span>
           <span className="fl-beat-label">The response didn&rsquo;t finish</span>
         </div>
-        <div className="fl-approval-more" role="alert">{message}</div>
+        {message === undefined ? null : <div className="fl-approval-more" role="alert">{message}</div>}
       </div>
     );
   }
@@ -237,15 +268,16 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     // granted" / denied) — reload-safe, since the state derives from the
     // persisted sibling tool part, never component state.
     const data = partData(part) as Partial<VendoGrantSetPart>;
+    const permissions = grantSetPermissions(data.permissions);
     if (typeof data.toolCallId !== "string" || typeof data.grantSetId !== "string"
       || typeof data.name !== "string"
-      || !Array.isArray(data.permissions) || data.permissions.length === 0) return null;
+      || permissions.length === 0) return null;
     return (
       <GrantSetConsent
         toolCallId={data.toolCallId}
         grantSetId={data.grantSetId}
         name={data.name}
-        permissions={data.permissions as GrantSetPermission[]}
+        permissions={permissions}
         siblingParts={siblingParts ?? []}
         respond={respond}
       />
@@ -277,6 +309,16 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
   if (part.type === "data-vendo-view") {
     const data = partData(part) as Partial<VendoViewPart>;
     if (typeof data.appId !== "string" || !data.payload) return null;
+    // Spec §8 + §15 — a build that DIED never flips `streaming` off: the last
+    // partial view ever emitted is the skeleton. Left mounted, the card sweeps
+    // its hairline over that skeleton forever on a turn that is over (§8 build
+    // calm is a claim about the settled turn too), and it holds the split
+    // view's stage on the same lie — the wave E2E photographed both. §15 says
+    // what replaces it and it is not a component: the failed call's ✕ beat and
+    // the agent's own prose, which are already in the turn. Unmounting also
+    // withdraws the embed (the removeEmbed cleanup below), which is what
+    // clears the stage.
+    if (!turnPending && (data.payload as { streaming?: boolean }).streaming === true) return null;
     // 06-apps §§8–9 — in-thread surfaces are conversational previews, never
     // the approved in-client venue and never a drift report: both fields are
     // server-authoritative, so whatever the stream carried, render jailed
@@ -286,9 +328,32 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
       pinDrift: _serverOnly,
       ...payload
     } = data.payload as typeof data.payload & { inClient?: unknown; pinDrift?: unknown };
-    return <ThreadAppCard key={`${partKey}-${data.appId}`} appId={data.appId} payload={payload} restored={restored} />;
+    return <ThreadAppCard key={`${partKey}-${data.appId}`} buildKey={`${partKey}-${data.appId}`} appId={data.appId} payload={payload} restored={restored} />;
   }
   return null;
+}
+
+/**
+ * H13 — the wire's grant-set permissions, VALIDATED instead of cast.
+ *
+ * THE DEFECT: the branch checked `Array.isArray` and then cast the whole array
+ * to `GrantSetPermission[]`. A member missing its `risk` rendered a row reading
+ * ": Send money" (`RISK_WORD[undefined]` is undefined), and its `approvalId` —
+ * possibly undefined too — rode into `client.approvals.decide([undefined])` on
+ * Approve, deciding nothing while the card claimed it had. Every field a row and
+ * a decision need is checked here; a malformed member is dropped, and a set with
+ * nothing left renders no card at all (the parked ask then keeps the ordinary
+ * approval path).
+ */
+function grantSetPermissions(value: unknown): GrantSetPermission[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is GrantSetPermission => {
+    const candidate = entry as Partial<GrantSetPermission> | null;
+    return typeof candidate === "object" && candidate !== null
+      && typeof candidate.approvalId === "string" && candidate.approvalId.length > 0
+      && typeof candidate.tool === "string" && candidate.tool.length > 0
+      && riskLabelSchema.options.includes(candidate.risk as RiskLabel);
+  });
 }
 
 /** The grant-set card's wire half: derives parked/approved/denied from the
@@ -351,7 +416,7 @@ const PREVIEW_MAX_HEIGHT = 300;
     registers its FINAL payload with the enclosing overlay's workspace (when
     one exists) and, while the workspace is expanded, clicking the card
     features this app on the big stage. */
-function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: UIPayload; restored: boolean }) {
+function ThreadAppCard({ appId, payload, restored, buildKey }: { appId: string; payload: UIPayload; restored: boolean; buildKey: string }) {
   const { client, components } = useVendoContext();
   const pin = usePinAction();
   const split = useSplitView();
@@ -400,23 +465,61 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
     observer.observe(canvas);
     return () => observer.disconnect();
   }, [compact]);
+  // V4 (spec §5) — the brain's plan-time display hint. It knows the shape
+  // before the fill, so a "stage" view opens the workspace at BUILD START,
+  // where instant()'s skeleton is actually visible; absent hint keeps today's
+  // inline card.
+  const staged = (payload as { display?: unknown }).display === "stage";
   // Register the finished view with the workspace stage; a re-stream of the
   // same app (regenerate) re-registers when streaming flips back off. The
   // registration carries the payload snapshot at settle time.
+  //
+  // A STAGED view also registers its FIRST streaming snapshot: the stage can
+  // only feature an embed the split already knows, so without it the auto-open
+  // below would land on an empty stage and hide the very skeleton the hint
+  // exists to show. Only the first snapshot — the effect is keyed on the
+  // streaming flip, never the payload, because re-registering per render would
+  // dispatch a fresh state object every render.
   const registerEmbed = split?.registerEmbed;
   const removeEmbed = split?.removeEmbed;
+  // M28 — a STAGED build has to keep up. The effect keyed on the streaming FLIP
+  // alone, so the stage the hint opened froze on the first snapshot (usually the
+  // bare skeleton) and stayed there for the whole build, while the small rail
+  // card streamed live beside it — the big surface, the stale one. The dep is
+  // the partial view's own PROGRESS rather than the payload object: the payload
+  // is a fresh object every render, so keying on it would dispatch per render.
+  // Known limit: progress is counted in NODES, so a stretch of the build that
+  // only fills props in already-emitted nodes does not move the stage.
+  const nodes = (payload as { nodes?: unknown }).nodes;
+  const progress = Array.isArray(nodes) ? nodes.length : 0;
   useEffect(() => {
-    if (!registerEmbed || streaming) return;
+    if (!registerEmbed || (streaming && !staged)) return;
     registerEmbed(appId, payload);
-    // payload is a fresh object every render (destructured from the part);
-    // keying the effect on it would re-register per render. appId + the
-    // streaming flip are the real identity edges.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registerEmbed, appId, streaming]);
+  }, [registerEmbed, appId, streaming, staged, progress]);
   useEffect(() => {
     if (!removeEmbed) return;
     return () => removeEmbed(appId);
   }, [removeEmbed, appId]);
+  // Live turns only — restored history never reopens a stage. The one-shot
+  // ledger lives in the split, not here: `autoStage` is idempotent per BUILD, so
+  // the hint's shot is spent even when it arrives against an ALREADY-OPEN
+  // workspace. A card-local ref could not record that — it returned early on
+  // `split.expanded`, left the shot unspent, and the first Back-to-chat re-ran
+  // this effect and re-opened the panel on the user's behalf (H9, §2 G1).
+  // `autoStage` is identity-stable, so keying on it (not on `split`) also stops
+  // every expand/collapse from re-running the effect.
+  //
+  // RULING 23 — the ledger key is this BUILD (message id + part index), not the
+  // app. Keyed by app it was per-app for the life of the surface, so once the
+  // user had collapsed a stage, an EXPLICIT new build request for the same app
+  // never staged again. G1 forbids the UI opening ITSELF; honouring a fresh
+  // request is not that.
+  const autoStage = split?.autoStage;
+  useEffect(() => {
+    if (!staged || restored || !autoStage) return;
+    autoStage(appId, buildKey);
+  }, [staged, restored, autoStage, appId, buildKey]);
   const featured = split?.expanded === true && split.featuredAppId === appId;
   // The compact card's activation: expanded → feature on the stage;
   // collapsed → expand the workspace WITH this app staged. Clicking the card
@@ -548,14 +651,14 @@ function ThreadAppCard({ appId, payload, restored }: { appId: string; payload: U
 
 type ToolPart = Extract<UIMessage["parts"][number], { toolCallId: string }>;
 
-/** The parked in-thread approval cards: each synthesizes an ApprovalRequest
-    from the wire parts (ENG-216), morphs into the top-right toast on approve
-    (ENG-205), and decides the guard's record over the wire before resuming
+/** The parked in-thread approval cards: each builds its ApprovalRequest with
+    the shared §16 wire builder (ENG-216), morphs into the top-right toast on
+    approve (ENG-205), and decides the guard's record over the wire before resuming
     the model loop (05 §1). */
 export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, respond, onMorph }: {
   approvals: (ToolPart & { state: "approval-requested"; approval: { id: string } })[];
   risks: Map<string, RiskLabel>;
-  guardApprovals: Map<string, { approvalId?: string; invalidatedGrant?: ApprovalRequest["invalidatedGrant"] }>;
+  guardApprovals: Map<string, ApprovalWireMeta>;
   cardRefs: React.MutableRefObject<Map<string, HTMLDivElement | null>>;
   respond: (response: { id: string; approved: boolean }) => void;
   onMorph: (morph: Omit<MorphToastProps, "onDone">) => void;
@@ -571,30 +674,28 @@ export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, re
   return (
     <>
       {approvals.map((part, index) => {
-        const risk = risks.get(part.toolCallId) ?? "read";
+        // Ruling 15 — no `data-vendo-approval` part means UNGRADED, not read:
+        // the builder owns the cautious display default (approval-wire.ts).
+        const risk = risks.get(part.toolCallId);
         const input = "input" in part ? part.input : undefined;
         const guardApproval = guardApprovals.get(part.toolCallId);
         const name = toolName(part);
-        const approval: ApprovalRequest = {
-          id: part.approval.id,
-          call: { id: part.toolCallId, tool: name, args: input as Json },
-          // The wire approval part carries no descriptor (01-core), so the
-          // name is the raw tool id (ApprovalCard humanizes it) and the
-          // description is left to host metadata — never a fabricated
-          // "Approve <tool>" sentence.
-          descriptor: { name, description: tools[name]?.description ?? "", inputSchema: {}, risk },
-          inputPreview: preview(input),
+        // spec §16 law 2 — the descriptor travels with the approval: one
+        // builder shared with the queue, so a declared schema (when the wire
+        // carries one) formats $47.50 as money IN-THREAD too, instead of the
+        // old `inputSchema: {}` synthesis that read "4750 (unit not
+        // specified)". No descriptor on the wire still yields a usable ask.
+        const approval = buildApprovalRequest({
+          approvalId: part.approval.id,
+          toolCallId: part.toolCallId,
+          tool: name,
+          args: input,
+          ...(risk === undefined ? {} : { risk }),
           ...(guardApproval?.invalidatedGrant === undefined
-            ? {}
-            : { invalidatedGrant: guardApproval.invalidatedGrant }),
-          // ENG-216 — the in-thread card renders inside the live conversation,
-          // which IS its context, and the wire carries no ctx: rather than
-          // invent a principal/venue/presence and stamp a per-render `new
-          // Date()`, we hide the context byline in-thread (showContext=false)
-          // and only structurally-true, stable values ride here (never shown).
-          ctx: { principal: { kind: "user", subject: "" }, venue: "chat", presence: "present" },
-          createdAt: SYNTHESIZED_CREATED_AT,
-        };
+            ? {} : { invalidatedGrant: guardApproval.invalidatedGrant }),
+          ...(guardApproval?.descriptor === undefined
+            ? {} : { descriptor: guardApproval.descriptor }),
+        }, tools);
         const guardApprovalId = guardApproval?.approvalId;
         const asSheet = mobile && index === approvals.length - 1;
         const card = (
@@ -609,7 +710,19 @@ export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, re
                 if (decision.approve) {
                   const card = cardRefs.current.get(part.approval.id)?.querySelector<HTMLElement>(".fl-approval");
                   if (card) {
-                    const presentation = toolPresentation(name, input, tools[name]);
+                    // L38 — the toast's title must be the CARD's title: without
+                    // the descriptor's authored title (and its schema) this
+                    // recomputed a bare humanization, so a card reading "Send
+                    // money" morphed into a toast reading "Host transfer money
+                    // — approved". Same arguments as the card's own
+                    // presentation, from the request it just built.
+                    const presentation = toolPresentation(
+                      name,
+                      input,
+                      tools[name],
+                      approval.descriptor.title,
+                      approval.descriptor.inputSchema,
+                    );
                     const rect = card.getBoundingClientRect();
                     card.style.transition = "opacity .22s ease";
                     card.style.opacity = "0";
