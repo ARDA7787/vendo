@@ -216,6 +216,107 @@ describe("find_service_tools rides Composio's own search", () => {
   });
 });
 
+/**
+ * Composio ships documentation for PEOPLE inside the machine schema. It is a
+ * third of the bytes and none of it is needed to construct a call, and the
+ * difference decides whether a real search fits in one tool result or arrives
+ * cut in half.
+ */
+describe("Composio's human-facing copy is trimmed before the model sees a schema", () => {
+  /** The shipped `toolOutputCap` default, which is what a search has to fit in. */
+  const CAP = 32_000;
+
+  /** One of their parameters at its real size — measured against their live
+   *  catalog 2026-08-03, where a Gmail property runs 280–470 chars because the
+   *  description is stated three times over (`description`, then
+   *  `human_parameter_name` and `human_parameter_description` for a UI) with
+   *  worked `examples` beside it. */
+  const property = (name: string) => ({
+    type: "string",
+    title: name,
+    default: "",
+    examples: [`a worked example of ${name}`, `a second worked example of ${name}, longer than the first one`],
+    description:
+      `The ${name} this tool acts on. At least one of the sibling fields must be provided, and the `
+      + "provider rejects the call when the format does not match what its API documents, down to the "
+      + "separator between entries.",
+    human_parameter_name: `The ${name}`,
+    human_parameter_description:
+      `Enter the ${name} here. This is the same sentence as the description above, rewritten for a person `
+      + "reading a form rather than for a model constructing a call.",
+  });
+
+  const schema = (count: number) => ({
+    type: "object",
+    title: "Input",
+    properties: Object.fromEntries(Array.from({ length: count }, (_, index) => [`field_${index}`, property(`field_${index}`)])),
+    required: ["field_0"],
+  });
+
+  it("cuts a real-sized search from over the cap to under it, losing nothing a call needs", async () => {
+    const tools: NonNullable<StubOptions["tools"]> = {};
+    for (const [index, count] of [10, 11, 6, 10, 2, 8, 2, 3].entries()) {
+      tools[`GMAIL_TOOL_${index}`] = { toolkit: "gmail", description: `Tool ${index}`, input: schema(count) };
+    }
+    const raw = JSON.stringify(Object.values(tools).map((tool) => tool.input)).length;
+    // The fixture is only worth what its size is: their real eight-match email
+    // search was 36,407 chars against a 32,000 cap.
+    expect(raw).toBeGreaterThan(CAP);
+
+    const connector = await connectorOn(composioStub({ tools }));
+    const matches = await connector.searchTools!("send an email to a contact", ctx());
+    const trimmed = JSON.stringify({ tools: matches }).length;
+
+    expect(matches).toHaveLength(8);
+    expect(trimmed).toBeLessThan(CAP);
+    expect(trimmed).toBeLessThan(raw * 0.75);
+    // Nothing a call is constructed FROM was touched.
+    expect(matches[0]?.inputSchema).toMatchObject({
+      type: "object",
+      required: ["field_0"],
+      properties: {
+        field_0: {
+          type: "string",
+          default: "",
+          description: expect.stringContaining("At least one of the sibling fields"),
+        },
+      },
+    });
+    const serialized = JSON.stringify(matches);
+    for (const padding of ["examples", "human_parameter_name", "human_parameter_description"]) {
+      expect(serialized, padding).not.toContain(padding);
+    }
+  });
+
+  it("keeps a PARAMETER named `examples` — that is an argument, not padding", async () => {
+    const connector = await connectorOn(composioStub({
+      tools: {
+        WEIRD_TOOL: {
+          toolkit: "gmail",
+          input: {
+            type: "object",
+            properties: {
+              examples: { type: "array", description: "The examples to attach" },
+              human_parameter_name: { type: "string", description: "Whose name to use" },
+            },
+            required: ["examples"],
+          },
+        },
+      },
+    }));
+
+    const [match] = await connector.searchTools!("attach examples", ctx());
+    expect(match?.inputSchema).toEqual({
+      type: "object",
+      properties: {
+        examples: { type: "array", description: "The examples to attach" },
+        human_parameter_name: { type: "string", description: "Whose name to use" },
+      },
+      required: ["examples"],
+    });
+  });
+});
+
 describe("use_service_tool grades and runs one slug", () => {
   it("maps Composio's own tags to our risk labels", async () => {
     const stub = composioStub({

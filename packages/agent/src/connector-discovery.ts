@@ -27,6 +27,31 @@ export const USE_SERVICE_TOOL = "use_service_tool";
  *  this ranks the phrase against its whole catalog. */
 const MAX_NEED_LENGTH = 512;
 
+/** The share of the turn's tool-output cap one search may spend.
+ *
+ *  `find_service_tools` is the one tool whose result routinely approaches the
+ *  cap: a broker's schemas run 5–7KB each (measured against Composio's live
+ *  catalog 2026-08-03 — eight email matches serialized to 36,407 chars against a
+ *  32,000 cap), and a match without its schema is half a match. The cap's own
+ *  enforcement slices the SERIALIZED result at a character count, so a result
+ *  that reaches it comes back with its last schema cut mid-object, with nothing
+ *  saying which match lost it — and the model is told to call with the schema
+ *  that came back. So this tool bounds ITSELF, in whole matches, and says what
+ *  it dropped. The 10% is headroom between the measurement here and the one the
+ *  bridge makes on the same object downstream. */
+const OUTPUT_BUDGET_SHARE = 0.9;
+
+/** Assumed when the composition does not say what the cap is. The shipped
+ *  default is 32,000, but a host may set its own lower, and a bound that guesses
+ *  high is no bound: guessing low costs a dropped match the model is TOLD about,
+ *  guessing high costs the silent mid-schema cut this exists to prevent. */
+const ASSUMED_TOOL_OUTPUT_CAP = 16_000;
+
+const NO_SCHEMA_FROM_BROKER =
+  "No argument schema came back for this tool. Ask the user what it needs — do not guess arguments.";
+const SCHEMA_TOO_LARGE =
+  "This tool's argument schema is too large to return here. Ask the user what it needs — do not guess arguments.";
+
 /** One tool the broker's own search matched. Structurally identical to
  *  `ServiceToolMatch` in @vendoai/actions, restated here because agent may not
  *  depend on actions (layering) — the wire adapts one to the other. */
@@ -132,8 +157,14 @@ const PORT_FOR: Record<string, keyof ConnectorDiscoveryPorts> = {
 const fail = (code: string, message: string) => ({ status: "error" as const, error: { code, message } });
 const notOurs = (tool: string) => fail("not-found", `${tool} is not a connector-discovery tool`);
 
-export function connectorDiscoveryRegistry(ports: ConnectorDiscoveryPorts): ToolRegistry {
+export function connectorDiscoveryRegistry(
+  ports: ConnectorDiscoveryPorts,
+  /** The turn's `toolOutputCap`, so a search can stay under it instead of being
+   *  cut by it. See {@link OUTPUT_BUDGET_SHARE}. */
+  options: { toolOutputCap?: number } = {},
+): ToolRegistry {
   const available = DESCRIPTORS.filter((descriptor) => ports[PORT_FOR[descriptor.name]!] !== undefined);
+  const budget = Math.floor((options.toolOutputCap ?? ASSUMED_TOOL_OUTPUT_CAP) * OUTPUT_BUDGET_SHARE);
 
   return {
     async descriptors() {
@@ -157,7 +188,7 @@ export function connectorDiscoveryRegistry(ports: ConnectorDiscoveryPorts): Tool
               return fail("validation", `find_service_tools takes a short intent, not a document — keep it under ${MAX_NEED_LENGTH} characters (this one was ${need.length})`);
             }
             const matches = await find(need, ctx);
-            return { status: "ok", output: { tools: matches.map(row) as unknown as Json } };
+            return { status: "ok", output: searchResult(matches, budget) as unknown as Json };
           }
           case USE_SERVICE_TOOL: {
             const use = ports.use;
@@ -190,18 +221,68 @@ export function connectorDiscoveryRegistry(ports: ConnectorDiscoveryPorts): Tool
   };
 }
 
-/** One match as the model reads it. A schema the broker could not produce is
- *  MARKED rather than omitted quietly: an absent field reads as "no arguments"
- *  and the model then calls the tool with `{}`. */
-function row(match: ServiceToolMatch): Record<string, unknown> {
+/** One match as the model reads it. A missing schema is MARKED rather than
+ *  omitted quietly: an absent field reads as "no arguments" and the model then
+ *  calls the tool with `{}`. `schemaUnavailable` overrides — the schema is being
+ *  withheld for size, and the row still has to say so in the same words the
+ *  model is already taught to act on (ask, never guess). */
+function row(match: ServiceToolMatch, schemaUnavailable?: string): Record<string, unknown> {
+  const withheld = schemaUnavailable ?? (match.inputSchema === undefined ? NO_SCHEMA_FROM_BROKER : undefined);
   return {
     slug: match.slug,
     toolkit: match.toolkit,
     description: match.description,
     connected: match.connected,
     ...(match.statusMessage === undefined ? {} : { statusMessage: match.statusMessage }),
-    ...(match.inputSchema === undefined
-      ? { schemaUnavailable: "No argument schema came back for this tool. Ask the user what it needs — do not guess arguments." }
-      : { inputSchema: match.inputSchema }),
+    ...(withheld === undefined ? { inputSchema: match.inputSchema } : { schemaUnavailable: withheld }),
   };
+}
+
+/** What the model is told when matches were left out for size — a count it can
+ *  reason about and the one action that helps. */
+function droppedNotice(count: number): Record<string, unknown> {
+  return {
+    moreMatches: count,
+    moreMatchesNote:
+      `${count} further match${count === 1 ? "" : "es"} came back but ${count === 1 ? "was" : "were"} left out `
+      + "to keep this answer small. If none of the tools above fit, search again with a narrower need — "
+      + "name the service, or the exact action.",
+  };
+}
+
+/** The matches, in the broker's relevance order, for as long as the SERIALIZED
+ *  result stays inside `budget` — so this result never reaches the bridge's cap
+ *  and can never be cut mid-schema. Dropping is visible: the model is told how
+ *  many it did not see and what to do about it. */
+function searchResult(matches: ServiceToolMatch[], budget: number): Record<string, unknown> {
+  // Priced in from the first row, worst case: a row admitted only because
+  // nothing had been dropped yet must not be what pushes the notice out.
+  const reserved = JSON.stringify(droppedNotice(matches.length)).length;
+  // `+ 1` is the comma this row costs inside the array.
+  const cost = (entry: Record<string, unknown>) => JSON.stringify(entry).length + 1;
+  const tools: Array<Record<string, unknown>> = [];
+  let used = JSON.stringify({ tools: [] }).length + reserved;
+  let dropped = 0;
+
+  for (const [index, match] of matches.entries()) {
+    const full = row(match);
+    if (used + cost(full) <= budget) {
+      tools.push(full);
+      used += cost(full);
+      continue;
+    }
+    // A single schema larger than the whole budget can never fit beside
+    // anything, so waiting for room is waiting forever. The row is still worth
+    // having without it — marked, which sends the model to ask.
+    const marked = row(match, SCHEMA_TOO_LARGE);
+    if (cost(full) > budget && used + cost(marked) <= budget) {
+      tools.push(marked);
+      used += cost(marked);
+      continue;
+    }
+    dropped = matches.length - index;
+    break;
+  }
+
+  return { tools, ...(dropped === 0 ? {} : droppedNotice(dropped)) };
 }

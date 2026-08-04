@@ -2359,6 +2359,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     schedule: async ({ appId, cron }, ctx) =>
       await apps.schedule(appId as AppId, cron, ctx) as unknown as Json,
   }));
+  // One value, three readers: the agent's context, the harness bridge, and the
+  // discovery registry — which bounds its own search under it rather than being
+  // cut by it (the cap slices serialized JSON, so a search that reaches it loses
+  // a schema mid-object).
+  const toolOutputCap = config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP;
   // The connector-discovery tools (design 2026-08-03), on the SAME registry, each
   // only as far as an adapter backs it — the "no adapter, no tool" rule knowledge
   // follows below, applied per tool rather than per registry.
@@ -2416,7 +2421,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
           connected: connected.has(entry.toolkit),
         })) as unknown as Json;
       },
-    }));
+    }, { toolOutputCap }));
   }
   // Knowledge K1 — the tool exists exactly when an adapter is configured;
   // no adapter, no `vendo_knowledge_search` in any descriptor surface.
@@ -2539,7 +2544,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     store,
     ...(system === undefined ? {} : { system }),
     context: {
-      toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
+      toolOutputCap,
       ...(config.agent?.maxOutputTokens === undefined ? {} : { maxOutputTokens: config.agent.maxOutputTokens }),
       ...(config.agent?.historyWindow === undefined ? {} : { historyWindow: config.agent.historyWindow }),
       ...(config.agent?.maxSteps === undefined ? {} : { maxSteps: config.agent.maxSteps }),
@@ -2674,8 +2679,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // zero-key Cloud default) is taught nothing rather than two tools that are
     // not on its listing.
     connectorDiscovery: serviceCatalog,
-    bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
-      preflight: (call, ctx) => connectGate.check(call, ctx) }),
+    bridge: () => ({ toolOutputCap, preflight: (call, ctx) => connectGate.check(call, ctx) }),
     // §1.6's app half. Without it a files-first app (D4) is a PICTURE of an app: no
     // store row, so it never lists and `vendo_apps_open` masks it as not-found, and
     // no query data, so every value renders "—" with the real host data one call away.

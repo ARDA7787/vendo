@@ -125,13 +125,18 @@ beforeAll(async () => {
   });
 });
 
-async function compose(connectors: Connector[], rules?: PolicyRule[]): Promise<Vendo> {
+async function compose(
+  connectors: Connector[],
+  rules?: PolicyRule[],
+  agent?: { toolOutputCap?: number },
+): Promise<Vendo> {
   return createVendo({
     model: {} as LanguageModel,
     principal: async () => principal,
     store: shared!,
     connectors,
     ...(rules === undefined ? {} : { policy: { rules } }),
+    ...(agent === undefined ? {} : { agent }),
   });
 }
 
@@ -257,6 +262,55 @@ describe("find_service_tools", () => {
     const { tools } = (outcome as { output: { tools: Array<{ connected: boolean }> } }).output;
     expect(tools.length).toBeGreaterThan(0);
     expect(tools.every((row) => row.connected === false)).toBe(true);
+  });
+});
+
+describe("a search is bounded by the host's OWN tool-output cap", () => {
+  /** A broker whose schemas are the size real ones are (Composio's run 5–7KB a
+   *  match), so the result would run past a tool-output cap and be cut
+   *  mid-schema if nothing bounded it first. */
+  function bulkyBroker(): Connector {
+    const paragraph =
+      "Composio's parameter descriptions run a full paragraph: they restate the constraint, name the "
+      + "sibling fields the value interacts with, and give the format the provider expects.";
+    const match = (index: number): ServiceToolMatch => ({
+      slug: `BULK_TOOL_${index}`,
+      toolkit: "gmail",
+      description: `Bulk tool ${index}`,
+      connected: true,
+      inputSchema: {
+        type: "object",
+        properties: Object.fromEntries(
+          Array.from({ length: 10 }, (_, field) => [`field_${field}`, { type: "string", description: paragraph }]),
+        ),
+      },
+    });
+    return {
+      ...broker(),
+      searchTools: async () => Array.from({ length: 10 }, (_, index) => match(index)),
+      toolRisk: async (slug) => (slug.startsWith("BULK_TOOL_") ? "read" : undefined),
+    };
+  }
+
+  it("keeps the answer under the cap the host set, and names what it left out", async () => {
+    // Not the shipped 32,000: a host may set its own, and a bound that reads a
+    // constant of its own would sail straight past it.
+    const vendo = await compose([bulkyBroker()], undefined, { toolOutputCap: 8_000 });
+    const outcome = await vendo.guardedTools.execute(
+      { id: "d9", tool: "find_service_tools", args: { need: "send a gmail message" } },
+      ctx,
+    );
+
+    expect(outcome.status).toBe("ok");
+    const output = (outcome as { output: Record<string, unknown> }).output;
+    const tools = output["tools"] as Array<Record<string, unknown>>;
+    // What the bridge would measure — and it never reaches the cap, so it is
+    // never cut mid-schema.
+    expect(JSON.stringify(output).length).toBeLessThanOrEqual(8_000);
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.length).toBeLessThan(10);
+    expect(tools.every((row) => row["inputSchema"] !== undefined)).toBe(true);
+    expect(output["moreMatches"]).toBe(10 - tools.length);
   });
 });
 

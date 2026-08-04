@@ -51,7 +51,11 @@ const NO_CONNECTED_ACCOUNT_SLUG = "ActionExecute_ConnectedAccountNotFound";
  *
  * Composio's session search takes NO limit/top_k parameter (verified against
  * their API reference 2026-08-03), so the cap has to be ours: an unbounded
- * result set is a prompt-budget hazard, and we fetch one schema per row. */
+ * result set is a prompt-budget hazard, and we fetch one schema per row.
+ *
+ * This bounds the READ. What the model is handed is bounded by SIZE, one layer
+ * up in `find_service_tools`, because ten of their schemas do not fit a default
+ * tool-output cap even trimmed. */
 const MAX_MATCHES = 10;
 
 /** Composio's tool-router — sessions, semantic search, connect links — exists
@@ -61,6 +65,38 @@ const MAX_MATCHES = 10;
  * pre-existing calls stay on v3, everything the tool-router era added is v3.1.
  * Their changelog (2026-04-27) supports both; v1 and v2 answer 410. */
 const TOOL_ROUTER_BASE = "/api/v3.1";
+
+/** Composio ships documentation for PEOPLE inside the machine schema —
+ * `examples`, and a `human_parameter_*` restatement of every description — and
+ * it is roughly a third of the bytes: measured against their live catalog
+ * 2026-08-03, eight email matches serialize to 36,407 chars whole and 24,736
+ * with these gone. None of it is needed to construct a call; the real
+ * `description` stays. */
+const HUMAN_FACING_KEYWORDS = new Set(["examples", "human_parameter_name", "human_parameter_description"]);
+
+/** JSON Schema keywords whose values are maps of NAME → schema. A parameter may
+ * legitimately be called `examples`, and dropping it would be dropping an
+ * argument, so the trim below only ever removes a KEYWORD. */
+const SCHEMA_NAME_MAPS = new Set(["properties", "patternProperties", "definitions", "$defs"]);
+
+function withoutHumanCopy(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(withoutHumanCopy);
+  if (node === null || typeof node !== "object") return node;
+  const trimmed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (HUMAN_FACING_KEYWORDS.has(key)) continue;
+    if (SCHEMA_NAME_MAPS.has(key) && value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const named: Record<string, unknown> = {};
+      for (const [name, schema] of Object.entries(value as Record<string, unknown>)) {
+        named[name] = withoutHumanCopy(schema);
+      }
+      trimmed[key] = named;
+      continue;
+    }
+    trimmed[key] = withoutHumanCopy(value);
+  }
+  return trimmed;
+}
 
 function errorOutcome(message: string): ToolOutcome {
   return { status: "error", error: { code: "connector-error", message } };
@@ -276,7 +312,7 @@ export function composioConnector(config: {
     const inputSchema = item.input_parameters
       && typeof item.input_parameters === "object"
       && !Array.isArray(item.input_parameters)
-      ? (item.input_parameters as Record<string, unknown>)
+      ? (withoutHumanCopy(item.input_parameters) as Record<string, unknown>)
       : undefined;
     slugCache.set(slug, {
       toolkit,

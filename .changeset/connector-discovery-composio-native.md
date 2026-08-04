@@ -27,13 +27,31 @@ both the `vendo()` and `claudeCode()` harness paths:
   carries the callable slug, the full input schema, the caller's connection
   status and the broker's next-step message, inline, so the model can construct
   a call with no second lookup. A match the broker has no schema for says so
-  rather than inviting a guess.
+  rather than inviting a guess. The answer is bounded by its own SERIALIZED
+  size, under the turn's `agent.toolOutputCap`, so it can never be the result
+  that cap truncates: broker schemas are kilobytes each (Composio's run 5–7KB),
+  and a result cut at a character count loses a schema mid-object with nothing
+  saying which match lost it. Matches are included whole, in the broker's
+  relevance order, until the budget is spent; whatever is left over is reported
+  as `moreMatches` (a count) and `moreMatchesNote` (narrow the `need` and search
+  again), never dropped silently. A single schema larger than the whole budget
+  still returns its row, with the same `schemaUnavailable` marker that already
+  sends the model to ask rather than guess.
 - **`use_service_tool(slug, arguments)`** — looks up the broker's per-tool risk
   tag, maps it to a `RiskLabel`, lets the guard decide run/ask/refuse, executes,
   and lands on the audit trail with its toolkit named — the same guarded path a
   `host_*` call travels. An untagged tool is `ungraded` (ask-by-default); risk is
   never inferred from a tool's name.
 - **`list_connections`** — unchanged, re-backed by the connector's connection API.
+
+The Composio adapter also trims the documentation Composio ships for PEOPLE
+inside the machine schema — `examples`, `human_parameter_name`,
+`human_parameter_description` — before a schema reaches the model. It is a third
+of the bytes and none of it is needed to construct a call (measured against
+their live catalog 2026-08-03: eight email matches, 36,407 chars whole, 24,736
+trimmed), so trimming is what lets a realistic search come back complete instead
+of short. Only KEYWORDS are removed: a parameter named `examples` is an
+argument, and survives.
 
 Both new tools exist only when a connector adapter can actually serve them
 ("no adapter, no tool"): `find_service_tools` and `use_service_tool` need a

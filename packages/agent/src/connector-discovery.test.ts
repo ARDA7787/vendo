@@ -138,6 +138,113 @@ describe("find_service_tools", () => {
   });
 });
 
+/**
+ * The bound that keeps this tool's answer OUT of the bridge's truncation path.
+ * The bridge slices a serialized result at a character count, so a search that
+ * reaches the cap comes back with its last schema cut mid-object and nothing
+ * saying which match lost it — while the model is told to call with the schema
+ * that came back.
+ */
+describe("find_service_tools bounds its own answer by size", () => {
+  /** The shipped `toolOutputCap` default. */
+  const CAP = 32_000;
+  const share = (cap: number) => Math.floor(cap * 0.9);
+
+  /** A match at the size the real ones are. Measured against Composio's live
+   *  catalog 2026-08-03: their email and Slack tools serialize to 0.8–5.5KB per
+   *  match once their human-facing copy is trimmed, and eight of them to 24,736
+   *  chars — against a 32,000 cap. A toy 200-byte schema would prove nothing
+   *  about this bound, so the fixture is built to the measured size and the
+   *  first test asserts it still is. */
+  const brokerMatch = (slug: string, properties: number): ServiceToolMatch => ({
+    slug,
+    toolkit: "gmail",
+    description: `Composio's own one-line description of ${slug}`,
+    connected: true,
+    inputSchema: {
+      type: "object",
+      properties: Object.fromEntries(Array.from({ length: properties }, (_, index) => [`field_${index}`, {
+        type: "string",
+        description:
+          `Argument ${index}. Composio's parameter descriptions run a full paragraph: they restate the `
+          + "constraint, name the sibling fields the value interacts with, spell out what happens when it "
+          + "is left out, and give the format the provider's API expects down to the separator between "
+          + "entries — which is why one of their tool schemas is kilobytes rather than bytes, why a match "
+          + "is worthless without one, and why ten of them do not fit inside one tool result.",
+      }])),
+      required: ["field_0"],
+    },
+  });
+
+  const found = async (matches: ServiceToolMatch[], toolOutputCap: number) => {
+    const outcome = await connectorDiscoveryRegistry(ports({ find: async () => matches }), { toolOutputCap })
+      .execute(call("find_service_tools", { need: "send an email to a contact" }), ctx());
+    expect(outcome.status).toBe("ok");
+    const output = (outcome as { output: Record<string, unknown> }).output;
+    return { output, size: JSON.stringify(output).length, tools: output["tools"] as Array<Record<string, unknown>> };
+  };
+
+  it("returns a realistic multi-match answer WHOLE", async () => {
+    // The measured live distribution: eight email matches, the biggest of them
+    // ten paragraph-described arguments.
+    const matches = [10, 9, 5, 10, 2, 8, 2, 3].map((properties, index) => brokerMatch(`GMAIL_TOOL_${index}`, properties));
+    const { output, size, tools } = await found(matches, CAP);
+
+    // The fixture is only worth what its size is: if these ever shrink to toys,
+    // every assertion below stops meaning anything.
+    expect(JSON.stringify(matches[0]).length).toBeGreaterThan(3_000);
+    expect(JSON.stringify({ tools: matches }).length).toBeGreaterThan(20_000);
+
+    expect(tools).toHaveLength(8);
+    expect(tools.every((row) => row["inputSchema"] !== undefined)).toBe(true);
+    // Nothing was dropped, so nothing is claimed to have been.
+    expect(output).not.toHaveProperty("moreMatches");
+    // And the bridge has nothing to cut: this is the exact string it measures.
+    expect(size).toBeLessThanOrEqual(CAP);
+  });
+
+  it("drops the matches that do not fit and SAYS how many, rather than being cut mid-schema", async () => {
+    const matches = Array.from({ length: 10 }, (_, index) => brokerMatch(`GMAIL_TOOL_${index}`, 10));
+    const { output, size, tools } = await found(matches, CAP);
+
+    expect(size).toBeLessThanOrEqual(share(CAP));
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.length).toBeLessThan(matches.length);
+    // The whole point: the loss is visible and countable, and every row that DID
+    // come back is a whole row.
+    expect(output["moreMatches"]).toBe(matches.length - tools.length);
+    expect(output["moreMatchesNote"]).toMatch(/narrower need/i);
+    expect(tools.every((row) => typeof row["inputSchema"] === "object")).toBe(true);
+    // Relevance order is the broker's, and it is kept: the dropped ones are the tail.
+    expect(tools.map((row) => row["slug"])).toEqual(matches.slice(0, tools.length).map((match) => match.slug));
+  });
+
+  it("still returns a match whose OWN schema is bigger than the whole answer", async () => {
+    const huge = brokerMatch("GMAIL_MONSTER", 200);
+    expect(JSON.stringify(huge).length).toBeGreaterThan(CAP);
+    const { size, tools } = await found([huge], CAP);
+
+    // Returning nothing would be the same silence, one layer earlier. The row
+    // comes back usable — slug, toolkit, connect status — with the schema marked
+    // absent in the words the model already acts on.
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({ slug: "GMAIL_MONSTER", toolkit: "gmail", connected: true });
+    expect(tools[0]).not.toHaveProperty("inputSchema");
+    expect(tools[0]!["schemaUnavailable"]).toMatch(/too large/i);
+    expect(tools[0]!["schemaUnavailable"]).toMatch(/do not guess arguments/i);
+    expect(size).toBeLessThanOrEqual(share(CAP));
+  });
+
+  it("bounds against the cap the COMPOSITION set, not a constant of its own", async () => {
+    const matches = Array.from({ length: 10 }, (_, index) => brokerMatch(`GMAIL_TOOL_${index}`, 10));
+    const small = await found(matches, 8_000);
+    const large = await found(matches, CAP);
+
+    expect(small.size).toBeLessThanOrEqual(share(8_000));
+    expect(small.tools.length).toBeLessThan(large.tools.length);
+  });
+});
+
 describe("use_service_tool", () => {
   it("dispatches the slug and arguments as the caller, and returns the outcome verbatim", async () => {
     const seen: Array<[string, unknown, string]> = [];
