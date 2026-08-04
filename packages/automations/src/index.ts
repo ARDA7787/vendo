@@ -15,6 +15,7 @@ import type {
   Json,
   Membership,
   Principal,
+  RiskResolver,
   RunContext,
   RunId,
   StoreAdapter,
@@ -55,6 +56,13 @@ export interface AutomationsConfig {
   store: StoreAdapter;
   /** Absent → agentic runs unavailable, steps still work. */
   runner?: AgentRunner;
+  /** The SAME per-call risk resolver the composition gave the guard. Arm-time
+   *  capture grades a declared connector call with it, so the consent card
+   *  states the grade the call will really run under and the grant it mints
+   *  carries the descriptor hash the guard recomputes at fire time. Absent →
+   *  every declared call is graded exactly as its descriptor says, which is
+   *  what host tools have always done. */
+  resolveRisk?: RiskResolver;
   /** Testability. */
   now?: () => Date;
   /** Max automations a single tick executes concurrently (default 4). A small pool keeps

@@ -62,7 +62,8 @@ export const VENDO_TOOL_TITLES: Readonly<Record<string, string>> = {
   search_components: "Look up available components",
   schedule: "Set when this runs",
   ask_user: "Ask you a question",
-  search_connectors: "Look for an outside service",
+  find_service_tools: "Look for an outside service",
+  use_service_tool: "Use an outside service",
   list_connections: "Check your connected services",
   // Meta-tools: ai-SDK `dynamicTool`s with no descriptor at all, so the table is
   // their ONLY title. The reporter fires on the honest-refusal path — the very
@@ -114,6 +115,17 @@ export type GradedRiskLabel = "read" | "write" | "destructive";
  *  records): the registry that implements it, and the loop that ends a turn on
  *  it. */
 export const ASK_USER_TOOL = "ask_user";
+
+/** The connector dispatcher (connector-discovery design 2026-08-03) — the one
+ *  tool whose real action is an ARGUMENT rather than its name, because a single
+ *  name stands in for a third-party catalog of ~20,000 tools.
+ *
+ *  It lives here for the same reason `ASK_USER_TOOL` does, and one more: the
+ *  grant law below has to recognise it. "Allow this tool" means twenty thousand
+ *  actions on this one name and nothing like that on any other, so consent is
+ *  keyed on the slug (see {@link GrantScope}'s `service-tool`) — a rule three
+ *  packages read and none of them may spell differently. */
+export const USE_SERVICE_TOOL = "use_service_tool";
 
 /**
  * Design §12 / build contract §8 (clarification 2026-07-31) — WHO wrote this
@@ -257,6 +269,31 @@ export const toolCallSchema = z.object({
   args: requiredJsonValueSchema,
 }).passthrough() satisfies z.ZodType<ToolCall>;
 
+/** Additive composition hook: resolve a call's effective risk before policy
+ * rules, grants, breakers, and approvals evaluate it. Throwing, returning an
+ * unknown value, or returning undefined preserves the descriptor's risk.
+ *
+ * In core rather than in the guard because the guard is not its only reader:
+ * the automations engine grades a DECLARED call at arm time with the same
+ * resolver, so the consent card shows the grade the call will really run under
+ * and the grant it mints carries the descriptor hash the guard will compute. */
+export type RiskResolver = (
+  call: ToolCall,
+  descriptor: ToolDescriptor,
+  ctx: RunContext,
+) => RiskLabel | undefined | Promise<RiskLabel | undefined>;
+
+/** The descriptor a {@link RiskResolver}'s answer produces. Unchanged when the
+ *  resolver declined or agreed, so `descriptorHash` stays stable for every tool
+ *  whose grade is authored — and identical on both sides for the one whose
+ *  grade is not, which is what keeps a minted grant matchable. */
+export function withResolvedRisk(descriptor: ToolDescriptor, resolved: unknown): ToolDescriptor {
+  const parsed = riskLabelSchema.safeParse(resolved);
+  if (!parsed.success) return descriptor;
+  // `{ ...descriptor }` keeps the enumerable VENDO_AUTHORED symbol on purpose.
+  return parsed.data === descriptor.risk ? descriptor : { ...descriptor, risk: parsed.data };
+}
+
 /** 01-core §4 — a connector call that needs a per-user connected account first
  * (04-actions §3). `connector`/`toolkit` key the umbrella's /connections
  * endpoints; the UI renders an inline connect card and retries after connecting. */
@@ -296,21 +333,10 @@ export const toolOutcomeSchema = z.discriminatedUnion("status", [
 /** The run a listing is asked FOR (01-core §4) — a `RunContext` is one.
  *
  *  `venue`/`presence` are what design §12's projection reads: the guard
- *  withholds destructive and external tools from an unattended run.
- *
- *  The run also has to be IDENTIFIABLE, because a registry may narrow a listing
- *  by it: `@vendoai/actions` scopes lazily expanded connector toolkits to the run
- *  that expanded them. A caller says which run this is either with
- *  {@link listingScope} or — absent one — with the context OBJECT's own identity.
- *  An unidentified run fails toward "search again", never toward another run's
- *  set: a rebuilt object with no scope reads as a fresh listing. */
-export type ToolListingContext = Pick<RunContext, "venue" | "presence"> & {
-  /** Opaque run/session key. Same string ⇒ same listing, whatever the object;
-   *  absent ⇒ the object's identity is the key. Never parsed, never a
-   *  permission — a listing is not an authorization (the guard and the
-   *  per-user connect check decide what may RUN). */
-  listingScope?: string;
-};
+ *  withholds destructive and external tools from an unattended run. Nothing
+ *  else narrows a listing: every tool a run may call is on every listing that
+ *  run is given, so a listing never has to be identified. */
+export type ToolListingContext = Pick<RunContext, "venue" | "presence">;
 
 /** 01-core §4 */
 export interface ToolRegistry {
@@ -322,11 +348,4 @@ export interface ToolRegistry {
    *  hint, which means only the guard-bound registry has to know the law. */
   descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]>;
   execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome>;
-  /** This {@link ToolListingContext.listingScope} is finished — forget whatever
-   *  the registry remembers for it. Scope-keyed state is keyed by a STRING, so
-   *  nothing collects it: without this the sets could only shed by capacity,
-   *  which makes a process-global cap into a cross-tenant interference channel.
-   *  Optional, and never required for correctness — a released scope simply reads
-   *  as a fresh listing. */
-  releaseListingScope?(scope: string): void;
 }

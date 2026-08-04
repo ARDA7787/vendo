@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AppId, Trigger } from "@vendoai/core";
+import { serviceToolSlug, type ApprovalRequest, type AppId, type Trigger } from "@vendoai/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { APPROVALS_DECIDED_EVENT } from "../client-impl.js";
 import { useVendoContext, useVendoTheme } from "../context.js";
@@ -513,11 +513,18 @@ export function AutomationsPanel() {
               {pendingAsks.length > 0 ? (
                 <GrantSetCard
                   name={entry.app.name}
-                  permissions={pendingAsks.map(ask => ({
-                    approvalId: ask.id,
-                    tool: ask.call.tool,
-                    risk: ask.descriptor.risk,
-                  }))}
+                  permissions={pendingAsks.map(ask => {
+                    // A connector ask is FOR its service action, not for the
+                    // dispatcher — two service actions are otherwise the same
+                    // row twice.
+                    const slug = serviceToolSlug(ask.call);
+                    return {
+                      approvalId: ask.id,
+                      tool: ask.call.tool,
+                      ...(slug === undefined ? {} : { slug }),
+                      risk: ask.descriptor.risk,
+                    };
+                  })}
                   state="parked"
                   onDecide={async approve => {
                     await decideSet(appId, pendingAsks, entry.grantSetId, approve);

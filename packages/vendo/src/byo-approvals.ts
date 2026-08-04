@@ -213,11 +213,6 @@ export function createByoApprovals({ guard, tools, store }: ByoApprovalsConfig):
       // the connect gate's bug (`createConnectGate().bind`): a decorator with no
       // opinion about projection must pass the argument straight through.
       descriptors: (ctx) => tools.descriptors(ctx),
-      // Forwarded for the same reason, one method along: an OPTIONAL method a
-      // decorator rebuilds without is silently gone, and this registry IS
-      // `vendo.guardedTools` — so a BYO host would have no way to end a listing
-      // scope.
-      releaseListingScope: (scope) => tools.releaseListingScope?.(scope),
       async execute(call, ctx) {
         const outcome = await tools.execute(call, ctx);
         if (outcome.status === "pending-approval") {

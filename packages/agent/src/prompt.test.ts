@@ -174,13 +174,14 @@ describe("discovery sections", () => {
     expect(prompt).toContain("Discovery budget");
     expect(prompt).toContain("Use find_tools at most 2 times per user intent");
     expect(prompt).toMatch(/unconnected/i);
-    expect(prompt).not.toContain("search_connectors");
+    expect(prompt).not.toContain("find_service_tools");
   });
 
-  it("connectors: names the two Composio-scoped tools and never find_tools", async () => {
+  it("connectors: names the three outside-service tools and never find_tools", async () => {
     const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, "connectors");
     expect(prompt).toContain("Connectors");
-    expect(prompt).toContain("search_connectors");
+    expect(prompt).toContain("find_service_tools");
+    expect(prompt).toContain("use_service_tool");
     expect(prompt).toContain("list_connections");
     expect(prompt).not.toContain("find_tools");
     expect(prompt).not.toContain("Discovery budget");
@@ -194,17 +195,19 @@ describe("discovery sections", () => {
     expect(prompt).toContain("hunt for substitutes across the catalog");
   });
 
-  /** Live boxed run 2026-08-03: search_connectors answered
-   * `{"name":"slack_SLACK_SEND_MESSAGE"}`, the model called that bare name, the
-   * client answered "No such tool available", and the model relayed that to the
-   * user. The prefix rule has to cover names read out of a RESULT, not just the
-   * ones on the listing. */
-  it("connectors: the server-prefix rule covers names read out of a tool result", async () => {
+  /** The section this replaced taught the model to hunt a found tool down on its
+   * own tool list, behind a `mcp__vendo__` server prefix. That was only ever true
+   * of the expansion shape, and it was never reliably true even then (measured
+   * live 2026-08-03: the client does not re-list, so the tool was not there at
+   * all). The listing is now fixed, so there is no name to reconcile — the slug
+   * goes straight back into `use_service_tool`. */
+  it("connectors: teaches the slug loop, not a hunt for a prefixed name on the listing", async () => {
     const prompt = await assembleSystemPrompt(testGuard({}, []), ctx(), undefined, false, "connectors");
-    expect(prompt).toContain("A tool name in any RESULT");
-    expect(prompt).toContain("server prefix");
-    expect(prompt).toContain("Call it by the exact name your list shows");
-    expect(prompt).toContain("before telling the user anything failed");
+    expect(prompt).toContain("never on your own tool list");
+    expect(prompt).toContain("passing the slug exactly as find_service_tools returned it");
+    expect(prompt).toContain("if a match came back without one, ask the user");
+    expect(prompt).not.toContain("mcp__vendo__");
+    expect(prompt).not.toContain("server prefix");
   });
 
   it("stays out entirely when there is no discovery rail", async () => {

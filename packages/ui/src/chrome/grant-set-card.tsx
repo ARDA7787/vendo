@@ -30,6 +30,10 @@ export interface GrantSetPermission {
   /** The pending guard approval this row settles. */
   approvalId: string;
   tool: string;
+  /** The service action this row is for, when the tool is the connector
+      dispatcher. It, not the tool name, is what the person is allowing — two
+      service actions on one card are otherwise the same row twice. */
+  slug?: string;
   risk: RiskLabel;
 }
 
@@ -141,10 +145,16 @@ export function GrantSetCard({ name, permissions, state, onDecide }: GrantSetCar
         </CardLine>
         <CardList className="fl-grants">
           {permissions.map(permission => {
-            const presentation = toolPresentation(permission.tool, undefined, tools[permission.tool]);
+            const presentation = toolPresentation(
+              permission.tool,
+              permission.slug === undefined ? undefined : { slug: permission.slug },
+              tools[permission.tool],
+            );
             // Host-authored only: `toolPresentation` carries `ToolMeta.description`
             // (the host's own sentence) or one we compose ourselves — never the
-            // descriptor's model-facing line.
+            // descriptor's model-facing line. A connector row's `slug` reaches
+            // presentation above, so the service action names itself without
+            // that line being needed.
             const description = (presentation.description ?? "").trim();
             return (
               <li className="fl-grant" key={permission.approvalId}>

@@ -5,8 +5,9 @@ import {
   mechanicalRisk,
   projectableForRun,
   resolvedRisk,
-  riskLabelSchema,
+  serviceToolSlug,
   withheldFromUnattended,
+  withResolvedRisk,
   sha256Hex,
   toolOutcomeSchema,
   UNATTENDED_DESTRUCTIVE_REASON,
@@ -247,9 +248,13 @@ function auditData(record: VendoRecord): AuditEvent {
   return record.data as AuditEvent;
 }
 
-function scopeMatches(scope: GrantScope, args: unknown): boolean {
+function scopeMatches(scope: GrantScope, call: ToolCall): boolean {
   if (scope.kind === "tool") return true;
-  return scope.inputHash === exactInputHash(args);
+  // A `service-tool` grant is authority over ONE service action, whatever
+  // arguments it is called with — the connector dispatcher's tool name says
+  // nothing about what the call does, so the slug is the thing consented to.
+  if (scope.kind === "service-tool") return scope.slug === serviceToolSlug(call);
+  return scope.inputHash === exactInputHash(call.args);
 }
 
 function durationMatches(grant: PermissionGrant, ctx: RunContext): boolean {
@@ -546,7 +551,6 @@ class GuardImplementation implements VendoGuard {
         const all = await tools.descriptors(ctx);
         return ctx === undefined ? all : projectableForRun(all, ctx);
       },
-      releaseListingScope: (scope: string) => tools.releaseListingScope?.(scope),
       execute: async (call, ctx) => {
         const descriptors = await tools.descriptors();
         const descriptor = descriptors.find((candidate) => candidate.name === call.tool);
@@ -992,9 +996,7 @@ class GuardImplementation implements VendoGuard {
     const resolveRisk = this.#config.resolveRisk;
     if (resolveRisk === undefined) return descriptor;
     try {
-      const resolved = riskLabelSchema.safeParse(await resolveRisk(call, descriptor, ctx));
-      if (!resolved.success) return descriptor;
-      return resolved.data === descriptor.risk ? descriptor : { ...descriptor, risk: resolved.data };
+      return withResolvedRisk(descriptor, await resolveRisk(call, descriptor, ctx));
     } catch {
       // The static descriptor is the conservative fallback. Vendo's dynamic
       // edit descriptor is write-class, so lookup/classifier failures still ask.
@@ -1501,7 +1503,7 @@ class GuardImplementation implements VendoGuard {
       if (grant.revokedAt !== undefined) continue;
       if (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= at)) continue;
       if (!durationMatches(grant, ctx) || !presenceMatches(grant, ctx)) continue;
-      if (!scopeMatches(grant.scope, call.args)) continue;
+      if (!scopeMatches(grant.scope, call)) continue;
       if (grant.descriptorHash !== fingerprint) {
         invalidated.push(grant);
         continue;
