@@ -1,12 +1,12 @@
-# 20260803T221242Z — branch redesign/postcheck2-gate @ c2a444fe1c3c46f5d695b1a59969d9f6d358c01a
-# cwd: /Users/yousefh/orca/workspaces/flowlet/ui-s1-fixdefects
+# 20260803T235135Z — branch redesign/ui-s1 @ 4b6e362991a6a69eeafce4391899464cdbe0f007
+# cwd: /Users/yousefh/orca/workspaces/flowlet/ui-s1
 # argv: zsh -c node scripts/dependency-guard.mjs && node scripts/portability-gate.mjs && pnpm exec turbo run lint --force
 
 dependency-guard: OK (15 packages checked)
 portability-gate: ok — server entry bundles for a Worker target with zero unresolved imports
-portability-gate: ok — no Node-only leg in the worker server graph (609 modules checked)
-portability-gate: ok — store postgres entry stays PGlite-free under node resolution (144 modules checked)
-portability-gate: ok — @vendoai/harnesses bundles for a Worker target (286 modules checked)
+portability-gate: ok — no Node-only leg in the worker server graph (612 modules checked)
+portability-gate: ok — store postgres entry stays PGlite-free under node resolution (145 modules checked)
+portability-gate: ok — @vendoai/harnesses bundles for a Worker target (288 modules checked)
 portability-gate: ok — no raw hazard patterns in package sources
 [vendo] `model` is deprecated: use the `models.default` seat — `models: { default: … }`. It still works for one more minor.
 [vendo] smoke-render gate skipped: react/jsdom did not resolve to filesystem paths in this environment (bundled server); islands ship without the crash gate
@@ -19,20 +19,20 @@ portability-gate: all legs green
    • Running lint in 33 packages
    • Remote caching disabled, using shared worktree cache
 
-demo-accounting:lint: cache bypass, force executing cbdacb0a3ed790e6
-demo-template:lint: cache bypass, force executing e650b50018bb07d8
-@vendoai-examples/ai-sdk-agent:lint: cache bypass, force executing dfc4b5f1343765a7
-@vendoai-examples/mastra-agent:lint: cache bypass, force executing 14dcb58a459e81c0
-genui-bench:lint: cache bypass, force executing bb954350c8bc0353
-demo-bank:lint: cache bypass, force executing 13cf1e2fdfaf9d1f
-@vendoai-examples/ai-sdk-agent:lint: $ eslint
-demo-bank:lint: $ eslint
+@vendoai-examples/mastra-agent:lint: cache bypass, force executing 226fee109b432295
+demo-accounting:lint: cache bypass, force executing e64ccdfae6d6408d
+@vendoai-examples/ai-sdk-agent:lint: cache bypass, force executing 0c09f86713fd4d39
+demo-bank:lint: cache bypass, force executing ad6d574b7537e126
+genui-bench:lint: cache bypass, force executing 34c26e13fb020c82
+demo-template:lint: cache bypass, force executing eff70bfdf3b3329d
 genui-bench:lint: $ eslint
-@vendoai-examples/mastra-agent:lint: $ eslint
 demo-accounting:lint: $ eslint
+demo-bank:lint: $ eslint
 demo-template:lint: $ eslint
+@vendoai-examples/mastra-agent:lint: $ eslint
+@vendoai-examples/ai-sdk-agent:lint: $ eslint
 demo-bank:lint: 
-demo-bank:lint: /Users/yousefh/orca/workspaces/flowlet/ui-s1-fixdefects/examples/demo-bank/src/app/logout/route.ts
+demo-bank:lint: /Users/yousefh/orca/workspaces/flowlet/ui-s1/examples/demo-bank/src/app/logout/route.ts
 demo-bank:lint:   13:28  warning  'request' is defined but never used  @typescript-eslint/no-unused-vars
 demo-bank:lint: 
 demo-bank:lint: ✖ 1 problem (0 errors, 1 warning)
@@ -40,7 +40,7 @@ demo-bank:lint:
 
  Tasks:    6 successful, 6 total
 Cached:    0 cached, 6 total
-  Time:    5.401s 
+  Time:    4.118s 
 
 
 EXIT=0
