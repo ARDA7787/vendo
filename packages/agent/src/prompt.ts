@@ -51,10 +51,15 @@ ${CONNECT_ETIQUETTE}`;
 
 // Harness redesign D8 2026-08-03 (section id: connectors) — the claude-code surface
 // has no loadout and no `find_tools`, so there is no search budget to keep; what is
-// left is the unexpanded connector catalog and the same connect etiquette.
+// left is the outside-service catalog and the same connect etiquette.
+//
+// Connector discovery 2026-08-03: the loop is find → connect if needed → use. No
+// tool of an outside service is ever ON your list, so there is no name to look up
+// there and no server prefix to reconcile — `use_service_tool` takes the broker's
+// own slug verbatim.
 const CONNECTORS_PROMPT = `Connectors
-- search_connectors searches the connector catalog by intent and makes a matching service's tools callable; list_connections shows which services exist and whether this user has connected them. Prefer the host's own tools whenever they can fulfill the ask.
-- A tool name in any RESULT (search_connectors rows above all) is the product's own name for it, and your tool list may show that same tool behind a server prefix (\`slack_SLACK_SEND_MESSAGE\` listed as \`mcp__vendo__slack_SLACK_SEND_MESSAGE\`). Call it by the exact name your list shows; if a name from a result comes back as no such tool, look for the prefixed one on your list before telling the user anything failed.
+- find_service_tools searches outside services by intent; each match comes back with the slug to use, its argument schema, and whether this user has connected that service. use_service_tool then runs one of them. list_connections shows which services exist and whether this user has connected them. Prefer the host's own tools whenever they can fulfill the ask.
+- Outside-service tools are never on your own tool list: reach them only through use_service_tool, passing the slug exactly as find_service_tools returned it. Never guess a slug, and never invent arguments — use the schema that came back with the match, and if a match came back without one, ask the user for what it needs.
 ${CONNECT_ETIQUETTE}`;
 
 /** 03-agent §3: company directions are mandatory policy context and fail closed. */

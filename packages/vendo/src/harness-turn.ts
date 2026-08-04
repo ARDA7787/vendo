@@ -105,10 +105,11 @@ export interface HarnessTurnsConfig {
   /** The shipped capability-miss rail. Load-bearing for evaluation E1's fifth ask:
    *  an impossible request must produce an honest refusal, not an invention. */
   capabilityMiss?: CapabilityMissConfig;
-  /** Are D3's `search_connectors` / `list_connections` projected at all? Only when
-   *  the deployment has connectors configured (server.ts gates the registry add on
-   *  that) — otherwise an uncurated surface, which has no `find_tools` either, would
-   *  be taught two tools that are not on its listing. */
+  /** Is the `find_service_tools` / `use_service_tool` pair projected at all? Only
+   *  when a configured connector can actually search and dispatch the broker's
+   *  catalog (server.ts gates the registry add on that) — otherwise an uncurated
+   *  surface, which has no `find_tools` either, would be taught two tools that are
+   *  not on its listing. */
   connectorDiscovery?: boolean;
   /** The render seam's halves composition owns, per turn — like `bridge` below,
    *  and for the same reason: the app half (`authoredApp`) stores the app row and

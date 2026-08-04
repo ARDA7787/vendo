@@ -7,7 +7,6 @@ import type {
   RunContext,
   StoreAdapter,
   ToolDescriptor,
-  ToolListingContext,
   ToolOutcome,
   ToolRegistry,
   ToolResult,
@@ -57,26 +56,8 @@ interface HostIdentity {
   description: string;
 }
 
-/**
- * The context a door session hands the registry — a `RunContext` plus core's
- * opaque `listingScope`.
- *
- * The scope is load-bearing on THIS surface: the door mints a brand-new context
- * object per authenticated request (consent and asserted memberships are
- * per-request facts), so keyed on object identity every request was a different
- * run and a client that took the `list_changed` and re-listed got a listing
- * WITHOUT the tool `search_connectors` had just materialized. The session id is
- * what stays the same across those objects, so the session id is the scope. A
- * TURN session carries the live turn's own context verbatim, with no scope: one
- * turn is one object.
- */
-type DoorRunContext = RunContext & Pick<ToolListingContext, "listingScope">;
-
 interface SessionState extends McpStateSession {
   server: Server;
-  /** {@link DoorRunContext} — narrowed from `McpStateSession.context` so the
-   *  listing scope the registry reads is visible in the types here. */
-  context: DoorRunContext;
   sessionId?: string;
   /**
    * Set only on a TURN-credential session (10-mcp §3b). Its presence is what
@@ -93,17 +74,6 @@ interface SessionState extends McpStateSession {
    *  the token that created it — the turn-path analogue of the OAuth path's
    *  subject + clientId binding. */
   turnToken?: string;
-  /**
-   * This session's cached listing is STALE: the callable surface grew (a
-   * connector search expanded a lazy toolkit) after the client last listed.
-   *
-   * A flag rather than a fire-and-forget notification because the transport
-   * DROPS a `list_changed` sent before the client's standalone SSE stream
-   * exists — silently, with no throw to catch — and a `search_connectors` as
-   * the session's first call is exactly that case. The flag is replayed when
-   * the stream attaches and cleared by the `tools/list` it exists to provoke.
-   */
-  toolsChanged?: boolean;
 }
 
 /** The `clientId` a turn session records in door state. Not a secret and not an
@@ -190,8 +160,8 @@ export interface McpDoorConfig {
    *
    * The door calls it FRESH for every listing and every call, and deliberately
    * does not memoize — not even the resolved value, and never a rejection. The
-   * bound registry grows at runtime (a lazy connector's `expandToolkits`, an
-   * `add()`), so a menu frozen at the first request would leave every
+   * bound registry grows at runtime (an `add()`), so a menu frozen at the
+   * first request would leave every
    * late-arriving tool invisible AND uncallable until the process restarted;
    * caching a failed read would freeze the door just as permanently. The
    * registry memoizes its own load underneath, so re-asking costs a map lookup.
@@ -606,21 +576,17 @@ class Door {
         });
       },
       onsessionclosed: async (sessionId) => {
-        // The client's own DELETE. It never routes through `state.close`, so the
-        // listing scope has to be released here too.
-        this.#releaseListing(state);
         await this.#state.deleteSession(sessionId);
       },
     });
-    // `listChanged` is a PROMISE the door now keeps: `search_connectors` expands
-    // the registry mid-session, and an SDK client lists once and caches, so
-    // without the notification the tool the model just found is invisible and
-    // uncallable until the client reconnects. See `#announceExpansion`.
-    const tools = { listChanged: true };
+    // No `listChanged`: the door's listing is fixed for the life of a session.
+    // Nothing materializes tools mid-session any more (the service-tool pair is
+    // permanent), and an SDK client lists once and caches — a promise nobody
+    // keeps is worse than none.
     const capabilities = this.#config.apps === undefined
-      ? { tools }
+      ? { tools: {} }
       : {
-          tools,
+          tools: {},
           resources: {},
           extensions: { "io.modelcontextprotocol/ui": {} },
         };
@@ -713,17 +679,10 @@ class Door {
           response = await transport.handleRequest(req);
         }
         if (!(response.headers.get("content-type") ?? "").includes("text/event-stream")) return response;
-        response = adoptStandalone(response);
-        // The client's standalone SSE stream just attached. Everything the door
-        // tried to announce before it existed was dropped by the transport, so
-        // this is where a pending `list_changed` gets its only other chance —
-        // including on a reconnect, which is why sending never clears the flag.
-        await this.#flushToolsChanged(state);
-        return response;
+        return adoptStandalone(response);
       },
       close: async () => {
         await releaseStandalone();
-        this.#releaseListing(state);
         await transport.close();
       },
     };
@@ -737,9 +696,6 @@ class Door {
       const tools = state.turn === undefined
         ? await this.#listedTools(state)
         : await turnTools(state.turn);
-      // The client is holding a fresh listing now, which is the whole point of
-      // the notification — so the staleness this session was tracking is spent.
-      state.toolsChanged = false;
       return { tools };
     });
     state.server.setRequestHandler(CallToolRequestSchema, async (request) =>
@@ -764,8 +720,8 @@ class Door {
 
   /**
    * Resolve the menu FRESH for every listing and every call. It is deliberately
-   * not memoized: the registry behind the provider grows at runtime (a lazy
-   * connector's `expandToolkits`, an `add()`), and a door that froze its menu at
+   * not memoized: the registry behind the provider grows at runtime (an
+   * `add()`), and a door that froze its menu at
    * the first request would leave every late-arriving tool invisible AND
    * uncallable until the process restarted. The registry memoizes its own load,
    * so re-asking costs a map lookup. A rejected resolution is likewise never
@@ -838,7 +794,7 @@ class Door {
     // what is callable, and an unknown name comes back as its own error.
     if (state.turn !== undefined) {
       const turn = state.turn;
-      return turnResult(await this.#announcingExpansion(state, name, () => turn.tools.call(name, args as Json)));
+      return turnResult(await turn.tools.call(name, args as Json));
     }
     const descriptors = await this.#config.tools.descriptors(state.context);
     // An off-menu name answers exactly like a name that does not exist: the
@@ -850,12 +806,9 @@ class Door {
       }
       return inBandError(`not-found: Tool ${name} was not found`);
     }
-    const outcome = await this.#announcingExpansion(state, name, async () => {
-      const id = await this.#replayId(state, name, args);
-      const result = await this.#config.tools.execute({ id, tool: name, args }, state.context);
-      await this.#recordReplay(state, name, args, id, result.status);
-      return result;
-    });
+    const id = await this.#replayId(state, name, args);
+    const outcome = await this.#config.tools.execute({ id, tool: name, args }, state.context);
+    await this.#recordReplay(state, name, args, id, outcome.status);
     // FIX E: a bound registry that owns an app-viewer name (vendo_apps_open via
     // apps.agentTools()) returns an OpenSurface envelope ({kind,payload}); the
     // MCP Apps shim renders a bare format-tagged UIPayload (core §8), so unwrap
@@ -865,66 +818,6 @@ class Door {
       return mapOutcome({ status: "ok", output: output as Json }, identity.name);
     }
     return mapOutcome(outcome, identity.name);
-  }
-
-  /** The names this session's `tools/list` would OFFER right now, or `undefined`
-   *  if that cannot be read: the surface is read AROUND an already-executed write,
-   *  so a listing that throws must never become the model's answer. */
-  async #offeredNames(state: SessionState): Promise<Set<string> | undefined> {
-    try {
-      if (state.turn !== undefined) {
-        return new Set((await state.turn.tools.list()).map((listing) => listing.name));
-      }
-      const menu = await this.#menu();
-      const descriptors = await this.#config.tools.descriptors(state.context);
-      return new Set(descriptors.filter(({ name: tool }) => offeredAtDoor(menu, tool)).map(({ name: tool }) => tool));
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
-   * Run one tool call, telling the client if it GREW the callable surface.
-   * `search_connectors` is the only tool that can: it expands a matching connector
-   * toolkit, so the tools it just reported exist from the NEXT listing onward. An
-   * SDK client lists once and caches, so without the notification the found tool
-   * is named to the model and then refuses to run for the rest of the session.
-   *
-   * Keyed off the EXPANSION, not the call's status: a search that expanded nothing
-   * announces nothing (bare noise a client answers with a re-list), and a search
-   * that expanded and THEN failed downstream announces anyway, because those tools
-   * are callable either way.
-   */
-  async #announcingExpansion<T>(state: SessionState, name: string, run: () => Promise<T>): Promise<T> {
-    if (name !== CONNECTOR_SEARCH_TOOL) return run();
-    const before = await this.#offeredNames(state);
-    const result = await run();
-    const after = await this.#offeredNames(state);
-    // An unreadable surface on either side says nothing about growth. Announce:
-    // a spurious re-list costs one request, a missed one costs the session.
-    if (before === undefined || after === undefined || !sameNames(before, after)) {
-      state.toolsChanged = true;
-      await this.#flushToolsChanged(state);
-    }
-    return result;
-  }
-
-  /** Send the pending `list_changed`, if this session has one. Never clears the
-   *  flag: the transport drops a notification with no standalone stream open and
-   *  reports success either way, so only the client's next `tools/list` proves it
-   *  landed. Called after every expansion AND when a stream attaches. */
-  async #flushToolsChanged(state: SessionState): Promise<void> {
-    if (state.toolsChanged !== true) return;
-    try {
-      await state.server.sendToolListChanged();
-    } catch (error) {
-      // The tool already ran. A notification the transport could not place (a
-      // session already closing) must not turn a completed call into a JSON-RPC
-      // error the client would retry; the flag survives for the next stream.
-      console.error("[vendo] mcp door: tools/list_changed notification failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   }
 
   /** The ride-along tools are door tool calls like any other (10-mcp §2/§4).
@@ -1068,18 +961,6 @@ class Door {
       }
     }
     return projectAppsOpenOutput(output, { productName: identity.name, appName });
-  }
-
-  /** This session's listing scope is spent. The registry keys expansions by that
-   *  opaque string, so nothing collects them on its own — without this they shed
-   *  only at the registry's capacity cap, which makes a process-global map into a
-   *  cross-tenant interference channel. Called from every way a session ends:
-   *  DELETE, sweep, revocation, and an initialize that never bound a session id. */
-  #releaseListing(state: SessionState): void {
-    // A turn-credential session carries the TURN's context verbatim, which names
-    // no scope: the turn owns that listing and outlives this session.
-    const scope = state.context.listingScope;
-    if (scope !== undefined) this.#config.tools.releaseListingScope?.(scope);
   }
 
   async #sweepIdleSessions(): Promise<void> {
@@ -1299,11 +1180,6 @@ const APP_TOOL_NAMES = new Set(APP_TOOL_DESCRIPTORS.map((descriptor) => descript
  *  the agent side of the same rule lives in the umbrella. Duplicated as a
  *  literal because block layering keeps mcp off the agent/actions packages. */
 const VENDO_TOOL_PREFIX = "vendo_";
-
-/** D3's connector search — the one tool whose success MATERIALIZES tools (a lazy
- *  toolkit expands), which is why the door has a `listChanged` promise to keep.
- *  Duplicated as a literal for the same layering reason as the prefix above. */
-const CONNECTOR_SEARCH_TOOL = "search_connectors";
 
 /**
  * Vendo's reserved namespace for keys the RUNTIME adds to a tool result — the
@@ -1749,26 +1625,17 @@ function tryStringify(value: unknown): string | undefined {
   }
 }
 
-function sameNames(before: Set<string>, after: Set<string>): boolean {
-  return before.size === after.size && [...after].every((name) => before.has(name));
-}
-
 function mcpContext(
   principal: Principal,
   sessionId: string,
   consent: { clientId: string; scopes: string[] },
   memberships?: Membership[],
-): McpRunContext & { listingScope: string } {
+): McpRunContext {
   return {
     principal,
     venue: "mcp",
     presence: "present",
     sessionId,
-    // What ties this request's context to the last one's ({@link DoorRunContext}).
-    // The same string the session is keyed by, so a client's listing survives
-    // the door rebuilding its context — the tool a search materialized is still
-    // there on the re-list the door asked for.
-    listingScope: sessionId,
     mcpConsent: consent,
     // §9.1 — asserted, never stored, and absent when the host asserts nothing.
     ...(memberships === undefined ? {} : { memberships }),

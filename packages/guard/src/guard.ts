@@ -546,7 +546,6 @@ class GuardImplementation implements VendoGuard {
         const all = await tools.descriptors(ctx);
         return ctx === undefined ? all : projectableForRun(all, ctx);
       },
-      releaseListingScope: (scope: string) => tools.releaseListingScope?.(scope),
       execute: async (call, ctx) => {
         const descriptors = await tools.descriptors();
         const descriptor = descriptors.find((candidate) => candidate.name === call.tool);

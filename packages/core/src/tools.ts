@@ -62,7 +62,8 @@ export const VENDO_TOOL_TITLES: Readonly<Record<string, string>> = {
   search_components: "Look up available components",
   schedule: "Set when this runs",
   ask_user: "Ask you a question",
-  search_connectors: "Look for an outside service",
+  find_service_tools: "Look for an outside service",
+  use_service_tool: "Use an outside service",
   list_connections: "Check your connected services",
   // Meta-tools: ai-SDK `dynamicTool`s with no descriptor at all, so the table is
   // their ONLY title. The reporter fires on the honest-refusal path — the very
@@ -296,21 +297,10 @@ export const toolOutcomeSchema = z.discriminatedUnion("status", [
 /** The run a listing is asked FOR (01-core §4) — a `RunContext` is one.
  *
  *  `venue`/`presence` are what design §12's projection reads: the guard
- *  withholds destructive and external tools from an unattended run.
- *
- *  The run also has to be IDENTIFIABLE, because a registry may narrow a listing
- *  by it: `@vendoai/actions` scopes lazily expanded connector toolkits to the run
- *  that expanded them. A caller says which run this is either with
- *  {@link listingScope} or — absent one — with the context OBJECT's own identity.
- *  An unidentified run fails toward "search again", never toward another run's
- *  set: a rebuilt object with no scope reads as a fresh listing. */
-export type ToolListingContext = Pick<RunContext, "venue" | "presence"> & {
-  /** Opaque run/session key. Same string ⇒ same listing, whatever the object;
-   *  absent ⇒ the object's identity is the key. Never parsed, never a
-   *  permission — a listing is not an authorization (the guard and the
-   *  per-user connect check decide what may RUN). */
-  listingScope?: string;
-};
+ *  withholds destructive and external tools from an unattended run. Nothing
+ *  else narrows a listing: every tool a run may call is on every listing that
+ *  run is given, so a listing never has to be identified. */
+export type ToolListingContext = Pick<RunContext, "venue" | "presence">;
 
 /** 01-core §4 */
 export interface ToolRegistry {
@@ -322,11 +312,4 @@ export interface ToolRegistry {
    *  hint, which means only the guard-bound registry has to know the law. */
   descriptors(ctx?: ToolListingContext): Promise<ToolDescriptor[]>;
   execute(call: ToolCall, ctx: RunContext): Promise<ToolOutcome>;
-  /** This {@link ToolListingContext.listingScope} is finished — forget whatever
-   *  the registry remembers for it. Scope-keyed state is keyed by a STRING, so
-   *  nothing collects it: without this the sets could only shed by capacity,
-   *  which makes a process-global cap into a cross-tenant interference channel.
-   *  Optional, and never required for correctness — a released scope simply reads
-   *  as a fresh listing. */
-  releaseListingScope?(scope: string): void;
 }

@@ -12,7 +12,7 @@ import {
   type OverridesFile,
   type ServerActionHandler,
 } from "@vendoai/actions";
-import { askUserRegistry, connectorDiscoveryRegistry, createAgent, vendoVerbsRegistry, VENDO_TOOL_PACK_PREFIX, type CapabilityMissConfig, type ToolSearchConfig, type VendoAgent } from "@vendoai/agent";
+import { askUserRegistry, connectorDiscoveryRegistry, createAgent, vendoVerbsRegistry, USE_SERVICE_TOOL, VENDO_TOOL_PACK_PREFIX, type CapabilityMissConfig, type ToolSearchConfig, type VendoAgent } from "@vendoai/agent";
 import { assembleSystemPrompt } from "@vendoai/agent/internal";
 // Architecture §3 — the harness runtime and the default thinker. `vendo()` is
 // composed HERE (not by the host) when `harness:` is unset; its prompt and
@@ -72,10 +72,12 @@ import {
   type PackProvider,
   type PermissionGrant,
   type Principal,
+  type RiskLabel,
   type RunContext,
   type RunId,
   type SecretsProvider,
   type StoreAdapter,
+  type ToolCall,
   type ToolDescriptor,
   type ToolOutcome,
   type ToolRegistry,
@@ -514,12 +516,6 @@ export interface CreateVendoConfig {
         the cap is not applied; the rest stay discoverable via
         `find_tools`. Vendo's own `vendo_*` tools are always active. */
     loadout?: string[];
-    /** Discovery discipline (spec 2026-07-25) — how many lazy connector toolkits ONE
-        `find_tools` query may expand from the discovery index.
-        Default 3. Lower it to keep a broad intent from fanning out schema
-        loads; 0 disables index-driven expansion entirely (already-loaded
-        tools stay searchable). */
-    maxSearchExpansions?: number;
     /** AGENT-7: agent-loop step cap per turn (default 20). Exhaustion streams a
         renderable `data-vendo-step-limit` part instead of ending silently. */
     maxSteps?: number;
@@ -1686,7 +1682,13 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     store,
     // The resolver is installed immediately after createApps below. Keeping the
     // hook in guard means chat/SSE and the MCP door reach the same decision.
-    resolveRisk: (call, _descriptor, ctx) => resolveAppToolRisk?.(call, ctx),
+    //
+    // Two resolvers, chained, app first: an app's own tool grade is a decision a
+    // person made in this deployment, so it outranks a broker's catalog tag —
+    // and the two can never collide anyway, since only `use_service_tool`
+    // reaches the second leg.
+    resolveRisk: async (call, _descriptor, ctx) =>
+      (await resolveAppToolRisk?.(call, ctx)) ?? await serviceToolRisk(call),
     ...(configPolicy === undefined ? {} : { policy: configPolicy }),
     // cse lane 3 — a cloud policy.json body, consulted by the resolver STRICTLY
     // AFTER the local file and only within its existing opt-in path (decision
@@ -2351,40 +2353,49 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     schedule: async ({ appId, cron }, ctx) =>
       await apps.schedule(appId as AppId, cron, ctx) as unknown as Json,
   }));
-  // Harness-redesign D3's connector-discovery pair, on the SAME registry, and ONLY
-  // when connectors are configured — the same "no adapter, no tool" rule knowledge
-  // follows below. Both ports read seams declared BELOW this line (`toolSearch`,
-  // `connections`, `connectedToolkitsFor`), the established pattern here: a port
-  // body only runs on a real tool call, long after createVendo has returned.
+  // The connector-discovery tools (design 2026-08-03), on the SAME registry, each
+  // only as far as an adapter backs it — the "no adapter, no tool" rule knowledge
+  // follows below, applied per tool rather than per registry.
+  //
+  // `list_connections` answers a standalone question ("what can I connect?") and
+  // needs nothing but a connector. The CATALOG PAIR needs all THREE halves of the
+  // find → use loop from the same connector: only the broker can index tens of
+  // thousands of third-party tools (`searchTools`), only it can grade them
+  // (`toolRisk`, which is also how a slug is claimed below), and only it can run
+  // them (`executeSlug`). Anything less projects a tool the model can see and can
+  // never successfully use — there is deliberately no fallback, no keyword scoring
+  // (design §Deletions) and no name-based inference (§12, #747). The zero-key Cloud
+  // default connector has no search backend, so a Cloud-default host is projected
+  // `list_connections` alone rather than a search that answers nothing.
+  //
+  // The ports read seams declared BELOW this line (`connections`,
+  // `connectedToolkitsFor`), the established pattern here: a port body only runs on
+  // a real tool call, long after createVendo has returned.
+  const catalogConnectors = resolvedConnectors.filter((connector) =>
+    connector.searchTools !== undefined
+    && connector.toolRisk !== undefined
+    && connector.executeSlug !== undefined);
+  const serviceCatalog = catalogConnectors.length > 0;
   if (resolvedConnectors.length > 0) {
     actions.add(connectorDiscoveryRegistry({
-      // The SAME search `find_tools` rides: it ranks the connectors' toolkit
-      // index, expands the top matches through the connector adapter, and so
-      // makes their tools callable on the door's next listing. Composio is
-      // never named here — a connector fills the slot or nothing does.
-      search: async (query, limit, searchCtx) => {
-        // `searchCtx` reaches the registry: the toolkits this search expands
-        // become callable for THIS caller's listing, not for every later one.
-        const matches = await toolSearch.search(query, limit === undefined ? undefined : { limit }, searchCtx);
-        const connected = new Set(await connectedToolkitsFor(searchCtx));
-        const rows = await Promise.all(matches.map(async (match) => {
-          const toolkit = (await actions.connectorToolkit(match.name))?.toolkit;
-          return {
-            name: match.name,
-            description: match.description,
-            risk: match.risk,
-            ...(toolkit === undefined ? {} : { toolkit }),
-            // A hit the subject cannot run yet has to say so, or the model
-            // burns a turn calling it and reads the connect card as a failure.
-            connected: toolkit !== undefined && connected.has(toolkit),
-          };
-        }));
-        // Connector hits ONLY, which is what this tool's name and description
-        // promise. A host tool has no connection status to report, is already on
-        // the door's listing, and — on the loadout-bounded `vendo()` surface —
-        // would be a row naming a tool this tool did not make callable.
-        return rows.filter((row) => row.toolkit !== undefined) as unknown as Json;
-      },
+      ...(serviceCatalog ? {
+        // The BROKER's own search, not ours. Composio is never named here — a
+        // connector fills the slot or nothing does. `findCtx` is the CALLER's, so
+        // each match's `connected` is that person's answer, not the deployment's,
+        // and the fan-out is over the SAME connectors `use_service_tool` can
+        // reach, or the model would be handed rows it can never run.
+        find: async (need, findCtx) => (await Promise.all(
+          catalogConnectors.map((connector) => connector.searchTools!(need, findCtx)),
+        )).flat(),
+        // The outcome travels back VERBATIM: the guard lifts its `connectorAccount`
+        // passthrough onto the audit row, which is how a connector call gets its
+        // toolkit named without a second audit path. `undefined` = no connector
+        // serves this slug, and the tool turns that into "search first".
+        use: async (slug, args, useCtx) => {
+          const owner = await serviceToolOwner(slug);
+          return owner === undefined ? undefined : await owner.connector.executeSlug!(slug, args, useCtx);
+        },
+      } : {}),
       // The connect dock's catalog (toolkits with an enabled auth config),
       // annotated per subject from the same cache the connect gate reads.
       list: async (listCtx) => {
@@ -2494,16 +2505,10 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // the refusal can never disagree.
     connectRequired: async (toolkit, toolkitCtx) => !(await subjectHasToolkit(toolkit, toolkitCtx)),
     // A curated agent menu has to hold at BOTH doors into the toolset: the
-    // per-turn seed below and search, which materializes hits into the live
-    // toolset mid-turn. Filtering only the seed would let the model search
-    // its way back to an off-menu tool. The expansion cap (discovery
-    // discipline) rides the same call: it bounds how many lazy toolkits one
-    // query may pull in before the menu filter runs.
-    search: async (query, options, searchCtx) => onAgentMenu(
-      await actions.search(query, {
-        ...options,
-        ...(config.agent?.maxSearchExpansions === undefined ? {} : { maxExpansions: config.agent.maxSearchExpansions }),
-      }, searchCtx),
+    // per-turn seed below and search. Filtering only the seed would let the
+    // model search its way back to an off-menu tool.
+    search: async (query, options) => onAgentMenu(
+      await actions.search(query, options),
       (match) => match.name,
     ),
     // Connection-scoped loadout seed (spec 2026-07-20): each turn starts
@@ -2511,7 +2516,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // alphabetical slice of a lazy catalog. `connections` is declared below
     // this composition; turns only run after createVendo returns, so the
     // closure reference is safe.
-    seed: (ctx) => loadoutSeedFor(ctx),
+    seed: () => loadoutSeedFor(),
     // The curated agent menu also binds an explicit `agent.loadout`: host
     // config chooses WITHIN the menu, it does not escape it.
     menu: async () => {
@@ -2657,10 +2662,12 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // cannot diverge on discovery, curation, or honest refusal.
     toolSearch,
     capabilityMiss,
-    // The SAME condition D3's registry add is gated on above: without connectors
-    // neither `search_connectors` nor `list_connections` is projected, so an
-    // uncurated surface must not be taught them.
-    connectorDiscovery: resolvedConnectors.length > 0,
+    // The SAME condition the catalog pair is gated on above. The section teaches
+    // `find_service_tools` and `use_service_tool` by name, so it rides only where
+    // they are projected — a deployment with `list_connections` alone (the
+    // zero-key Cloud default) is taught nothing rather than two tools that are
+    // not on its listing.
+    connectorDiscovery: serviceCatalog,
     bridge: () => ({ toolOutputCap: config.agent?.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP,
       preflight: (call, ctx) => connectGate.check(call, ctx) }),
     // §1.6's app half. Without it a files-first app (D4) is a PICTURE of an app: no
@@ -2801,12 +2808,44 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       return toolkits;
     }
   }
-  async function loadoutSeedFor(ctx: RunContext): Promise<string[]> {
-    const toolkits = await connectedToolkitsFor(ctx);
-    // `ctx` rides through: the seed expands this subject's connected toolkits,
-    // and the listing that gets them is theirs (fix 2026-08-03 — lazy expansion
-    // used to inflate every listing in the process).
-    return onAgentMenu(await actions.loadoutSeed(toolkits, ctx), (name) => name);
+  // No `connectedToolkitsFor` read: the seed stopped narrowing by connected
+  // toolkit when lazy expansion went, and keeping the call would have spent a
+  // broker round-trip per turn on an argument nobody reads.
+  async function loadoutSeedFor(): Promise<string[]> {
+    return onAgentMenu(await actions.loadoutSeed(), (name) => name);
+  }
+  /** Which connector owns a broker slug, and the grade IT assigned.
+   *
+   * `toolRisk` answers ownership and grading in one call: the adapter contract
+   * defines `undefined` as "this slug is not mine" and every other answer —
+   * `ungraded` included — as a real grade. Using ONE predicate for both means
+   * the risk the guard decided on and the connector that runs the call can never
+   * disagree. Searched over `catalogConnectors` — exactly the set the tool pair
+   * was projected for — so every row the model was shown is dispatchable and
+   * nothing else is. First owner wins. */
+  async function serviceToolOwner(slug: string): Promise<{ connector: Connector; risk: RiskLabel } | undefined> {
+    for (const connector of catalogConnectors) {
+      const risk = await connector.toolRisk!(slug);
+      if (risk !== undefined) return { connector, risk };
+    }
+    return undefined;
+  }
+  /** The per-slug half of `use_service_tool`'s grade. Its DESCRIPTOR is
+   * `ungraded` — one tool name standing in for a whole third-party catalog
+   * cannot carry a real grade — and this replaces it with the grade the broker
+   * assigned to the slug THIS call names, which is the grading nobody else can
+   * do at catalog scale.
+   *
+   * A slug nobody owns grades `read`: the dispatcher answers "no such tool"
+   * without touching anything, and leaving it `ungraded` would park an approval
+   * card for a call that CANNOT run — the approval spam the pre-guard connect
+   * gate exists to stop. That is safe only because ownership and grading are the
+   * same lookup above: unowned means unrunnable, not merely ungraded. */
+  async function serviceToolRisk(call: ToolCall): Promise<RiskLabel | undefined> {
+    if (call.tool !== USE_SERVICE_TOOL) return undefined;
+    const slug = (call.args as { slug?: unknown } | undefined)?.slug;
+    if (typeof slug !== "string") return undefined;
+    return (await serviceToolOwner(slug))?.risk ?? "read";
   }
   // 02-store §4 (kill-list B3) TTL sweep: erase every idle ephemeral session's
   // disk rows, then cascade each swept subject into the agent's in-memory

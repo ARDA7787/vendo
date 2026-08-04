@@ -60,11 +60,10 @@ export interface ToolSearchConfig {
   /** Explicit curated initial loadout by tool name. When set, exactly these
    *  (that exist and are enabled) start active; the cap is not applied. */
   loadout?: string[];
-  /** Per-turn initial-loadout seed (connection-scoped tool loading, spec
-   *  2026-07-20): typically the connected toolkits' tools — the umbrella
-   *  wires this to registry.loadoutSeed(connectedToolkits). Runs BEFORE the
-   *  toolset is built so freshly expanded tools are included. A failure
-   *  degrades to the risk/name fallback, never the turn. */
+  /** Per-turn initial-loadout seed — the umbrella wires this to
+   *  `registry.loadoutSeed()`, every tool the registry has loaded. Resolved per
+   *  turn rather than once, because `add()` can register a source after boot. A
+   *  failure degrades to the risk/name fallback, never the turn. */
   seed?: (ctx: RunContext) => Promise<string[] | undefined>;
   /** The host's curated menu for THIS surface (`surfaces.agent` in
    *  `.vendo/overrides.json`, resolved by the umbrella). `undefined` means

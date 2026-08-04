@@ -132,8 +132,6 @@ export const bindTools = (guard: Guard, registry: ToolRegistry): ToolRegistry =>
 
   return {
     descriptors: () => registry.descriptors(),
-    // A rebuilt surface drops optional methods silently, fixtures included.
-    releaseListingScope: (scope) => registry.releaseListingScope?.(scope),
     async execute(call, ctx): Promise<ToolOutcome> {
       const descriptors = await registry.descriptors();
       const descriptor = descriptors.find((candidate) => candidate.name === call.tool);

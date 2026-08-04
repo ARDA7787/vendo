@@ -18,8 +18,10 @@ export {
 export { VENDO_VERB_TOOLS, vendoVerbsRegistry, type VendoVerbPorts, type VendoVerbFinding } from "./vendo-verbs.js";
 export {
   CONNECTOR_DISCOVERY_TOOLS,
+  USE_SERVICE_TOOL,
   connectorDiscoveryRegistry,
   type ConnectorDiscoveryPorts,
+  type ServiceToolMatch,
 } from "./connector-discovery.js";
 export { ASK_USER_TOOL, askUserRegistry } from "./ask-user.js";
 export { FIND_TOOLS_TOOL_NAME } from "./tool-search.js";

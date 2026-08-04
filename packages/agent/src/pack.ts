@@ -233,9 +233,6 @@ function delegateTool(registry: ToolRegistry, runner: AgentRunner): VendoPackToo
         // from an unattended run would have handed the sub-run every destructive
         // tool the outer run was denied.
         descriptors: (ctx) => registry.descriptors(ctx),
-        // Optional methods are dropped SILENTLY by a rebuilt surface, so without
-        // this the delegated run has no way to end a listing scope.
-        releaseListingScope: (scope) => registry.releaseListingScope?.(scope),
         async execute(call, runCtx) {
           const outcome = await registry.execute(call, runCtx);
           if (call.tool === VENDO_APPS_CREATE_TOOL && outcome.status === "ok") {
