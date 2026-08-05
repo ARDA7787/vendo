@@ -2608,7 +2608,21 @@ export function createVendo(config: CreateVendoConfig): Vendo {
   // default is still a choice that has to hold.
   // A composed agent IS a harness choice (its brain, with its knobs already
   // bound and its sandbox already injected), so it takes the same slot.
-  const harness = (composed?.harness ?? config.harness ?? vendo({ onHire: reportHire })) as Harness;
+  //
+  // The host's `agent:` context knobs reach BOTH thinkers. They used to reach
+  // `createAgent` only, so on the default (harness) route a configured history
+  // window or step cap was silently ignored — the same deployment, two answers,
+  // depending on which door happened to serve. A composed harness already
+  // carries its own bound knobs, so only the default construction takes them.
+  const harness = (composed?.harness ?? config.harness ?? vendo({
+    onHire: reportHire,
+    // `agentOptions` is the ONE place the chat knobs are read from (see its
+    // definition): it already normalizes both arms of `agent:`, so a composed
+    // agent contributes nothing here and cannot double-bind its own knobs.
+    ...(agentOptions.maxSteps === undefined ? {} : { maxSteps: agentOptions.maxSteps }),
+    ...(agentOptions.historyWindow === undefined ? {} : { historyWindow: agentOptions.historyWindow }),
+    ...(agentOptions.maxOutputTokens === undefined ? {} : { maxOutputTokens: agentOptions.maxOutputTokens }),
+  })) as Harness;
   assertHarnessComposable(harness, sandbox.adapter === undefined ? {} : { sandbox: sandbox.adapter });
   // The harness runtime, wired to everything a turn needs: the store handle (its
   // transcript and its workspace), the ONE guard-bound registry, the merged pack
