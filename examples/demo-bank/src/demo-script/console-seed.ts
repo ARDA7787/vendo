@@ -35,7 +35,7 @@
  *   to fill them is running real agent turns against the tenant;
  * - the org guard policy on the HOSTED store — console-managed (guard PR 789).
  */
-import type { AppDocument, AppId, AuditEvent, RunId } from "@vendoai/core";
+import { DEFAULT_TRIGGER_ID, type AppDocument, type AppId, type AuditEvent, type RunId } from "@vendoai/core";
 import { workspaceStore, type VendoStore } from "@vendoai/store";
 import { mapleDemoUsers } from "@/server/users";
 
@@ -70,34 +70,37 @@ function automationDocs(subject: string): AppDocument[] {
       id: seedId("paydaysweep", subject) as AppId,
       name: "Payday savings sweep",
       description: "On the 1st and 15th at 9:00 AM, move $200 from Maple Checking to Maple Savings.",
-      trigger: {
+      triggers: [{
+        id: DEFAULT_TRIGGER_ID,
         on: { kind: "schedule", cron: "0 9 1,15 * *" },
         run: {
           kind: "agentic",
           prompt: "Move $200.00 from Maple Checking to Maple Savings and confirm the transfer posted.",
           budget: { maxToolCalls: 5 },
         },
-      },
+      }],
     },
     {
       format: "vendo/app@1",
       id: seedId("lowbalance500", subject) as AppId,
       name: "Balance below $500 alert",
       description: "Every morning at 7:00 AM, check Maple Checking and draft an alert if the available balance is below $500.",
-      trigger: {
+      triggers: [{
+        id: DEFAULT_TRIGGER_ID,
         on: { kind: "schedule", cron: "0 7 * * *" },
         run: {
           kind: "steps",
           steps: [{ id: "balance", tool: "host_listAccounts" }],
         },
-      },
+      }],
     },
     {
       format: "vendo/app@1",
       id: seedId("billreview", subject) as AppId,
       name: "Monthly bill review",
       description: "On the 28th at 9:00 AM, review upcoming bills and recurring subscriptions and prepare a summary.",
-      trigger: {
+      triggers: [{
+        id: DEFAULT_TRIGGER_ID,
         on: { kind: "schedule", cron: "0 9 28 * *" },
         run: {
           kind: "steps",
@@ -106,14 +109,15 @@ function automationDocs(subject: string): AppDocument[] {
             { id: "recurring", tool: "host_getRecurringInsights" },
           ],
         },
-      },
+      }],
     },
     {
       format: "vendo/app@1",
       id: seedId("weeklydigest", subject) as AppId,
       name: "Weekly spending digest",
       description: "Every Monday at 8:00 AM, summarize last week's spending by category and how cashflow is trending.",
-      trigger: {
+      triggers: [{
+        id: DEFAULT_TRIGGER_ID,
         on: { kind: "schedule", cron: "0 8 * * 1" },
         run: {
           kind: "steps",
@@ -122,34 +126,36 @@ function automationDocs(subject: string): AppDocument[] {
             { id: "cashflow", tool: "host_getCashflowInsights" },
           ],
         },
-      },
+      }],
     },
     {
       format: "vendo/app@1",
       id: seedId("pricewatch", subject) as AppId,
       name: "Subscription price watch",
       description: "On the 5th at 10:00 AM, flag any subscription that got more expensive month-over-month. (Paused.)",
-      trigger: {
+      triggers: [{
+        id: DEFAULT_TRIGGER_ID,
         on: { kind: "schedule", cron: "0 10 5 * *" },
         run: {
           kind: "steps",
           steps: [{ id: "recurring", tool: "host_getRecurringInsights" }],
         },
-      },
+      }],
     },
     {
       format: "vendo/app@1",
       id: seedId("taxsetaside", subject) as AppId,
       name: "Quarterly tax set-aside",
       description: "Quarterly on the 1st at 9:00 AM, move 25% of the quarter's business income into Maple Money Market. (Paused.)",
-      trigger: {
+      triggers: [{
+        id: DEFAULT_TRIGGER_ID,
         on: { kind: "schedule", cron: "0 9 1 */3 *" },
         run: {
           kind: "agentic",
           prompt: "Total this quarter's Maple Business Checking income, move 25% of it to Maple Money Market, and confirm the transfer posted.",
           budget: { maxToolCalls: 8 },
         },
-      },
+      }],
     },
   ];
 }

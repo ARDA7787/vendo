@@ -5,13 +5,15 @@
  * turns, and static wire payloads served by the in-page fake client for
  * everything the collection hooks fetch. No model key, no network.
  */
-import type {
-  AppDocument,
-  ApprovalRequest,
-  AuditEvent,
-  PermissionGrant,
-  Principal,
-  UIPayload,
+import {
+  DEFAULT_TRIGGER_ID,
+  type AppDocument,
+  type ApprovalRequest,
+  type AuditEvent,
+  type PermissionGrant,
+  type Principal,
+  type Trigger,
+  type UIPayload,
 } from "@vendoai/core";
 import type {
   AutomationEntry,
@@ -377,12 +379,17 @@ export function playgroundFixtures(): PlaygroundFixtures {
     ui: "tree",
     tree: renewalsViewPayload(),
   };
+  const digestTrigger: Trigger = {
+    id: DEFAULT_TRIGGER_ID,
+    on: { kind: "schedule", every: "1d" },
+    run: { kind: "agentic", prompt: "Summarize renewal changes and post to #renewals." },
+  };
   const digestApp: AppDocument = {
     format: "vendo/app@1",
     id: "app_digest",
     name: "Morning renewals digest",
     description: "Posts the renewals digest to #renewals every morning at 8:00.",
-    trigger: { on: { kind: "schedule", every: "1d" }, run: { kind: "agentic", prompt: "Summarize renewal changes and post to #renewals." } },
+    triggers: [digestTrigger],
   };
 
   return {
@@ -452,7 +459,7 @@ export function playgroundFixtures(): PlaygroundFixtures {
       },
     ],
     apps: [renewalsApp, digestApp],
-    automations: [{ app: digestApp, enabled: true }],
+    automations: [{ app: digestApp, triggers: [{ trigger: digestTrigger, enabled: true }] }],
     connections: [
       { id: "conn_slack", connector: "composio", toolkit: "slack", status: "active", createdAt: "2026-06-30T08:00:00.000Z" },
       { id: "conn_github", connector: "composio", toolkit: "github", status: "expired", createdAt: "2026-05-12T10:00:00.000Z" },
@@ -555,6 +562,7 @@ export function playgroundFixtures(): PlaygroundFixtures {
       {
         id: "run_01",
         appId: "app_digest",
+        triggerId: DEFAULT_TRIGGER_ID,
         trigger: { kind: "schedule" },
         status: "ok",
         startedAt: "2026-07-17T08:00:00.000Z",
@@ -568,14 +576,21 @@ export function playgroundFixtures(): PlaygroundFixtures {
       {
         id: "run_02",
         appId: "app_digest",
+        triggerId: DEFAULT_TRIGGER_ID,
         trigger: { kind: "schedule" },
-        status: "pending-approval",
+        status: "error",
         startedAt: "2026-07-18T08:00:00.000Z",
+        finishedAt: "2026-07-18T08:00:09.000Z",
         steps: [
           { id: "step_1", tool: "host_listRenewals", outcome: "ok", at: "2026-07-18T08:00:04.000Z" },
           { id: "step_2", tool: "slack_SLACK_SEND_MESSAGE", outcome: "pending-approval", at: "2026-07-18T08:00:09.000Z" },
         ],
-        summary: "Waiting on the Slack post approval.",
+        summary: "stopped at step_2: it needs a permission nobody has allowed yet — allow it and run this again",
+        error: {
+          code: "needs-permission",
+          message: "needs permission to post a Slack message",
+          tool: "slack_SLACK_SEND_MESSAGE",
+        },
       },
     ],
   };

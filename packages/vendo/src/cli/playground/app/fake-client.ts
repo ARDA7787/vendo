@@ -27,6 +27,12 @@ export function createFakeClient(fixtures: PlaygroundFixtures): VendoClient {
     return found;
   };
 
+  /** The mutable per-trigger arm state the enable/disable flows flip. */
+  const automationTrigger = (appId: string, triggerId: string) =>
+    state.automations
+      .find((candidate) => candidate.app.id === appId)
+      ?.triggers.find((candidate) => candidate.trigger.id === triggerId);
+
   return {
     baseUrl: "playground:fake",
     headers: {},
@@ -200,15 +206,15 @@ export function createFakeClient(fixtures: PlaygroundFixtures): VendoClient {
     },
 
     automations: {
-      list: async () => state.automations.map((entry) => ({ ...entry })),
-      enable: async (id) => {
-        const entry = state.automations.find((candidate) => candidate.app.id === id);
-        if (entry) entry.enabled = true;
+      list: async () => state.automations.map((entry) => ({ ...entry, triggers: entry.triggers.map((trigger) => ({ ...trigger })) })),
+      enable: async (id, triggerId) => {
+        const trigger = automationTrigger(id, triggerId);
+        if (trigger) trigger.enabled = true;
         return { enabled: true, missing: [] };
       },
-      disable: async (id) => {
-        const entry = state.automations.find((candidate) => candidate.app.id === id);
-        if (entry) entry.enabled = false;
+      disable: async (id, triggerId) => {
+        const trigger = automationTrigger(id, triggerId);
+        if (trigger) trigger.enabled = false;
       },
       dryRun: async () => ({
         steps: [
@@ -232,6 +238,10 @@ export function createFakeClient(fixtures: PlaygroundFixtures): VendoClient {
         return found;
       },
       stop: async () => undefined,
+      // The playground fires nothing, so "run it again" hands back the run it
+      // was asked about rather than inventing a run id nothing will ever answer
+      // for.
+      rerun: async (id) => id,
     },
 
     activity: {

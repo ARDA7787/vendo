@@ -49,6 +49,7 @@ import {
 import { selectSandbox } from "@vendoai/apps/sandbox-ladder";
 import {
   agentComposition,
+  awayRunner,
   provideCloudAdapters,
   type AgentComposition,
   type VendoAgent as ComposedAgent,
@@ -2251,14 +2252,14 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // Build contract §9 — the multi-party half. `can()` over whatever store the
     // host wired (OSS, unconditional); `multiParty` is the Cloud gate on the
     // three writes that create sharing; `promoteApp` is the store's sanctioned
-    // cross-subject door; `memberships` lets an unattended schedule fire assert
-    // the same orgs a request does.
+    // cross-subject door. (§9.1's `memberships` left this seam with the
+    // machine-app scheduler: the ONE unattended firing path is the automations
+    // engine, which is handed the same seam below.)
     appAccess: access,
     multiParty,
     // §9.5's order and its rollback rule live in promote-app.ts, where the
     // failure interleavings are testable; the getters keep `dbFor` lazy.
     ...(promoteRows === undefined ? {} : { promoteApp: createPromoteApp(promoteRows) }),
-    ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
     // Build contract §9.9 — sponsorship's two halves, composed HERE because
     // they cross the apps↔automations line and neither block may reach into
     // the other. Both ride the same late binding as `armAutomation` above
@@ -2289,7 +2290,7 @@ export function createVendo(config: CreateVendoConfig): Vendo {
       // opener already holds keeps the adoption lookup's two store reads off
       // EVERY app open in every deployment, including the single-player ones
       // that have no automations at all.
-      if (app.trigger === undefined) return undefined;
+      if ((app.triggers ?? []).length === 0) return undefined;
       const card = await automationsForArming?.adoption(app.id, ctx);
       return card === undefined ? undefined : { [ADOPTION_VENUE_KEY]: card };
     },
@@ -2354,11 +2355,11 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // Wave 9 — a ladder-authored automation is armed through the automations
     // engine's own enable(), so the 07 §3 grant-capture flow runs at creation
     // and the missing standing-grant approvals surface on the edit result.
-    armAutomation: async (appId, armCtx) => {
+    armAutomation: async (appId, triggerId, armCtx) => {
       if (automationsForArming === undefined) {
         throw new VendoError("not-implemented", "the automations engine is not composed yet");
       }
-      return automationsForArming.enable(appId, armCtx);
+      return automationsForArming.enable(appId, triggerId, armCtx);
     },
     // The fast fill tier (models spec 2026-07-22, `models.paint` on the public
     // surface): the family fast pick when the agent slot rides the ladder, the
@@ -3058,7 +3059,26 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     tools: boundTools,
     guard,
     store,
-    runner: agent.asRunner(),
+    // An agentic firing is ONE non-interactive harness run on the deployment's
+    // own brain — the same runtime, the same guard-bound choke point and the same
+    // durable workspace a chat turn gets, with `interactive: false` and the
+    // engine's fire-time ctx. The runner takes NO tool surface here: the engine
+    // hands each run its own (`tools` above, projected for the firing ctx), which
+    // is what keeps THE LAW's unattended filter in charge of what a model sees.
+    runner: awayRunner({
+      harness,
+      store,
+      files,
+      guard,
+      skills: packs.skills,
+      models: inference.seats,
+      // The SAME brief a chat turn thinks on, assembled for the FIRING ctx — so
+      // the venue gate and the guard's directions are the away run's too, and the
+      // deployment does not have two agents wearing one name. No discovery
+      // section: an away run gets no discovery rails, and promising `find_tools`
+      // would name a tool that is not on its listing.
+      system: (ctx) => assembleSystemPrompt(guard, ctx, system, true, false),
+    }),
     resolveRisk,
     // Build contract §9.3 — the fire-time sponsorship gate and the adoption
     // card ask `can(editor)` through this seam. Unwired it would silently fall

@@ -1,6 +1,7 @@
 import {
   auditContext,
   canonicalJson,
+  DEFAULT_TRIGGER_ID,
   descriptorHash,
   isUnattended,
   projectableForRun,
@@ -172,11 +173,10 @@ function exactInputHash(args: unknown): string {
 /** Build contract §7's key: sha256 over the run, the tool, and the exact input.
  *  `undefined` means this call is not ledger-eligible at all.
  *
- *  The contract writes the preimage as `runId|turnId`. `ctx.turnId` now exists
- *  (§3.5) but the run component stays `ctx.trigger.runId` — deliberately, and
- *  the reasoning below is why: a turn is even narrower than a session, so keying
- *  on it would make "pay this invoice" asked twice in one conversation charge
- *  twice, which is precisely what the ledger exists to prevent.
+ *  The contract writes the preimage as `runId|turnId`. The run component is the
+ *  FIRING (`ctx.trigger.lineageId`), falling back to the run itself. `ctx.turnId`
+ *  now exists (§3.5) and is deliberately NOT used: a turn is even narrower than a
+ *  session, so it fails for the reason the next paragraph gives, only harder.
  *
  *  It deliberately does NOT fall back to `ctx.sessionId`, even though the write
  *  breaker and `task`-duration grants do. The ledger exists to make
@@ -189,9 +189,15 @@ function exactInputHash(args: unknown): string {
  *
  *  Scoping is load-bearing in both directions: narrower (per call id) would never
  *  dedupe a re-run at all, and broader (per subject) would make a daily
- *  automation fire once and then never again. */
+ *  automation fire once and then never again.
+ *
+ *  The lineage is why: "fail loudly, then run it again" does not resume a run — it
+ *  starts a fresh one of the same trigger on the same event — so a receipt written
+ *  under the failed run's id was invisible to the very re-run it existed to
+ *  protect, and work that had already landed happened twice. A ctx that names no
+ *  lineage behaves exactly as before. */
 function effectBaseKey(ctx: RunContext, call: ToolCall): string | undefined {
-  const runId = ctx.trigger?.runId;
+  const runId = ctx.trigger?.lineageId ?? ctx.trigger?.runId;
   if (runId === undefined) return undefined;
   return canonicalJson([runId, call.tool, exactInputHash(call.args)]);
 }
@@ -275,7 +281,16 @@ function durationMatches(grant: PermissionGrant, ctx: RunContext): boolean {
 
 function presenceMatches(grant: PermissionGrant, ctx: RunContext): boolean {
   if (ctx.presence === "away") {
-    return grant.appId !== undefined && grant.appId === ctx.appId && grant.source === "automation";
+    // Per (app, TRIGGER): an away run is one trigger of that app, and each is
+    // consented to on its own — the person arming it was shown that trigger's
+    // steps. Matching on the app alone made every sibling trigger ride the first
+    // trigger's yes. A grant minted before an app had a trigger list carries no
+    // id and stays valid for the trigger it was minted for, which read
+    // normalization names `main` — the same defaulting automations' arm-time
+    // check applies, so the two halves of the rule cannot disagree.
+    return grant.appId !== undefined && grant.appId === ctx.appId
+      && (grant.triggerId ?? DEFAULT_TRIGGER_ID) === (ctx.trigger?.id ?? DEFAULT_TRIGGER_ID)
+      && grant.source === "automation";
   }
   return grant.appId === undefined || grant.appId === ctx.appId;
 }
@@ -1339,10 +1354,6 @@ class GuardImplementation implements VendoGuard {
     }
   }
 
-  /** The grant that authorized a "run", re-attached for executors that need it
-   *  (actions resolves ActAs against ctx.grant on away calls — 04 §4). Approval
-   *  replays carry no grantId; away replays re-match, because deciding a parked
-   *  automation approval mints the app-bound grant first (07 §3). */
   /** The ordinal for this call within its (run, tool, input) group. Stable per
    *  call id: asking twice for the same call id gives the same number, which is
    *  what makes a retry dedupe while a second distinct call does not. */

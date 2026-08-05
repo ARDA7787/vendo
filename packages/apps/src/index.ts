@@ -48,9 +48,15 @@ export {
   type BuiltBoxEnv,
   type InferenceResolver,
 } from "./box-env.js";
-// execution-v2 Lane D — the BYO schedule engine's state collection (the wire
-// tests pin its name).
-export { SCHEDULE_STATE_COLLECTION } from "./schedules.js";
+// A machine app's vendo.json schedules are doc triggers: the shapes
+// `AppsRuntime.machine`'s syncManifest and report answer with. The converter's
+// own constants stay internal to it — nothing outside needs them yet, and an
+// export is additive the day something does.
+export type {
+  AppMachineStatus,
+  ManifestTriggerResult,
+  ManifestTriggerSync,
+} from "./manifest-triggers.js";
 export {
   shareSnapshotSchema,
   publishRecordSchema,
@@ -110,6 +116,10 @@ export type {
 // function of the public AppPlan, so demo/harness surfaces can render a plan's
 // skeleton without booting the engine.
 export { skeletonFromPlan, type Skeleton } from "./generation/skeleton.js";
+// The automation planner, exported for the same reason as the skeleton above: it
+// is one model call over public inputs, so a harness can author (and prove the
+// refusal of) an automation plan without booting the generation pipeline.
+export { planAutomation, type AutomationPlan, type AutomationPlanInput } from "./automation-plan.js";
 // The model-capability rule (model-params.ts): which Claude ids still accept
 // sampling params, and the output cap for ids a sampling-era provider registry
 // does not know. Exported for the umbrella's model ladder — its lazy wrapper
