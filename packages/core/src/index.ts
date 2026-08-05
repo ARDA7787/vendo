@@ -36,6 +36,7 @@ export * from "./semantics.js";
 export * from "./shape.js";
 export * from "./sha256.js";
 export * from "./skills.js";
+export * from "./sse-keepalive.js";
 export * from "./store.js";
 export * from "./store-wire.js";
 export * from "./stream-parts.js";
