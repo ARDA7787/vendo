@@ -628,14 +628,15 @@ export interface CreateVendoConfig {
       ladder's last rung) and machine provisioning refuse with a typed
       VendoError naming this flag until the host enables it; steps/agentic
       automations (the ladder's first two rungs) never need it, and apps that
-      already carry a machine keep every runtime path. `experimentalServedApps`
-      is the layer-3 opt-in on top: a machine may serve the app surface itself
-      (the host embeds its URL in a sandboxed iframe) — it REQUIRES
-      `experimentalMachines` (layer 3 is served by a layer-2 machine). OFF by
-      default — layer-3 generation, the 2→3 surface flip, and open() on a
-      served app all refuse with a typed VendoError naming the flag. */
+      already carry a machine keep every runtime path.
+
+      A layer-3 SERVED app — the machine serving the app surface itself, embedded
+      in a sandboxed iframe — needs no second flag: it is a narrowing of layer 2,
+      reachable only where there is a machine to serve it and a mounted wire to
+      serve it THROUGH (`createVendo().handler`, which answers
+      /apps/:appId/serve/**). A deployment missing either hears it as a plain
+      "cannot" in the plan rather than as a flag. */
   apps?: {
-    experimentalServedApps?: boolean;
     experimentalMachines?: boolean;
     /** Remix review (round-2 hardening 2026-08-02) — the host's reviewer
         assertion for the review-kind remix lifecycle: whether THIS caller may
@@ -2276,27 +2277,25 @@ export function createVendo(config: CreateVendoConfig): Vendo {
     // wire owns its base path, so it is filled here and nowhere else; the apps
     // block never invents a URL for a door it does not mount.
     //
-    // ABSOLUTE, like the personal branch's provider URL: an MCP client (or
+    // ABSOLUTE, like the sandbox provider's URL this replaced: an MCP client (or
     // anything not already sitting on the host origin) cannot resolve a relative
-    // path. Serving an app means a machine, and machine provisioning already
-    // requires VENDO_BASE_URL (see machineEnv), so the origin is always there —
-    // and when it is not, the refusal names it rather than handing out a URL
-    // nobody can follow.
-    servedProxyPath: (appId: AppId) => {
-      if (configuredBaseUrl === undefined) {
-        throw new VendoError(
-          "validation",
-          "serving a team app needs VENDO_BASE_URL — the app's URL has to be absolute for anything "
-          + "that is not already on this origin (an MCP client, a native app). Set it to this "
-          + "deployment's public origin and restart.",
-        );
-      }
-      return `${configuredBaseUrl.replace(/\/+$/, "")}${BASE_PATH}/apps/${encodeURIComponent(appId)}/serve/`;
-    },
-    // execution-v2 Waves 4+9 — the layer-2/3 experimental opt-ins, host-config
-    // only (never an env var: enabling machine-backed execution or a surface
-    // that runs generated web apps is a deliberate per-project decision).
-    ...(config.apps?.experimentalServedApps === undefined ? {} : { experimentalServedApps: config.apps.experimentalServedApps }),
+    // path. So this seam is supplied ONLY when the deployment has named an origin
+    // to build one from.
+    //
+    // Its ABSENCE is the answer, never a callback that exists and throws. The apps
+    // block tests availability by presence (`config.servedProxyPath !== undefined`)
+    // to shut the served lane, and a closure that always exists made that check a
+    // lie: a machines+sandbox host with no VENDO_BASE_URL was offered the served
+    // lane by the planner and only discovered the truth at serve time, after a box
+    // was built and a surface flipped. Availability now means "can actually produce
+    // a path", by construction.
+    ...(configuredBaseUrl === undefined ? {} : {
+      servedProxyPath: (appId: AppId) =>
+        `${configuredBaseUrl.replace(/\/+$/, "")}${BASE_PATH}/apps/${encodeURIComponent(appId)}/serve/`,
+    }),
+    // execution-v2 Wave 9 — the layer-2 experimental opt-in, host-config only
+    // (never an env var: enabling machine-backed execution is a deliberate
+    // per-project decision). Layer 3 rides it — see the CreateVendoConfig note.
     ...(config.apps?.experimentalMachines === undefined ? {} : { experimentalMachines: config.apps.experimentalMachines }),
     // Round-2 hardening — the host's reviewer assertion for the review-kind
     // remix lifecycle, threaded verbatim (see the CreateVendoConfig comment).

@@ -499,7 +499,6 @@ export interface CreateVendoConfig {
   sessions?: { ttlMs?: number; sweepIntervalMs?: number; now?: () => number };
   approvals?: { parkedCallTtlMs?: number };
   apps?: {
-    experimentalServedApps?: boolean;
     experimentalMachines?: boolean;
     review?: {                // review-kind remixes: who may review (queue/reject/approve)
       reviewer?(ctx: RunContext): boolean | Promise<boolean>;
