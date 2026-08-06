@@ -1,9 +1,9 @@
 # The machine model
 
 How Vendo executes apps. Three layers, one new noun (the machine), one
-contract (the skin of the box). The decision record is
-`docs/superpowers/specs/2026-07-19-execution-v2-design.md`; this page describes
-what shipped.
+contract (the skin of the box). The decision record (the execution-v2 design,
+2026-07-19) lives in the private repo archive; this page describes what
+shipped.
 
 ## The three layers
 
@@ -116,7 +116,7 @@ leaves that fn's shape unknown and defensive.
 
 **2 to 3** is an honest UI rewrite in the same box, gated behind the
 experimental served-apps flag. The tree keeps serving until the new surface is
-verified live, then the surface flips. See [Served apps](./served-apps.md).
+verified live, then the surface flips.
 
 ## The skin of the box
 
