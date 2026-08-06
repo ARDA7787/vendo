@@ -88,7 +88,8 @@
           "connect/theming",
           "connect/host-components",
           "connect/instructions",
-          "connect/context"
+          "connect/context",
+          "connect/knowledge"
         ]
       },
       {
