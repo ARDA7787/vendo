@@ -19,8 +19,16 @@ import { z } from "zod";
 import { modelToolDescription, type Harness, type HarnessEvent, type Json, type ToolDescriptor, type Turn } from "@vendoai/core";
 import { startTurn, type TurnContext } from "./loop.js";
 import { wireErrorMessage } from "../wire-error.js";
-import { reportHire } from "../runtime.js";
-import { jsonSchema, stepCountIs, streamText, tool, type LanguageModel, type ToolSet } from "ai";
+import { reportHire, type HireRecord, type UsageTotals } from "../runtime.js";
+import {
+  jsonSchema,
+  stepCountIs,
+  streamText,
+  tool,
+  type LanguageModel,
+  type LanguageModelUsage,
+  type ToolSet,
+} from "ai";
 import { defineHarness } from "../define.js";
 
 /** How many messages a hired subagent may exchange before it must report back.
@@ -84,12 +92,7 @@ export interface VendoHarnessDeps {
    * reach it), so without this it would be invisible. Override only to observe it
    * somewhere else too.
    */
-  onHire?: (record: {
-    purpose: string;
-    skill?: string;
-    summary: string;
-    usage: { inputTokens: number; outputTokens: number };
-  }) => void;
+  onHire?: (record: HireRecord) => void;
   /**
    * The CLOSED toolbox. Set, the equipped set is EXACTLY this list: a string
    * equips that registry tool (guarded, via `turn.tools.call`, same as today); a
@@ -216,8 +219,29 @@ async function equipClosedLoadout(
 interface SubagentReport {
   summary: string;
   /** Every token a hired specialist spent. Unmetered subagents are the bulk of a
-   *  build turn's inference, so this is not optional bookkeeping. */
-  usage: { inputTokens: number; outputTokens: number };
+   *  build turn's inference, so this is not optional bookkeeping — and the FULL
+   *  shape, cache split and model included, because the hire's own audit row is
+   *  the only row that carries them. */
+  usage: UsageTotals;
+}
+
+/** The resolved id of the seat that spent the tokens: the union's string form IS
+ *  the id, the object form names it. */
+const modelIdOf = (model: LanguageModel): string =>
+  typeof model === "string" ? model : model.modelId;
+
+/** One usage figure set from an `ai` totals block, in `UsageTotals` shape. */
+function usageOf(usage: LanguageModelUsage, model: LanguageModel): UsageTotals {
+  const { cacheReadTokens, cacheWriteTokens } = usage.inputTokenDetails;
+  return {
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    // The seat this loop actually thought with, so the row prices without
+    // anyone asking composition which seat it chose.
+    model: modelIdOf(model),
+  };
 }
 
 /**
@@ -253,7 +277,7 @@ async function runSubagent(
   const [text, usage] = await Promise.all([result.text, result.totalUsage]);
   return {
     summary: text.trim() || "The specialist finished without a summary.",
-    usage: { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 },
+    usage: usageOf(usage, model),
   };
 }
 
@@ -293,8 +317,6 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
       // nothing to discover, so it fills the same object once and stops.)
       const residentTools: ToolSet = {};
       let equipped: string[] = [];
-      /** Subagent tokens, drained onto the turn's usage after the stream ends. */
-      const hiredUsage: Array<{ inputTokens: number; outputTokens: number }> = [];
       const hireSubagent = tool({
         description:
           "Hire a specialist for one big job (building or editing an app, a long research pass). "
@@ -310,7 +332,9 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
             // bounded at one and a helper cannot spawn a tree.
             const { [HIRE_SUBAGENT]: _hiring, ...hands } = residentTools;
             const report = await runSubagent(turn, model, input, hands);
-            hiredUsage.push(report.usage);
+            // The ONLY place a hire's spend is reported. The turn's `usage` event
+            // stays the resident's own, so the run row and the hire rows partition
+            // the turn instead of overlapping — see `reportRun`.
             (deps.onHire ?? reportHire)({
               purpose: input.instructions,
               ...(input.skill === undefined ? {} : { skill: input.skill }),
@@ -390,47 +414,32 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
               // travel; the operator's terminal gets the real error.
               yield { type: "error", message: wireErrorMessage(part.error), code: "model" };
               break;
-            case "tool-error":
-              // A thrown or malformed tool call is a real failure the user must be
-              // told about — swallowing it left the turn looking finished.
-              // (`tool-input-error` is a UI-stream chunk, not a fullStream part;
-              // the SDK surfaces that class here as `tool-error` too.)
-              yield { type: "error", message: wireErrorMessage(part.error), code: "tool" };
-              break;
             case "abort":
               // The caller hung up: stop cleanly, say nothing.
               return;
-            case "finish": {
-              // `model` is left unset: the contract's field is optional, and the
-              // resolved model id is not on this part — composition, which chose
-              // the seat, is the honest place to attribute it.
-              const { inputTokens, outputTokens, inputTokenDetails } = part.totalUsage;
-              const hired = hiredUsage.reduce(
-                (total, one) => ({
-                  inputTokens: total.inputTokens + one.inputTokens,
-                  outputTokens: total.outputTokens + one.outputTokens,
-                }),
-                { inputTokens: 0, outputTokens: 0 },
-              );
-              yield {
-                type: "usage",
-                // Subagent tokens are the bulk of a build turn's inference;
-                // billing that counted only the resident would under-report by
-                // most of the spend.
-                inputTokens: (inputTokens ?? 0) + hired.inputTokens,
-                outputTokens: (outputTokens ?? 0) + hired.outputTokens,
-                ...(inputTokenDetails.cacheReadTokens === undefined
-                  ? {}
-                  : { cacheReadTokens: inputTokenDetails.cacheReadTokens }),
-                ...(inputTokenDetails.cacheWriteTokens === undefined
-                  ? {}
-                  : { cacheWriteTokens: inputTokenDetails.cacheWriteTokens }),
-              };
+            case "finish":
+              // The RESIDENT loop's own spend, and only it. Folding the hires in
+              // here too double-counted them: each hire is already its own audit
+              // row (`reportHire`), so a host summing the turn's rows paid for
+              // every specialist twice — and the cache split, which is the
+              // resident's, then described a total that was not.
+              yield { type: "usage", ...usageOf(part.totalUsage, model) };
               break;
-            }
             default:
               // Tool call/result chunks are consumed here and dropped: the RUNTIME
               // mirrors them (§1.5), so echoing them would double every call.
+              //
+              // `tool-error` is dropped with them, and that is the rule: a turn
+              // FAILS by how it ends — an `error` part, a throw out of this drain,
+              // an abort — never by a step it recovered from. The SDK raises this
+              // part for its own malformed-input/unknown-tool class, feeds it back,
+              // and the model answers on the next step; a guarded call cannot raise
+              // it at all, because `turn.tools.call()` never throws (§1.1) and its
+              // failures are already a tool RESULT the model reads. Reporting it as
+              // an `error` event made the runtime — right to treat a reported error
+              // as the turn's death — stamp a finished turn failed: a permanent
+              // "The response didn't finish" notice and a failed audit row above a
+              // perfectly good answer.
               break;
           }
         }
