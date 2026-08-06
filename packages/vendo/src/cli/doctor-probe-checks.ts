@@ -208,13 +208,22 @@ async function checkActAs(run: DoctorRun, probe404Message: () => Promise<string>
     });
     const body = await probeBody(response);
     if (response.ok && body.ok === true) {
-      run.pass("auth/act-as", "actAs mint + host verification live round-trip");
+      // Honest scope: the probe verifies the mint against the composition's
+      // OWN resolver over the wire — it never exercises the host app's real
+      // session middleware (#874).
+      run.pass("auth/act-as", "actAs mint round-trip verified by the composition's own principal resolver — host middleware is not exercised, real away calls still depend on it");
     } else if (body.error?.code === "act-as-not-configured") {
       run.warn("auth/act-as", "E-AUTH-007", "actAs is not configured; pass createVendo({ actAs }) before enabling away host actions");
+    } else if (body.error?.code === "act-as-declined") {
+      // A configured seam that says no to the synthetic doctor principal is
+      // expected on hosts whose subject→user resolver only mints for real
+      // users — a warn with the wire's own reason, never "not configured".
+      run.warn("auth/act-as", "E-AUTH-008", `actAs is configured and declined the doctor's synthetic principal (${typeof body.error?.message === "string" ? body.error.message : "no detail"}) — expected when a subject→user resolver only mints for real users; real away runs depend on it accepting real subjects`);
     } else if (response.status === 404) {
       run.fail("auth/act-as", "E-AUTH-004", await probe404Message());
     } else {
-      run.fail("auth/act-as", "E-AUTH-004", "actAs mint + host verification failed; check createVendo({ actAs }), its verifier middleware, and the host principal resolver");
+      const detail = typeof body.error?.message === "string" ? `: ${body.error.message}` : "; check createVendo({ actAs }), its verifier middleware, and the host principal resolver";
+      run.fail("auth/act-as", "E-AUTH-004", `actAs mint + host verification failed${detail}`);
     }
   } catch {
     run.fail("auth/act-as", "E-AUTH-005", `actAs probe is unreachable at ${statusUrl}/doctor/act-as; restart the dev server and check createVendo({ actAs })`);

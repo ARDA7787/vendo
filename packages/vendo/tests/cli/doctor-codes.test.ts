@@ -28,6 +28,7 @@ describe("doctor error-code registry", () => {
         "E-AUTH-005": "the actAs probe is unreachable",
         "E-AUTH-006": "the actAs probe cannot run while the dev server is down",
         "E-AUTH-007": "actAs is not configured",
+        "E-AUTH-008": "actAs is configured but declined the doctor probe's synthetic principal",
         "E-CFG-001": "a required .vendo/ config file is missing",
         "E-CFG-002": ".vendo/data/.gitignore is missing",
         "E-CFG-003": "the OpenAPI spec's relative server mount and VENDO_BASE_URL's path prefix disagree",
