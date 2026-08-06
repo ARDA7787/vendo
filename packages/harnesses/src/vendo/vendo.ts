@@ -17,16 +17,18 @@
  */
 import { z } from "zod";
 import { modelToolDescription, type Harness, type HarnessEvent, type Json, type ToolDescriptor, type Turn } from "@vendoai/core";
-import { startTurn, type TurnContext } from "./loop.js";
+import { readCompactionState, writeCompactionState } from "./compaction.js";
+import { startTurn, type TurnCompaction, type TurnContext } from "./loop.js";
+import { contextWindowTokens, rememberResolvedModelId } from "./model-windows.js";
+import { isContextOverflow } from "./overflow.js";
 import { wireErrorMessage } from "../wire-error.js";
 import { reportHire, type HireRecord, type UsageTotals } from "../runtime.js";
 import {
   jsonSchema,
-  stepCountIs,
-  streamText,
   tool,
   type LanguageModel,
   type LanguageModelUsage,
+  type ModelMessage,
   type ToolSet,
 } from "ai";
 import { defineHarness } from "../define.js";
@@ -34,6 +36,10 @@ import { defineHarness } from "../define.js";
 /** How many messages a hired subagent may exchange before it must report back.
  *  Bounded so a runaway helper costs a receipt, not a turn. */
 const SUBAGENT_MAX_STEPS = 12;
+
+const SPECIALIST_SYSTEM =
+  "You are a specialist hired for one job. Do it with the tools you have, then report back in "
+  + "at most three sentences. Your reply is read by another agent, not by a person.";
 
 const HIRE_SUBAGENT = "hire_subagent";
 
@@ -49,6 +55,7 @@ const optionsSchema = z.object({
   historyWindow: z.number().int().positive().optional(),
   contextTokenBudget: z.number().int().positive().optional(),
   maxOutputTokens: z.number().int().positive().optional(),
+  contextWindowTokens: z.number().int().positive().optional(),
 });
 
 export interface VendoHarnessOptions {
@@ -62,11 +69,20 @@ export interface VendoHarnessOptions {
   historyWindow?: number;
   contextTokenBudget?: number;
   maxOutputTokens?: number;
+  /** Override the window this seat is assumed to have. The BYO escape for a
+   *  model {@link contextWindowTokens}'s table cannot name. */
+  contextWindowTokens?: number;
 }
 
 /** The knobs a per-turn option may override, and the deployment defaults they
  *  override. One list, so a new knob cannot reach one half and not the other. */
-const CONTEXT_KNOBS = ["maxSteps", "historyWindow", "contextTokenBudget", "maxOutputTokens"] as const;
+const CONTEXT_KNOBS = [
+  "maxSteps",
+  "historyWindow",
+  "contextTokenBudget",
+  "maxOutputTokens",
+  "contextWindowTokens",
+] as const;
 
 export interface VendoHarnessDeps {
   /**
@@ -85,6 +101,10 @@ export interface VendoHarnessDeps {
   historyWindow?: number;
   contextTokenBudget?: number;
   maxOutputTokens?: number;
+  /** The window this deployment's seat is assumed to have, when the shipped
+   *  table is wrong about it. Q1a: this lives on the harness and nowhere else —
+   *  it is a fact about a model, not a product decision a host composes. */
+  contextWindowTokens?: number;
   /**
    * Called once per hired specialist. Defaults to the runtime's own
    * {@link reportHire}, which writes the audit row and the transcript receipt — a
@@ -254,7 +274,13 @@ async function runSubagent(
   turn: Turn<unknown>,
   model: LanguageModel,
   input: { instructions: string; skill?: string },
+  /** Already the resident's toolset minus the hiring tool — depth-1 lock #1. */
   tools: ToolSet,
+  /** The loadout the specialist may PICK from, hiring filtered out — lock #2. */
+  equipped: readonly string[],
+  /** The resident's window, minus its state: a hire has no next turn, so there
+   *  is nothing for it to remember and nothing of the thread's for it to spend. */
+  compaction: TurnCompaction,
 ): Promise<SubagentReport> {
   let brief = input.instructions;
   if (input.skill !== undefined) {
@@ -263,18 +289,21 @@ async function runSubagent(
     const body = await turn.skills.load(input.skill);
     brief = `${body}\n\n---\n\n${input.instructions}`;
   }
-  const result = streamText({
+  // THE shipped loop, for the hire as well: every rail `startTurn` owns reaches
+  // the specialist too, so it cannot drift from the resident on any of them.
+  const loop = await startTurn({
     model,
-    system:
-      "You are a specialist hired for one job. Do it with the tools you have, then report back in "
-      + "at most three sentences. Your reply is read by another agent, not by a person.",
-    prompt: brief,
-    // No hiring tool: depth is bounded at one, so a helper cannot spawn a tree.
+    system: SPECIALIST_SYSTEM,
+    messages: [{ id: "hire-brief", role: "user", parts: [{ type: "text", text: brief }] }],
     tools,
-    stopWhen: [stepCountIs(SUBAGENT_MAX_STEPS)],
-    abortSignal: turn.signal,
+    // `attach` is a no-op for the resident's reason: the runtime owns `find_tools`.
+    toolSearch: { activeToolNames: () => [...equipped], attach: () => {} },
+    context: { maxSteps: SUBAGENT_MAX_STEPS },
+    compaction,
+    signal: turn.signal,
+    turnId: turn.turnId,
   });
-  const [text, usage] = await Promise.all([result.text, result.totalUsage]);
+  const [text, usage] = await Promise.all([loop.result.text, loop.result.totalUsage]);
   return {
     summary: text.trim() || "The specialist finished without a summary.",
     usage: usageOf(usage, model),
@@ -298,11 +327,36 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
       if (model === undefined) {
         throw new Error("vendo() thinks with `turn.models.default`, and this turn carries no default seat");
       }
-      const context: TurnContext = {};
+      const resolved: Partial<Record<(typeof CONTEXT_KNOBS)[number], number>> = {};
       for (const knob of CONTEXT_KNOBS) {
         const value = turn.options?.[knob] ?? deps[knob];
-        if (value !== undefined) context[knob] = value;
+        if (value !== undefined) resolved[knob] = value;
       }
+      // The window is not one of the loop's `TurnContext` knobs — it configures
+      // COMPACTION, which is its own shape. It rides the same resolution list
+      // anyway, so a per-turn option and a deployment default cannot disagree
+      // about which one wins for this knob and not for its neighbours.
+      const { contextWindowTokens: windowOverride, ...context } = resolved;
+      // What the thread already knows about its own size. An unreadable or
+      // foreign slot reads as no state, which costs one un-compacted turn.
+      const stored = readCompactionState(turn.state.get());
+      // …and a slot the thread has OUTGROWN reads as no state too. §1.3 clears
+      // the slot for an arbitrary edit and keeps it for a rewind, because a
+      // harness with a native session rewinds that session itself. This one
+      // cannot: the summary is the thread's only account of a band that has just
+      // stopped existing, and the update skeleton's standing order is PRESERVE —
+      // so a fact from a branch the user abandoned would be copied forward for
+      // as long as the thread lives, and answered from. Dropping it costs one
+      // extra compaction.
+      const boundary = stored?.boundaryMessageId;
+      const carried = boundary !== undefined && !turn.messages.some((message) => message.id === boundary)
+        ? undefined
+        : stored;
+      const compaction: TurnCompaction = {
+        model,
+        contextWindowTokens: contextWindowTokens(model, windowOverride),
+        ...(carried === undefined ? {} : { state: carried }),
+      };
       const system =
         (typeof deps.system === "function" ? await deps.system() : deps.system)
         ?? turn.system
@@ -326,12 +380,29 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
           skill: z.string().optional().describe("A skill name from your skill list."),
         }),
         execute: async (input) => {
+          let report: SubagentReport;
           try {
             // The specialist gets the same hands as the resident has RIGHT NOW —
             // searched-in tools included — minus the hiring tool, so depth is
             // bounded at one and a helper cannot spawn a tree.
             const { [HIRE_SUBAGENT]: _hiring, ...hands } = residentTools;
-            const report = await runSubagent(turn, model, input, hands);
+            // A snapshot, not the live variable: the hands are frozen at hire
+            // time, so the loadout has to be too or it could name a tool the
+            // specialist was never handed.
+            const loadout = equipped.filter((name) => name !== HIRE_SUBAGENT);
+            report = await runSubagent(turn, model, input, hands, loadout, {
+              ...compaction,
+              state: undefined,
+            });
+          } catch (error) {
+            // A failed hire is one tool result the resident can react to — never
+            // the turn's death.
+            console.error("[vendo] harness: subagent failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return { error: "The specialist could not be reached for that job." };
+          }
+          try {
             // The ONLY place a hire's spend is reported. The turn's `usage` event
             // stays the resident's own, so the run row and the hire rows partition
             // the turn instead of overlapping — see `reportRun`.
@@ -341,15 +412,17 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
               summary: report.summary,
               usage: report.usage,
             });
-            return { summary: report.summary };
           } catch (error) {
-            // A failed hire is one tool result the resident can react to — never
-            // the turn's death.
-            console.error("[vendo] harness: subagent failed", {
+            // The work is DONE and its tokens are already spent, so a receipt
+            // that cannot be booked must never read as a hire that failed: the
+            // resident's sane reply to a failed hire is to hire again, and the
+            // same job would then be paid for twice. `onHire` is a host's knob;
+            // its bugs cost the host a receipt, not a second specialist.
+            console.error("[vendo] harness: hire receipt failed to book", {
               error: error instanceof Error ? error.message : String(error),
             });
-            return { error: "The specialist could not be reached for that job." };
           }
+          return { summary: report.summary };
         },
       });
 
@@ -369,11 +442,18 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
         activeToolNames = () => equipped;
       }
 
-      let loop: Awaited<ReturnType<typeof startTurn>>;
-      try {
+      // ONE attempt at the turn. The overflow retry re-enters through the same
+      // function so the two attempts cannot drift on any input but the two the
+      // retry means to change.
+      const attempt = (
+        attemptCompaction: TurnCompaction,
+        /** What the failed attempt already produced, for a retry that CONTINUES
+         *  the turn rather than restarting it. */
+        resume?: readonly ModelMessage[],
+      ): Promise<Awaited<ReturnType<typeof startTurn>>> =>
         // THE shipped loop. Every rail lives in it, so this harness cannot drift
         // from `createAgent` on any of them.
-        loop = await startTurn({
+        startTurn({
           model,
           system,
           messages: [...turn.messages],
@@ -389,64 +469,136 @@ export function vendo(deps: VendoHarnessDeps = {}): Harness<VendoHarnessOptions>
           // not the harness — owns `find_tools`: that is the dividing line, and it
           // is what gives a third-party harness the same rail for free.
           toolSearch: { activeToolNames, attach: () => {} },
+          // How big this seat's window is, and what the thread remembers about
+          // filling it. Always passed: a deployment that never set a knob is
+          // exactly the deployment that has never had a context rail at all.
+          compaction: attemptCompaction,
+          ...(resume === undefined ? {} : { resume }),
           // The WHOLE context, not just `maxSteps`. Passing one knob is what made
           // every other knob unreachable from `vendo()` — the loop declared them,
           // `createAgent` passed them, and this caller silently dropped them, so
           // the two thinkers disagreed about a host's own configuration.
           ...(Object.keys(context).length === 0 ? {} : { context }),
         });
+
+      let loop: Awaited<ReturnType<typeof startTurn>>;
+      try {
+        loop = await attempt(compaction);
       } catch (error) {
         yield { type: "error", message: wireErrorMessage(error), code: "model" };
         return;
       }
 
-      try {
-        for await (const part of loop.result.fullStream) {
-          switch (part.type) {
-            case "text-delta":
-              yield { type: "text", delta: part.text };
-              break;
-            case "error":
-              // `wireErrorMessage` is the SHIPPED formatter: a Vendo-shaped error
-              // keeps its message and code, the Cloud meter's 402 becomes the
-              // sentence with figures, reset date and both exits, and anything
-              // else stays the fixed generic string. Provider internals never
-              // travel; the operator's terminal gets the real error.
-              yield { type: "error", message: wireErrorMessage(part.error), code: "model" };
-              break;
-            case "abort":
-              // The caller hung up: stop cleanly, say nothing.
-              return;
-            case "finish":
-              // The RESIDENT loop's own spend, and only it. Folding the hires in
-              // here too double-counted them: each hire is already its own audit
-              // row (`reportHire`), so a host summing the turn's rows paid for
-              // every specialist twice — and the cache split, which is the
-              // resident's, then described a total that was not.
-              yield { type: "usage", ...usageOf(part.totalUsage, model) };
-              break;
-            default:
-              // Tool call/result chunks are consumed here and dropped: the RUNTIME
-              // mirrors them (§1.5), so echoing them would double every call.
-              //
-              // `tool-error` is dropped with them, and that is the rule: a turn
-              // FAILS by how it ends — an `error` part, a throw out of this drain,
-              // an abort — never by a step it recovered from. The SDK raises this
-              // part for its own malformed-input/unknown-tool class, feeds it back,
-              // and the model answers on the next step; a guarded call cannot raise
-              // it at all, because `turn.tools.call()` never throws (§1.1) and its
-              // failures are already a tool RESULT the model reads. Reporting it as
-              // an `error` event made the runtime — right to treat a reported error
-              // as the turn's death — stamp a finished turn failed: a permanent
-              // "The response didn't finish" notice and a failed audit row above a
-              // perfectly good answer.
-              break;
+      /** The turn's single retry, spent. */
+      let retried = false;
+      for (;;) {
+        /** Set when THIS attempt died on a prompt that did not fit. */
+        let overflowed = false;
+        try {
+          for await (const part of loop.result.fullStream) {
+            switch (part.type) {
+              case "text-delta":
+                yield { type: "text", delta: part.text };
+                break;
+              case "finish-step":
+                // Which model actually served it, which a lazy seat cannot say
+                // before the call and the provider says on every one. The step's
+                // reported prompt COUNT is deliberately not read here: it is the
+                // usage event's and the audit ledger's, and it drives no decision
+                // (see `compaction.ts`'s header for the four bugs it caused when
+                // it drove the trigger).
+                rememberResolvedModelId(model, part.response.modelId);
+                break;
+              case "error":
+                // A prompt that did not fit is the ONE provider failure this loop
+                // can answer by itself: compact what the thread is carrying and
+                // continue, silently, once. Everything else — and a second
+                // overflow, and a caller who has already hung up — takes the
+                // normal path below.
+                if (!retried && !turn.signal.aborted && isContextOverflow(part.error)) {
+                  overflowed = true;
+                  break;
+                }
+                // `wireErrorMessage` is the SHIPPED formatter: a Vendo-shaped error
+                // keeps its message and code, the Cloud meter's 402 becomes the
+                // sentence with figures, reset date and both exits, and anything
+                // else stays the fixed generic string. Provider internals never
+                // travel; the operator's terminal gets the real error.
+                yield { type: "error", message: wireErrorMessage(part.error), code: "model" };
+                break;
+              case "abort":
+                // The caller hung up: stop cleanly, say nothing.
+                return;
+              case "finish":
+                // The RESIDENT loop's own spend, and only it. Folding the hires in
+                // here too double-counted them: each hire is already its own audit
+                // row (`reportHire`), so a host summing the turn's rows paid for
+                // every specialist twice — and the cache split, which is the
+                // resident's, then described a total that was not.
+                yield { type: "usage", ...usageOf(part.totalUsage, model) };
+                break;
+              default:
+                // Tool call/result chunks are consumed here and dropped: the RUNTIME
+                // mirrors them (§1.5), so echoing them would double every call.
+                //
+                // `tool-error` is dropped with them, and that is the rule: a turn
+                // FAILS by how it ends — an `error` part, a throw out of this drain,
+                // an abort — never by a step it recovered from. The SDK raises this
+                // part for its own malformed-input/unknown-tool class, feeds it back,
+                // and the model answers on the next step; a guarded call cannot raise
+                // it at all, because `turn.tools.call()` never throws (§1.1) and its
+                // failures are already a tool RESULT the model reads. Reporting it as
+                // an `error` event made the runtime — right to treat a reported error
+                // as the turn's death — stamp a finished turn failed: a permanent
+                // "The response didn't finish" notice and a failed audit row above a
+                // perfectly good answer.
+                break;
+            }
           }
+        } catch (error) {
+          yield { type: "error", message: wireErrorMessage(error), code: "model" };
+          return;
         }
-      } catch (error) {
-        yield { type: "error", message: wireErrorMessage(error), code: "model" };
-        return;
+        if (!overflowed) break;
+        retried = true;
+        // Everything the failed attempt said and did, tool RESULTS included. It
+        // rides the next prompt verbatim, below the compaction: each of those
+        // calls has already run through `turn.tools.call()` and committed a real
+        // effect, so an attempt that replayed them would transfer the money
+        // twice. An overflow on the FIRST step produced no step at all, and `ai`
+        // rejects `response` rather than resolving it empty — nothing to carry.
+        const resume: readonly ModelMessage[] = await loop.result.response.then(
+          (response) => response.messages,
+          () => [],
+        );
+        try {
+          loop = await attempt({ ...compaction, force: true }, resume);
+        } catch (error) {
+          yield { type: "error", message: wireErrorMessage(error), code: "model" };
+          return;
+        }
       }
+
+      // §1.3's slot, which the runtime persists at turn end (`runtime.ts`
+      // `onFinish` → `saveHarnessState`). Whatever the slot already carried
+      // survives what this turn did not touch.
+      //
+      // What the slot holds is a SUMMARY and the boundary it absorbed, together or
+      // not at all — half of that pair is not usable and the projection discards
+      // it. No measurement is carried. The provider's reported prompt count used to
+      // live here, and it was the wrong kind of fact to persist: it describes what
+      // a turn SENT while the next turn's trigger asks about what the thread
+      // STORES, and after a compaction those are different sizes. Every turn
+      // measures its own candidate prompt fresh instead (`compaction.ts`).
+      const state = loop.compacted ?? carried;
+      if (state !== undefined) turn.state.set(writeCompactionState(state));
+      // …and a state this turn REFUSED is destroyed rather than left in the row.
+      // Declining to overwrite it is not the same thing: the boundary it names
+      // could be re-created by a later edit, and the summary would come back to
+      // life describing a branch nobody is on. This used to happen by accident —
+      // the turn always wrote its measurement, which overwrote the summary with
+      // it — so deleting the measurement is what made the clear load-bearing.
+      else if (stored !== undefined) turn.state.clear();
 
       const stepLimit = await loop.stepLimitPart();
       if (stepLimit !== undefined) {
