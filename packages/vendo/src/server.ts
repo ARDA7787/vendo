@@ -385,10 +385,10 @@ export interface CreateVendoConfig {
       then VENDO_API_KEY → Vendo Cloud managed inference — and fails honestly
       with instructions when none exists (precedence: resolveModels). */
   model?: LanguageModel;
-  /** @deprecated The `model` half is superseded by `models.paint`. There is ONE
-      generation pipeline now, so `disabled` no longer disables a lane — it means
-      "compose no separate fast tier", and the group fill workers then run on the
-      agent model instead of a cheaper one. */
+  /** @deprecated Superseded by `models.paint`. The group fill workers it fed
+      are gone with the generation pipeline, so nothing reads this any more; it
+      is still accepted, and ignored, so a host config does not have to change
+      in the same release. */
   paint?: ResolveModelsInput["paint"];
   /** Models spec 2026-07-22 (DX surface 3) — the models block, keyed by slot,
       valued by a model-name string (resolved through vendoModel's credential
@@ -2399,18 +2399,28 @@ export function createVendo(input: CreateVendoConfig): Vendo {
       remember: async (appId, decisions, memoryCtx) => {
         await apps.remember({ appId, decisions }, memoryCtx);
       },
-      // `system` is deliberately unset. The screen agent's brief is the shipped
-      // `building-apps` skill plus the host's own tool shapes, and the
-      // deployment prompt's job — voice, venue gate, guard directions, the
-      // discovery rail — belongs to the thinker talking to the PERSON. This loop
-      // talks to nobody: the front door speaks its one-line receipt.
+      // The deployment's CONVERSATIONAL prompt is deliberately unset: voice, the
+      // venue gate, guard directions and the discovery rail belong to the thinker
+      // talking to the PERSON, and this loop talks to nobody — the front door
+      // speaks its one-line receipt.
       //
-      // `design` is NOT part of that. `apps.designRules` and the theme tokens are
-      // documented seams a host sets and expects a generated screen to obey, and
-      // this loop is the thing that generates it — a brief without them makes
-      // those two config keys silently do nothing on the route that serves every
-      // ask.
+      // What a writer does need is the host's own configuration, and it arrives on
+      // two slots because it is two different things with two different owners:
+      //
+      //  - `design` — `apps.designRules` and the theme tokens. Documented seams a
+      //    host sets and expects a generated screen to obey, rendered by
+      //    `hostDesignBrief` so this loop and the `claudeCode()` builder cannot be
+      //    taught different design.
+      //  - `system` — the semantics-annotated SHAPE CARD for every tool a binding
+      //    may name (`.vendo/semantics.json` plus the cloud-owned overrides). A
+      //    different fact about a different key: what a tool really returns, and
+      //    in what units. It reached the fill worker and nothing else, and the
+      //    fill worker is gone, so without this the `:money.cents` annotations a
+      //    host authored would silently stop reaching the only thing that writes
+      //    bindings. Read off the runtime per call, so a local `tools.json` edit
+      //    and a cloud override both apply without a restart.
       design: writerDesignBrief,
+      system: (screenCtx) => apps.toolShapeBrief(screenCtx),
     }),
     // Round-2 hardening — the host's reviewer assertion for the review-kind
     // remix lifecycle, threaded verbatim (see the CreateVendoConfig comment).
@@ -2424,11 +2434,6 @@ export function createVendo(input: CreateVendoConfig): Vendo {
       }
       return automationsForArming.enable(appId, triggerId, armCtx);
     },
-    // The fast fill tier (models spec 2026-07-22, `models.paint` on the public
-    // surface): the family fast pick when the agent slot rides the ladder, the
-    // deprecated paint.model otherwise. There is ONE pipeline now, so the old
-    // single-lane `disabled` switch has nothing left to disable.
-    ...(inference.paint?.model === undefined ? {} : { fill: { model: inference.paint.model } }),
     ...(config.apps?.pipeline === undefined ? {} : { pipeline: config.apps.pipeline }),
     // The floor's plugged checks: the host's own, then the ones a mounted
     // subsystem brings. Appended, never replacing — and a judgment rule rides
