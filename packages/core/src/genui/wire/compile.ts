@@ -32,8 +32,7 @@ import { FN_REFERENCE_PATTERN } from "../../fn-references.js";
 import { VENDO_TREE_FORMAT } from "../../formats.js";
 import type { Json } from "../../ids.js";
 import { isPlainObject, type TreeNode } from "../tree-node.js";
-import { RESERVED_COMPONENT_NAMES } from "../tree-limits.js";
-import { WIRE_COMPONENT_NAMES } from "../../kit/specs.js";
+import { KIT_COMPONENT_NAMES, WIRE_COMPONENT_NAMES } from "../../kit/specs.js";
 import { QUERY_NAME_PATTERN, type TreeQuery, type Tree } from "../tree.js";
 import type { ShapeType } from "../../shape.js";
 import { parseAttributes } from "./attributes.js";
@@ -86,12 +85,17 @@ export interface WireCompileResult {
 /** D3 — component tag names (and Island names) are PascalCase. */
 const PASCAL_TAG_PATTERN = /^[A-Z][A-Za-z0-9]*$/;
 
-/** D3 (extended W3) — the full built-in vocabulary: the legacy prewired set
- *  plus the adopted Kit names, shared with the engine's catalog validation
- *  via kit/specs. */
-const PREWIRED_NAMES: ReadonlySet<string> = new Set(WIRE_COMPONENT_NAMES);
+/** D3 (V4) — the built-in vocabulary a NODE resolves against: the Kit names the
+ *  wire can express, shared with the engine's catalog validation via
+ *  kit/specs. */
+const BUILTIN_NAMES: ReadonlySet<string> = new Set(WIRE_COMPONENT_NAMES);
 
-const RESERVED_SET: ReadonlySet<string> = new Set(RESERVED_COMPONENT_NAMES);
+/** The set an ISLAND NAME may not shadow: the FULL Kit, not just the
+ *  wire-expressible slice. Every consumer downstream reads the full Kit —
+ *  `prepareIslands` rejects the name and the renderer hard-fails the payload —
+ *  so an island named after a Kit component the wire cannot spell (Accordion)
+ *  used to compile clean and then never render at all. */
+const KIT_NAMES: ReadonlySet<string> = new Set(KIT_COMPONENT_NAMES);
 
 /** D3 — island content ends at the FIRST occurrence of this literal. */
 const ISLAND_CLOSE = "</Island>";
@@ -140,7 +144,7 @@ const mintId = (state: CompileState, component: string): string => {
  *  contained unknown-component notice). */
 const resolveSource = (state: CompileState, name: string): TreeNode["source"] => {
   if (state.hostComponents.has(name)) return "host";
-  if (PREWIRED_NAMES.has(name)) return "prewired";
+  if (BUILTIN_NAMES.has(name)) return "prewired";
   if (state.islandNames.has(name)) return "generated";
   return undefined;
 };
@@ -213,7 +217,7 @@ export const compileIsland = (state: CompileState): void => {
     return;
   }
   const name = attrs.props?.name;
-  const validName = typeof name === "string" && PASCAL_TAG_PATTERN.test(name) && !RESERVED_SET.has(name);
+  const validName = typeof name === "string" && PASCAL_TAG_PATTERN.test(name) && !KIT_NAMES.has(name);
   const duplicate = validName && Object.prototype.hasOwnProperty.call(state.components, name);
   if (!validName) {
     issue(
@@ -464,7 +468,7 @@ export const prescanDeclarations = (wire: string, rootTag = "App"): { queryNames
       if (close === -1) break; // unterminated — the main pass drops it
       state.index = close + ISLAND_CLOSE.length;
       const islandName = attrs.props?.name;
-      if (typeof islandName === "string" && PASCAL_TAG_PATTERN.test(islandName) && !RESERVED_SET.has(islandName)) {
+      if (typeof islandName === "string" && PASCAL_TAG_PATTERN.test(islandName) && !KIT_NAMES.has(islandName)) {
         islandNames.add(islandName);
       }
       continue;

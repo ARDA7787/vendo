@@ -17,7 +17,6 @@ import {
   KIT_WIRE_COMPONENT_NAMES,
   kitPrompt,
 } from "@vendoai/core";
-import { prewiredSchemaPrompt } from "../../prewired-schema.js";
 import type { GenerationDependencies } from "../engine.js";
 
 export interface GenerationPromptSection {
@@ -66,14 +65,11 @@ export const hostThemeSection = (deps: Pick<GenerationDependencies, "theme">): G
 export const hostDesignBrief = (deps: Pick<GenerationDependencies, "theme" | "designRules">): string =>
   composePromptSections([...hostThemeSection(deps), ...hostDesignRulesSection(deps)]);
 
-/** The COMPONENTS section is GENERATED from the component schemas (kitPrompt
- *  over the Kit specs + the legacy primitive signatures); no hand-written
- *  component list survives here. Deps-independent, so it is rendered once per
- *  process (perf budget: gen-scripted:create). */
+/** The COMPONENTS section is GENERATED from the Kit specs (kitPrompt); no
+ *  hand-written component list survives here. V4 retired the legacy primitive
+ *  block — one family, one generated section. Deps-independent, so it is
+ *  rendered once per process (perf budget: gen-scripted:create). */
 let componentsPromptCache: string | undefined;
 export const componentsPromptSection = (): string => componentsPromptCache ??= `COMPONENTS (generated from the component schemas — use these EXACT component and prop names; an unknown prop is silently dropped and fails validation):
 
-${kitPrompt({ only: [...KIT_WIRE_COMPONENT_NAMES] })}
-
-# Legacy primitives (also available)
-${prewiredSchemaPrompt()}`;
+${kitPrompt({ only: [...KIT_WIRE_COMPONENT_NAMES] })}`;

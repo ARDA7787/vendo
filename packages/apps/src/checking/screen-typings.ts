@@ -35,7 +35,6 @@ import {
   type ShapeType,
 } from "@vendoai/core";
 import { z, type ZodTypeAny } from "zod";
-import { PREWIRED_SCHEMAS } from "../prewired-schema.js";
 
 /** One query a screen declares: `<Query id="invoices" tool="maple_invoices_list"/>`.
  *  Structurally the floor's own `tree.queries` entry. */
@@ -213,9 +212,29 @@ const AMBIENT_PROPS = "children?: any; pending?: any";
 const componentDeclaration = (name: string, propsText: string): string =>
   `declare const ${name}: (props: ${propsText}) => JSX.Element;`;
 
+/**
+ * A binding `printWire` could not write as a dotted reference, so it printed as a
+ * quoted object literal instead: a numeric-index path (`records.0.summary`), a
+ * stored aggregate reshape, an `$expr` whose source no longer parses — print.ts's
+ * "totality over fidelity" fallback.
+ *
+ * `facts.ts` already names this the subsumption's edge: tsc cannot walk such a
+ * literal, so it carries NO type information, and rejecting it is a false finding
+ * — the renderer resolves the real value at render time. Admitting it costs the
+ * check nothing it was buying, because a binding the wire CAN write prints as a
+ * real member expression and stays fully typed against the query result types.
+ *
+ * This only became load-bearing when V4 retired the legacy prewired components:
+ * their permissive `any` props used to absorb these literals wherever a stored
+ * screen carried one, so no typed prop ever met one.
+ */
+const BINDING_TYPE = "VendoBinding";
+const BINDING_DECLARATION =
+  `declare type ${BINDING_TYPE} = { $path: string } | { $state: string } | { $expr: string };`;
+
 const propsTextFrom = (props: Record<string, PropSpec>): string => {
   const fields = Object.entries(props).map(([name, spec]) =>
-    `${name}${spec.required === true ? "" : "?"}: ${zodTypeText(spec.schema)}`);
+    `${name}${spec.required === true ? "" : "?"}: ${zodTypeText(spec.schema)} | ${BINDING_TYPE}`);
   return `{ ${[...fields, AMBIENT_PROPS].join("; ")} }`;
 };
 
@@ -294,6 +313,7 @@ export function screenTypings(input: ScreenTypingsInput): string {
     "  interface ElementChildrenAttribute { children: {} }",
     "  interface IntrinsicElements { [element: string]: any }",
     "}",
+    BINDING_DECLARATION,
   ];
 
   const push = (name: string, propsText: string): void => {
@@ -302,18 +322,12 @@ export function screenTypings(input: ScreenTypingsInput): string {
     lines.push(componentDeclaration(name, propsText));
   };
 
-  // Kit first, then the legacy prewired set: both shadow a host component of
-  // the same name, because the renderer resolves a reserved name to the
-  // primitive before it looks at the catalog (facts.ts `catalogIssues`).
+  // The Kit first: a built-in shadows a host component of the same name,
+  // because the renderer resolves a built-in name before it looks at the
+  // catalog (facts.ts `catalogIssues`). V4: the Kit specs are the only source.
   for (const name of KIT_WIRE_COMPONENT_NAMES) {
     const spec = kitSpec(name);
     if (spec !== undefined) push(name, propsTextFrom(spec.props));
-  }
-  for (const [name, schema] of Object.entries(PREWIRED_SCHEMAS)) {
-    // Prewired primitives carry no schema — a hand-written signature string
-    // and an exact prop-NAME set (prewired-schema.ts). Names are the contract;
-    // the types stay permissive.
-    push(name, `{ ${[...schema.props.map((prop) => `${prop}?: any`), AMBIENT_PROPS].join("; ")} }`);
   }
   for (const entry of input.catalog) {
     push(entry.name, entry.propsJsonSchema === undefined
@@ -341,10 +355,17 @@ export function screenTypings(input: ScreenTypingsInput): string {
   // `$state` is a live binding kind (core `isStateBinding`) whose values are
   // written at runtime. The dialect settled (#808) that it is EXACTLY one
   // segment — `state.<key>`, never `state.<key>.<deeper>`, no aggregates on it,
-  // none inside `$expr`. `unknown` is the shim that enforces that: `state.foo`
-  // reads any value, but `state.foo.bar` needs a narrow the wire cannot write,
-  // so the deeper access is a type error — the compiler would silently drop it
-  // at runtime, so the screen must not name it.
-  lines.push("declare const state: Record<string, unknown>;");
+  // none inside `$expr`.
+  //
+  // `never` is the shim that enforces exactly that, and nothing more: a
+  // single-segment read binds into ANY prop (the renderer resolves the real
+  // value at render, so the gate must not guess its type), while `state.k.deep`
+  // is an error because `never` has no members — the renderer would silently
+  // drop the deeper access, so the screen must not name it. This was
+  // `Record<string, unknown>` until V4: `unknown` banned the deeper access the
+  // same way, but it ALSO refused every typed prop, which only went unnoticed
+  // while the legacy prewired components' permissive `any` props existed to
+  // absorb state bindings. Retiring them made that hole load-bearing.
+  lines.push("declare const state: Record<string, never>;");
   return `${lines.join("\n")}\n`;
 }

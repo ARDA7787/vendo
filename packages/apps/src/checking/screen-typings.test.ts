@@ -52,9 +52,33 @@ describe("screenTypings", () => {
   it("carries the Kit's zod prop types, not just its prop names", () => {
     const dts = screenTypings({ catalog: [], queries: [] });
     // Money.cents is a REQUIRED number (data class); currency an optional string.
-    expect(dts).toContain("declare const Money: (props: { cents: number; currency?: string;");
+    // Every prop also admits VendoBinding — see the unresolvable-binding test below.
+    expect(dts).toContain("declare const Money: (props: { cents: number | VendoBinding; currency?: string | VendoBinding;");
     // Stat.format is an enum — the literal union is what makes format=\"huge\" a type error.
     expect(dts).toContain('format?: "money" | "date" | "datetime" | "time" | "percent" | "number" | "text"');
+  });
+
+  /**
+   * A binding `printWire` cannot spell as a dotted reference — a numeric-index
+   * path, a stored aggregate reshape — prints as a quoted `{"$path":…}` object
+   * literal. tsc cannot walk one, so it carries no type information and must not
+   * be a finding: the renderer resolves the real value.
+   *
+   * Regression 2026-08-06 (the origin/main merge): the legacy prewired components'
+   * `any` props used to absorb these literals. V4 retired that family, so
+   * `<Text text={{$path:"/results/records/0/data/summary"}}/>` — a real stored
+   * screen, proven end to end by vendo's `ladder.e2e.test.ts` — started failing
+   * the floor against `Text.text: string | number` and painted nothing.
+   */
+  it("admits an unresolvable binding literal in any typed prop slot", () => {
+    const dts = screenTypings({ catalog, queries: [] });
+    expect(dts).toContain("declare type VendoBinding = { $path: string } | { $state: string } | { $expr: string };");
+    // The exact slot the regression hit — Text.text, a REQUIRED string | number,
+    // which is where a missing-prop error anchors on the tag rather than the
+    // attribute (so no checker-side suppression could have caught every spelling).
+    expect(dts).toContain("text: string | number | VendoBinding");
+    // An enum slot keeps its literal union — format="huge" is still a type error.
+    expect(dts).toContain('format?: "money" | "date" | "datetime" | "time" | "percent" | "number" | "text" | VendoBinding');
   });
 
   it("types host components from their derived JSON Schema", () => {
@@ -67,22 +91,23 @@ describe("screenTypings", () => {
     expect(dts).toContain("declare const MapleFreeform: (props: { [prop: string]: any");
   });
 
-  it("lets a prewired/Kit name win over a host component of the same name", () => {
+  it("lets a Kit name win over a host component of the same name", () => {
     const dts = screenTypings({
-      catalog: [{ name: "Stack", description: "a host component squatting a reserved name" }],
+      catalog: [{ name: "Stack", description: "a host component squatting a built-in name" }],
       queries: [],
     });
     expect(dts.match(/declare const Stack:/gu)).toHaveLength(1);
-    // The renderer resolves a reserved name to the primitive before it looks at
-    // the catalog, so the primitive's prop-NAME set is what a screen may write.
-    expect(dts).toContain("declare const Stack: (props: { gap?: any;");
+    // The renderer resolves a built-in name before it looks at the catalog, so
+    // the Kit spec's typed props are what a screen may write.
+    expect(dts).toContain("declare const Stack: (props: { gap?: number | VendoBinding;");
   });
 
-  it("keeps the legacy prewired primitives to their prop NAMES, permissively typed", () => {
-    // They carry no schema — a hand-written signature string and an exact
-    // allowed-name set (prewired-schema.ts). Names are the contract.
+  /** V4 — the legacy prewired family is retired, so DataTable is the only
+   *  table and it carries a real zod-derived type, not a permissive name set. */
+  it("types the one table from its Kit spec, not a permissive name list", () => {
     const dts = screenTypings({ catalog: [], queries: [] });
-    expect(dts).toContain("declare const Table: (props: { columns?: any; rows?: any; caption?: any; emptyLabel?: any; rowKey?: any;");
+    expect(dts).toContain("declare const DataTable: (props: { rows:");
+    expect(dts).not.toContain("declare const Table:");
   });
 
   it("allows `pending` on every component (the plan skeleton writes it on every leaf)", () => {

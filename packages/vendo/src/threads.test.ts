@@ -15,7 +15,7 @@
  * The turn door's own behaviour (D4/D6, the loadout cleanup) is proven through
  * the composed wire in `harness-threads.test.ts`; this file is the layer under it.
  */
-import type { Json, RunContext, StoreAdapter, ThreadId } from "@vendoai/core";
+import { AGENT_CONTEXT_MARK, type Json, type RunContext, type StoreAdapter, type ThreadId } from "@vendoai/core";
 import { memoryStoreAdapter } from "@vendoai/core/conformance";
 import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
@@ -125,6 +125,36 @@ describe("a foreign thread id is a conflict, never a takeover", () => {
     // Ada's history is intact, not merged with Bob's turn.
     const kept = await threads.get("thr_shared" as ThreadId, ada);
     expect(kept?.messages.map((message) => message.id)).toEqual(["m1"]);
+  });
+});
+
+describe("a hidden agent-context message is never a thread's name", () => {
+  /** uiaudit 2026-08-06 — the chrome answers a connect card by SENDING a marked
+   *  text part ("[vendo:context] Declined to connect Gmail."): the model reads it,
+   *  a person never sees it, and it arrives as a bare `{ type, text }` with no
+   *  metadata at all. `deriveTitle` took the first user text part it found with no
+   *  filter, so a thread that opened on one was listed in the rail under the
+   *  plumbing (observed live). The mark lives in 01-core now, for exactly this.
+   *  The whole chain is proven in `request-connection.seam.test.ts`; this is the
+   *  layer under it. */
+  it("skips the mark, then takes the first thing the person actually typed", async () => {
+    const threads = new ThreadRepository(memoryStoreAdapter());
+    const id = "thr_hidden" as ThreadId;
+
+    await threads.persist(
+      { id, subject: "ada", messages: [], createdAt: "", updatedAt: "" },
+      [said("m1", `${AGENT_CONTEXT_MARK} Declined to connect Gmail.`)],
+    );
+    // Nothing eligible yet, so the existing fallback stands — never the mark.
+    expect(await threads.list(ada)).toMatchObject([{ id, title: "New thread" }]);
+
+    await threads.persist(
+      { id, subject: "ada", messages: [], createdAt: "", updatedAt: "" },
+      [said("m1", `${AGENT_CONTEXT_MARK} Declined to connect Gmail.`), said("m2", "Summarise this week's spending")],
+    );
+    const listed = await threads.list(ada);
+    expect(listed).toMatchObject([{ id, title: "Summarise this week's spending" }]);
+    expect(JSON.stringify(listed)).not.toContain(AGENT_CONTEXT_MARK);
   });
 });
 

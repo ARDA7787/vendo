@@ -16,10 +16,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Connector } from "@vendoai/actions";
 import type { Harness, Principal, RunContext, ToolDescriptor, ToolRegistry } from "@vendoai/core";
+import { memoryStoreAdapter } from "@vendoai/core/conformance";
+import { createGuard } from "@vendoai/guard";
 import { createStore, type VendoStore } from "@vendoai/store";
 import { defineHarness, vendo as vendoHarness } from "@vendoai/harnesses";
 import type { LanguageModel, UIMessage } from "ai";
 import { afterEach, describe, expect, it } from "vitest";
+import { assembleSystemPrompt } from "./prompt.js";
 import * as serverExports from "./server.js";
 import { createVendo, type Vendo } from "./server.js";
 
@@ -237,5 +240,93 @@ describe("the assembled system prompt reaches every composition", () => {
     // costs a second direct dependency on @vendoai/harnesses to compile.
     expect(serverExports.vendo).toBe(vendoHarness);
     expect(serverExports.vendo().name).toBe("vendo");
+  });
+});
+
+/**
+ * The connect ASK, on whichever discovery section a turn actually receives.
+ *
+ * uiaudit 2026-08-06 — the ask was taught in the `connectors` section only, and
+ * the turn door defaults to `"find-tools"`, so the demo's model (and every
+ * composed route) never read it. Worse, the section it DID read told it to send
+ * the user hunting for the connect button, which is a section telling it not to
+ * ask: the card appeared on 2 of 6 identical prompts. The teaching rides
+ * CONNECT_ETIQUETTE now, which both sections carry — so this is asserted per
+ * discovery surface, and once per prompt.
+ *
+ * These four properties arrived from the deleted `@vendoai/agent`'s prompt and
+ * tool-search suites; the surface they guard is the same one this file already
+ * owns, so they land here rather than in a file of their own.
+ */
+describe("the connect etiquette every discovery surface carries", () => {
+  const guard = () => createGuard({ store: memoryStoreAdapter(), policy: {} });
+  const promptFor = (discovery: "find-tools" | "connectors" | false) =>
+    assembleSystemPrompt(guard(), ctx(), undefined, false, discovery);
+
+  /** The ask had no TRIGGER on the shipped demo: the zero-key Cloud connector
+   *  registers no service-tool descriptors, so there is no Gmail tool to find and
+   *  no connect-required result to stop on, and every clause of the etiquette
+   *  began "when you learn". `list_connections` is the only thing that can tell
+   *  the model, and nothing told it to call it. */
+  it("gives the ask a trigger on EVERY discovery surface: check before answering", async () => {
+    for (const discovery of ["find-tools", "connectors"] as const) {
+      const prompt = await promptFor(discovery);
+      expect(prompt, discovery).toContain("call list_connections before you answer");
+      // One copy per prompt, the same law the ask itself is held to.
+      expect(prompt.match(/call list_connections before you answer/g), discovery).toHaveLength(1);
+    }
+  });
+
+  /** The competing licensed exit: an unconnected service met every word of "no
+   *  available tool can perform it", so reporting a miss and replying in prose was
+   *  compliance with one section while the etiquette asked for the opposite. */
+  it("does not license a capability miss for a service that is merely unconnected", async () => {
+    const prompt = await assembleSystemPrompt(guard(), ctx(), undefined, true, "find-tools");
+    expect(prompt).toContain('kind "no-matching-tool"');
+    expect(prompt).toContain("is not a capability miss: ask for it with request_connection instead");
+  });
+
+  it("teaches request_connection on EVERY discovery surface, engine path included", async () => {
+    for (const discovery of ["find-tools", "connectors"] as const) {
+      const prompt = await promptFor(discovery);
+      expect(prompt, discovery).toContain("call request_connection with that service's toolkit and one plain sentence saying why");
+      expect(prompt, discovery).toContain("then stop and wait");
+      // One copy per prompt: the sentence used to be duplicated into the
+      // connectors section on top of the shared etiquette.
+      expect(prompt.match(/call request_connection with/g), discovery).toHaveLength(1);
+    }
+  });
+
+  /** The contradiction itself: a section telling the model to make the USER go
+   *  find the button is a section telling it not to ask. The dock button is still
+   *  there for a person who wants it — it is just never the agent's answer. */
+  it("no section sends the user hunting for the connect button", async () => {
+    for (const discovery of ["find-tools", "connectors", false] as const) {
+      const prompt = await promptFor(discovery);
+      expect(prompt, String(discovery)).not.toMatch(/point (the user )?(to|at) the connect/i);
+      expect(prompt, String(discovery)).not.toContain("connect (link) button in the message box");
+    }
+  });
+
+  /** Measured on the first live run of the fixed prompt: the model learned Gmail
+   *  was unconnected from list_connections and hand-wrote the email in chat for
+   *  the user to copy. Every named substitute here is one that was actually
+   *  taken, and the etiquette leaves no graceful alternative to the ask. */
+  it("leaves no substitute for the ask", async () => {
+    const prompt = await promptFor("find-tools");
+    expect(prompt).toContain("including when list_connections is what told you");
+    expect(prompt).toContain("never hand-write the result in chat as a consolation prize");
+    expect(prompt).toContain("never reach for a different service");
+  });
+
+  /** Asserted on the prompt the model was actually HANDED through the composed
+   *  door, not on the assembler's return value — the original defect was that
+   *  the two disagreed about which section this path gets. */
+  it("reaches the model through the composed turn door", async () => {
+    const { vendo, seen } = await compose({});
+    await (await post(vendo, { threadId: "thr_ask", message: userMessage("m1", "draft me an email") })).text();
+    expect(seen[0]).toContain("call list_connections before you answer");
+    expect(seen[0]).toContain("call request_connection with that service's toolkit");
+    expect(seen[0]).not.toMatch(/point (the user )?(to|at) the connect/i);
   });
 });

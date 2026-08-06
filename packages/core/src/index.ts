@@ -1,4 +1,5 @@
 /** @vendoai/core — the shapes everything speaks (docs/archive/contracts/01-core.md). */
+export * from "./agent-context.js";
 export * from "./app-access.js";
 export * from "./app-document.js";
 export * from "./app-floor.js";
@@ -41,6 +42,7 @@ export * from "./skills.js";
 export * from "./sse-keepalive.js";
 export * from "./store.js";
 export * from "./store-wire.js";
+export * from "./theme.js";
 export * from "./stream-parts.js";
 export * from "./tool-envelopes.js";
 export * from "./tools.js";

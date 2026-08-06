@@ -1,4 +1,4 @@
-import { VENDO_TOOL_TITLES, type Json, type RunContext, type ToolDescriptor, type ToolOutcome, type ToolRegistry } from "@vendoai/core";
+import { CONNECTOR_DISCOVERY_TOOLS, VENDO_TOOL_TITLES, type Json, type RunContext, type ToolDescriptor, type ToolOutcome, type ToolRegistry } from "@vendoai/core";
 
 /**
  * The connector-discovery tools, projected as ordinary tools on the one registry
@@ -9,12 +9,21 @@ import { VENDO_TOOL_TITLES, type Json, type RunContext, type ToolDescriptor, typ
  * broker's catalog is tens of thousands of tools and no client re-lists mid
  * session, so the catalog is not reached by growing the list: `find_service_tools`
  * returns each match WITH its argument schema, and `use_service_tool` runs one by
- * the broker's own slug. These three names are permanent, and a tool the model
+ * the broker's own slug. These four names are permanent, and a tool the model
  * found a moment ago is callable on the same turn.
  *
- * CONNECTING stays a UI act (the connect card), never a tool call.
+ * CONNECTING is still a UI act — only the person can complete a consent screen,
+ * and the connect card is where they do it. What `request_connection` changes is
+ * WHO STARTS IT: the agent may now ASK, in its own words, as soon as it knows the
+ * request needs a service this user has not connected — with or without that
+ * service's tools on its listing. The tool mints exactly the `connect-required`
+ * outcome a refused call would have produced, so the card the user sees is the
+ * same card — it just no longer costs a failed call to reach.
+ *
+ * The four names themselves live in core: the loadout reads them too, and none of
+ * them carries the `vendo_*` prefix its always-active exemption keys on.
  */
-export const CONNECTOR_DISCOVERY_TOOLS = ["find_service_tools", "use_service_tool", "list_connections"] as const;
+export { CONNECTOR_DISCOVERY_TOOLS };
 
 /** The one dispatcher's name. Exported because composition has to recognise it
  *  to resolve the call's REAL, per-slug risk — see `serviceToolRisk` in the
@@ -26,6 +35,11 @@ export const USE_SERVICE_TOOL = "use_service_tool";
  *  blank-input check is: a schema is advice to the model, and the broker behind
  *  this ranks the phrase against its whole catalog. */
 const MAX_NEED_LENGTH = 512;
+
+/** A reason is one sentence a PERSON reads on the connect card, never a
+ *  rationale. Same law as {@link MAX_NEED_LENGTH}: declared in the schema AND
+ *  enforced in `execute`, because a schema is advice to the model. */
+const MAX_REASON_LENGTH = 280;
 
 /** The share of the turn's tool-output cap one search may spend.
  *
@@ -86,6 +100,13 @@ export interface ConnectorDiscoveryPorts {
   /** The services this deployment can connect to, each tagged with whether the
    *  caller has connected it. Subject-scoped through `ctx` for the same reason. */
   list(ctx: RunContext): Promise<Json>;
+  /** Resolve a toolkit slug to the connector that can connect it here, so the
+   *  ask the model raises names a real, connectable service. `undefined` means
+   *  THIS deployment cannot connect that toolkit — the model is told to check
+   *  what exists rather than raise a card for a service nobody can complete.
+   *  Absent (like {@link find}) means no connect is offered at all, so
+   *  `request_connection` is not projected. */
+  connect?(toolkit: string, ctx: RunContext): Promise<{ connector: string; toolkit: string } | undefined>;
 }
 
 /** Hand-written and reviewed in this repo; the declared label is final. */
@@ -134,8 +155,34 @@ const DESCRIPTORS: ToolDescriptor[] = [
     title: VENDO_TOOL_TITLES.list_connections,
     description:
       "List the outside services this product can connect to and whether this user has connected each. "
-      + "A service the user has not connected cannot run: say so plainly and point at the connect button.",
+      + "A service the user has not connected cannot run: ask for it with request_connection instead of calling it.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    risk: "read",
+  },
+  {
+    name: "request_connection",
+    title: VENDO_TOOL_TITLES.request_connection,
+    // "INSTEAD of a service tool you already know is unconnected" scoped this tool
+    // to a situation the shipped demo cannot reach (uiaudit 2026-08-06): the
+    // zero-key Cloud default projects NO service tools, so a literal reading made
+    // the tool inapplicable to the only deployment that needs it most. The
+    // condition is the REQUEST's, not the listing's.
+    description:
+      "Ask the user to connect an outside service, and stop there. Call this whenever the request needs a "
+      + "service that is not connected — whether or not you can see that service's tools. Never call a tool "
+      + "of an unconnected service to see what happens, and never substitute a different service. "
+      + "Pass the toolkit slug exactly as find_service_tools or list_connections "
+      + "reported it, and one plain sentence saying why you need it, in the user's words. "
+      + "The user gets a connect button; wait for them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        toolkit: { type: "string", minLength: 1 },
+        reason: { type: "string", minLength: 1, maxLength: MAX_REASON_LENGTH },
+      },
+      required: ["toolkit", "reason"],
+      additionalProperties: false,
+    },
     risk: "read",
   },
 ];
@@ -148,6 +195,7 @@ const PORT_FOR: Record<string, keyof ConnectorDiscoveryPorts> = {
   find_service_tools: "find",
   use_service_tool: "use",
   list_connections: "list",
+  request_connection: "connect",
 };
 
 const fail = (code: string, message: string) => ({ status: "error" as const, error: { code, message } });
@@ -202,6 +250,31 @@ export function connectorDiscoveryRegistry(
           case "list_connections": {
             const connections = await ports.list(ctx);
             return { status: "ok", output: { connections } as unknown as Json };
+          }
+          case "request_connection": {
+            const requestConnect = ports.connect;
+            if (requestConnect === undefined) return notOurs(call.tool);
+            const toolkit = typeof args["toolkit"] === "string" ? args["toolkit"].trim() : "";
+            if (toolkit === "") {
+              return fail("validation", "request_connection needs the toolkit slug of the service to connect");
+            }
+            const reason = typeof args["reason"] === "string" ? args["reason"].trim() : "";
+            if (reason === "") {
+              return fail("validation", "request_connection needs one plain sentence saying why the user should connect it");
+            }
+            if (reason.length > MAX_REASON_LENGTH) {
+              return fail("validation", `request_connection takes one sentence the user reads on the connect card, not a paragraph — keep it under ${MAX_REASON_LENGTH} characters (this one was ${reason.length})`);
+            }
+            const target = await requestConnect(toolkit, ctx);
+            // Nothing here can connect that toolkit, so raising a card would
+            // put a button in front of the user that cannot succeed.
+            if (target === undefined) {
+              return fail("not-found", `Nothing here can connect "${toolkit}". Call list_connections to see which services this product can connect.`);
+            }
+            return {
+              status: "connect-required",
+              connect: { connector: target.connector, toolkit: target.toolkit, message: reason },
+            };
           }
           default:
             return notOurs(call.tool);

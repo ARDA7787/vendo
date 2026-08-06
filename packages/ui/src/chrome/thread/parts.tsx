@@ -20,6 +20,7 @@ import { LONG_TEXT_CAP, truncateHead } from "../truncate.js";
 import { SentAttachment } from "./attachments.js";
 import { buildApprovalRequest } from "./approval-wire.js";
 import {
+  AGENT_CONTEXT_MARK,
   appTitle,
   BUILD_FAILURE_COPY,
   isAgentContext,
@@ -99,12 +100,20 @@ function ThreadConnect({ ask, live, sendMessage }: {
       message={ask.message}
       live={live}
       onConnected={() => {
-        // The continuation: the account is live, so resume the turn.
-        // A NATURAL user line, not tool plumbing — the parked turn's
-        // context (the connect-required call directly above) tells the
-        // agent what to retry (2026-07 demo feedback; the old line
-        // read "retry gmail_send_email" in the transcript).
-        void sendMessage?.({ text: `Connected ${toolkitDisplayName(ask.toolkit)}.` });
+        // The continuation: the account is live, so resume the turn. It
+        // travels as agent context (hidden from the transcript) — the card's
+        // own Connected badge already records the fact, and a fabricated
+        // user bubble put words in the user's mouth (2026-08-06 polish; the
+        // previous visible line was itself a rewrite of "retry
+        // gmail_send_email").
+        void sendMessage?.({ text: `${AGENT_CONTEXT_MARK} Connected ${toolkitDisplayName(ask.toolkit)}.` });
+      }}
+      onDeclined={() => {
+        // "Not now" is an answer, and the agent is the one waiting on it —
+        // without this it sits on a card the user already dismissed. Same
+        // hidden-context carrier as the Connected line above: the Skipped row
+        // is the visible record, so a user bubble would say it twice.
+        void sendMessage?.({ text: `${AGENT_CONTEXT_MARK} Declined to connect ${toolkitDisplayName(ask.toolkit)}.` });
       }}
     />
   );
@@ -173,8 +182,8 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
     }
     // Spec §1 — THE TRANSCRIPT SHOWS THE WORK: every tool call leaves a beat at
     // its position in the conversation (this reverses lane pick C1, which sent
-    // progress to the StatusRibbon and kept the transcript beat-free). Two
-    // exceptions:
+    // progress to a status ribbon above the composer and kept the transcript
+    // beat-free). Two exceptions:
     //   · the settled turn folds its beats into one summary row (hideBeats) —
     //     but a failed or declined call is content, not progress, so its ✕ beat
     //     stays visible either way (spec §15: the ✕ stays in the record);
