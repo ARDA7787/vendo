@@ -19,10 +19,10 @@
 
 import { safeErrorMessage } from "../../errors.js";
 import type { Json } from "../../ids.js";
+import { isWellFormedUtf16 } from "../../jcs.js";
 import { findInvalidReshapeSteps, type ReshapeStep } from "../../reshape.js";
 import { exprPathHeads, parseExprPrefix, type ExprBinding, type ExprNode } from "../expr.js";
 import { defineOwn, isPathBinding, isStateBinding, type PathBinding, type StateBinding } from "../tree-node.js";
-import { isWellFormedUtf16 } from "./state.js";
 
 /**
  * v2 spec §2 — the closed registry of stable issue codes across all six
@@ -44,7 +44,9 @@ export const WIRE_ISSUE_CODES = [
   // — attribute layer (attributes.ts)
   /** Attribute syntax error (bad char, single-quoted string, missing value, ill-formed UTF-16); attribute dropped or char skipped. */
   "malformed-attribute",
-  /** Same attribute name twice in one tag; the last one wins. */
+  /** Same attribute name twice in one tag; the last one wins, unless it was
+   *  dropped — then whichever value actually landed stands, and the message
+   *  says which, up to none of them. */
   "duplicate-attribute",
   /** Wire-supplied `id` on a non-declaration element ignored (ids are compiler-owned). */
   "wire-id-ignored",

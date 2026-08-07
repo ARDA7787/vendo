@@ -36,7 +36,15 @@ import { parseAttributes, type ParsedAttributes } from "../wire/attributes.js";
 import { makeState, opensRoot, prescanDeclarations } from "../wire/compile.js";
 import { collectText, readName, scanCloseTag, skipCommentOrBraces, skipElement, skipWhitespace } from "../wire/scan.js";
 import { FAILED, type CompileState, type Failed } from "../wire/state.js";
-import type { AppPlan, PlanGroup, PlanLeaf, PlanQuery, PlanServer } from "./types.js";
+import {
+  PLAN_DISPLAYS,
+  type AppPlan,
+  type PlanDisplay,
+  type PlanGroup,
+  type PlanLeaf,
+  type PlanQuery,
+  type PlanServer,
+} from "./types.js";
 
 /** What the host actually has, for the fact checks. */
 export interface PlanFacts {
@@ -67,6 +75,13 @@ const NO_NAMES: ReadonlySet<string> = new Set();
 /** At most this many host names are listed in one issue — a teaching sentence
  *  stops teaching once it becomes a catalog dump. */
 const MAX_LISTED_NAMES = 12;
+
+/** At most this many issues are handed back. The issue list IS the retry
+ *  prompt, and a broken document mints a sentence per stray token, so an
+ *  uncapped list is an unbounded prompt (the wire compiler caps its own for
+ *  the same reason, wire/state.ts). A plan is a short document: nothing a
+ *  rewrite can act on lives past the first few dozen sentences. */
+const PLAN_MAX_ISSUES = 64;
 
 const nameList = (names: readonly string[]): string => {
   if (names.length === 0) return "none at all";
@@ -534,11 +549,11 @@ const compilePlanUnsafe = (text: string, facts: PlanFacts): PlanCompileResult =>
   }
   const appPlan: AppPlan = { name: name ?? "", queries: [], groups: [], cannot: [] };
   const display = head.props?.display;
-  if (display === "inline" || display === "stage") {
-    appPlan.display = display;
+  if (typeof display === "string" && (PLAN_DISPLAYS as readonly string[]).includes(display)) {
+    appPlan.display = display as PlanDisplay;
   } else if (display !== undefined) {
     plan.issues.push(
-      `a plan's display is "inline" or "stage", and ${describe(display)} is neither — this one arrives inline.`,
+      `a plan's display is ${PLAN_DISPLAYS.map((one) => `"${one}"`).join(" or ")}, and ${describe(display)} is neither — this one arrives inline.`,
     );
   }
   if (!head.selfClosing) compilePlanChildren(plan, appPlan);
@@ -551,6 +566,16 @@ const compilePlanUnsafe = (text: string, facts: PlanFacts): PlanCompileResult =>
   return { plan: appPlan, issues: plan.issues };
 };
 
+const capIssues = (issues: string[]): string[] => {
+  if (issues.length <= PLAN_MAX_ISSUES) return issues;
+  const omitted = issues.length - PLAN_MAX_ISSUES;
+  const problems = omitted === 1 ? "1 further problem was" : `${omitted} further problems were`;
+  return [
+    ...issues.slice(0, PLAN_MAX_ISSUES),
+    `${problems} not listed — fix these first and write the plan again.`,
+  ];
+};
+
 /**
  * Read one `<Plan>` document into an {@link AppPlan}, checking it against what
  * the host actually has. Pure, deterministic and total: never throws — an
@@ -558,7 +583,8 @@ const compilePlanUnsafe = (text: string, facts: PlanFacts): PlanCompileResult =>
  */
 export function compilePlan(text: string, facts: PlanFacts): PlanCompileResult {
   try {
-    return compilePlanUnsafe(text, facts);
+    const result = compilePlanUnsafe(text, facts);
+    return { ...result, issues: capIssues(result.issues) };
   } catch (error) {
     return {
       issues: [`the plan could not be read (${safeErrorMessage(error)}); write it again as one <Plan> document.`],

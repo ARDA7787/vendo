@@ -169,6 +169,30 @@ describe("compileWire attributes", () => {
     expect(codes(result)).toEqual(["duplicate-attribute"]);
   });
 
+  it("says the earlier attribute stands when the last one was dropped", () => {
+    // "the last one wins" is the model's repair instruction: told the last one
+    // won when it was dropped, a retry re-sends the value that never landed.
+    const result = compile(`<App><Card a="1" a='2'/></App>`);
+    expect(result.tree.nodes[1]?.props).toStrictEqual({ a: "1" });
+    expect(result.issues.map(({ message }) => message).join("\n")).not.toContain("the last one wins");
+  });
+
+  it("does not claim a survivor when every duplicate value was dropped", () => {
+    // Both values are dropped, so no onClick prop exists. Telling a retry that
+    // "the earlier one stands" points it at a value that is not there.
+    const result = compile('<App><Card onClick="not a tool" onClick="also not a tool"/></App>');
+    expect(result.tree.nodes[1]?.props).toBeUndefined();
+    expect(result.issues.map(({ message }) => message)).toContain(
+      'duplicate attribute "onClick" (every value was dropped, so the attribute is missing)',
+    );
+  });
+
+  it("does not claim a winner when both duplicates are compiler-owned ids", () => {
+    const result = compile('<App><Card id="one" id="two"/></App>');
+    expect(result.tree.nodes[1]).toStrictEqual({ id: "card-1", component: "Card", source: "prewired" });
+    expect(result.issues.map(({ message }) => message).join("\n")).not.toContain("the last one wins");
+  });
+
   it("drops an ill-formed UTF-16 string attribute (lone surrogate)", () => {
     const result = compile('<App><Card title="a\uD800b"/></App>');
     expect(result.tree.nodes[1]).toStrictEqual({ id: "card-1", component: "Card", source: "prewired" });

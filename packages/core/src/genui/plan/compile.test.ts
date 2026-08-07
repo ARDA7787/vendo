@@ -215,22 +215,20 @@ describe("compilePlan", () => {
     expect(truncated.issues.join(" ")).toContain("ended before </Plan>");
   });
 
-  it("issues read as sentences a person could say, never error codes", () => {
-    const result = compilePlan(
-      `<Plan>
-         <Group tab="Overview" layout="masonry">
-           <Leaf purpose="Something"/>
-           <Leaf component="StatTile"/>
-         </Group>
-         <Server kind="magic" why="Because."/>
-         <Cannot></Cannot>
-       </Plan>`,
-      FACTS,
-    );
-    expect(result.issues.length).toBeGreaterThan(4);
-    for (const message of result.issues) {
-      expect(message.split(" ").length).toBeGreaterThan(4);
-    }
+  it("caps the issue list, because the issues become the retry prompt", () => {
+    // One stray close tag mints one sentence, so a hostile (or merely broken)
+    // document otherwise hands the model an issue per byte.
+    const result = compilePlan(`<Plan name="Noise">${"</X>".repeat(2000)}</Plan>`, FACTS);
+    expect(result.issues.length).toBeLessThan(200);
+    expect(result.issues.at(-1)).toContain("were not listed");
+  });
+
+  it("counts a single omitted issue in the singular", () => {
+    // The issue list is the retry prompt verbatim, so "1 further problems" is
+    // a grammatical error handed straight to the model.
+    const result = compilePlan(`<Plan name="Noise">${"</X>".repeat(64)}</Plan>`, FACTS);
+    expect(result.issues).toHaveLength(65);
+    expect(result.issues.at(-1)).toBe("1 further problem was not listed — fix these first and write the plan again.");
   });
 
   it("reads a valid five-field cron schedule without complaint", () => {
