@@ -4,7 +4,7 @@ import { encode } from "next-auth/jwt";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authSecret, resolveMapleSubject } from "@/server/users";
 import { BASE_PATH } from "@/lib/base-path";
-import { resolveMapleSession, safeReturnTo, withMountedLogin } from "./auth";
+import { resolveMapleSession, safeReturnTo } from "./auth";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -95,24 +95,6 @@ describe("authJs's actAs half (away/MCP minting) — the session resolveMapleSes
   });
 });
 
-describe("the MCP door's sign-in bounce", () => {
-  /** The one page a real MCP client's human ever sees. The preset builds it as
-   *  `<public origin>/login`, which on the mounted demo is a 404 — measured on
-   *  maple.vendo.run, where the door bounces to /login and Maple's login page
-   *  is at /maple/login. */
-  it("lands under Maple's mount point, not the bare origin", async () => {
-    const returnTo = "http://localhost:3000/maple/api/vendo/mcp/authorize?state=ok";
-    const answer = await withMountedLogin(auth).oauth!.session!(
-      new Request("http://localhost:3000/api/vendo/mcp/authorize"),
-      { returnTo },
-    );
-    expect(answer).toBeInstanceOf(Response);
-    const location = new URL((answer as Response).headers.get("location")!);
-    expect(location.pathname).toBe(`${BASE_PATH}/login`);
-    expect(location.searchParams.get("returnTo")).toBe(returnTo);
-  });
-});
-
 describe("safeReturnTo", () => {
   it("only accepts same-origin return targets", () => {
     vi.stubEnv("VENDO_BASE_URL", "https://maple.example.com");
@@ -123,16 +105,40 @@ describe("safeReturnTo", () => {
     expect(safeReturnTo(null)).toBe("/");
   });
 
-  /** Every caller puts the mount point back on with `withBasePath`, so this
-   *  must hand back the app's own vocabulary whichever way the prefix arrived
-   *  — Next strips it off its own request URLs, but an absolute URL built from
-   *  the deployment's public base (the MCP door's `returnTo`) still carries
-   *  it, and prefixing that a second time is a 404 the human sees right after
-   *  typing their password. */
-  it("answers in the app's own vocabulary, mount point or no mount point", () => {
-    vi.stubEnv("VENDO_BASE_URL", "https://maple.example.com");
-    expect(safeReturnTo(`https://maple.example.com${BASE_PATH}/api/vendo/mcp/authorize?state=ok`))
-      .toBe("/api/vendo/mcp/authorize?state=ok");
-    expect(safeReturnTo(BASE_PATH)).toBe("/");
+  /** #867: VENDO_BASE_URL now carries /maple, and what comes back is the
+   *  PUBLIC spelling — the browser's own. Callers must not run it through
+   *  withBasePath() again; that produced /maple/maple/…. */
+  it("returns the public spelling when the base URL carries a path prefix", () => {
+    vi.stubEnv("VENDO_BASE_URL", "https://maple.example.com/maple");
+    expect(safeReturnTo("https://maple.example.com/maple/api/vendo/mcp/authorize?state=ok"))
+      .toBe("/maple/api/vendo/mcp/authorize?state=ok");
+    // A refused target collapses to the app's OWN home, not the origin root —
+    // under a mount point "/" serves nothing, so it is a 404, not a homepage.
+    expect(safeReturnTo("https://attacker.example/maple/callback")).toBe("/maple");
+    expect(safeReturnTo(null)).toBe("/maple");
+    // Belt and braces (browser proof, 2026-08-06): a returnTo in the app's
+    // mount-STRIPPED vocabulary — an old bookmark of the pre-fix /login link —
+    // still lands somewhere that exists instead of 404ing after sign-in.
+    expect(safeReturnTo("/insights")).toBe("/maple/insights");
+  });
+
+  /** returnTo is the one attacker-reachable input on the sign-in path and its
+   *  output is emitted verbatim as a Location, so the open-redirect property is
+   *  absolute: whatever comes back is a path under this deployment's mount and
+   *  NEVER carries an authority. Every spelling that smuggles a host past a
+   *  string check is listed — protocol-relative, backslash-relative, a
+   *  whitespace-split scheme, an encoded double slash — because the prefixing
+   *  step concatenates and a leading `//` would turn a path into an origin. */
+  it.each([
+    "//evil.example/phish",
+    "/\\evil.example/phish",
+    "\\\\evil.example/phish",
+    "https:/\\evil.example/phish",
+    "java\tscript:alert(1)",
+    "/%2f%2fevil.example/phish",
+  ])("never turns %j into an authority", (candidate) => {
+    vi.stubEnv("VENDO_BASE_URL", "https://maple.example.com/maple");
+    const target = safeReturnTo(candidate);
+    expect(target === "/maple" || target.startsWith("/maple/")).toBe(true);
   });
 });

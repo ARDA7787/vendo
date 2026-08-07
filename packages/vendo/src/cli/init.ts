@@ -6,11 +6,11 @@ import type { ExtractedTool, OverridesFile } from "@vendoai/actions";
 import { mergeOverrides, vendoSync } from "@vendoai/actions/sync";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import type { VendoTheme } from "@vendoai/core";
 import { scrubErrorDetail, type Telemetry } from "@vendoai/telemetry";
 import { detectDepVersions, installedAiVersion } from "./dep-versions.js";
 import { AUTH_MD_URL, runCloudStep, upsertEnvLocal, warnEnvLocalNotIgnored, type CloudStepOptions } from "./cloud-init.js";
-import { runInitJudgment, type InitJudgmentOptions } from "./init-judgment.js";
+import type { InitPolishSeam } from "./init-judgment.js";
+import { runSyncFlow } from "./sync-flow.js";
 import { BRIEF_TEMPLATE } from "./extract/stages.js";
 import { ENV_KEY_VARS, resolveDevCredential, describeDevCredential, type DevCredential } from "../dev-creds/resolve.js";
 import { detectFramework, detectVendoWiring, workspaceHostCandidates, type HostFramework } from "./framework.js";
@@ -22,31 +22,28 @@ import {
   importsGeneratedMap,
   missingRegistrationLines,
   missingRegistrations,
-  registrySource,
   requiredServerActions,
   routeSource,
   serverActionsModuleSource,
   serverActionsWiring,
   VENDO_ENV_EXAMPLE,
-  vendoRootWrapperSource,
 } from "./init-scaffolds.js";
 import { createPrettyOutput, plainSelect, usePrettyOutput, type PrettyOutput, type SelectOption } from "./pretty.js";
 import { contrastingText } from "./theme/color.js";
 import {
   applyThemeDraft,
-  extractTheme as extractThemeSlots,
+  toVendoTheme,
   validateSlotValue,
   type ThemeSlotValues,
   type ThemeSummary,
 } from "./theme/extract-theme.js";
-import { baseFrom, writeBase } from "./theme/provenance.js";
 import {
   appDirectory,
   askYesNo,
   clientRoot,
   cloudProjectProps,
   consoleOutput,
-  envLocalValueSync,
+  envFileValueSync,
   errorClass,
   exists,
   invokedByPackageScript,
@@ -60,8 +57,8 @@ import {
  * `vendo init` (install-dx v1, re-derived 2026-07-18): one command, zero
  * questions on the happy path, no ceremony.
  *
- *   scan → wire (the surface files — empty vendo/registry.tsx, the client
- *   mount vendo/vendo-root.tsx, the catch-all handler wired to the registry;
+ *   scan → wire (the server surface — the catch-all handler holding the
+ *   composition; init never writes a client file;
  *   a detected auth preset gets one consent-style confirm in interactive runs,
  *   --yes/non-interactive accept it silently — plus package.json hooks)
  *   → key (env stated, else the cloud starter offer) → done summary (files
@@ -86,42 +83,7 @@ import {
  * ceremony (doctor owns verification and the live turn).
  */
 
-const DEFAULT_RADIUS = { small: "4px", large: "12px" } as const;
-
 const BRIEF_PLACEHOLDER = `${BRIEF_TEMPLATE}\n`;
-
-/** Slot values → the frozen runtime VendoTheme contract — one derivation law,
- *  never two (theme/provenance.ts leans on this exact derivation). */
-export function toVendoTheme(slots: ThemeSlotValues): VendoTheme {
-  const deriveRadius = (factor: number, fallback: string): string => {
-    const value = slots.radius.match(/^(\d+(?:\.\d+)?)px$/)?.[1];
-    return value === undefined ? fallback : `${Number(value) * factor}px`;
-  };
-  return {
-    colors: {
-      background: slots.background,
-      surface: slots.surface,
-      text: slots.text,
-      muted: slots.mutedText,
-      accent: slots.accent,
-      accentText: slots.accentText,
-      danger: slots.danger,
-      border: slots.border,
-    },
-    typography: {
-      fontFamily: slots.fontFamily,
-      headingFamily: slots.headingFamily,
-      baseSize: slots.baseSize,
-    },
-    radius: {
-      small: deriveRadius(0.5, DEFAULT_RADIUS.small),
-      medium: slots.radius,
-      large: deriveRadius(1.5, DEFAULT_RADIUS.large),
-    },
-    density: slots.density,
-    motion: slots.motion,
-  };
-}
 
 export interface RiskRecommendation {
   tool: string;
@@ -214,7 +176,7 @@ export interface InitOptions {
   /** Test seam (ENG-339): cloud-in-init step overrides. */
   cloud?: Partial<Omit<CloudStepOptions, "root" | "output" | "yes" | "credential">>;
   /** Test seam: judgment step overrides (harnesses, consent). */
-  extract?: Partial<Omit<InitJudgmentOptions, "root" | "output" | "yes" | "env">>;
+  extract?: InitPolishSeam;
   /** Test seam: the detect+confirm auth question, asked only in interactive
       runs when exactly one auth family is detected and init is creating the
       composition. Mirrors the AI-polish consent's confirm shape. */
@@ -484,56 +446,29 @@ async function setupSkillSource(): Promise<string | null> {
   }
 }
 
-/** The mount paste for a Next host, as data. A host that already mounts a
-    surface needs nothing; a <VendoRoot>-without-surface host needs the one
-    overlay line; everyone else pastes the wrapper mount (the wrapper owns the
-    registry/theme imports — pasting them into a Server Component layout is the
-    RSC-serialization crash the wrapper exists to avoid). Null on Express and
-    custom hosts: their wiring has no single host file to name, so it stays in
-    the printed lines below. */
-async function mountStep(root: string, layout: LayoutWiring, withRegistry: boolean): Promise<ManualEdit | null> {
+/** The mount paste for a Next host, as data — ONE paste: `<VendoProvider>`
+    around the app's client root. A host that already mounts a surface needs
+    nothing. No overlay line: the chat bubble is an optional documented line,
+    never something init prints. Null on Express and custom hosts: their wiring
+    has no single host file to name, so it stays in the printed lines below. */
+async function mountStep(root: string, layout: LayoutWiring): Promise<ManualEdit | null> {
   if (layout.kind === "already" || layout.kind === "express" || layout.kind === "custom") return null;
-  if (layout.kind === "overlay-missing") {
-    return {
-      file: layout.layoutPath,
-      lines: [
-        `import { VendoOverlay } from "@vendoai/vendo/react";`,
-        `… then add inside <VendoRoot>: <VendoOverlay />`,
-      ],
-      why: "<VendoRoot> is a context provider — it renders nothing. <VendoOverlay /> is the launcher pill + panel your users open.",
-    };
-  }
-  const app = await appDirectory(root);
   const { file: entry, children } = await clientRoot(root);
   const entryDir = dirname(entry);
-  if (withRegistry) {
-    const wrapperSpecifier = relative(entryDir, join(dirname(app), "vendo", "vendo-root")).split(sep).join("/");
-    return {
-      file: relative(root, entry),
-      lines: [
-        `import { VendoRoot } from ${JSON.stringify(wrapperSpecifier)};`,
-        `… then wrap: <VendoRoot>${children}</VendoRoot>`,
-      ],
-      why: `${join("vendo", "vendo-root.tsx")} mounts <VendoOverlay />, the visible launcher + panel — until this lands, Vendo is wired but invisible.`,
-    };
-  }
-  // No registry consumer (a hand-wired route that ignores it): the direct
-  // provider + overlay paste — theme.json is serializable, so it may cross
-  // the Server Component boundary; the registry may not.
   const specifier = await themeImportSpecifier(root, entryDir);
   return {
     file: relative(root, entry),
     lines: [
-      `import { VendoOverlay, VendoRoot } from "@vendoai/vendo/react";`,
+      `import { VendoProvider } from "@vendoai/vendo/react";`,
       ...(specifier === null
         ? []
         : [
             `import theme from ${JSON.stringify(specifier)};`,
             `import type { VendoTheme } from "@vendoai/vendo";`,
           ]),
-      `… then wrap: <VendoRoot${specifier === null ? "" : " theme={theme as VendoTheme}"}>${children}<VendoOverlay /></VendoRoot>`,
+      `… then wrap: <VendoProvider baseUrl="/api/vendo"${specifier === null ? "" : " theme={theme as VendoTheme}"}>${children}</VendoProvider>`,
     ],
-    why: "<VendoRoot> alone renders nothing — <VendoOverlay /> is the visible launcher + panel; until this lands, Vendo is wired but invisible.",
+    why: "<VendoProvider> is what the @vendoai/ui hooks and embeds read; baseUrl is the wire mount, path prefix included. Until this lands, Vendo is wired but nothing on the page can reach it.",
   };
 }
 
@@ -544,27 +479,21 @@ function editLines(step: ManualEdit): string[] {
 
 /** Everything the run could not do itself: the mount paste plus, on Express
     and custom runtimes, their own two wiring lines. */
-async function manualWiringLines(root: string, layout: LayoutWiring, withRegistry: boolean): Promise<string[]> {
+async function manualWiringLines(root: string, layout: LayoutWiring): Promise<string[]> {
   if (layout.kind === "express") {
-    const wrap = withRegistry
-      ? `<VendoRoot components={registry} theme={theme}>…<VendoOverlay /></VendoRoot>`
-      : `<VendoRoot theme={theme}>…<VendoOverlay /></VendoRoot>`;
     return [
       `app.use("/api/vendo", mountVendo());   // in your server`,
-      `${wrap}  // around your client root (see vendo/server for the imports; <VendoOverlay /> is the visible launcher + panel)`,
+      `<VendoProvider baseUrl="/api/vendo" theme={theme}>…</VendoProvider>  // around your client root`,
     ];
   }
   if (layout.kind === "custom") {
-    const wrap = withRegistry
-      ? `<VendoRoot components={registry} theme={theme}>…<VendoOverlay /></VendoRoot>`
-      : `<VendoRoot theme={theme}>…<VendoOverlay /></VendoRoot>`;
     return [
       `Route your runtime's requests through the generated module — Cloudflare Workers: export default { fetch: (request, env) => handleVendoRequest(request, env) };`,
-      `${wrap}  // around your client root (see vendo/server for the imports; <VendoOverlay /> is the visible launcher + panel)`,
-      `Set VENDO_BASE_URL to the deployed origin (credential forwarding fails closed without it).`,
+      `<VendoProvider baseUrl="/api/vendo" theme={theme}>…</VendoProvider>  // around your client root`,
+      `Set VENDO_BASE_URL to the deployment's FULL public URL, path prefix included (credential forwarding fails closed without it).`,
     ];
   }
-  const step = await mountStep(root, layout, withRegistry);
+  const step = await mountStep(root, layout);
   return step === null ? [] : editLines(step);
 }
 
@@ -577,7 +506,6 @@ async function manualWiringLines(root: string, layout: LayoutWiring, withRegistr
 async function agentTailLines(args: {
   root: string;
   framework: Exclude<HostFramework, "unknown"> | "custom";
-  registryPath: string | null;
   compositionPath: string | null;
   authWired: AuthMatch | null;
   /** How far the visible-surface wiring got this run. */
@@ -600,21 +528,16 @@ async function agentTailLines(args: {
       lines.push(`auth: ${args.authWired.preset}() wired (detected ${args.authWired.dependency})`);
     }
   }
-  if (args.registryPath !== null) {
-    lines.push(`edit ${args.registryPath} — register the components the agent may render (generated empty)`);
-  }
   if (args.compositionPath !== null && args.authWired === null) {
     lines.push(`edit ${args.compositionPath} — add the auth preset named in the advisory above when the host has auth`);
   }
   if (args.framework === "express") {
     // No exact entry file exists to name on Express — point at the printed
     // wiring lines instead of guessing a path.
-    lines.push("edit your server and client entries — paste the mountVendo() and <VendoRoot>/<VendoOverlay /> lines above (without a mounted surface, users see nothing)");
-  } else if (args.layout.kind === "overlay-missing") {
-    lines.push(`edit ${args.layout.layoutPath} — add <VendoOverlay /> inside your <VendoRoot> (see the lines above; <VendoRoot> alone renders NOTHING visible)`);
+    lines.push("edit your server and client entries — paste the mountVendo() and <VendoProvider> lines above (without a mounted provider, nothing on the page can reach Vendo)");
   } else if (args.layout.kind === "manual") {
     const entry = relative(args.root, (await clientRoot(args.root)).file);
-    lines.push(`edit ${entry} — wrap the app in the <VendoRoot> lines above (it mounts <VendoOverlay />, the visible surface; without it users see nothing)`);
+    lines.push(`edit ${entry} — wrap the app in the <VendoProvider> lines above (without it, nothing on the page can reach Vendo)`);
   }
   for (const edit of args.edits) {
     lines.push(`edit ${edit.file} — apply the change printed above yourself (it already exists, so init did not write it)`);
@@ -672,9 +595,6 @@ export function starViaGh(spawnStar: NonNullable<InitOptions["spawnStar"]>, time
     there is no "wired by init" state: the only question is what is left for
     the developer to paste. */
 type LayoutWiring =
-  /** The layout already mounts <VendoRoot> but no <VendoOverlay /> is
-      mounted anywhere obvious — the one remaining paste is the overlay. */
-  | { kind: "overlay-missing"; layoutPath: string }
   /** A Vendo mount already exists — nothing to do or say. */
   | { kind: "already" }
   /** Nothing mounts Vendo yet — the printed paste is the step. */
@@ -700,8 +620,6 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
   authWired: AuthMatch | null;
   /** Relative path of the composition created THIS run; null otherwise. */
   compositionPath: string | null;
-  /** Relative path of the registry generated THIS run; null otherwise. */
-  registryPath: string | null;
   /** How the visible surface reached (or didn't reach) the layout. */
   layout: LayoutWiring;
 }> {
@@ -717,8 +635,6 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
   let authAdvice: string | null = null;
   let authWired: AuthMatch | null = null;
   let compositionPath: string | null = null;
-  let registryPath: string | null = null;
-  let withRegistry = false;
   let layout: LayoutWiring = { kind: "manual" };
 
   if (framework === "custom") {
@@ -727,21 +643,10 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
     if (!wiring.server || !wiring.client) {
       const typescript = await exists(join(root, "tsconfig.json"));
       const server = join(root, "vendo", typescript ? "server.ts" : "server.mjs");
-      const registryFile = join(root, "vendo", typescript ? "registry.tsx" : "registry.mjs");
-      const registryBefore = await readOptional(registryFile);
       const serverBefore = await readOptional(server);
-      // Same ownership rules as the Express branch: init composes only when
-      // it CREATES the composition, and the registry regenerates only for a
-      // consumer that uses it.
+      // Same ownership rule as the Express branch: init composes only when it
+      // CREATES the composition.
       const scaffolding = serverBefore === null && !wiring.server;
-      const registryPlanned = registryBefore === null
-        && (scaffolding || serverBefore?.includes("./registry") === true);
-      if (registryPlanned) {
-        const path = relative(root, registryFile);
-        const registryAfter = registrySource(typescript ? "tsx" : "mjs");
-        changes.push({ absolute: registryFile, path, before: null, after: registryAfter, diff: diff(path, null, registryAfter) });
-        registryPath = path;
-      }
       if (scaffolding) {
         const path = relative(root, server);
         const auth = await resolveScaffoldAuth(root, path, options.auth, confirmAuth, selectAuth);
@@ -751,7 +656,6 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
         authWired = auth.wired;
         compositionPath = path;
       }
-      withRegistry = registryBefore !== null || registryPlanned;
     }
   } else if (framework === "express") {
     layout = { kind: "express" };
@@ -759,30 +663,17 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
     if (!wiring.server || !wiring.client) {
       const typescript = await exists(join(root, "tsconfig.json"));
       const server = join(root, "vendo", typescript ? "server.ts" : "server.mjs");
-      const registryFile = join(root, "vendo", typescript ? "registry.tsx" : "registry.mjs");
-      const registryBefore = await readOptional(registryFile);
       const serverBefore = await readOptional(server);
       // Init owns the composition only when it CREATES it: no generated
       // server module yet AND no hand-wired createVendo anywhere else. A host
-      // that composed at its own path but hasn't pasted <VendoRoot> yet gets
-      // neither a duplicate server module nor an orphaned registry — the
-      // Express analog of the Next branch's routeBefore === null guard.
+      // that composed at its own path but hasn't pasted <VendoProvider> yet
+      // gets no duplicate server module — the Express analog of the Next
+      // branch's routeBefore === null guard.
       const scaffolding = serverBefore === null && !wiring.server;
-      // The registry regenerates only for a composition that uses it: the one
-      // being created now, or a previously generated server module whose
-      // ./registry import would otherwise dangle. Never clobbered.
-      const registryPlanned = registryBefore === null
-        && (scaffolding || serverBefore?.includes("./registry") === true);
-      if (registryPlanned) {
-        const path = relative(root, registryFile);
-        const registryAfter = registrySource(typescript ? "tsx" : "mjs");
-        changes.push({ absolute: registryFile, path, before: null, after: registryAfter, diff: diff(path, null, registryAfter) });
-        registryPath = path;
-      }
       if (scaffolding) {
         const path = relative(root, server);
         // Detect + confirm happens only here — fresh composition creation —
-        // so a re-run before the manual <VendoRoot> paste neither asks nor
+        // so a re-run before the manual <VendoProvider> paste neither asks nor
         // re-fires the advisory after "Already wired".
         const auth = await resolveScaffoldAuth(root, path, options.auth, confirmAuth, selectAuth);
         const serverAfter = expressServerSource(typescript, auth.wired);
@@ -791,7 +682,6 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
         authWired = auth.wired;
         compositionPath = path;
       }
-      withRegistry = registryBefore !== null || registryPlanned;
     }
   } else {
     const app = await appDirectory(root);
@@ -800,21 +690,6 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
     const routeBefore = await readOptional(route);
     const actionsBefore = await readOptional(actionsModule);
     const registrations = await requiredServerActions(root);
-    // The shared registry mirrors the app dir (src/app → src/vendo): generated
-    // only while absent and only when the route uses it — a fresh scaffold, or
-    // a route that already imports vendo/registry. A hand-wired route that
-    // ignores the registry never grows an orphan file.
-    const registryFile = join(dirname(app), "vendo", "registry.tsx");
-    const registryBefore = await readOptional(registryFile);
-    const registryPlanned = registryBefore === null
-      && (routeBefore === null || routeBefore.includes("vendo/registry"));
-    if (registryPlanned) {
-      const path = relative(root, registryFile);
-      const registryAfter = registrySource("tsx");
-      changes.push({ absolute: registryFile, path, before: null, after: registryAfter, diff: diff(path, null, registryAfter) });
-      registryPath = path;
-    }
-    withRegistry = registryBefore !== null || registryPlanned;
     // The registration map is generated once, when the host's first
     // "use server" action appears. After that it is the developer's file and is
     // never rewritten — so an existing one is compared by the KEYS it registers,
@@ -849,8 +724,7 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
       const path = relative(root, route);
       // Detect + confirm happens only on fresh composition creation.
       const auth = await resolveScaffoldAuth(root, path, options.auth, confirmAuth, selectAuth);
-      const registrySpecifier = relative(dirname(route), join(dirname(app), "vendo", "registry")).split(sep).join("/");
-      const routeAfter = routeSource({ serverActions: registrations.length > 0, auth: auth.wired, registrySpecifier });
+      const routeAfter = routeSource({ serverActions: registrations.length > 0, auth: auth.wired });
       changes.push({ absolute: route, path, before: routeBefore, after: routeAfter, diff: diff(path, routeBefore, routeAfter) });
       authAdvice = auth.advice;
       authWired = auth.wired;
@@ -863,34 +737,10 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
       if (edit !== null) edits.push(edit);
     }
 
-    // Visible surface (0.4.1 E2E cert B3): the client mount wrapper next to
-    // the registry — the "use client" boundary that owns the registry + theme
-    // imports (passing the registry from the Server Component layout into the
-    // client provider fails RSC serialization) and mounts <VendoOverlay />.
-    // A NEW Vendo-owned file, so init writes it; mounting it in the host's own
-    // layout is the developer's paste (init never writes user-authored files),
-    // printed by mountStep and gated by doctor's E-WIRE-004.
-    const wrapperFile = join(dirname(app), "vendo", "vendo-root.tsx");
-    const wrapperBefore = await readOptional(wrapperFile);
-    // The generated wrapper doesn't count as a host mount: its overlay is
-    // only real once a layout mounts the wrapper itself.
-    const mounts = await detectVendoWiring(root, { exclude: [wrapperFile] });
-    if (mounts.client || mounts.surface) {
-      // A mounted <VendoRoot> next to an existing wrapper IS the surface —
-      // the wrapper renders <VendoOverlay />.
-      layout = mounts.surface || wrapperBefore !== null
-        ? { kind: "already" }
-        // A pages-only host mounted <VendoRoot> in pages/_app.tsx, not in an
-        // app/layout.tsx it doesn't have — name the file it really wraps in.
-        : { kind: "overlay-missing", layoutPath: relative(root, (await clientRoot(root)).file) };
-    } else if (withRegistry && wrapperBefore === null) {
-      // The wrapper consumes ./registry, so it exists only alongside one —
-      // a hand-wired host that ignores the registry keeps the direct paste.
-      const path = relative(root, wrapperFile);
-      const themeSpecifier = await themeImportSpecifier(root, dirname(wrapperFile));
-      const wrapperAfter = vendoRootWrapperSource({ themeSpecifier });
-      changes.push({ absolute: wrapperFile, path, before: null, after: wrapperAfter, diff: diff(path, null, wrapperAfter) });
-    }
+    // Init never writes a client file, so the only question is whether the host
+    // already mounts one. A host source that mounts the provider IS the mount.
+    const mounts = await detectVendoWiring(root);
+    if (mounts.client) layout = { kind: "already" };
   }
   const packageJson = join(root, "package.json");
   const packageBefore = await readOptional(packageJson);
@@ -931,9 +781,9 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
     ".vendo/theme.extracted.json",
     ".vendo/data/.gitignore",
   ];
-  const mount = await mountStep(root, layout, withRegistry);
+  const mount = await mountStep(root, layout);
   const manualSteps = [
-    ...await manualWiringLines(root, layout, withRegistry),
+    ...await manualWiringLines(root, layout),
     ...edits.flatMap(editLines),
   ];
   return {
@@ -944,7 +794,6 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
     authAdvice,
     authWired,
     compositionPath,
-    registryPath,
     layout,
     plan: {
       framework,
@@ -961,14 +810,6 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
 async function writeIfMissing(path: string, content: string, force: boolean): Promise<void> {
   if (!force && await exists(path)) return;
   await writeText(path, content);
-}
-
-/** The value of one NAME=value line in .env.local (the cloud step's upsert
-    target) — the same-run pickup reads the freshly minted key back from disk.
-    One parser for the whole CLI: shared.ts's envLocalValueSync (telemetry's
-    cloud-key read uses the same one, so the two can never disagree). */
-async function envLocalValue(root: string, name: string): Promise<string | null> {
-  return envLocalValueSync(root, name);
 }
 
 async function ensureVendoEnvExample(root: string): Promise<void> {
@@ -1055,7 +896,7 @@ export async function runInit(options: InitOptions): Promise<number> {
     ? undefined
     : (options.selectAuth ?? (pretty === null ? plainSelect : pretty.select));
   const detectStarted = Date.now();
-  const { plan, changes, edits, manualSteps, mount, authAdvice, authWired, compositionPath, registryPath, layout } = await buildPlan(options, confirmAuth, selectAuth);
+  const { plan, changes, edits, manualSteps, mount, authAdvice, authWired, compositionPath, layout } = await buildPlan(options, confirmAuth, selectAuth);
   const detectMs = Date.now() - detectStarted;
   let telemetry = telemetryFor(options, output, root);
   await telemetry.track("init_started", { framework: plan.framework });
@@ -1082,7 +923,7 @@ export async function runInit(options: InitOptions): Promise<number> {
     let effectiveEnv = env;
     for (const name of [...ENV_KEY_VARS.map((entry) => entry.envVar), "VENDO_API_KEY"]) {
       if ((env[name] ?? "").trim() !== "") continue;
-      const stored = await envLocalValue(root, name);
+      const stored = envFileValueSync(root, name);
       if (stored !== null) effectiveEnv = { ...effectiveEnv, [name]: stored };
     }
     let credential = await (options.resolveCredential ?? resolveDevCredential)({ env: effectiveEnv });
@@ -1109,7 +950,7 @@ export async function runInit(options: InitOptions): Promise<number> {
     // Same-run pickup: a starter key minted just now lands in .env.local —
     // merge it the same way so THIS run's passes already benefit.
     if (cloud.wroteEnvLocal) {
-      const minted = await envLocalValue(root, "VENDO_API_KEY");
+      const minted = envFileValueSync(root, "VENDO_API_KEY");
       if (minted !== null) {
         effectiveEnv = { ...effectiveEnv, VENDO_API_KEY: minted };
         credential = await (options.resolveCredential ?? resolveDevCredential)({ env: effectiveEnv });
@@ -1164,52 +1005,11 @@ export async function runInit(options: InitOptions): Promise<number> {
       BRIEF_PLACEHOLDER,
       options.force === true,
     );
-    // Theme (Task 2/4 re-derive): the exact-only allowlist pass runs and
-    // writes theme.json right away — never overwriting an existing one (it
-    // is the editable source of truth) unless --force. Whatever brand slots
-    // the allowlist left unfilled ride the consent-gated AI-polish pass
-    // below; the merge, --theme answers, the one-glance palette print, and
-    // the uncertain-slot review all happen AFTER that pass returns, further
-    // down this function — a pre-existing theme.json is never touched.
-    const themePath = join(root, ".vendo", "theme.json");
-    const themeCreatedThisRun = options.force === true || !(await exists(themePath));
-    let wiringMs = Date.now() - wiringStarted;
-    let themeMs: number | undefined;
-    let themeSummary: ThemeSummary | null = null;
-    if (themeCreatedThisRun) {
-      pretty?.spin("Capturing your theme");
-      const themeStarted = Date.now();
-      themeSummary = await extractThemeSlots(root);
-      themeMs = Date.now() - themeStarted;
-      pretty?.stopSpin();
-      await writeText(themePath, `${JSON.stringify(toVendoTheme(themeSummary.slots), null, 2)}\n`);
-      // The merge base for every later `vendo sync` theme re-scan: what the
-      // DETERMINISTIC pass read, before any model fill or --theme answer —
-      // those are decisions, and sync must pin them (theme/provenance.ts).
-      await writeBase(join(root, ".vendo"), baseFrom(themeSummary));
-    }
     await writeIfMissing(join(root, ".vendo", "data", ".gitignore"), "*\n!.gitignore\n", options.force === true);
+    const wiringMs = Date.now() - wiringStarted;
 
-    pretty?.spin("Learning your API surface");
-    const scanStarted = Date.now();
-    const report = await vendoSync({ root, out: join(root, ".vendo") });
-    wiringMs += Date.now() - scanStarted;
-    pretty?.stopSpin();
-    for (const warning of report.warnings) output.error(`warning: ${warning}`);
-
-    let toolCount = 0;
-    let routeCount = 0;
-    try {
-      const tools = JSON.parse(await readFile(join(root, ".vendo", "tools.json"), "utf8")) as {
-        tools?: Array<{ binding?: { kind?: string } }>;
-      };
-      toolCount = tools.tools?.length ?? 0;
-      routeCount = tools.tools?.filter((tool) => tool.binding?.kind === "route").length ?? 0;
-    } catch {
-      // Sync already reported any extraction warning; telemetry gets a count only.
-    }
-
-    // Summary — what changed, what was learned.
+    // Summary — what changed. What was LEARNED is the shared flow's report,
+    // printed by the flow itself a few lines down.
     if (changes.length > 0) {
       output.log(`\nWired (${changes.length} file${changes.length === 1 ? "" : "s"}):`);
       for (const change of changes) {
@@ -1222,50 +1022,54 @@ export async function runInit(options: InitOptions): Promise<number> {
     // silent — the comment in the scaffold cites the escape hatch; none or
     // ambiguous gets exactly one calm line naming the line to add.
     if (authAdvice !== null) output.log(authAdvice);
-    output.log(`Learned: ${toolCount} tools · theme captured → .vendo/ (tools.json, theme.json, brief.md)`);
 
-    // The judgment pass, then the brief and theme stages: a coding agent grades
-    // the extracted catalog with a verbatim source quote behind every proposal,
-    // an independent skeptic checks each one, and loosenings wait for a human
-    // (reviewed inline in an interactive run). Consent-gated; skipped silently
-    // when non-interactive or credential-less. Judgments land in
-    // `.vendo/judgments.json`, so `overrides.json` keeps meaning only "what a
-    // person decided" and a re-sync can never clobber either.
+    // init ENDS in the one shared flow — the same extraction, theme path,
+    // consent, judgment, prose stages, report and Cloud pushes `vendo sync`
+    // runs, in "full" mode (a fresh install has judged nothing). Install-only
+    // work stays above this line; everything below it is the flow's, and init
+    // stays fail-LOUD: the catch at the bottom still exits 1.
+    const themePath = join(root, ".vendo", "theme.json");
     const engineStarted = Date.now();
-    const polish = await runInitJudgment({
+    // `--extract` is the test seam onto the flow's judgment step, in init's own
+    // flat spelling; where it overlaps a real flag, the seam wins.
+    const extract = options.extract ?? {};
+    const ai = extract.ai ?? options.ai;
+    const engine = extract.engine ?? options.engine;
+    const flow = await runSyncFlow({
       root,
       output,
-      env: effectiveEnv,
+      mode: "full",
+      // The AI-polish step keeps its OWN interactivity posture (a real TTY that
+      // no package script drives), distinct from `interactive` above — that one
+      // is the auth confirm's seam, and spending money on a model is not a
+      // question a programmatic caller may be assumed to have answered.
+      interactive: extract.interactive
+        ?? (!invokedByPackageScript() && Boolean(stdin.isTTY) && Boolean(stdout.isTTY)),
       yes: options.yes === true,
       // --ai IS the consent (no prompt, non-interactive runs stop skipping);
       // --no-ai is the refusal. No flag = ask, every interactive run.
-      ...(options.ai === undefined ? {} : { ai: options.ai }),
+      ...(ai === undefined ? {} : { ai }),
       ...(options.force === true ? { force: true } : {}),
-      ...(options.engine === undefined ? {} : { engine: options.engine }),
+      ...(engine === undefined ? {} : { engine }),
       ...(pretty === null ? {} : { confirm: pretty.confirm, choose: pretty.select }),
-      ...(themeCreatedThisRun && themeSummary !== null ? {
-        theme: {
-          needed: themeSummary.needed,
-          alreadyExact: Object.fromEntries(
-            Object.entries(themeSummary.matched)
-              .filter(([, provenance]) => provenance.startsWith("--"))
-              .map(([slot]) => [slot, String(themeSummary!.slots[slot as keyof ThemeSlotValues])]),
-          ),
-          evidencePaths: themeSummary.evidencePaths,
-        },
-      } : {}),
-      ...(options.extract ?? {}),
+      ...(extract.choose === undefined ? {} : { choose: extract.choose }),
+      judge: {
+        ...(extract.harnesses === undefined ? {} : { harnesses: extract.harnesses }),
+        ...(extract.confirm === undefined ? {} : { confirm: extract.confirm }),
+        ...(extract.resolveCredential === undefined ? {} : { resolveCredential: extract.resolveCredential }),
+      },
     });
     const engineMs = Date.now() - engineStarted;
+    const { themeSummary, counts: { tools: toolCount, routes: routeCount } } = flow;
 
     // Theme finalization (Task 4): merge whatever the AI pass filled — if
-    // consent was declined or unavailable, `polish.theme` is simply absent
+    // consent was declined or unavailable, `flow.themeDraft` is simply null
     // and the exact-only summary stands — then --theme answers (a human
     // "(you)" wins over a model value), the one-glance palette print, and
     // finally the uncertain-slot review. Skipped entirely when theme.json
-    // pre-existed this run (nothing above ran either).
-    if (themeCreatedThisRun && themeSummary !== null) {
-      const summary = polish.theme === undefined ? themeSummary : applyThemeDraft(themeSummary, polish.theme);
+    // pre-existed this run (the flow reconciles that one instead).
+    if (themeSummary !== null) {
+      const summary = flow.themeDraft === null ? themeSummary : applyThemeDraft(themeSummary, flow.themeDraft);
       // --theme answers land first; the review prompt then covers only the
       // uncertain slots the flags left unanswered (non-interactive runs keep
       // the extracted/merged values for those, exactly as before).
@@ -1313,7 +1117,7 @@ export async function runInit(options: InitOptions): Promise<number> {
 
     // Judgment state, one line: a pass that ran already narrated itself (it
     // owns the judged/queued/rejected counts); otherwise say so honestly.
-    if (!polish.ran) {
+    if (!flow.judged.ran) {
       output.log("judgment: structural-only — only protocol facts are graded, so every ungraded tool asks on each call (add a model key and run `vendo sync` to grade the catalog)");
     }
 
@@ -1327,7 +1131,7 @@ export async function runInit(options: InitOptions): Promise<number> {
       typescript: await exists(join(root, "tsconfig.json")),
       router: await detectRouter(root, plan.framework),
       // The engine that actually ran the AI polish; "none" when it didn't run.
-      engine: polish.engine ?? "none",
+      engine: flow.judged.engine ?? "none",
       // route-scan today; "zod" is reserved for a future oracle-backed detect
       // (the zod collector currently enriches route-scan output invisibly).
       apiDetectMethod: routeCount > 0 ? "route-scan" : "none",
@@ -1338,7 +1142,7 @@ export async function runInit(options: InitOptions): Promise<number> {
       // every one of them in the anonymous lane.
       detectMs,
       engineMs,
-      ...(themeMs === undefined ? {} : { themeMs }),
+      ...(flow.themeMs === undefined ? {} : { themeMs: flow.themeMs }),
       wiringMs,
       ...(await cloudProjectProps(root)),
     });
@@ -1440,7 +1244,7 @@ export async function runInit(options: InitOptions): Promise<number> {
     // never reaches here (its read-only JSON plan returned above).
     if (options.yes === true || !interactive) {
       output.log("\nAgent tail:");
-      const tail = await agentTailLines({ root, framework: plan.framework, registryPath, compositionPath, authWired, layout, edits, cloudKeyMissing: credential.rung === "none" });
+      const tail = await agentTailLines({ root, framework: plan.framework, compositionPath, authWired, layout, edits, cloudKeyMissing: credential.rung === "none" });
       for (const line of tail) output.log(`  ${line}`);
     } else {
       // Star ask (agent-install-dx §CLI-5): the interactive success screen

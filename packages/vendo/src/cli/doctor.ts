@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { stdin, stdout } from "node:process";
 import type { Telemetry } from "@vendoai/telemetry";
 import {
@@ -21,13 +21,15 @@ import { cloudMcpTenant, type EnsureTenantResult } from "../cloud-mcp.js";
 import { publicBaseUrl } from "../mcp-broker-select.js";
 import { EJECT_MANIFEST_FILE, type EjectedManifest } from "./eject.js";
 import { applyJudgment, judgmentsFileSchema, overridesFileSchema, toolsFileSchema, type ToolJudgment } from "@vendoai/actions";
-import type { RiskLabel } from "@vendoai/core";
+import { firstOpenApiSpec, openApiMountPath } from "@vendoai/actions/sync";
+import { publicBase, type RiskLabel } from "@vendoai/core";
 import { detectFramework, detectVendoWiring } from "./framework.js";
 import { importsGeneratedMap, missingRegistrations, registrationKey, requiredServerActions, serverActionsWiring } from "./init-scaffolds.js";
 import { CONFIG_SURFACES, OVERRIDES_ENABLEMENT_NOTE } from "../config-surface.js";
 import { walk } from "./theme/walk.js";
 import { remoteUrls, sameUrl, validateRegistryServer } from "./mcp/registry.js";
-import { askYesNo, clientRoot, CLI_VERSION, consoleOutput, exists, normalizeDotEnvValue, readOptional, toolingTelemetry, type Output } from "./shared.js";
+import { askYesNo, clientRoot, CLI_VERSION, consoleOutput, exists, readOptional, toolingTelemetry, type Output } from "./shared.js";
+import { readEnvFiles } from "./sync-flow.js";
 
 export interface DoctorOptions {
   targetDir: string;
@@ -124,50 +126,17 @@ async function probeBody(response: Response): Promise<DoctorProbeBody> {
   }
 }
 
-/** Doctor runs standalone, so unlike the dev server it gets no framework
- *  dotenv loading — without this, `VENDO_API_KEY` sitting in `.env.local`
- *  is invisible to the cloud/live-turn checks and users must export it by
- *  hand. Reads `.env` then `.env.local` (local wins); real process env wins
- *  over both at the merge site. Minimal KEY=VALUE parser: `export ` prefix,
- *  matching single/double quotes, and `#` comment lines. */
-export async function readDotEnvFallback(root: string): Promise<Record<string, string>> {
-  const env: Record<string, string> = {};
-  for (const file of [".env", ".env.local"]) {
-    const source = await readOptional(join(root, file));
-    if (source === null) continue;
-    for (const rawLine of source.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (line === "" || line.startsWith("#")) continue;
-      const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
-      if (!match) continue;
-      env[match[1]!] = normalizeDotEnvValue(match[2]!.trim());
-    }
-  }
-  return env;
-}
-
-/** Process env wins over the dotenv fallback — except that a blank process
- *  value yields to a concrete dotenv one, matching toolingTelemetry's
- *  VENDO_API_KEY precedence (an exported empty `VENDO_API_KEY=` must not
- *  mask the real key in `.env.local`). */
-export function mergeEnvOverDotEnv(
-  fallback: Record<string, string>,
-  processEnv: NodeJS.ProcessEnv,
-): Record<string, string | undefined> {
-  const merged: Record<string, string | undefined> = { ...fallback, ...processEnv };
-  for (const [key, value] of Object.entries(processEnv)) {
-    if ((value ?? "").trim() === "" && fallback[key] !== undefined) merged[key] = fallback[key];
-  }
-  return merged;
-}
-
 /** 09-vendo §5 / block-actions A — wiring checks plus live composition,
     present-credential, and actAs mint+verify round-trips. */
 export async function runDoctor(options: DoctorOptions): Promise<number> {
   const root = resolve(options.targetDir);
   const output = options.output ?? consoleOutput;
   const json = options.json === true;
-  const env = options.env ?? mergeEnvOverDotEnv(await readDotEnvFallback(root), process.env);
+  // The ONE env reader for the whole CLI (sync-flow.ts): doctor runs
+  // standalone, so unlike the dev server it gets no framework dotenv loading —
+  // without this, a VENDO_API_KEY sitting in `.env.local` is invisible to the
+  // cloud and live-turn checks and users must export it by hand.
+  const env = options.env ?? await readEnvFiles(root);
   const telemetry = telemetryFor(options, output, root);
   let failures = 0;
   let warnings = 0;
@@ -182,38 +151,21 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   const warn = (id: string, code: DoctorErrorCode, message: string): void => { warnings += 1; checks.push({ id, status: "warning", message, error_code: code, fix_ref: doctorFixRef(code) }); if (!json) output.error(`warning: ${message}`); };
 
   const framework = await detectFramework(root);
-  // The generated vendo/vendo-root.tsx wrapper carries the <VendoRoot> AND
-  // <VendoOverlay /> markers itself, so an unexcluded scan would pass the
-  // client/surface gates even when NO layout mounts the wrapper — the exact
-  // doctor-green-but-invisible failure E-WIRE-006 exists to catch. Mirror
-  // init's layout decision: exclude the wrapper from the scan, then let a
-  // user-code <VendoRoot> mount next to an overlay-bearing wrapper satisfy
-  // the surface (the wrapper renders the overlay once a layout mounts it).
-  const wrapperCandidates = [
-    join(root, "vendo", "vendo-root.tsx"),
-    join(root, "src", "vendo", "vendo-root.tsx"),
-  ];
-  let wrapperWithOverlay = false;
-  for (const candidate of wrapperCandidates) {
-    const source = await readFile(candidate, "utf8").catch(() => null);
-    if (source !== null && source.includes("<VendoOverlay")) wrapperWithOverlay = true;
-  }
-  const scanned = await detectVendoWiring(root, { exclude: wrapperCandidates });
-  const wiring = { ...scanned, surface: scanned.surface || (scanned.client && wrapperWithOverlay) };
+  const wiring = await detectVendoWiring(root);
   if (framework === "unknown") {
     // No framework to pattern-match (field case: a Cloudflare Worker + Vite
     // host failed E-WIRE-003/004 forever) — judge the wiring by the same
     // bounded source scan init uses, never by another framework's file
     // layout. The surface check below still runs; it is source-generic.
-    if (scanned.server) pass("wiring/server", "createVendo server wiring found");
+    if (wiring.server) pass("wiring/server", "createVendo server wiring found");
     else fail("wiring/server", "E-WIRE-007", "no createVendo server wiring found — import createVendo from @vendoai/vendo/server and mount vendo.handler on your runtime's request entry");
-    if (scanned.client) pass("wiring/client", "<VendoRoot> wraps the client");
-    else warn("wiring/client", "E-WIRE-008", "no <VendoRoot> found in the host source — the @vendoai/ui hooks and embeds need it; ignore this if the host renders a fully custom surface");
+    if (wiring.client) pass("wiring/client", "<VendoProvider> wraps the client");
+    else warn("wiring/client", "E-WIRE-008", "no <VendoProvider> found in the host source — the @vendoai/ui hooks and embeds need it; ignore this if the host renders a fully custom surface");
   } else if (framework === "express") {
     if (wiring.server) pass("wiring/express-server", "Express server is wired");
     else fail("wiring/express-server", "E-WIRE-001", "Express server is not wired with createVendo from @vendoai/vendo/server");
-    if (wiring.client) pass("wiring/express-client", "<VendoRoot> wraps the client");
-    else fail("wiring/express-client", "E-WIRE-002", "Express client is not wrapped in <VendoRoot>");
+    if (wiring.client) pass("wiring/express-client", "<VendoProvider> wraps the client");
+    else fail("wiring/express-client", "E-WIRE-002", "Express client is not wrapped in <VendoProvider>");
   } else {
     const routeCandidates = [
       join(root, "app", "api", "vendo", "[...vendo]", "route.ts"),
@@ -266,9 +218,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
 
     // The mount may live in ANY layout, not just the root one (i18n/route-group
     // hosts mount in e.g. app/[locale]/layout.tsx — the literal root-layout
-    // grep fought exactly that correct wiring in the 0.4.1 E2E cert), and the
-    // correct scaffold mounts the generated vendo/vendo-root.tsx wrapper —
-    // whose export is also named VendoRoot, so the marker holds there too.
+    // grep fought exactly that correct wiring in the 0.4.1 E2E cert).
     let rootWired = false;
     const mountCandidates = [
       ...await walk(join(root, "app"), (rel) => /(^|[\\/])layout\.(?:tsx|jsx|js)$/.test(rel)),
@@ -281,10 +231,10 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     ];
     for (const path of mountCandidates) {
       const source = await readFile(path, "utf8").catch(() => "");
-      if (source.includes("<VendoRoot") || source.includes("<VendoProvider")) rootWired = true;
+      if (source.includes("<VendoProvider")) rootWired = true;
     }
     if (rootWired) {
-      pass("wiring/next-root", "<VendoRoot> wraps the app");
+      pass("wiring/next-root", "<VendoProvider> wraps the app");
     } else {
       // The exact paste, not a description of it: init never edits user source,
       // so this is the one step a by-the-book install still owes, and doctor is
@@ -292,23 +242,34 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       // "which file", so the two can never name different files again.
       const { file: layoutPath, children } = await clientRoot(root);
       const file = relative(root, layoutPath);
-      const specifier = relative(dirname(layoutPath), join(dirname(dirname(layoutPath)), "vendo", "vendo-root"))
-        .split(sep).join("/");
       fail("wiring/next-root", "E-WIRE-004",
-        `no client entry mounts <VendoRoot> — Vendo is wired but invisible. In ${file}, paste: `
-        + `import { VendoRoot } from "${specifier}";  … then wrap: <VendoRoot>${children}</VendoRoot>. `
-        + "(The generated vendo/vendo-root.tsx wrapper's export is also named VendoRoot and mounts <VendoOverlay />; "
-        + "any layout that covers your pages works. `vendo init` never edits your source, so this paste is always yours.)");
+        `no client entry mounts <VendoProvider> — Vendo is wired but nothing on the page can reach it. In ${file}, paste: `
+        + `import { VendoProvider } from "@vendoai/vendo/react";  … then wrap: <VendoProvider baseUrl="/api/vendo">${children}</VendoProvider>. `
+        + "(Any layout that covers your pages works. `vendo init` never edits your source, so this paste is always yours.)");
     }
   }
 
-  // Visible surface (0.4.1 E2E cert B3): <VendoRoot> is a context provider
+  // Visible surface (0.4.1 E2E cert B3): <VendoProvider> is a context provider
   // that renders NOTHING — two certified stacks ended doctor-green with no
   // way for a user to reach the agent. Green must mean visible.
   if (wiring.surface) {
     pass("wiring/surface", "a visible agent surface is mounted (<VendoOverlay /> or an equivalent)");
   } else {
-    fail("wiring/surface", "E-WIRE-006", "no visible agent surface is mounted — <VendoRoot> renders nothing by itself; mount <VendoOverlay /> (init generates vendo/vendo-root.tsx for this), or render your own surface (<VendoThread />, <VendoToolResult>, the BYO embeds)");
+    fail("wiring/surface", "E-WIRE-006", "no visible agent surface is mounted — <VendoProvider> renders nothing by itself; add <VendoOverlay /> (the launcher pill + panel) or render your own surface (<VendoThread />, <VendoToolResult>, the BYO embeds)");
+  }
+
+  // VendoRoot is gone in this release (spec 2026-08-06 §B2). A host that still
+  // names it, or still carries the wrapper init used to generate, gets the
+  // three-line fix by name instead of a build error it has to decode.
+  const legacyWrapper = (await Promise.all(
+    [join(root, "vendo", "vendo-root.tsx"), join(root, "src", "vendo", "vendo-root.tsx")]
+      .map(async (candidate) => (await exists(candidate)) ? candidate : null),
+  )).find((candidate) => candidate !== null);
+  if (legacyWrapper !== undefined || wiring.legacyRoot) {
+    warn("wiring/vendo-root", "E-WIRE-010",
+      `<VendoRoot> was removed — swap it for <VendoProvider baseUrl="/api/vendo">. `
+      + (legacyWrapper === undefined ? "" : `${relative(root, legacyWrapper)} is YOUR file now: change its import to \`import { VendoProvider } from "@vendoai/vendo/react"\`, rename the tag, and add baseUrl. `)
+      + "Nothing else moves — the props are identical.");
   }
 
   if (await hasDependency(root)) pass("wiring/dependency", "@vendoai/vendo dependency is declared");
@@ -357,6 +318,29 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     else fail(`config/${file}`, "E-CFG-001", `missing .vendo/${file}`);
   }
   if (!await exists(join(root, ".vendo", "data", ".gitignore"))) warn("config/data-gitignore", "E-CFG-002", ".vendo/data/.gitignore is missing");
+
+  // Spec 2026-08-06 §B1 — the deployment's path prefix has exactly one home:
+  // VENDO_BASE_URL. A spec that declares a DIFFERENT relative server mount is the
+  // #914 shape by another route: every page renders and every tool call 404s.
+  const specPath = await firstOpenApiSpec(root);
+  const declaredMount = specPath === null ? "" : await openApiMountPath(specPath);
+  const configuredBase = env["VENDO_BASE_URL"];
+  if (declaredMount !== "" && configuredBase !== undefined && configuredBase.trim() !== "") {
+    let basePath = "";
+    try {
+      basePath = publicBase(configuredBase).path;
+    } catch {
+      basePath = "";
+    }
+    if (basePath !== declaredMount) {
+      fail("config/mount", "E-CFG-003",
+        `${relative(root, specPath!)} declares servers[0].url ${JSON.stringify(declaredMount)} but VENDO_BASE_URL's path is `
+        + `${JSON.stringify(basePath)} — one of them is wrong, and the disagreement 404s every host tool while every page renders. `
+        + `Set VENDO_BASE_URL to the app's FULL public URL including ${JSON.stringify(declaredMount)}, or drop the relative server from the spec.`);
+    } else {
+      pass("config/mount", `the OpenAPI server mount and VENDO_BASE_URL agree on ${JSON.stringify(declaredMount)}`);
+    }
+  }
 
   // cse lane 3 — per-surface OWNERSHIP: for each cloud-resolvable content
   // surface, is the local file the source of truth, or is it resolved at
@@ -586,7 +570,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     try {
       const response = await fetchImpl(`${new URL(statusUrl).origin}/`, { headers: { accept: "text/html" } });
       if (response.status >= 500) {
-        fail("live/render", "E-LIVE-006", `the app's root page returned ${response.status} — the site is crashing for users even though the wire answers (typical cause: the component registry imported in a Server Component layout; mount it via the generated vendo/vendo-root.tsx wrapper instead). Check the dev server log.`);
+        fail("live/render", "E-LIVE-006", `the app's root page returned ${response.status} — the site is crashing for users even though the wire answers (typical cause: the component registry declared in a Server Component layout; move it into your own "use client" file with the provider). Check the dev server log.`);
       } else {
         pass("live/render", `the app's root page renders (HTTP ${response.status})`);
       }

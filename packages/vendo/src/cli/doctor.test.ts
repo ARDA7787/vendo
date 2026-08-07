@@ -56,7 +56,7 @@ async function healthy(base?: string): Promise<string> {
     await writeFile(path, body);
   };
   await write("package.json", JSON.stringify({ dependencies: { "@vendoai/vendo": "0.3.0", next: "16" } }));
-  await write("app/layout.tsx", "export default ({children}) => <VendoRoot>{children}<VendoOverlay /></VendoRoot>;");
+  await write("app/layout.tsx", "export default ({children}) => <VendoProvider>{children}<VendoOverlay /></VendoProvider>;");
   await write("app/api/vendo/[...vendo]/route.ts", "export const GET = () => {};\n");
   for (const file of ["tools.json", "overrides.json", "policy.json", "brief.md", "theme.json"]) await write(`.vendo/${file}`, "{}\n");
   await write(".vendo/data/.gitignore", "*\n");
@@ -76,7 +76,7 @@ async function expressHost(wired: boolean): Promise<string> {
   }));
   if (wired) {
     await write("src/server.ts", 'import { createVendo } from "@vendoai/vendo/server";\ncreateVendo({ model, principal });\n');
-    await write("src/client.tsx", "export const App = () => <VendoRoot><main /><VendoOverlay /></VendoRoot>;\n");
+    await write("src/client.tsx", "export const App = () => <VendoProvider><main /><VendoOverlay /></VendoProvider>;\n");
   } else {
     await write("src/notes.ts", "/* TODO: import createVendo from @vendoai/vendo/server and render <VendoRoot> */\n");
   }
@@ -100,7 +100,7 @@ async function customHost(wired: boolean): Promise<string> {
   }));
   if (wired) {
     await write("src/worker.ts", 'import { createVendo } from "@vendoai/vendo/server";\nexport const vendo = createVendo({ model, principal });\n');
-    await write("src/app.tsx", "export const App = () => <VendoRoot><main /><VendoOverlay /></VendoRoot>;\n");
+    await write("src/app.tsx", "export const App = () => <VendoProvider><main /><VendoOverlay /></VendoProvider>;\n");
   } else {
     await write("src/worker.ts", "export default { fetch: () => new Response('ok') };\n");
   }
@@ -224,7 +224,7 @@ describe("vendo doctor", () => {
     })).toBe(0);
     expect(messages.errors).toEqual([]);
     expect(messages.logs).toContain("ok: Express server is wired");
-    expect(messages.logs).toContain("ok: <VendoRoot> wraps the client");
+    expect(messages.logs).toContain("ok: <VendoProvider> wraps the client");
     expect(messages.logs.join("\n")).not.toContain("catch-all handler");
   });
 
@@ -238,7 +238,7 @@ describe("vendo doctor", () => {
     })).toBe(1);
     expect(messages.errors).toEqual(expect.arrayContaining([
       "broken: Express server is not wired with createVendo from @vendoai/vendo/server",
-      "broken: Express client is not wrapped in <VendoRoot>",
+      "broken: Express client is not wrapped in <VendoProvider>",
     ]));
   });
 
@@ -1303,12 +1303,44 @@ describe("vendo doctor error codes + fix_refs", () => {
     });
   });
 
+  /** Spec 2026-08-06 §B1: the path prefix has ONE home, VENDO_BASE_URL. A spec
+   *  declaring a different relative server mount is #914 by another route —
+   *  every page renders and every host tool 404s. */
+  const specWithMount = JSON.stringify({
+    openapi: "3.1.0", info: { title: "t", version: "1" }, servers: [{ url: "/maple" }], paths: {},
+  });
+
+  it("fails E-CFG-003 when the OpenAPI server mount and VENDO_BASE_URL's path disagree", async () => {
+    const root = await healthy();
+    await writeFile(join(root, "openapi.json"), specWithMount, "utf8");
+    const { report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+      env: { VENDO_BASE_URL: "https://site.com" },
+    });
+    expect(report.checks.find((check) => check.id === "config/mount")).toMatchObject({
+      status: "broken",
+      error_code: "E-CFG-003",
+    });
+  });
+
+  it("passes config/mount when the spec and VENDO_BASE_URL agree", async () => {
+    const root = await healthy();
+    await writeFile(join(root, "openapi.json"), specWithMount, "utf8");
+    const { report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+      env: { VENDO_BASE_URL: "https://site.com/maple" },
+    });
+    expect(report.checks.find((check) => check.id === "config/mount")).toMatchObject({ status: "ok" });
+  });
+
   // Visible-surface gate (0.4.1 E2E cert B3): green must mean a user can SEE
-  // the agent — <VendoRoot> alone is a provider that renders nothing.
+  // the agent — <VendoProvider> alone is a provider that renders nothing.
   it("fails E-WIRE-006 when nothing visible is mounted, and exits 1", async () => {
     const root = await healthy();
     await writeFile(join(root, "app", "layout.tsx"),
-      "export default ({children}) => <VendoRoot>{children}</VendoRoot>;");
+      "export default ({children}) => <VendoProvider>{children}</VendoProvider>;");
     const messages = output();
     expect(await doctor({
       targetDir: root,
@@ -1420,48 +1452,25 @@ describe("vendo doctor error codes + fix_refs", () => {
     expect(report.checks.some((entry) => entry.id === "wiring/server-actions")).toBe(false);
   });
 
-  // The generated wrapper carries <VendoRoot> AND <VendoOverlay /> markers
-  // itself — it must NOT satisfy the client/surface gates while no layout
-  // mounts it, or doctor-green-but-invisible comes right back.
-  it("fails E-WIRE-006 when only the UNMOUNTED generated wrapper carries the overlay", async () => {
+  /** VendoRoot is gone (spec 2026-08-06 §B2): a host that still names it —
+      or still carries the wrapper init used to generate — gets the swap by
+      name, as a warning, not a build error it has to decode. */
+  it("warns E-WIRE-010 when the host still carries the legacy vendo-root wrapper", async () => {
     const root = await healthy();
-    await writeFile(join(root, "app", "layout.tsx"),
-      "export default ({children}) => <html><body>{children}</body></html>;");
     await mkdir(join(root, "vendo"), { recursive: true });
     await writeFile(join(root, "vendo", "vendo-root.tsx"),
-      "\"use client\";\nexport function VendoRoot({children}) { return <VendoRoot>{children}<VendoOverlay /></VendoRoot>; }");
-    const messages = output();
-    expect(await doctor({
-      targetDir: root,
-      fetchImpl: successfulProbeFetch(),
-      output: messages.sink,
-      telemetry: { env: { VENDO_TELEMETRY_DISABLED: "1" } },
-    })).toBe(1);
-    expect(messages.errors.join("\n")).toContain("no visible agent surface is mounted");
-  });
-
-  // The auto-wired shape: the layout mounts <VendoRoot> imported FROM the
-  // wrapper (so the layout itself carries no overlay marker) and the wrapper
-  // renders <VendoOverlay /> — that IS the surface, same rule init applies.
-  it("passes when the layout mounts the overlay-bearing wrapper's <VendoRoot>", async () => {
-    const root = await healthy();
-    await writeFile(join(root, "app", "layout.tsx"),
-      "import { VendoRoot } from \"../vendo/vendo-root\";\nexport default ({children}) => <VendoRoot>{children}</VendoRoot>;");
-    await mkdir(join(root, "vendo"), { recursive: true });
-    await writeFile(join(root, "vendo", "vendo-root.tsx"),
-      "\"use client\";\nexport function VendoRoot({children}) { return <VendoRoot>{children}<VendoOverlay /></VendoRoot>; }");
-    expect(await doctor({
-      targetDir: root,
-      fetchImpl: successfulProbeFetch(),
-      output: output().sink,
-      telemetry: { env: { VENDO_TELEMETRY_DISABLED: "1" } },
-    })).toBe(0);
+      "\"use client\";\nexport function VendoRoot({children}) { return <VendoProvider>{children}<VendoOverlay /></VendoProvider>; }");
+    const { report } = await jsonChecks({ targetDir: root, fetchImpl: successfulProbeFetch() });
+    expect(report.checks.find((check) => check.id === "wiring/vendo-root")).toMatchObject({
+      status: "warning",
+      error_code: "E-WIRE-010",
+    });
   });
 
   it("accepts a BYO embed (<VendoToolResult>) as the visible surface", async () => {
     const root = await healthy();
     await writeFile(join(root, "app", "layout.tsx"),
-      "export default ({children}) => <VendoRoot>{children}</VendoRoot>;");
+      "export default ({children}) => <VendoProvider>{children}</VendoProvider>;");
     await mkdir(join(root, "app", "chat"), { recursive: true });
     await writeFile(join(root, "app", "chat", "page.tsx"),
       "export default () => <VendoToolResult output={null} />;");
@@ -1476,13 +1485,13 @@ describe("vendo doctor error codes + fix_refs", () => {
   // E-WIRE-004 broadened: hosts with route groups or i18n mount in a NESTED
   // layout (invoify: app/[locale]/layout.tsx) — the root-layout-only grep
   // fought exactly that correct wiring in the 0.4.1 E2E cert.
-  it("finds the <VendoRoot> mount in a nested layout", async () => {
+  it("finds the <VendoProvider> mount in a nested layout", async () => {
     const root = await healthy();
     await writeFile(join(root, "app", "layout.tsx"),
       "export default ({children}) => <html><body>{children}</body></html>;");
     await mkdir(join(root, "app", "[locale]"), { recursive: true });
     await writeFile(join(root, "app", "[locale]", "layout.tsx"),
-      "export default ({children}) => <VendoRoot>{children}<VendoOverlay /></VendoRoot>;");
+      "export default ({children}) => <VendoProvider>{children}<VendoOverlay /></VendoProvider>;");
     expect(await doctor({
       targetDir: root,
       fetchImpl: successfulProbeFetch(),
@@ -1495,12 +1504,12 @@ describe("vendo doctor error codes + fix_refs", () => {
   // hands the user `pages/_app.tsx` to paste into, because there is no app
   // layout to wrap. Doctor scanning app/ layouts only fails such a host
   // forever, and names a file init never mentioned and that does not exist.
-  it("finds the <VendoRoot> mount in a Pages-Router host's pages/_app.tsx", async () => {
+  it("finds the <VendoProvider> mount in a Pages-Router host's pages/_app.tsx", async () => {
     const root = await healthy();
     await rm(join(root, "app", "layout.tsx"));
     await mkdir(join(root, "pages"), { recursive: true });
     await writeFile(join(root, "pages", "_app.tsx"),
-      "export default ({Component, pageProps}) => <VendoRoot><Component {...pageProps} /><VendoOverlay /></VendoRoot>;");
+      "export default ({Component, pageProps}) => <VendoProvider><Component {...pageProps} /><VendoOverlay /></VendoProvider>;");
     expect(await doctor({
       targetDir: root,
       fetchImpl: successfulProbeFetch(),
@@ -1649,7 +1658,7 @@ function discoveryFetch(challenge?: string): typeof fetch {
   }) as typeof fetch;
 }
 
-describe("readDotEnvFallback", () => {
+describe("readEnvFiles — the CLI's one env reader (doctor and config read it too)", () => {
   it("reads .env.local over .env, parses quotes/comments, never overrides process env at the merge site", async () => {
     const root = await mkdtemp(join(tmpdir(), "vendo-doctor-env-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
@@ -1658,8 +1667,8 @@ describe("readDotEnvFallback", () => {
       join(root, ".env.local"),
       "# comment\nSHARED=from-local\nVENDO_API_KEY=\"vnd_0123\"\nexport EXPORTED=yes\nEMPTY=\nBROKEN LINE\n",
     );
-    const { readDotEnvFallback } = await import("./doctor.js");
-    const env = await readDotEnvFallback(root);
+    const { readEnvFiles } = await import("./sync-flow.js");
+    const env = await readEnvFiles(root, {});
     expect(env["SHARED"]).toBe("from-local");
     expect(env["ENV_ONLY"]).toBe("plain");
     expect(env["VENDO_API_KEY"]).toBe("vnd_0123");
@@ -1668,32 +1677,32 @@ describe("readDotEnvFallback", () => {
     expect(Object.keys(env)).not.toContain("BROKEN LINE");
   });
 
-  it("strips inline comments from unquoted values, same grammar as envLocalValueSync", async () => {
+  it("strips inline comments from unquoted values, same grammar as envFileValueSync", async () => {
     const root = await mkdtemp(join(tmpdir(), "vendo-doctor-envc-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     await writeFile(join(root, ".env.local"), "VENDO_API_KEY=vnd_abc # dev key\nQUOTED=\"kept # inside\"\n");
-    const { readDotEnvFallback } = await import("./doctor.js");
-    const env = await readDotEnvFallback(root);
+    const { readEnvFiles } = await import("./sync-flow.js");
+    const env = await readEnvFiles(root, {});
     expect(env["VENDO_API_KEY"]).toBe("vnd_abc");
     expect(env["QUOTED"]).toBe("kept # inside");
   });
 
   it("blank process values yield to concrete dotenv values at the merge", async () => {
-    const { mergeEnvOverDotEnv } = await import("./doctor.js");
-    const merged = mergeEnvOverDotEnv(
-      { VENDO_API_KEY: "vnd_real", ONLY_FILE: "x" },
-      { VENDO_API_KEY: "  ", SHELL_WINS: "yes", ONLY_PROC: "" },
-    );
+    const root = await mkdtemp(join(tmpdir(), "vendo-doctor-envm-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    await writeFile(join(root, ".env"), "VENDO_API_KEY=vnd_real\nONLY_FILE=x\nSHELL_WINS=from-file\n");
+    const { readEnvFiles } = await import("./sync-flow.js");
+    const merged = await readEnvFiles(root, { VENDO_API_KEY: "  ", SHELL_WINS: "yes", ONLY_PROC: "" });
     expect(merged["VENDO_API_KEY"]).toBe("vnd_real");
     expect(merged["ONLY_FILE"]).toBe("x");
     expect(merged["SHELL_WINS"]).toBe("yes");
     expect(merged["ONLY_PROC"]).toBe("");
   });
 
-  it("returns an empty object when no env files exist", async () => {
+  it("returns only the process env when no env files exist", async () => {
     const root = await mkdtemp(join(tmpdir(), "vendo-doctor-noenv-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
-    const { readDotEnvFallback } = await import("./doctor.js");
-    expect(await readDotEnvFallback(root)).toEqual({});
+    const { readEnvFiles } = await import("./sync-flow.js");
+    expect(await readEnvFiles(root, {})).toEqual({});
   });
 });

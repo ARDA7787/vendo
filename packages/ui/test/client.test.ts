@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { VendoError } from "@vendoai/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVendoClient } from "../src/index.js";
 import { createWireServer } from "./wire-server.js";
 
@@ -158,5 +158,44 @@ describe("createVendoClient", () => {
 
     wire.state.statusErrorCode = "future-code";
     await expect(client.status()).rejects.toMatchObject({ name: "Error", code: "future-code", message: "Status failed" });
+  });
+
+  it("joins the base URL's path prefix onto every route exactly once", async () => {
+    const seen: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(typeof input === "string" ? input : input.toString());
+      return new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      await createVendoClient({ baseUrl: "/maple/api/vendo" }).threads.list();
+      expect(seen[0]).toBe("/maple/api/vendo/threads");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  /** An unprefixed baseUrl on a prefixed page is the #914 shape from the
+   *  browser: one loud error naming both sides and the fix, not a bare 404. */
+  it("throws ONE named mount-mismatch error on first contact, reported once at error level", async () => {
+    const originalFetch = globalThis.fetch;
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    window.history.replaceState({}, "", "/maple/dashboard");
+    globalThis.fetch = (async () => new Response("<!doctype html>not found", {
+      status: 404,
+      headers: { "content-type": "text/html" },
+    })) as typeof fetch;
+    try {
+      const client = createVendoClient({ baseUrl: "/api/vendo" });
+      await expect(client.threads.list()).rejects.toThrow(/wire mount mismatch/);
+      await expect(client.status()).rejects.toThrow(/\/maple/);
+      // Callers that degrade on a failed fetch (the connector catalog) swallow
+      // the throw, so the console.error is what the developer actually sees —
+      // once per client, never folded into a retry warning.
+      expect(errors.mock.calls).toEqual([[expect.stringMatching(/wire mount mismatch[\s\S]*\/maple/)]]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      errors.mockRestore();
+    }
   });
 });

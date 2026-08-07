@@ -1,6 +1,6 @@
-import type { authJs } from "@vendoai/vendo/auth/auth-js";
+import { joinUrl, withPathPrefix } from "@vendoai/core";
 import { getToken } from "next-auth/jwt";
-import { stripBasePath, withBasePath } from "@/lib/base-path";
+import { withBasePath } from "@/lib/base-path";
 import {
   authSecret,
   isSecureDeployment,
@@ -21,57 +21,38 @@ export async function resolveMapleSession(request: Request): Promise<MapleDemoUs
   return typeof token?.sub === "string" ? resolveMapleSubject(token.sub) : null;
 }
 
-/** The operator-set public origin (VENDO_BASE_URL) or, failing that, the
- * request's own origin — mirrors how the door derives its URLs. */
-export function publicOrigin(request?: Request): URL {
-  return new URL(process.env.VENDO_BASE_URL ?? request?.url ?? "http://localhost:3000");
+/** The operator-set FULL public URL (VENDO_BASE_URL — /maple included) or,
+ * failing that, the request's own origin under Maple's mount point — mirrors how
+ * the door and the auth presets derive their URLs. The request contributes its
+ * ORIGIN only: its path is wherever the visitor happens to be, not where the app
+ * is mounted, and letting it through made every URL built from here hang off the
+ * current page. */
+export function publicUrl(request?: Request): URL {
+  return new URL(process.env.VENDO_BASE_URL ?? withBasePath("/"), request?.url ?? "http://localhost:3000");
 }
 
-/** Same-origin-only returnTo, in the APP's own vocabulary — the mount point
- * comes off here and every caller puts it back with `withBasePath`. Anything
- * not same-origin collapses to "/". */
-export function safeReturnTo(candidate: string | null | undefined, base: URL = publicOrigin()): string {
-  if (!candidate) return "/";
+/** Same-origin-only returnTo: anything else collapses to the app's own home. The
+ * returned path is the PUBLIC spelling — prefix included, exactly as the browser
+ * will use it. #867: callers used to run it back through withBasePath() and
+ * produce /maple/maple/…. The fallback is the base's own path, not "/": under a
+ * mount point the origin root serves nothing, so "/" is a 404. */
+export function safeReturnTo(candidate: string | null | undefined, base: URL = publicUrl()): string {
+  const home = base.pathname.replace(/\/+$/u, "") || "/";
+  if (!candidate) return home;
   try {
     const target = new URL(candidate, base);
-    return target.origin === base.origin
-      ? `${stripBasePath(target.pathname)}${target.search}${target.hash}`
-      : "/";
+    if (target.origin !== base.origin) return home;
+    // Belt and braces: a returnTo that arrives in the app's mount-STRIPPED
+    // vocabulary — an old bookmark, a link built before the prefix existed —
+    // still lands somewhere that exists. The prefix comes from the deployment's
+    // own base URL, and withPathPrefix is idempotent, so an already-public path
+    // is left exactly as it is.
+    return withPathPrefix(home === "/" ? "" : home, `${target.pathname}${target.search}${target.hash}`);
   } catch {
-    return "/";
+    return home;
   }
 }
 
 export function maplePublicUrl(request: Request, path: string): URL {
-  return new URL(path, publicOrigin(request));
-}
-
-/**
- * THE DOOR'S SIGN-IN BOUNCE, UNDER THE MOUNT POINT.
- *
- * A sessionless MCP client is redirected to the host's login page, and that is
- * the ONE page a real client's human ever sees. The auth preset builds it as
- * `<public origin>/login` — it has no way to know Maple is served in place
- * under BASE_PATH — so the Location it emits 404s. Same job as
- * `mountedRedirect` in src/proxy.ts: Next puts the prefix back on nothing the
- * app builds itself, and a redirect's Location is the app's own URL.
- */
-export function withMountedLogin(preset: ReturnType<typeof authJs>): ReturnType<typeof authJs> {
-  const oauth = preset.oauth;
-  if (oauth?.session === undefined) return preset;
-  const bounce = oauth.session;
-  return {
-    ...preset,
-    oauth: {
-      ...oauth,
-      session: async (request, context) => {
-        const answer = await bounce(request, context);
-        // The only Response this seam returns is that login redirect.
-        if (!(answer instanceof Response)) return answer;
-        const login = new URL(answer.headers.get("location")!);
-        login.pathname = withBasePath(login.pathname);
-        return Response.redirect(login, answer.status);
-      },
-    },
-  };
+  return joinUrl(publicUrl(request), path);
 }

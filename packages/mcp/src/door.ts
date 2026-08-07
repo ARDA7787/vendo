@@ -12,7 +12,7 @@ import type {
   ToolResult,
   VendoTheme,
 } from "@vendoai/core";
-import { auditContext, themeCssVariables } from "@vendoai/core";
+import { auditContext, publicBase, stripPathPrefix, themeCssVariables, withPathPrefix } from "@vendoai/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
@@ -317,9 +317,9 @@ class Door {
       ? undefined
       : new OAuthServer({ ...config, oauth: outside });
     this.#remoteAs = config.remoteAs === undefined ? undefined : new RemoteAsVerifier(config.remoteAs);
-    const publicBase = config.baseUrl === undefined ? undefined : publicBaseOf(config.baseUrl);
-    this.#publicOrigin = publicBase?.origin;
-    this.#publicBasePath = publicBase?.path ?? "";
+    const base = config.baseUrl === undefined ? undefined : publicBase(config.baseUrl);
+    this.#publicOrigin = base?.origin;
+    this.#publicBasePath = base?.path ?? "";
     this.#shimHtml = shimHtml(config.theme);
   }
 
@@ -1112,46 +1112,6 @@ function outsideSpacePath(path: string): boolean {
 function normalizeMount(mount: string): string {
   if (!mount || mount === "/") return "";
   return `/${mount.replace(/^\/+|\/+$/g, "")}`;
-}
-
-/** Whether `path` is `prefix` itself or lives under it, on a SEGMENT boundary —
- *  `/maple/api` is under `/maple`, `/maplesyrup` is not. `""` holds everything. */
-function underPathPrefix(prefix: string, path: string): boolean {
-  return prefix === "" || path === prefix || path.startsWith(`${prefix}/`);
-}
-
-/** The public spelling of a path: prefixed exactly once. A path that already
- *  carries the prefix (a prefix-preserving mount) is left alone. */
-function withPathPrefix(prefix: string, path: string): string {
-  return underPathPrefix(prefix, path) ? path : `${prefix}${path}`;
-}
-
-/** The door-local spelling of a path: the public prefix taken back off. A path
- *  outside the prefix is left alone. */
-function stripPathPrefix(prefix: string, path: string): string {
-  if (prefix === "" || !underPathPrefix(prefix, path)) return path;
-  const stripped = path.slice(prefix.length);
-  return stripped === "" ? "/" : stripped;
-}
-
-/** Reduce the configured base URL to its canonical origin and mount-normalized
- * path prefix, failing LOUD at construction — a malformed base silently falling
- * back to request-derived origins would ship wrong discovery documents to every
- * client. */
-function publicBaseOf(baseUrl: string): { origin: string; path: string } {
-  let url: URL;
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    throw new TypeError(`baseUrl must be an absolute http(s) URL, got ${JSON.stringify(baseUrl)}`);
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new TypeError(`baseUrl must be an absolute http(s) URL, got ${JSON.stringify(baseUrl)}`);
-  }
-  if (url.username || url.password) {
-    throw new TypeError("baseUrl cannot contain credentials");
-  }
-  return { origin: url.origin, path: normalizeMount(url.pathname) };
 }
 
 /** Move a request onto the canonical public origin and path, preserving

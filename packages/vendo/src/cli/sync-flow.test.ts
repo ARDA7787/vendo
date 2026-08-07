@@ -2,12 +2,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runSync } from "./sync.js";
+import type { Output } from "./shared.js";
+import { runSyncFlow, type SyncFlowOptions, type SyncFlowResult } from "./sync-flow.js";
 
 /**
- * `vendo sync` coherence (init/sync lane, 2026-08-02): the AI flag matrix that
- * matches init's exactly, the theme re-scan that never clobbers a hand edit,
- * and the pin-baseline reconcile with Vendo Cloud.
+ * The ONE flow `vendo init` (mode "full") and `vendo sync` (mode "incremental")
+ * both run: one env reader that sees BOTH dotenv files, one consent question,
+ * one theme path (create when missing, reconcile when present).
  */
 
 const dirs: string[] = [];
@@ -15,6 +16,22 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
+async function host(files: Record<string, string> = {}): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "vendo-sync-flow-"));
+  dirs.push(root);
+  await mkdir(join(root, ".vendo"), { recursive: true });
+  for (const [name, source] of Object.entries(files)) {
+    await writeFile(join(root, name), source, "utf8");
+  }
+  return root;
+}
+
+function captureOutput() {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  return { output: { log: (m: string) => logs.push(m), error: (m: string) => errors.push(m) }, logs, errors };
+}
 
 const REPORT = {
   tools: { added: [], removed: [], changed: [] },
@@ -26,21 +43,38 @@ const REPORT = {
   warnings: [],
 };
 
-const scan = async () => REPORT;
+const scan = (async () => REPORT) as never;
 
-function captureOutput() {
-  const logs: string[] = [];
-  const errors: string[] = [];
-  return { output: { log: (m: string) => logs.push(m), error: (m: string) => errors.push(m) }, logs, errors };
-}
+/** A judged catalog whose one tool is unchanged: incremental has nothing to do,
+ *  full re-judges it. The difference IS the mode, read through the real pass. */
+const JUDGED_CATALOG = {
+  "tools.json": `${JSON.stringify({
+    format: "vendo/tools@3",
+    tools: [{
+      name: "host_a",
+      description: "Use this to call host_a.",
+      inputSchema: { type: "object", properties: {} },
+      risk: "read",
+      binding: { kind: "route", method: "GET", path: "/api/a", argsIn: "query" },
+    }],
+  })}\n`,
+  "judgments.json": `${JSON.stringify({
+    format: "vendo/judgments@1",
+    tools: {
+      host_a: {
+        binding: "GET /api/a",
+        fields: { description: "Reads the counter." },
+        evidence: "export async function GET() {",
+      },
+    },
+  })}\n`,
+};
 
 const offline = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
 
-async function host(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "vendo-sync-coherence-"));
-  dirs.push(dir);
-  await mkdir(join(dir, ".vendo"), { recursive: true });
-  return dir;
+/** The flow as `vendo sync` runs it: incremental, non-interactive. */
+function flow(options: Partial<SyncFlowOptions> & { root: string; output: Output }): Promise<SyncFlowResult> {
+  return runSyncFlow({ mode: "incremental", interactive: false, yes: false, sync: scan, ...options });
 }
 
 /** A harness that fails loudly if the judgment pass so much as probes it. */
@@ -50,115 +84,125 @@ const forbidden = {
   run: async () => { throw new Error("the judgment pass must not run here"); },
 };
 
-describe("the AI flag matrix on sync (identical to init's)", () => {
+/** An available engine, so a run reaches the consent question instead of
+ *  stopping at the availability check. */
+const engine = {
+  id: "scripted",
+  availability: async () => "a scripted engine",
+  run: async () => { throw new Error("declined consent must never reach the engine"); },
+};
+
+describe("runSyncFlow", () => {
+  it("judges the WHOLE catalog in full mode and only what moved in incremental", async () => {
+    const invocations: number[] = [];
+    for (const mode of ["incremental", "full"] as const) {
+      const root = await host(JUDGED_CATALOG);
+      // The `.vendo` copies are what the pass reads.
+      for (const [name, source] of Object.entries(JUDGED_CATALOG)) {
+        await writeFile(join(root, ".vendo", name), source, "utf8");
+      }
+      let calls = 0;
+      const { output } = captureOutput();
+      await runSyncFlow({
+        root, output, mode, interactive: false, yes: true, ai: true, sync: scan,
+        judge: {
+          harness: {
+            id: "scripted",
+            availability: async () => "a scripted engine",
+            run: async () => {
+              calls += 1;
+              return "```json\n" + JSON.stringify({ tools: [], narrative: "" }) + "\n```";
+            },
+          },
+        },
+      });
+      invocations.push(calls);
+    }
+    expect(invocations).toEqual([0, 1]);
+  });
+
+  it("asks for consent exactly ONCE, with the same question in both modes", async () => {
+    const asked: string[] = [];
+    for (const mode of ["full", "incremental"] as const) {
+      const { output } = captureOutput();
+      await runSyncFlow({
+        root: await host(), output, mode, interactive: true, yes: false, sync: scan,
+        confirm: async (question: string) => { asked.push(question); return false; },
+        judge: { harnesses: [engine] },
+      });
+    }
+    expect(asked).toHaveLength(2);
+    expect(asked[0]).toBe(asked[1]);
+  });
+
+  it("creates .vendo/theme.json when absent and reconciles it when present", async () => {
+    const root = await host();
+    const { output } = captureOutput();
+    const created = await runSyncFlow({
+      root, output, mode: "full", interactive: false, yes: true, ai: false, sync: scan,
+    });
+    expect(created.theme).toBeNull();
+    await expect(readFile(join(root, ".vendo", "theme.json"), "utf8")).resolves.toContain("colors");
+
+    const reconciled = await runSyncFlow({
+      root, output, mode: "incremental", interactive: false, yes: true, ai: false, sync: scan,
+    });
+    expect(reconciled.theme).not.toBeNull();
+  });
+});
+
+describe("the AI flag matrix (one rule, both modes)", () => {
   it("interactive with no flag ASKS, every run — nothing is persisted", async () => {
     const dir = await host();
     for (const pass of [1, 2]) {
       const asked: string[] = [];
       const messages = captureOutput();
-      expect(await runSync({
-        targetDir: dir,
+      await flow({
+        root: dir,
         output: messages.output,
         fetchImpl: offline,
-        sync: scan,
         interactive: true,
-        judge: {
-          harnesses: [forbidden],
-          confirm: async (question: string) => { asked.push(question); return false; },
-        },
-      })).toBe(0);
+        judge: { harnesses: [engine], confirm: async (question: string) => { asked.push(question); return false; } },
+      });
       expect(asked.length, `run ${pass} asked`).toBe(1);
-      expect(asked[0]).toContain("Let a coding agent read this codebase");
+      expect(asked[0]).toContain("read this codebase to draft tool descriptions");
     }
   });
 
   it("non-interactive with no flag never prompts and never runs the pass", async () => {
     const messages = captureOutput();
-    expect(await runSync({
-      targetDir: await host(),
+    await flow({
+      root: await host(),
       output: messages.output,
       fetchImpl: offline,
-      sync: scan,
-      interactive: false,
-      judge: {
-        harnesses: [forbidden],
-        confirm: async () => { throw new Error("prompted in a non-interactive run"); },
-      },
-    })).toBe(0);
+      judge: { harnesses: [forbidden], confirm: async () => { throw new Error("prompted in a non-interactive run"); } },
+    });
     expect(messages.logs.join("\n")).toContain("judgment: skipped — this run cannot ask");
   });
 
-  it("--yes and --json are non-interactive by construction: neither ever prompts", async () => {
-    for (const flags of [{ yes: true }, { json: true }] as const) {
-      const messages = captureOutput();
-      expect(await runSync({
-        targetDir: await host(),
-        output: messages.output,
-        fetchImpl: offline,
-        sync: scan,
-        ...flags,
-        judge: {
-          harnesses: [forbidden],
-          confirm: async () => { throw new Error("prompted") },
-        },
-      })).toBe(0);
-    }
-  });
-
-  it("--json still emits exactly one object", async () => {
+  it("--yes cannot ask, whatever the terminal says", async () => {
     const messages = captureOutput();
-    expect(await runSync({
-      targetDir: await host(),
+    await flow({
+      root: await host(),
       output: messages.output,
       fetchImpl: offline,
-      sync: scan,
-      json: true,
-      judge: { harnesses: [forbidden], confirm: async () => { throw new Error("prompted") } },
-    })).toBe(0);
-    expect(messages.logs).toHaveLength(1);
-    const result = JSON.parse(messages.logs[0]!) as { theme: unknown; baselines: unknown };
-    expect(result.theme).toBeNull();
-    expect(result.baselines).toBeNull();
-  });
-
-  // I1 (review): existing installs have a bare `predev: vendo sync`. npm
-  // inherits the terminal, so without this exemption `npm run dev` blocks on a
-  // default-yes prompt and a reflexive Enter starts spending.
-  it("a package-script run is never interactive, even with a TTY", async () => {
-    vi.stubEnv("npm_lifecycle_event", "predev");
-    // A REAL TTY, or the assertion is vacuous: this is exactly the shape
-    // `npm run dev` hands its predev hook.
-    const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
-    process.stdin.isTTY = true;
-    process.stdout.isTTY = true;
-    const messages = captureOutput();
-    expect(await runSync({
-      targetDir: await host(),
-      output: messages.output,
-      fetchImpl: offline,
-      sync: scan,
-      judge: {
-        harnesses: [forbidden],
-        confirm: async () => { throw new Error("prompted inside an npm lifecycle hook"); },
-      },
-    }).finally(() => {
-      process.stdin.isTTY = tty.in;
-      process.stdout.isTTY = tty.out;
-    })).toBe(0);
+      interactive: true,
+      yes: true,
+      judge: { harnesses: [forbidden], confirm: async () => { throw new Error("prompted"); } },
+    });
     expect(messages.logs.join("\n")).toContain("judgment: skipped — this run cannot ask");
   });
 
   it("--no-ai forces the pass off in an interactive run too", async () => {
     const messages = captureOutput();
-    expect(await runSync({
-      targetDir: await host(),
+    await flow({
+      root: await host(),
       output: messages.output,
       fetchImpl: offline,
-      sync: scan,
       ai: false,
       interactive: true,
-      judge: { harnesses: [forbidden], confirm: async () => { throw new Error("prompted") } },
-    })).toBe(0);
+      judge: { harnesses: [forbidden], confirm: async () => { throw new Error("prompted"); } },
+    });
     expect(messages.logs.join("\n")).not.toContain("judgment");
   });
 });
@@ -201,7 +245,7 @@ describe("the theme re-scan (decision 3)", () => {
     await writeTheme(dir, themeJson("#7c3bed"));
     await writeBase(dir, { accent: "#7c3bed", background: "#ffffff", radius: "8px" });
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     expect((await read(dir)).colors.accent).toBe("#0f766e");
     expect(messages.logs.join("\n")).toContain("theme: 1 slot re-read from your app (accent)");
   });
@@ -213,7 +257,7 @@ describe("the theme re-scan (decision 3)", () => {
     await writeTheme(dir, themeJson("#ff0000"));
     await writeBase(dir, { accent: "#7c3bed", background: "#ffffff", radius: "8px" });
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     expect((await read(dir)).colors.accent).toBe("#ff0000");
     const logs = messages.logs.join("\n");
     expect(logs).toContain("1 pinned by you, unchanged (accent — yours #ff0000 vs your app's #0f766e)");
@@ -228,9 +272,9 @@ describe("the theme re-scan (decision 3)", () => {
     const dir = await themedHost("#0f766e");
     await writeTheme(dir, themeJson("#ff0000"));
     await writeBase(dir, { accent: "#7c3bed", background: "#ffffff", radius: "8px" });
-    expect(await runSync({
-      targetDir: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false, themeRefresh: true,
-    })).toBe(0);
+    await flow({
+      root: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false, themeRefresh: true,
+    });
     expect((await read(dir)).colors.accent).toBe("#0f766e");
     expect(JSON.parse(await readFile(join(dir, ".vendo", "theme.extracted.json"), "utf8")))
       .toMatchObject({ slots: { accent: "#0f766e" } });
@@ -240,7 +284,7 @@ describe("the theme re-scan (decision 3)", () => {
     const dir = await themedHost("#0f766e");
     await writeTheme(dir, themeJson("#7c3bed"));
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     expect((await read(dir)).colors.accent).toBe("#7c3bed");
     expect(messages.logs.join("\n")).toContain("1 pinned by you, unchanged (accent — yours #7c3bed vs your app's #0f766e)");
   });
@@ -252,7 +296,7 @@ describe("the theme re-scan (decision 3)", () => {
     const dir = await themedHost("#0f766e");
     await writeTheme(dir, themeJson("#2563eb")); // blue-600: our default AND a real brand choice
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     expect((await read(dir)).colors.accent).toBe("#2563eb");
     const logs = messages.logs.join("\n");
     expect(logs).toContain("1 pinned by you, unchanged (accent — yours #2563eb vs your app's #0f766e)");
@@ -267,7 +311,7 @@ describe("the theme re-scan (decision 3)", () => {
     await writeTheme(dir, { ...themeJson("#7c3bed"), colors: { ...themeJson("#7c3bed").colors, background: "#101010" } });
     await writeBase(dir, { accent: "#7c3bed" });
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     expect((await read(dir)).colors.background).toBe("#101010");
     expect(messages.logs.join("\n")).toContain("1 pinned by you, unchanged (background — yours #101010 vs your app's #ffffff)");
   });
@@ -278,9 +322,9 @@ describe("the theme re-scan (decision 3)", () => {
     const dir = await themedHost("#7c3bed");
     await writeTheme(dir, themeJson("#7c3bed"));
     const basePath = join(dir, ".vendo", "theme.extracted.json");
-    expect(await runSync({ targetDir: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false });
     const first = await readFile(basePath, "utf8");
-    expect(await runSync({ targetDir: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false });
     expect(await readFile(basePath, "utf8")).toBe(first);
     // No timestamp: the file carries decisions, nothing else.
     expect(JSON.parse(first)).toEqual({ format: "vendo/theme-extracted@1", slots: expect.any(Object) });
@@ -291,7 +335,7 @@ describe("the theme re-scan (decision 3)", () => {
     const dir = await themedHost("#7C3BED");
     await writeTheme(dir, themeJson("#7c3bed"));
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     expect(messages.logs.join("\n")).not.toContain("theme:");
   });
 
@@ -299,7 +343,7 @@ describe("the theme re-scan (decision 3)", () => {
     const dir = await themedHost("#7c3bed");
     await writeTheme(dir, themeJson("#7c3bed"));
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     expect(messages.logs.join("\n")).not.toContain("theme:");
     expect(JSON.parse(await readFile(join(dir, ".vendo", "theme.extracted.json"), "utf8")))
       .toMatchObject({ slots: { accent: "#7c3bed" } });
@@ -315,8 +359,8 @@ describe("the theme re-scan (decision 3)", () => {
     await writeTheme(dir, { ...start, colors: { ...start.colors, background: "#101010" } });
     await writeBase(dir, { accent: "#7c3bed", accentText: "#ffffff", background: "#ffffff", radius: "8px" });
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false, json: true })).toBe(0);
-    const line = (JSON.parse(messages.logs[0]!) as { notes: string[] }).notes.find((n) => n.startsWith("theme:"))!;
+    const result = await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
+    const line = result.notes.find((n) => n.startsWith("theme:"))!;
 
     // Written: accent only — and the pinned slot is NOT in the re-read list.
     expect(line).toContain("1 slot re-read from your app (accent) → .vendo/theme.json");
@@ -328,7 +372,7 @@ describe("the theme re-scan (decision 3)", () => {
     const after = await read(dir);
     expect(after.colors.accent).toBe("#0f766e"); // written, as reported
     expect(after.colors.background).toBe("#101010"); // pinned, as reported
-    expect(JSON.parse(messages.logs[0]!).theme).toEqual({ updated: ["accent"], pinned: ["background"] });
+    expect(result.theme).toEqual({ updated: ["accent"], pinned: ["background"] });
   });
 
   // The defect underneath the wrong label: a DERIVED slot followed the app's
@@ -341,7 +385,7 @@ describe("the theme re-scan (decision 3)", () => {
     await writeTheme(dir, themeJson("#2563eb"));
     await writeBase(dir, { accent: "#7c3bed", accentText: "#ffffff", background: "#ffffff", radius: "8px" });
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     const after = await read(dir);
     expect(after.colors.accent).toBe("#2563eb");
     expect(after.colors.accentText).toBe("#ffffff"); // NOT #000000 on dark blue
@@ -353,7 +397,7 @@ describe("the theme re-scan (decision 3)", () => {
     await writeTheme(dir, themeJson("#7c3bed"));
     await writeBase(dir, { accent: "#7c3bed", accentText: "#ffffff", background: "#ffffff", radius: "8px" });
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false });
     const after = await read(dir);
     expect(after.colors.accent).toBe("#fde047");
     expect(after.colors.accentText).toBe("#000000"); // correct contrast on yellow
@@ -364,16 +408,14 @@ describe("the theme re-scan (decision 3)", () => {
     const dir = await themedHost("#0f766e");
     await writeTheme(dir, themeJson("#ff0000"));
     await writeBase(dir, { accent: "#7c3bed", background: "#ffffff", radius: "8px" });
-    const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false, json: true })).toBe(0);
-    expect(JSON.parse(messages.logs[0]!).theme).toEqual({ updated: [], pinned: ["accent"] });
+    const result = await flow({ root: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false });
+    expect(result.theme).toEqual({ updated: [], pinned: ["accent"] });
   });
 
   it("a host with no theme.json is left alone (init owns creating it)", async () => {
     const dir = await themedHost("#0f766e");
-    const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, fetchImpl: offline, sync: scan, ai: false, json: true })).toBe(0);
-    expect(JSON.parse(messages.logs[0]!).theme).toBeNull();
+    const result = await flow({ root: dir, output: captureOutput().output, fetchImpl: offline, sync: scan, ai: false });
+    expect(result.theme).toBeNull();
   });
 });
 
@@ -428,15 +470,15 @@ describe("pin baselines reach Vendo Cloud (decision 4)", () => {
     const dir = await hostWithBaselines([{ slot: "NetWorthCard", hash: "aa" }]);
     const store = fakeStore();
     const messages = captureOutput();
-    expect(await runSync({
-      targetDir: dir,
+    await flow({
+      root: dir,
       output: messages.output,
       sync: scan,
       ai: false,
       apiKey: "vnd_" + "a".repeat(40),
       apiUrl: "https://console.test",
       fetchImpl: store.fetchImpl,
-    })).toBe(0);
+    });
     // The collection the console reads, and the exact shape it validates.
     expect(store.calls.some((path) => path.includes("/api/v1/store/records/vendo_pin_baselines"))).toBe(true);
     expect(store.rows.get("NetWorthCard")).toEqual(baseline("NetWorthCard", "aa"));
@@ -449,12 +491,11 @@ describe("pin baselines reach Vendo Cloud (decision 4)", () => {
       NetWorthCard: baseline("NetWorthCard", "aa"),   // already current
       LegacyHeroCard: baseline("LegacyHeroCard", "bb"), // no local file anymore
     });
-    const messages = captureOutput();
-    expect(await runSync({
-      targetDir: dir, output: messages.output, sync: scan, ai: false, json: true,
+    const result = await flow({
+      root: dir, output: captureOutput().output, sync: scan, ai: false,
       apiKey: "vnd_" + "a".repeat(40), apiUrl: "https://console.test", fetchImpl: store.fetchImpl,
-    })).toBe(0);
-    expect(JSON.parse(messages.logs[0]!).baselines).toEqual({ pushed: [], pruned: ["LegacyHeroCard"] });
+    });
+    expect(result.baselines).toEqual({ pushed: [], pruned: ["LegacyHeroCard"] });
     expect([...store.rows.keys()]).toEqual(["NetWorthCard"]);
     expect(store.calls.filter((path) => path.endsWith("/put"))).toEqual([]);
   });
@@ -463,9 +504,8 @@ describe("pin baselines reach Vendo Cloud (decision 4)", () => {
     vi.stubEnv("VENDO_API_KEY", "");
     const dir = await hostWithBaselines([{ slot: "NetWorthCard", hash: "aa" }]);
     const fetchImpl = vi.fn(async () => { throw new Error("keyless sync must never call the network"); }) as unknown as typeof fetch;
-    const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, sync: scan, ai: false, json: true, fetchImpl })).toBe(0);
-    expect(JSON.parse(messages.logs[0]!).baselines).toBeNull();
+    const result = await flow({ root: dir, output: captureOutput().output, sync: scan, ai: false, fetchImpl });
+    expect(result.baselines).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -473,18 +513,18 @@ describe("pin baselines reach Vendo Cloud (decision 4)", () => {
     vi.stubEnv("VENDO_API_KEY", "");
     const dir = await hostWithBaselines([{ slot: "NetWorthCard", hash: "aa" }]);
     const messages = captureOutput();
-    expect(await runSync({ targetDir: dir, output: messages.output, sync: scan, ai: false })).toBe(0);
+    await flow({ root: dir, output: messages.output, sync: scan, ai: false });
     expect(messages.logs.join("\n")).toContain("baselines stay local");
   });
 
   it("a Cloud hiccup is a warning, never a failed build", async () => {
     const dir = await hostWithBaselines([{ slot: "NetWorthCard", hash: "aa" }]);
     const messages = captureOutput();
-    expect(await runSync({
-      targetDir: dir, output: messages.output, sync: scan, ai: false, strict: true,
+    await flow({
+      root: dir, output: messages.output, sync: scan, ai: false,
       apiKey: "vnd_" + "a".repeat(40), apiUrl: "https://console.test",
       fetchImpl: (async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch,
-    })).toBe(0);
+    });
     expect(messages.errors.join("\n")).toContain("pin baselines did not fully reach Vendo Cloud");
     expect(messages.errors.join("\n")).toContain("the next sync retries");
   });
@@ -498,14 +538,12 @@ describe("pin baselines reach Vendo Cloud (decision 4)", () => {
       NetWorthCard: baseline("NetWorthCard", "aa"),
       SpendingDonut: baseline("SpendingDonut", "cc"),
     });
-    const messages = captureOutput();
-    expect(await runSync({
-      targetDir: dir, output: messages.output, sync: scan, ai: false, json: true,
+    const corrupt = await flow({
+      root: dir, output: captureOutput().output, sync: scan, ai: false,
       apiKey: "vnd_" + "a".repeat(40), apiUrl: "https://console.test", fetchImpl: store.fetchImpl,
-    })).toBe(0);
+    });
     // The truncated slot's row survives untouched, and nothing was pruned.
     expect([...store.rows.keys()].sort()).toEqual(["NetWorthCard", "SpendingDonut"]);
-    const corrupt = JSON.parse(messages.logs[0]!) as { baselines: unknown; notes: string[] };
     expect(corrupt.baselines).toEqual({ pushed: [], pruned: [] });
     expect(corrupt.notes.join("\n")).toContain("unreadable baselines left untouched in Vendo Cloud: SpendingDonut");
   });
@@ -523,13 +561,11 @@ describe("pin baselines reach Vendo Cloud (decision 4)", () => {
       if (String(url).endsWith("/put") && ++puts === 2) throw new Error("ECONNRESET");
       return store.fetchImpl(url as never, init as never);
     }) as unknown as typeof fetch;
-    const messages = captureOutput();
-    expect(await runSync({
-      targetDir: dir, output: messages.output, sync: scan, ai: false, json: true,
+    const partial = await flow({
+      root: dir, output: captureOutput().output, sync: scan, ai: false,
       apiKey: "vnd_" + "a".repeat(40), apiUrl: "https://console.test", fetchImpl: flaky,
-    })).toBe(0);
+    });
     // AaaCard landed and is still reported; BbbCard did not.
-    const partial = JSON.parse(messages.logs[0]!) as { baselines: unknown; notes: string[] };
     expect(partial.baselines).toEqual({ pushed: ["AaaCard"], pruned: [] });
     expect(partial.notes.join("\n")).toContain("did not fully reach Vendo Cloud");
   });
@@ -542,11 +578,11 @@ describe("pin baselines reach Vendo Cloud (decision 4)", () => {
       init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
     })) as unknown as typeof fetch;
     const started = Date.now();
-    expect(await runSync({
-      targetDir: dir, output: messages.output, sync: scan, ai: false,
+    await flow({
+      root: dir, output: messages.output, sync: scan, ai: false,
       apiKey: "vnd_" + "a".repeat(40), apiUrl: "https://console.test", fetchImpl: hang,
       baselineBudgetMs: 150,
-    })).toBe(0);
+    });
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(messages.errors.join("\n")).toContain("budget");
   });
