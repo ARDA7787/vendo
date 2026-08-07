@@ -1500,6 +1500,53 @@ describe("vendo doctor error codes + fix_refs", () => {
     expect(report.checks.some((entry) => entry.id === "deps/ai-sdk-major")).toBe(false);
   });
 
+  // FINDINGS F3 (linkwarden baseline): a resolvable pre-v6 ai sailed through
+  // doctor green and then 500d every turn at runtime — the peer conflict is
+  // exactly as fatal below the contract as above it.
+  it("fails fast with E-DEP-001 when the host has a pre-v6 ai installed", async () => {
+    const root = await healthy();
+    await mkdir(join(root, "node_modules", "ai"), { recursive: true });
+    await writeFile(join(root, "node_modules", "ai", "package.json"), JSON.stringify({ name: "ai", version: "5.0.59" }));
+    const { exit, report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+    });
+    expect(exit).toBe(1);
+    const check = report.checks.find((entry) => entry.id === "deps/ai-sdk-major");
+    expect(check).toMatchObject({
+      status: "broken",
+      error_code: "E-DEP-001",
+      fix_ref: doctorFixRef("E-DEP-001"),
+    });
+    expect(check?.message).toContain("ai@5.0.59");
+    expect(check?.message).toContain("peer contract");
+    expect(check?.message).toContain("npm install ai@^6");
+    expect(check?.message).toContain("hoisted");
+  });
+
+  it("fails E-DEP-001 when the workspace root hoists an old ai above the app, naming its package manager", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "vendo-doctor-ai-workspace-"));
+    cleanup.push(() => rm(workspace, { recursive: true, force: true }));
+    await writeFile(join(workspace, "pnpm-workspace.yaml"), "packages:\n  - apps/*\n");
+    await writeFile(join(workspace, "pnpm-lock.yaml"), "");
+    await mkdir(join(workspace, "node_modules", "ai"), { recursive: true });
+    await writeFile(join(workspace, "node_modules", "ai", "package.json"), JSON.stringify({ name: "ai", version: "5.0.59" }));
+    const root = await healthy(join(workspace, "apps", "web"));
+    const { exit, report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+    });
+    expect(exit).toBe(1);
+    const check = report.checks.find((entry) => entry.id === "deps/ai-sdk-major");
+    expect(check).toMatchObject({
+      status: "broken",
+      error_code: "E-DEP-001",
+      fix_ref: doctorFixRef("E-DEP-001"),
+    });
+    expect(check?.message).toContain("ai@5.0.59");
+    expect(check?.message).toContain("pnpm add ai@^6");
+  });
+
   it("fails with E-DEP-003 when the installed zod predates the AI SDK's subpaths", async () => {
     // FINDINGS F2 (skateshop): ai@6 imports zod/v3 + zod/v4, which arrive in
     // zod 3.25 — a host pinning older zod builds red the moment the vendo

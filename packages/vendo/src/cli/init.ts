@@ -24,7 +24,7 @@ import {
   type ConfirmAuth,
   type SelectAuth,
 } from "./init-auth.js";
-import { ensureProviderDeps, ensureVendoPackage, ensureZodFloor, type InstallRunner } from "./provider-deps.js";
+import { aiBelowPeerFloor, ensureProviderDeps, ensureVendoPackage, ensureZodFloor, type InstallRunner } from "./provider-deps.js";
 import {
   customServerSource,
   expressServerSource,
@@ -1980,9 +1980,13 @@ export async function runInit(options: InitOptions): Promise<number> {
     // #478 short-term — npm installs the ai@7 peer conflict without failing
     // and every internal turn then throws AI_InvalidPromptError; warn in the
     // end-of-run summary instead of waiting for doctor to fail (E-DEP-001).
+    // The same warning fires below the contract (FINDINGS F3) — the re-read
+    // only sees a pre-v6 copy when ensureProviderDeps could not install over it.
     const aiVersion = await installedAiVersion(root);
     if (aiVersion !== null && Number.parseInt(aiVersion, 10) >= 7) {
       output.error(`warning: installed ai@${aiVersion} is unsupported — Vendo supports ai@6; downgrade (npm install ai@^6 @ai-sdk/anthropic@^3 @ai-sdk/react@^3) or track github.com/runvendo/vendo/issues/478`);
+    } else if (aiVersion !== null && aiBelowPeerFloor(aiVersion)) {
+      output.error(`warning: installed ai@${aiVersion} predates the ai@6 peer contract — every turn fails at runtime until the app resolves its own ai@6 (E-DEP-001).`);
     }
 
     // Called on its OWN line, never inside `pretty?.done(…)`: optional
