@@ -6,6 +6,8 @@ import type { Readable } from "node:stream";
 import { resolveAppRoot } from "./app-root.js";
 import type { DatabaseProvisioning, ManifestEntry } from "./manifest.js";
 import { createRunContext, type CorpusRunContext } from "./run-context.js";
+import { runCommand } from "./process.js";
+import { sleep } from "./util.js";
 
 export interface BootCommandResult {
   code: number | null;
@@ -14,12 +16,16 @@ export interface BootCommandResult {
   stderr: string;
 }
 
+// The slice of ChildProcess the boot recipe drives. `pid` stays optional
+// because a real ChildProcess leaves it unset until the spawn succeeds; the
+// rest are required, so a fake that forgets one fails to compile instead of
+// quietly turning teardown or the exit watcher into a no-op.
 export interface BootProcess {
   pid?: number;
-  stdout?: Readable | NodeJS.ReadableStream | null;
-  stderr?: Readable | NodeJS.ReadableStream | null;
-  kill?: (signal?: NodeJS.Signals | number) => boolean;
-  once?: (event: "exit" | "close" | "error", listener: (...args: unknown[]) => void) => unknown;
+  stdout: Readable | null;
+  stderr: Readable | null;
+  kill(signal?: NodeJS.Signals | number): boolean;
+  once(event: "exit" | "close" | "error", listener: (...args: unknown[]) => void): unknown;
 }
 
 export interface BootLogPaths {
@@ -72,69 +78,23 @@ export interface BootRepoOptions {
   lastLogLines?: number;
 }
 
-interface BinaryResult {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-}
-
 const defaultReadinessTimeoutMs = 60_000;
 const defaultReadinessIntervalMs = 500;
 const defaultLastLogLines = 40;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function commandResultOutput(result: BinaryResult | BootCommandResult): string {
+function commandResultOutput(result: BootCommandResult): string {
   return [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
 }
 
-function runCommand(command: string, options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<BootCommandResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, {
-      cwd: options.cwd,
-      env: options.env,
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
-  });
-}
-
-function runBinary(command: string, args: readonly string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<BinaryResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
-  });
+function runBinary(command: string, args: readonly string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<BootCommandResult> {
+  return runCommand(command, { args, cwd: options.cwd, env: options.env });
 }
 
 async function checkedBinary(
   command: string,
   args: readonly string[],
   options: { cwd: string; env: NodeJS.ProcessEnv },
-): Promise<BinaryResult> {
+): Promise<BootCommandResult> {
   const result = await runBinary(command, args, options);
   if (result.code !== 0) {
     const output = commandResultOutput(result);
@@ -143,7 +103,7 @@ async function checkedBinary(
   return result;
 }
 
-async function appendDatabaseLog(logPath: string, command: string, result: BinaryResult | string): Promise<void> {
+async function appendDatabaseLog(logPath: string, command: string, result: BootCommandResult | string): Promise<void> {
   if (typeof result === "string") {
     await appendFile(logPath, `$ ${command}\n${result}${result.endsWith("\n") ? "" : "\n"}`);
     return;
@@ -192,7 +152,7 @@ async function defaultProvisionDatabase(
     const timeoutMs = database.readinessTimeoutMs ?? 30_000;
     const intervalMs = database.readinessIntervalMs ?? defaultReadinessIntervalMs;
     const attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs));
-    let lastResult: BinaryResult | undefined;
+    let lastResult: BootCommandResult | undefined;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       lastResult = await runBinary("docker", readinessArgs, dockerOptions);
       await appendDatabaseLog(context.logPath, "docker exec ... pg_isready", lastResult);
@@ -293,12 +253,8 @@ function attachLogStream(
   bootProcess.stderr?.on("data", write);
 
   return async () => {
-    const stdout = bootProcess.stdout as { off?: (event: string, listener: (chunk: unknown) => void) => void; removeListener?: (event: string, listener: (chunk: unknown) => void) => void } | null | undefined;
-    const stderr = bootProcess.stderr as { off?: (event: string, listener: (chunk: unknown) => void) => void; removeListener?: (event: string, listener: (chunk: unknown) => void) => void } | null | undefined;
-    if (stdout?.off) stdout.off("data", write);
-    else stdout?.removeListener?.("data", write);
-    if (stderr?.off) stderr.off("data", write);
-    else stderr?.removeListener?.("data", write);
+    bootProcess.stdout?.off("data", write);
+    bootProcess.stderr?.off("data", write);
     await new Promise<void>((resolve, reject) => {
       writer.end((error?: Error | null) => {
         if (error) reject(error);
@@ -406,7 +362,7 @@ export async function bootRepo(repo: BootRepo, options: BootRepoOptions = {}): P
       } catch (error) {
         errors.push(error);
       }
-    } else if (serverProcess?.kill) {
+    } else if (serverProcess) {
       try {
         serverProcess.kill("SIGTERM");
       } catch (error) {
@@ -447,10 +403,10 @@ export async function bootRepo(repo: BootRepo, options: BootRepoOptions = {}): P
     }
 
     serverProcess = spawnProcess(devServer.command, { cwd: appRoot, env });
-    serverProcess.once?.("exit", (code, signal) => {
+    serverProcess.once("exit", (code, signal) => {
       serverExit = `Dev server exited before readiness with ${code === null ? `signal ${String(signal)}` : `exit code ${String(code)}`}`;
     });
-    serverProcess.once?.("error", (error) => {
+    serverProcess.once("error", (error) => {
       serverExit = `Dev server failed to start: ${error instanceof Error ? error.message : String(error)}`;
     });
     closeServerLog = attachLogStream(serverProcess, logPaths.server, tail);
