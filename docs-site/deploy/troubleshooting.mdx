@@ -404,20 +404,34 @@ throws at boot and Postgres is the only option.
 
 #### E-DEP-001 {#E-DEP-001}
 
-**Symptom:** The installed `ai` package is major version 7 or newer; the
-message names the exact version found.
+**Symptom:** The installed `ai` package is outside the supported major — 7 or
+newer, or older than 6; the message names the exact version found.
 
 **Cause:** `@vendoai/vendo` drives the host's `ai` package with AI SDK v6
 calls (peer range `ai >=6 <7`), but npm installs the peer conflict without
 failing. Every static check passes on such a host — and then every internal
-Vendo turn throws `AI_InvalidPromptError`, because ai@7 removed system-role
-messages from the messages array.
+Vendo turn fails: ai@7 removed system-role messages
+(`AI_InvalidPromptError`), and a pre-v6 `ai` predates the v6 call shapes
+entirely. The pre-v6 case is usually a *hoisted* copy — another package in
+the workspace depends on ai@5, the workspace root hoists it, and the app
+resolves that copy because it never declared its own.
 
-**Fix:** Downgrade to the supported majors:
+**Fix:** For ai@7+, downgrade to the supported majors:
 
 ```bash
 npm install ai@^6 @ai-sdk/anthropic@^3 @ai-sdk/react@^3
 ```
+
+For a pre-v6 `ai`, give the app its own v6 with your package manager (the
+doctor message names the right command for your workspace), e.g.:
+
+```bash
+npm install ai@^6
+```
+
+In a workspace whose root pins another package's ai@5, an override or
+packageExtension (`resolutions`, pnpm `overrides`, yarn `packageExtensions`)
+also works — anything that makes the app resolve v6 wins.
 
 ai@7 support is tracked in
 [runvendo/vendo#478](https://github.com/runvendo/vendo/issues/478).
