@@ -819,9 +819,6 @@ importers:
       '@vendoai/harnesses':
         specifier: workspace:*
         version: link:../harnesses
-      '@vendoai/knowledge':
-        specifier: workspace:*
-        version: link:../knowledge
       '@vendoai/mcp':
         specifier: workspace:*
         version: link:../mcp

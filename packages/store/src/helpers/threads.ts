@@ -62,17 +62,28 @@ export function threadStore(store: VendoStore): {
       }));
     },
     async delete(principal, id) {
-      const deleted = await db.query(
-        "DELETE FROM vendo_threads WHERE id = $1 AND subject = $2 RETURNING id",
-        [id, principal.subject],
-      );
-      // The thread's harness state (a native-session ref) rides `vendo_state`
-      // under a synthetic app_id, so no table cascade covers it — without this
-      // sweep the ref outlives its thread until a subject-level erase. Guarded
-      // on the RETURNING row: a foreign principal's no-op delete sweeps nothing.
-      if (deleted.rows.length > 0) {
-        await db.query("DELETE FROM vendo_state WHERE app_id = $1", [harnessStateKey(id)]);
-      }
+      // The delete is a CASCADE, in one transaction: the thread row, its v6
+      // message rows, and its harness state die together.
+      //
+      // `vendo_thread_messages` has no foreign key, and a message row carries no
+      // subject of its own — the thread row IS the ownership record. So a
+      // message left behind here is unreachable forever: `erase.bySubject` finds
+      // transcript rows only through `thread_id IN (SELECT id FROM vendo_threads
+      // WHERE subject = $1)`, and that subquery is empty once the thread is
+      // gone. The harness state (a native-session ref) rides `vendo_state` under
+      // a synthetic app_id, which no table cascade covers either.
+      //
+      // Every drop is guarded on the RETURNING row, so a foreign principal's
+      // no-op delete sweeps nothing.
+      await db.transaction(async (q) => {
+        const deleted = await q(
+          "DELETE FROM vendo_threads WHERE id = $1 AND subject = $2 RETURNING id",
+          [id, principal.subject],
+        );
+        if (deleted.rows.length === 0) return;
+        await q("DELETE FROM vendo_thread_messages WHERE thread_id = $1", [id]);
+        await q("DELETE FROM vendo_state WHERE app_id = $1", [harnessStateKey(id)]);
+      });
     },
 
     /**
@@ -97,6 +108,18 @@ export function threadStore(store: VendoStore): {
      *    caller cannot choose where in someone's history their answer lands,
      *    which would otherwise let an answer be inserted BEFORE the question it
      *    supposedly answers.
+     * 4. `FOR KEY SHARE OF t` — the ownership read LOCKS the thread row rather
+     *    than merely reading it. One statement is not enough on its own: under
+     *    READ COMMITTED a plain read still sees a row a concurrent
+     *    `threadStore.delete` has removed but not yet committed, so the answer
+     *    landed after that delete's message sweep and outlived the thread that
+     *    owns it — unreachable forever, because a message row has no subject and
+     *    no foreign key. With the lock the two orders are the only outcomes: the
+     *    answer commits first and the cascade sweeps it, or the delete commits
+     *    first and this statement finds no row and refuses below. KEY SHARE is
+     *    the weakest strength that conflicts with deleting the row — the same
+     *    lock a foreign key would take — so ordinary thread touches
+     *    (`updated_at`, `revision`) still run alongside answers.
      *
      * The row id is `ans_<questionId>`, NOT the bare `questionId`. The prefix is
      * a namespace, and the in-lane security review is why it exists: the bare id
@@ -126,6 +149,7 @@ export function threadStore(store: VendoStore): {
                 COALESCE((SELECT max(m.seq) + 1 FROM vendo_thread_messages m WHERE m.thread_id = t.id), 0),
                 $3::jsonb, $5, $5
          FROM vendo_threads t WHERE t.id = $1 AND t.subject = $4
+         FOR KEY SHARE OF t
          ON CONFLICT (thread_id, id) DO NOTHING
          RETURNING thread_id`,
         [threadId, rowId, JSON.stringify(message), principal.subject, now],
