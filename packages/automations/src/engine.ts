@@ -22,7 +22,6 @@ import {
   type Json,
   type PermissionGrant,
   type GrantScope,
-  type Principal,
   type RecordStore,
   type RunContext,
   type RunId,
@@ -72,26 +71,30 @@ const CAPTURES = "automations:captures";
 const SCHEDULE = "automations:schedule";
 const WEBHOOK = "automations:webhook";
 const DELIVERIES = "automations:deliveries";
-/**
- * Which TRIGGERS of an app are armed — one row per armed (app, trigger),
- * engine-owned like `automations:captures`, so the generic records door is right
- * here.
- *
- * It is a second fact beside the app row's `enabled` boolean deliberately, and
- * the two mean different things: `enabled` is the APP-level arm the apps runtime
- * already owns (a trigger edit disarms the whole app there, §9.9), this is the
- * per-trigger arm a person turns on and off. A firing needs BOTH, so the
- * existing app-level disarm keeps working untouched and turning one trigger off
- * never reaches another.
- */
 /** The app row's trigger-kind ref BEFORE the trigger list: one key holding one
  *  kind. Kept only so the queries below can still find a row nobody has
  *  rewritten yet — nothing writes it any more. */
 const PRE_LIST_TRIGGER_KIND_REF = "trigger_kind";
-
+/**
+ * Which TRIGGERS of an app are armed — one row per armed (app, trigger).
+ *
+ * A second fact beside the app row's `enabled` boolean deliberately, and the two
+ * mean different things: `enabled` is the APP-level arm the apps runtime already
+ * owns (a trigger edit disarms the whole app there, §9.9), this is the
+ * per-trigger arm a person turns on and off. A firing needs BOTH, so the
+ * existing app-level disarm keeps working untouched and turning one trigger off
+ * never reaches another.
+ */
 const ARMED = "automations:armed";
 const WEBHOOK_MAX_BYTES = 1024 * 1024;
 const FOREACH_MAX_ITEMS = 1000;
+
+/** Every engine-owned generic row belongs to ONE app, and the 02-store §5 erase
+ *  cascade collects generic rows by `refs @> {app_id}` — so a row written
+ *  without this ref outlives the app forever. That is not only clutter: a
+ *  webhook secret is a live signing key, and the delivery ledger has no other
+ *  lifecycle at all. */
+const appRef = (appId: string): Record<string, string> => ({ app_id: appId });
 
 const appRowSchema = z.object({
   subject: z.string(),
@@ -262,7 +265,7 @@ const stopFor = (
 ): { reason: NonNullable<Sponsorship["reason"]>; summary: string } =>
   ({ reason, summary: SPONSORSHIP_STOP[reason](automationName) });
 
-/** §9.9 + F10 — what a run says when the identity checks could not ANSWER (the
+/** §9.9 — what a run says when the identity checks could not ANSWER (the
  *  host's memberships callback or access seam threw). The raw failure is a host
  *  system's error text — a DSN, a stack, a driver message — and the run row is
  *  rendered verbatim to consumers (`automations-panel.tsx` prints `summary` and
@@ -578,27 +581,17 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
    * Move any pre-rekey schedule cursor onto its (app, trigger) key, and return the
    * rows the tick should read for the keys that were missing.
    *
-   * The cursor moved from the bare `appId` to `<appId>:<triggerId>` when an app
-   * became a LIST of triggers. `automations:schedule` is a GENERIC collection keyed
-   * by row id, and nothing rewrites generic row ids — the reserved store migrates
-   * itself through generated columns over reserved TABLES, which this is not — so
-   * the old row is invisible on every store, not just a host-supplied one.
+   * The cursor moved from the bare `appId` when an app became a LIST of triggers,
+   * and no store rewrites GENERIC row ids, so the old row is invisible everywhere.
+   * A cursor the tick cannot find reads as "start the clock now" (so a new
+   * schedule does not backfill every window since the epoch) — applied to one that
+   * merely moved, that silently restarts a running automation's clock.
    *
-   * Invisible does not read as "overdue", which would be far worse: a cursor the
-   * tick cannot find is read as "start the clock now", deliberately, so a schedule
-   * discovered for the first time does not fire for every window since the epoch.
-   * Applied to a cursor that merely MOVED, that silently restarts a running
-   * automation's clock — it skips the firing it was due for and comes back up to
-   * one interval late, with nothing anywhere saying so.
-   *
-   * The state is carried VERBATIM (`lastFiredAt`, and `firedAt` for a one-shot
-   * `at:` schedule), because it is the automation's own history and rewriting it
-   * would either skip a window or replay one. Only trigger `main` is looked for:
-   * that is the id a pre-list document's one trigger normalizes to, so no other
-   * trigger can have a bare-id cursor. The old row is deleted once carried, so it
-   * can never be read again and dragged over a cursor that has since moved on; a
-   * row that will not parse is left exactly where it is, unreadable but not
-   * destroyed, and the tick treats it as the missing cursor it already was.
+   * State is carried VERBATIM: it is the automation's own history, and rewriting
+   * it would skip a window or replay one. Only `main` can have a bare-id cursor.
+   * The old row is deleted once carried so it can never drag a newer cursor
+   * backwards; an unparseable one is left alone and stays the missing cursor it
+   * already was. Proven by schedule-cursor.test.ts.
    */
   const migratePreRekeyCursors = async (
     records: RecordStore,
@@ -615,6 +608,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       carried.push(await records.put({
         id: triggerKey(record.id, DEFAULT_TRIGGER_ID),
         data: { ...parsed.data },
+        refs: appRef(record.id),
       }));
       await records.delete(record.id);
     }
@@ -624,20 +618,17 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
   /**
    * The app rows that fire on this trigger kind, under EITHER ref spelling.
    *
-   * An app has a LIST of triggers, so "which kind does this app fire on" is a SET
-   * and a ref is matched by equality — which is why one `trigger_kind: "<kind>"`
-   * ref became one key per kind. The RESERVED store re-derives its refs from
-   * generated columns over the document, so it migrated every existing row the
-   * moment the column existed. A host-supplied adapter does not: 01-core §12 says
-   * a generic adapter stores the refs it is GIVEN, so its pre-list rows still
-   * carry the old key and nothing rewrites them. Asking only the new key took
-   * every automation armed before the rename dark on BYO storage — no error, no
-   * run row, no audit event, which is the one failure mode an automation may
-   * never have.
+   * One `trigger_kind: "<kind>"` ref became one key per kind when an app got a
+   * LIST of triggers (a ref matches by equality; "which kinds" is a set). The
+   * RESERVED store re-derives refs from generated columns, so it migrated itself;
+   * a host-supplied adapter stores the refs it is GIVEN (01-core §12) and its
+   * pre-list rows still carry the old key. Asking only the new key took every
+   * automation armed before the rename dark on BYO storage — no error, no run
+   * row, no audit event, the one failure mode an automation may never have.
    *
-   * So both are asked and the rows are deduped by id. The old-key query ages out
-   * on its own rather than needing a sweep: `writeApp` re-derives refs from the
-   * document, so the first arm, disarm or edit moves that row onto the new keys.
+   * So both are asked and deduped by id. The old-key query ages out without a
+   * sweep: `writeApp` re-derives refs, so the first arm, disarm or edit moves the
+   * row across. Proven by byo-refs.test.ts.
    */
   const appsFiringOn = async (
     kind: TriggerSource["kind"],
@@ -679,11 +670,10 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
    * armed only when BOTH say so: the app-level `enabled` the apps runtime owns,
    * and the trigger's OWN armed row.
    *
-   * There is deliberately no "enabled but no rows ⇒ all of them" fallback. That
-   * read was authority-widening for any writer that sets `enabled` without armed
-   * rows — a trigger added to the list later would fire without anyone having
-   * armed it. The pre-list state it existed for is MIGRATED in {@link armedFor}
-   * instead, which names the one trigger it always meant.
+   * There is deliberately no "enabled but no rows ⇒ all of them" fallback: it was
+   * authority-widening, since a trigger added to the list later would fire
+   * without anyone having armed it. The pre-list state it existed for is MIGRATED
+   * in {@link armedFor} instead, which names the one trigger it always meant.
    */
   const armedTriggers = (row: AppRow, armed: ReadonlySet<string>): Trigger[] =>
     row.enabled
@@ -695,11 +685,10 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
    *
    * "Enabled with no per-trigger armed row at all" is the on-disk state of every
    * automation armed before triggers were a list, and it must not go quietly
-   * dark — that is the one failure mode an automation may never have. So the
-   * state is resolved ONCE, here, by seeding the armed row it always meant:
-   * `main`, the id read normalization gives a single-`trigger` document's one
-   * trigger. Deterministic (it names one id, never "whatever the list holds now")
-   * and idempotent (the row it writes is what makes the next read skip this).
+   * dark. Resolved ONCE, here, by seeding the row it always meant: `main`, the id
+   * a single-`trigger` document normalizes to. Deterministic (one id, never
+   * "whatever the list holds now") and idempotent (the row it writes is what
+   * makes the next read skip this).
    */
   const armedFor = async (rows: readonly AppRow[]): Promise<Set<string>> => {
     // ONE query for every (app, trigger) key, so per-trigger arming is not an
@@ -903,8 +892,8 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
 
   /** The run's context before any seam is consulted — a pure function of the run
    *  and a subject, so it cannot fail. It is what a failed identity resolution
-   *  still audits under (F10: a fire that cannot even resolve who it runs as
-   *  must leave a record, not vanish). */
+   *  still audits under: a fire that cannot even resolve who it runs as must
+   *  leave a record, not vanish. */
   const baseRunContext = (run: InternalRunRecord, subject: string): RunContext => ({
     principal: { kind: "user", subject },
     venue: "automation",
@@ -1384,8 +1373,8 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
           ctx = await runContext(app.doc, record, app.subject);
           stop = await sponsorshipRefusal(app, trigger, ctx);
         } catch (error) {
-          // F10 — the consumer sentence and the operator's detail part ways
-          // here: `summary` is rendered verbatim in the automations panel, so
+          // The consumer sentence and the operator's detail part ways here:
+          // `summary` is rendered verbatim in the automations panel, so
           // the host's raw throw rides the audit row below instead.
           stop = { summary: IDENTITY_UNAVAILABLE(app.doc.name), detail: message(error) };
         }
@@ -1844,14 +1833,14 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     if (trigger.on.kind === "schedule") {
       const cursor = await config.store.records(SCHEDULE).get(key);
       if (cursor === null) {
-        await config.store.records(SCHEDULE).put({ id: key, data: { lastFiredAt: iso() } });
+        await config.store.records(SCHEDULE).put({ id: key, data: { lastFiredAt: iso() }, refs: appRef(appId) });
       }
     }
     if (trigger.on.kind === "external") {
       const secret = await config.store.records(WEBHOOK).get(key);
       if (secret === null) {
         const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
-        await config.store.records(WEBHOOK).put({ id: key, data: { secret: base64url(bytes) } });
+        await config.store.records(WEBHOOK).put({ id: key, data: { secret: base64url(bytes) }, refs: appRef(appId) });
       }
     }
     return { enabled: true, missing, ...(missing.length === 0 ? {} : { grantSetId }) };
@@ -1865,10 +1854,10 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
   /**
    * Every sponsorship row for these apps' triggers, in ONE query — and the
    * pre-list rekey, because the LIST is where a person reads who an automation
-   * runs as (§13) and whether it stopped (E8-F2). A row that is invisible here
-   * does not merely go missing: both sentences then answer with the app's OWNER,
-   * so an automation someone else took on reads as the reader's own, and a
-   * STOPPED one shows no stopped line and no way back to it.
+   * runs as (§13) and whether it stopped. A row that is invisible here does not
+   * merely go missing: both sentences then answer with the app's OWNER, so an
+   * automation someone else took on reads as the reader's own, and a STOPPED one
+   * shows no stopped line and no way back to it.
    *
    * The batch is kept. Only a `main` key that MISSED can be pre-list, and those
    * app ids are probed in one further batched read; a deployment with no pre-list
@@ -1906,13 +1895,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     const records = await allRecords(config.store.records(APPS), { refs: { subject } });
     const rows = records.map(parseAppRow).filter((row) => row.subject === subject);
     const seen = new Set(rows.map((row) => row.doc.id));
-    // E8-F1 — an ORG-held app's row subject is the org id (§9.5), so matching
-    // the caller's own subject listed a promoted automation for NOBODY: not the
-    // members, not the org admin, not even the person who promoted it. Promote
-    // deliberately disarms the automation and tells the promoter it "stays off
-    // until someone turns it back on" — a promise nothing could keep while the
-    // only surface that mentions it hid it. The orgs come from the ctx (§9.1:
-    // asserted, never stored) and `can(editor)` still decides each row.
+    // An ORG-held app's row subject is the org id (§9.5), so matching only the
+    // caller's own subject listed a promoted automation for NOBODY — not the
+    // members, not the org admin, not the person who promoted it — while promote
+    // tells that person it "stays off until someone turns it back on". The orgs
+    // come from the ctx (§9.1: asserted, never stored) and `can(editor)` still
+    // decides each row.
     for (const org of new Set((ctx.memberships ?? []).map(({ org: id }) => id))) {
       for (const record of await allRecords(config.store.records(APPS), { refs: { subject: org } })) {
         const row = parseAppRow(record);
@@ -1928,7 +1916,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
     // sponsorship rows are ref'd by subject, so this is one indexed query, never
     // a scan of everybody's apps.
     //
-    // E8-F2 — INVALIDATED rows are included on purpose: a stopped automation
+    // INVALIDATED rows are included on purpose: a stopped automation
     // must not vanish from here, or there is no way back to it at all.
     // Deduped: sponsorship is per (app, trigger), so sponsoring two triggers of
     // one app must still fetch that app once.
@@ -1987,7 +1975,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
           const sponsorship = sponsorRows.get(key);
           const sponsor = sponsorship?.sponsor ?? row.subject;
           const display = sponsorship?.display ?? (sponsor === subject ? ctx.principal.display : undefined);
-          // E8-F2 — a stopped automation says so HERE, in the same sentence the
+          // A stopped automation says so HERE, in the same sentence the
           // stopped run row uses, so the list is a way back to it rather than a
           // place it silently disappeared from.
           const stopped = sponsorship?.status === "invalidated"
@@ -2088,6 +2076,10 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       const trigger = validateTrigger(declared);
       if (trigger.on.kind !== "schedule") continue;
       const cursorKey = triggerKey(row.doc.id, trigger.id);
+      // Every write of this row restates the ref, including the compare-and-swap
+      // replacement: a put that omitted it would strip the app ref the enable
+      // wrote and re-orphan the cursor on the very next tick.
+      const cursorRow = (data: Json) => ({ id: cursorKey, data, refs: appRef(row.doc.id) });
       const cursorRecord = cursorById.get(cursorKey) ?? null;
       const cursor = cursorRecord === null
         ? { lastFiredAt: at.toISOString() }
@@ -2105,8 +2097,8 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       }
       if (scheduledFor === undefined) {
         if (cursorRecord === null) {
-          if (scheduleRecords.atomic === undefined) await scheduleRecords.put({ id: cursorKey, data: cursor });
-          else await scheduleRecords.atomic.insertIfAbsent({ id: cursorKey, data: cursor });
+          if (scheduleRecords.atomic === undefined) await scheduleRecords.put(cursorRow(cursor));
+          else await scheduleRecords.atomic.insertIfAbsent(cursorRow(cursor));
         }
         continue;
       }
@@ -2117,15 +2109,12 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
       };
       let claimed = true;
       if (cursorRecord === null) {
-        if (scheduleRecords.atomic === undefined) await scheduleRecords.put({ id: cursorKey, data: nextCursor });
-        else claimed = await scheduleRecords.atomic.insertIfAbsent({ id: cursorKey, data: nextCursor }) !== null;
+        if (scheduleRecords.atomic === undefined) await scheduleRecords.put(cursorRow(nextCursor));
+        else claimed = await scheduleRecords.atomic.insertIfAbsent(cursorRow(nextCursor)) !== null;
       } else if (scheduleRecords.atomic !== undefined && cursorRecord.revision !== undefined) {
-        claimed = await scheduleRecords.atomic.compareAndSwap(
-          { id: cursorKey, data: nextCursor },
-          cursorRecord.revision,
-        ) !== null;
+        claimed = await scheduleRecords.atomic.compareAndSwap(cursorRow(nextCursor), cursorRecord.revision) !== null;
       } else {
-        await scheduleRecords.put({ id: cursorKey, data: nextCursor });
+        await scheduleRecords.put(cursorRow(nextCursor));
       }
       if (!claimed) continue;
       fired.push({ row, trigger, scheduledFor, firedAt: atIso });
@@ -2306,6 +2295,7 @@ export const createAutomationsEngine = (config: AutomationsConfig): AutomationsE
             deliveryId: headerResult.data.id,
             receivedAt: iso(),
           },
+          refs: appRef(row.doc.id),
         };
         if (deliveries.atomic === undefined) {
           if (await deliveries.get(deliveryKey) !== null) {

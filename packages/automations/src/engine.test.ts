@@ -86,7 +86,7 @@ class GuardDouble implements Guard {
   store?: StoreAdapter;
   private readonly callbacks = new Set<(id: ApprovalId, approved: boolean) => void>();
 
-  /** AGENT-6, the real guard's contract in miniature: deny as `system` (never a
+  /** The real guard's contract in miniature: deny as `system` (never a
    *  standing no), idempotent, mint nothing, then fire the decision callbacks
    *  the same way an explicit denial does. */
   async abandonApprovals(ids: ApprovalId[]): Promise<void> {
@@ -156,9 +156,6 @@ const memoryStoreWithoutAtomic = (): StoreAdapter => {
     },
   };
 };
-
-const storedRun = async (store: StoreAdapter, id: string): Promise<Record<string, unknown>> =>
-  (await store.records("vendo_runs").get(id))?.data as Record<string, unknown>;
 
 const sign = async (secret: string, deliveryId: string, timestamp: string, body: string): Promise<string> => {
   let normalized = secret.replace(/-/g, "+").replace(/_/g, "/");
@@ -271,13 +268,15 @@ describe("automations enable and grant capture", () => {
     expect(await store.records("automations:schedule").get(`${schedule.id}:main`)).toEqual(cursor);
   });
 
-  it("mints next-firing authority for an approved agentic call with no parked continuation", async () => {
+  it("mints next-firing authority when an agentic run's approval is granted", async () => {
     const doc = app("app_agent_next", {
       on: { kind: "host-event", event: "go" },
       run: { kind: "agentic", prompt: "write later" },
     });
     await seedApp(store, doc, "user_a", true);
-    const engine = createAutomations({
+    // Constructing the engine is the whole subject here: that is what registers
+    // the guard's onApprovalDecision callback the decision below travels through.
+    createAutomations({
       apps: appsDouble(), tools: registry([writeTool]), guard, store, now: () => NOW,
     });
     const request = {
@@ -311,7 +310,6 @@ describe("automations enable and grant capture", () => {
     expect((await store.records("vendo_approvals").get(request.id))?.data).toMatchObject({
       consumedAt: NOW.toISOString(),
     });
-    void engine;
   });
 });
 
@@ -1231,9 +1229,74 @@ describe("schedule, webhook, and host triggers", () => {
       receivedAt: NOW.toISOString(),
     });
   });
+
+  it("refs the schedule cursor, webhook secret, and delivery to their app so app erase collects them", async () => {
+    const store = memoryStoreAdapter();
+    const external = app("app_refs_webhook", {
+      on: { kind: "external", connector: "github", event: "push" },
+      run: { kind: "steps", steps: [] },
+    });
+    const scheduled = app("app_refs_schedule", {
+      on: { kind: "schedule", every: "15m" },
+      run: { kind: "steps", steps: [] },
+    });
+    await seedApp(store, external);
+    await seedApp(store, scheduled);
+    const engine = createAutomations({
+      apps: appsDouble(), tools: registry(), guard: new GuardDouble(), store, now: () => NOW,
+    });
+    await engine.enable(external.id, "main", ctx());
+    await engine.enable(scheduled.id, "main", ctx());
+    const secret = ((await store.records("automations:webhook").get(`${external.id}:main`))?.data as { secret: string }).secret;
+    const body = JSON.stringify({ answer: 42 });
+    const timestamp = String(NOW.getTime() / 1_000);
+    const signature = await sign(secret, "delivery_refs", timestamp, body);
+    await engine.webhook(new Request("https://example.test/api/webhooks/github", {
+      method: "POST",
+      headers: {
+        "webhook-id": "delivery_refs",
+        "webhook-timestamp": timestamp,
+        "webhook-signature": `v1,${signature}`,
+      },
+      body,
+    }));
+
+    expect((await store.records("automations:webhook").get(`${external.id}:main`))?.refs)
+      .toEqual({ app_id: external.id });
+    expect((await store.records("automations:deliveries").get(`${external.id}:main:delivery_refs`))?.refs)
+      .toEqual({ app_id: external.id });
+    expect((await store.records("automations:schedule").get(`${scheduled.id}:main`))?.refs)
+      .toEqual({ app_id: scheduled.id });
+  });
+
+  it("refs a schedule cursor the tick itself writes, on both the claiming and the not-yet-due path", async () => {
+    const store = memoryStoreAdapter();
+    const due = app("app_refs_tick_due", {
+      on: { kind: "schedule", every: "15m" },
+      run: { kind: "steps", steps: [] },
+    });
+    const future = app("app_refs_tick_future", {
+      on: { kind: "schedule", at: "2026-07-12T13:00:00.000Z" },
+      run: { kind: "steps", steps: [] },
+    });
+    await seedApp(store, due, "user_a", true);
+    await seedApp(store, future, "user_a", true);
+    // No cursor rows yet: the tick is what writes both, and the app row alone
+    // is what an erase would otherwise leave them behind from.
+    const engine = createAutomations({
+      apps: appsDouble(), tools: registry(), guard: new GuardDouble(), store, now: () => NOW,
+    });
+
+    await engine.tick();
+
+    expect((await store.records("automations:schedule").get(`${due.id}:main`))?.refs)
+      .toEqual({ app_id: due.id });
+    expect((await store.records("automations:schedule").get(`${future.id}:main`))?.refs)
+      .toEqual({ app_id: future.id });
+  });
 });
 
-// wave 2 (Cloud auto): under the hosted store, Vendo Cloud's own scheduler and Composio
+// Under the hosted store, Vendo Cloud's own scheduler and Composio
 // delivery already fire schedule/external automations for the deployment — the local engine
 // composed alongside it must not ALSO fire them (double-run). `localTriggerKinds` scopes which
 // trigger kinds this engine instance fires; host-event (vendo.emit) is never gated by it.
