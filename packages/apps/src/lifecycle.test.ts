@@ -372,4 +372,109 @@ describe("apps lifecycle", () => {
     await expect(runtime.list(ctx)).resolves.toEqual([edited.app]);
     await expect(runtime.history(valid.id, ctx).list()).resolves.toEqual([edited.version]);
   });
+
+  it("reports the version history stored, not a later clock read", async () => {
+    // Only `Date` is faked: the store, the guard and every await in the write
+    // path still run on real timers.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-12T12:00:00.000Z"));
+    try {
+      const store = memoryStore();
+      let runtime: AppsRuntime;
+      const assembler = screenFor(() => runtime);
+      runtime = createApps({
+        store,
+        guard: guardFixture(),
+        tools,
+        catalog: [],
+        model: basicLanguageModel(),
+        // The assembler's save is where the history row is appended, so moving
+        // the clock the moment it returns puts every later read in the NEXT
+        // millisecond — the straddle that used to need a busy machine.
+        screen: {
+          async assemble(request, assembleCtx) {
+            const outcome = await assembler.assemble(request, assembleCtx);
+            vi.setSystemTime(new Date(Date.now() + 1));
+            return outcome;
+          },
+        },
+      });
+      const ctx = context("user_ada");
+      const app = await runtime.create({ prompt: "Valid" }, ctx);
+      const edited = await runtime.edit(app.id, "Edited", ctx);
+
+      await expect(runtime.history(app.id, ctx).list()).resolves.toEqual([edited.version]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never reports an overlapping edit's version as its own", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-12T12:00:00.000Z"));
+    /** A save that has landed, and a hold released by the test. */
+    const gate = () => {
+      let open = (): void => {};
+      const held = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      let landed = (): void => {};
+      const saved = new Promise<void>((resolve) => {
+        landed = resolve;
+      });
+      return { held, open, saved, landed };
+    };
+    const gates = new Map([["First", gate()], ["Second", gate()]]);
+    const gateFor = (request: string) =>
+      [...gates].find(([instruction]) => request.trimEnd().endsWith(instruction))?.[1];
+    try {
+      const store = memoryStore();
+      let runtime: AppsRuntime;
+      const assembler = screenFor(() => runtime);
+      runtime = createApps({
+        store,
+        guard: guardFixture(),
+        tools,
+        catalog: [],
+        model: basicLanguageModel(),
+        // Held between the save and the answer, so the test can interleave two
+        // edits of the SAME app around each other's history row.
+        screen: {
+          async assemble(request, assembleCtx) {
+            const outcome = await assembler.assemble(request, assembleCtx);
+            vi.setSystemTime(new Date(Date.now() + 1));
+            const held = gateFor(request.request);
+            if (held !== undefined) {
+              held.landed();
+              await held.held;
+            }
+            return outcome;
+          },
+        },
+      });
+      const ctx = context("user_ada");
+      const app = await runtime.create({ prompt: "Valid" }, ctx);
+
+      // "First" saves its row, then waits. "Second" starts on top of it, saves
+      // its own row, and waits too — so when "First" answers, the newest row on
+      // this app is SOMEONE ELSE'S edit.
+      const first = runtime.edit(app.id, "First", ctx);
+      await gates.get("First")?.saved;
+      const second = runtime.edit(app.id, "Second", ctx);
+      await gates.get("Second")?.saved;
+      gates.get("First")?.open();
+      const firstResult = await first;
+      gates.get("Second")?.open();
+      const secondResult = await second;
+
+      // Never the sibling's row — the words in the version an edit reports are
+      // the words that edit was given.
+      expect(firstResult.version.intent).toBe("First");
+      expect(secondResult.version.intent).toBe("Second");
+      // …and the edit whose row is still the newest one reports it verbatim.
+      await expect(runtime.history(app.id, ctx).list()).resolves.toContainEqual(secondResult.version);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
