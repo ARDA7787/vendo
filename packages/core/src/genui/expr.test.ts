@@ -67,16 +67,51 @@ const accountsShape: ShapeType = {
   },
 };
 
+/** Rows of rows: `orders.lines.cents` crosses TWO array levels, so it is a
+ *  column of columns — which the evaluator flattens into one column. */
+const ordersShape: ShapeType = {
+  kind: "array",
+  items: {
+    kind: "object",
+    fields: {
+      placed: { kind: "string" },
+      lines: {
+        kind: "array",
+        items: {
+          kind: "object",
+          fields: { cents: { kind: "number" }, sku: { kind: "string" }, at: { kind: "string" } },
+        },
+      },
+    },
+  },
+};
+
+const orders: Json = [
+  { placed: "2026-01-14", lines: [{ cents: 100, sku: "a", at: "2026-01-14" }, { cents: 200, sku: "b", at: "2026-01-20" }] },
+  { placed: "2026-02-03", lines: [{ cents: 300, sku: "c", at: "2026-02-03" }] },
+];
+
+/** A list of lists the FIELD ITSELF declares — nesting no hop added, so the
+ *  evaluator still meets it at runtime and neither half may wave it through. */
+const matrixShape: ShapeType = { kind: "array", items: { kind: "array", items: { kind: "number" } } };
+const gridsShape: ShapeType = { kind: "array", items: { kind: "object", fields: { cells: matrixShape } } };
+
+const matrix: Json = [[100, 200], [300]];
+const grids: Json = [{ cells: [[100, 200], [300]] }];
+
 const shapes: Record<string, ShapeType> = {
   invoices: invoicesShape,
   clients: clientsShape,
   metrics: { kind: "object", fields: { total_cents: { kind: "number" }, label: { kind: "string" } } },
   logs: { kind: "array", items: { kind: "json" } },
   accounts: accountsShape,
+  orders: ordersShape,
+  grids: gridsShape,
+  matrix: matrixShape,
 };
 
 const context: ExprCheckContext = {
-  queryNames: ["invoices", "clients", "metrics", "unsampled", "logs", "accounts"],
+  queryNames: ["invoices", "clients", "metrics", "unsampled", "logs", "accounts", "orders", "grids", "matrix"],
   shapeOf: (name) => shapes[name],
 };
 
@@ -306,5 +341,47 @@ describe("checkExpr", () => {
     expect(checkExpr('group_by(invoices, "due_date", "month", sum.of("amount_cents")) / 2', context)).toEqual([
       expect.stringContaining("reduce it"),
     ]);
+  });
+
+  // One table for both halves: the check may only reject what the evaluator
+  // rejects. They drifted apart over nested rows once — the check counted an
+  // array level per hop and the evaluator flattened them — which failed legal
+  // apps pre-ship with "orders.lines.cents is a array field".
+  it("agrees with the evaluator about paths that cross an array level", () => {
+    const table: Array<[source: string, value: Json | null]> = [
+      ['sum(orders, "lines.cents")', 600],
+      ['average(orders, "lines.cents")', 200],
+      ['sum(orders.lines, "cents")', 600],
+      ["count(orders.lines)", 3],
+      ['sum(orders, "lines.cents") / 2', 300],
+      ['difference(sum(orders, "lines.cents"), 100)', 500],
+      [
+        'group_by(orders.lines, "at", "month", sum.of("cents"))',
+        [{ key: "2026-01", value: 300 }, { key: "2026-02", value: 300 }],
+      ],
+      // Rejected by both: a string column cannot be summed, and a column of
+      // numbers is still a list where arithmetic wants one number.
+      ['sum(orders, "lines.sku")', null],
+      ["orders.lines.cents / 2", null],
+      ['group_by(orders.lines, "cents", "month", sum.of("cents"))', null],
+      // Only the levels the HOPS added flatten. A list the field's own type
+      // declares survives into the runtime value, so a column of it is not a
+      // column of numbers, and difference() wants one number as much as `-`
+      // does — the evaluator rejects all three.
+      ['sum(grids, "cells")', null],
+      ["difference(matrix, 5)", null],
+      ["difference(orders.lines.cents, 5)", null],
+    ];
+    for (const [source, value] of table) {
+      const issues = checkExpr(source, context);
+      const result = evaluateExpr(source, { orders, grids, matrix }, { now });
+      if (value === null) {
+        expect(issues.length, `${source}: the check must reject it`).toBeGreaterThan(0);
+        expect(result.ok, `${source}: the evaluator must reject it`).toBe(false);
+        continue;
+      }
+      expect(issues, `${source}: the check must pass it`).toEqual([]);
+      expect(result.ok ? result.value : result.issue, `${source}: the evaluator's value`).toEqual(value);
+    }
   });
 });
