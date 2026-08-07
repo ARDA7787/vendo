@@ -80,6 +80,32 @@ const threadState = vi.hoisted(() => ({
   persisted: [] as unknown[],
 }));
 
+/** The scenario ladder is host copy: cards get added, dropped and reordered.
+ *  `reversed` serves the SAME cards in a different order (which must not
+ *  change which script a card plays); `dropped` removes one card entirely;
+ *  `collided` prepends a transfer card carrying the spending card's prompt
+ *  (padded with whitespace, so it trims to the same routing key) — the
+ *  duplicate that would hand the choice of script back to ladder order. */
+const scenarioLadder = vi.hoisted(() => ({ reversed: false, dropped: "", collided: false }));
+
+vi.mock("@/vendo/scenarios", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/vendo/scenarios")>();
+  const card = (beat: string): (typeof actual.mapleScenarios)[number] => {
+    const found = actual.mapleScenarios.find((candidate) => candidate.beat === beat);
+    if (found === undefined) throw new Error(`no Maple scenario card declares beat "${beat}"`);
+    return found;
+  };
+  return {
+    ...actual,
+    get mapleScenarios() {
+      const cards = actual.mapleScenarios.filter((candidate) => candidate.beat !== scenarioLadder.dropped);
+      const ladder = scenarioLadder.reversed ? [...cards].reverse() : cards;
+      if (!scenarioLadder.collided) return ladder;
+      return [{ ...card("transfer"), prompt: `  ${card("spending").prompt}  ` }, ...ladder];
+    },
+  };
+});
+
 vi.mock("./threads", () => ({
   loadScriptedThread: vi.fn(async () => ({ id: "thr_test", messages: threadState.messages as UIMessage[] })),
   persistScriptedThread: vi.fn(async (_principal: unknown, _id: unknown, messages: unknown[]) => {
@@ -90,7 +116,15 @@ vi.mock("./threads", () => ({
   },
 }));
 
+import { mapleScenarios } from "@/vendo/scenarios";
 import { scriptedThreadsResponse } from "./engine";
+
+/** The prompt a card sends on tap, found by its headline — never by position. */
+function cardPrompt(title: string): string {
+  const card = mapleScenarios.find((candidate) => candidate.title === title);
+  if (card === undefined) throw new Error(`no Maple scenario card titled "${title}"`);
+  return (card.prompt ?? card.title).trim();
+}
 
 function threadsRequest(text: string): Request {
   return new Request("http://localhost:3000/api/vendo/threads", {
@@ -115,9 +149,12 @@ describe("scripted beats stream wire-safe tool parts", () => {
     vi.clearAllMocks();
     threadState.messages = [];
     threadState.persisted = [];
+    scenarioLadder.reversed = false;
+    scenarioLadder.dropped = "";
+    scenarioLadder.collided = false;
   });
 
-  it("card (e) low-balance beat: every tool input is an object (Anthropic replay contract)", async () => {
+  it("the low-balance beat streams every tool input as an object (Anthropic replay contract)", async () => {
     const response = await scriptedThreadsResponse(
       threadsRequest("When my checking balance drops below $2,000, email me an alert."),
     );
@@ -145,7 +182,7 @@ describe("scripted beats stream wire-safe tool parts", () => {
     expect(JSON.stringify(grantInput)).toContain("standing, this app only");
   }, 60_000);
 
-  it("card (c) weekly beat surfaces the WHOLE grant set as one data-vendo-grant-set part (criterion 22, demo half)", async () => {
+  it("the weekly beat surfaces the WHOLE grant set as one data-vendo-grant-set part (criterion 22, demo half)", async () => {
     const response = await scriptedThreadsResponse(
       threadsRequest("Every Friday, email me a summary of that week's spending."),
     );
@@ -173,6 +210,53 @@ describe("scripted beats stream wire-safe tool parts", () => {
     // No legacy single-ask approval part for grant asks.
     expect(chunks.filter((chunk) => chunk.type === "data-vendo-approval")).toHaveLength(0);
   }, 60_000);
+
+  it("every card still plays its OWN script when the scenario ladder is reordered", async () => {
+    scenarioLadder.reversed = true;
+    const turn = async (title: string): Promise<{ tools: string[]; text: string }> => {
+      const response = await scriptedThreadsResponse(threadsRequest(cardPrompt(title)));
+      expect(response, `"${title}" matched no scripted beat`).not.toBeNull();
+      const chunks = await streamedChunks(response as Response);
+      return {
+        tools: chunks.filter((chunk) => chunk.type === "tool-input-start").map((chunk) => String(chunk.toolName)),
+        text: chunks.filter((chunk) => chunk.type === "text-delta").map((chunk) => String(chunk.delta)).join(""),
+      };
+    };
+
+    const [spending, transfer, weekly, moneyHq, lowBalance] = await Promise.all([
+      turn("Where did my money go?"),
+      turn("Move money to savings"),
+      turn("Email me a weekly summary"),
+      turn("Build my money HQ"),
+      turn("Alert me before I overdraft"),
+    ]);
+
+    expect(spending.text).toContain("Here's where this month went.");
+    expect(transfer.tools).toContain("host_transferMoney");
+    expect(weekly.text).toContain("Setting up your Friday digest");
+    expect(moneyHq.text).toContain("Here's your money HQ");
+    expect(lowBalance.text).toContain("You want a heads-up before checking runs low.");
+  }, 120_000);
+
+  it("a beat left without a card fails at import, naming the beat", async () => {
+    scenarioLadder.dropped = "moneyhq";
+    vi.resetModules();
+    await expect(import("./engine.js")).rejects.toThrow(/moneyhq/);
+  });
+
+  it("two cards sharing a prompt fail at import, naming both beats", async () => {
+    scenarioLadder.collided = true;
+    vi.resetModules();
+    const error = await import("./engine.js").then(
+      () => undefined,
+      (thrown: unknown) => thrown as Error,
+    );
+    expect(error, "a duplicate prompt must not boot — first match would decide the script").toBeDefined();
+    expect(error?.message).toContain("transfer");
+    expect(error?.message).toContain("spending");
+    expect(error?.message).toContain(cardPrompt("Where did my money go?"));
+    expect(error?.message).toContain("src/vendo/scenarios.tsx");
+  });
 
   it("a parked set abandoned by the next prompt resolves non-orphan — real-agent replay never 400s (criterion 23)", async () => {
     // History: a weekly turn parked on its grant set, never decided.
