@@ -451,7 +451,6 @@ function readAssistantMessage(
 export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
   const sdk = input.sdk;
   const inbox = messageInbox();
-  let sessionId: string | undefined;
   let model: string | undefined = input.model;
   /** Settles the `send()` whose turn is currently in flight. */
   let settleTurn: ((error?: unknown) => void) | undefined;
@@ -508,7 +507,6 @@ export function createClaudeSession(input: ClaudeSessionInput): ClaudeSession {
       if (type === "system" && message["subtype"] === "init") {
         const announced = message["session_id"];
         if (typeof announced === "string") {
-          sessionId = announced;
           input.emit({ type: "session", sessionId: announced });
         }
         const named = message["model"];
