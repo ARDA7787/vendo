@@ -9,11 +9,14 @@
  * number the agent quotes is a 404. That is why this is asserted rather than
  * eyeballed.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { config } from "../../proxy";
 import spec from "../../../openapi.json";
 import tools from "../../../.vendo/tools.json";
+import { doorUrls, signIn } from "../../../scripts/mcp-oauth";
 import { BASE_PATH } from "@/lib/base-path";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("Maple's mount point", () => {
   it("is what the spec declares as its server", () => {
@@ -37,6 +40,63 @@ describe("Maple's mount point", () => {
       .map(tool => `${tool.binding.method} ${tool.binding.path}`)
       .sort();
     expect(synced).toEqual(documented);
+  });
+
+  /** THE MCP DOOR IS UNDER THE MOUNT POINT TOO, and the same nothing-visible
+   *  rule applies: an origin-rooted discovery URL reaches Maple's 404 PAGE, and
+   *  a 404 page is an HTML body a walk can read right past. The door, its two
+   *  discovery documents and the login it bounces to all live under the prefix
+   *  — the door advertises the prefix-LOCAL well-known spelling, because a
+   *  mounted deployment owns no path outside its prefix. */
+  it("roots the MCP door walk — resource, discovery, login — at the mount point", () => {
+    const walk = {
+      base: `http://localhost:3000${BASE_PATH}`,
+      resource: `http://localhost:3000${BASE_PATH}/api/vendo/mcp`,
+      protectedResourceMetadata: `http://localhost:3000${BASE_PATH}/.well-known/oauth-protected-resource/api/vendo/mcp`,
+      authorizationServerMetadata: `http://localhost:3000${BASE_PATH}/.well-known/oauth-authorization-server/api/vendo/mcp`,
+      login: `http://localhost:3000${BASE_PATH}/login`,
+    };
+    // No argument at all is the same walk: the default target is the dev
+    // server's origin, not a bare origin the door does not answer on.
+    expect(doorUrls(undefined)).toEqual(walk);
+    expect(doorUrls("http://localhost:3000")).toEqual(walk);
+    expect(doorUrls("http://localhost:3000/maple")).toEqual(walk);
+  });
+
+  /** …AND THE AUTHORIZATION SERVER MAY NOT BE UNDER THE MOUNT POINT AT ALL.
+   *  Maple's own door names itself as its authorization server, so its
+   *  metadata is the prefix-local document beside the protected-resource one.
+   *  A broker-fronted deployment (`VENDO_MCP_REMOTE_AS_ISSUER`) names
+   *  `{tenant}.mcp.vendo.run` instead and 404s its own metadata route — so the
+   *  walk must read the server the protected-resource document ADVERTISES
+   *  (RFC 9728 §3.3), never one derived from where the door sits. */
+  it("follows the advertised authorization server off Maple's origin when a broker fronts the door", async () => {
+    const walk = doorUrls("http://localhost:3000");
+    const broker = "https://maple.mcp.vendo.run";
+    const brokerMetadata = `${broker}/.well-known/oauth-authorization-server`;
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      if (url === walk.protectedResourceMetadata) {
+        return Response.json({ resource: walk.resource, authorization_servers: [broker] });
+      }
+      if (url === brokerMetadata) {
+        return Response.json({
+          issuer: broker,
+          authorization_endpoint: `${broker}/authorize`,
+          token_endpoint: `${broker}/token`,
+          registration_endpoint: `${broker}/register`,
+          code_challenge_methods_supported: ["S256"],
+        });
+      }
+      return new Response("Maple's 404 page", { status: 404 });
+    });
+
+    // The walk cannot COMPLETE against a broker — the broker owns the sign-in
+    // pages this script types into. Discovery still has to get there.
+    await expect(signIn("http://localhost:3000", "mount-point test")).rejects.toThrow();
+    expect(requested.slice(0, 2)).toEqual([walk.protectedResourceMetadata, brokerMetadata]);
   });
 
   /** Next prefixes every proxy matcher with the mount point, so the catch-all
