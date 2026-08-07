@@ -338,9 +338,17 @@ of `tools.json`, `overrides.json`, `policy.json`, `brief.md`, `theme.json`.
 **Cause:** `vendo init` was never run in this directory, or the file was
 deleted.
 
+With `VENDO_API_KEY` set, a missing `overrides.json`, `policy.json`,
+`brief.md`, or `theme.json` is a **warning**, not a failure: those surfaces
+are cloud-resolvable, so a console-managed deployment legitimately keeps them
+published instead of on disk (a local file wins when present). `tools.json`
+has no cloud leg and its absence is always a failure.
+
 **Fix:** Run `npx vendo init`; it recreates missing `.vendo/` files and never
 overwrites existing ones. A missing `tools.json` alone can also be regenerated
-with `npx vendo sync`.
+with `npx vendo sync`. On a keyed deployment where the warning is expected,
+`npx vendo config status` shows which layer — local file or published cloud
+config — owns each surface.
 
 #### E-CFG-002 {#E-CFG-002}
 
@@ -513,21 +521,29 @@ attempt the start; agents own the dev server.
 
 #### E-LIVE-001 {#E-LIVE-001}
 
-**Symptom:** `/status` returned an invalid composition response.
+**Symptom:** `/status` answered, but not with a valid composition response.
+The message carries what actually came back: the HTTP status, plus the wire's
+own `error.code`/`error.message` when the body was a Vendo error, or a
+"body is not JSON" note when an error page answered.
 
 **Cause:** Something answered at `<base>/status` but not with the Vendo status
-shape (`posture`, `version`, `blocks`). Usually another handler owns the path,
-the mount is wrong, or the base URL points at the wrong app.
+shape (`posture`, `version`, `blocks`). A JSON error body means the wire
+itself is mounted but failing — the dev server log has the matching `[vendo]`
+wire error with the full stack. A non-JSON body means another handler owns
+the path, the mount is wrong, or the base URL points at the wrong app.
 
-**Fix:** Confirm the Vendo handler is mounted at the probed base (Next:
-`app/api/vendo/[...vendo]/route.ts`; Express: `app.use("/api/vendo",
-mountVendo())`, where `mountVendo` is the adapter init generated into your own
-`vendo/server.ts` — no package exports it) and that `--url`/`VENDO_URL` points
-at it.
+**Fix:** For a JSON error, read the carried `error.message` and the dev
+server log — the wire is telling you what broke (a failing principal
+resolver, a missing adapter). For a non-JSON body, confirm the Vendo handler
+is mounted at the probed base (Next: `app/api/vendo/[...vendo]/route.ts`;
+Express: `app.use("/api/vendo", mountVendo())`, where `mountVendo` is the
+adapter init generated into your own `vendo/server.ts` — no package exports
+it) and that `--url`/`VENDO_URL` points at it.
 
 #### E-LIVE-002 {#E-LIVE-002}
 
-**Symptom:** `/status` is unreachable.
+**Symptom:** `/status` is unreachable — the fetch itself never answered. A
+server that answered with an error is E-LIVE-001, never this.
 
 **Cause:** Nothing is listening at the probed base: the dev server is not
 running, it runs on a different port than the probe target, or `--url` was
