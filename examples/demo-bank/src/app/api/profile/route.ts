@@ -37,6 +37,6 @@ export async function GET(req: Request) {
           demoAutologin,
           staff,
         }
-      : { ...profile, demoAutologin, staff },
+      : { ...profile, demoAutologin },
   )
 }

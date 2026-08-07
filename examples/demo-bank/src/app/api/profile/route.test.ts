@@ -34,8 +34,9 @@ describe("GET /api/profile — the identity is the signed-in person's, all of it
     expect(yousef.avatarInitials).toBe("YH")
   })
 
-  it("leaves the seed's own initials alone when nobody is signed in", async () => {
+  it("leaves the seed's own initials alone when nobody is signed in, and hides staff", async () => {
     const anonymous = await bodyOf(new Request("http://localhost:3000/api/profile"))
     expect(anonymous.avatarInitials).toBe("YH")
+    expect(anonymous.staff).toBeUndefined()
   })
 })
