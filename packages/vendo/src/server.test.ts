@@ -1148,6 +1148,38 @@ describe("09 §3 public wire", () => {
     expect(response.status).toBe(404);
   });
 
+  it("does not mount the doctor probes when NODE_ENV is unset", async () => {
+    // The gate used to be a per-request `NODE_ENV === "production"` refusal on
+    // the /doctor/ prefix, so ABSENCE of configuration read as "not production"
+    // and served the whole probe surface unauthenticated: /doctor/machines
+    // enumerates every machine-bearing app in the deployment (id, name,
+    // provisioned-at, awake-right-now, and each declared cron + fn) across every
+    // subject, and reports whether VENDO_TICK_SECRET guards /tick;
+    // POST /doctor/act-as makes the composition mint host actAs material for a
+    // synthetic principal on demand. NODE_ENV is unset on plenty of Node deploys
+    // and `process` does not exist at all on edge runtimes, where
+    // `environment()` returns undefined for the same reason. Mounting is a
+    // composition fact now, and absent means closed.
+    vi.stubEnv("NODE_ENV", undefined);
+    const { vendo } = await setup();
+
+    for (const probe of [
+      request("GET", "/doctor/machines"),
+      request("GET", "/doctor/mcp"),
+      request("GET", "/doctor/present/echo"),
+      request("GET", "/doctor/act-as/echo"),
+      request("POST", "/doctor/present", {}),
+      request("POST", "/doctor/act-as", {}),
+    ]) {
+      expect((await vendo.handler(probe)).status, probe.url).toBe(404);
+    }
+
+    // The one deliberate exception, unchanged: /doctor/base-url reports a
+    // static composition fact and exists to catch a PRODUCTION misconfiguration,
+    // so it is mounted in every environment.
+    expect((await vendo.handler(request("GET", "/doctor/base-url"))).status).toBe(200);
+  });
+
   it("validates sync impact tool arrays", async () => {
     vi.stubEnv("NODE_ENV", "development");
     const { vendo } = await setup();
@@ -1270,7 +1302,10 @@ describe("06-apps §9 in-client venue over the wire", () => {
 describe("09 §2 composition", () => {
   it("audits one structured warning when present auth cannot be forwarded", async () => {
     vi.stubEnv("VENDO_BASE_URL", "");
-    const { vendo } = await setup();
+    // `development` because the probe this drives the present-forward branch
+    // through is a development-only route now. The branch under test is the
+    // untrusted-learned-origin one, which is unrelated to the flag.
+    const { vendo } = await setup(undefined, { development: true });
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const target = input instanceof Request ? input : new Request(input, init);
       return vendo.handler(target);
@@ -1933,7 +1968,9 @@ describe("09 §2.1 — host-identity presets (auth)", () => {
   it("auth's actAs half is live — the doctor actAs probe round-trips a minted Auth.js session", async () => {
     vi.stubEnv("AUTH_SECRET", authJsSecret);
     const store = await tempStore("vendo-auth-actas-");
-    const vendo = createVendo({ model: {} as LanguageModel, store, auth: authJs() });
+    // `development` because the probe this drives is a development-only route
+    // now; the dev server `vendo doctor` targets gets it from NODE_ENV.
+    const vendo = createVendo({ model: {} as LanguageModel, store, auth: authJs(), development: true });
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const target = input instanceof Request ? input : new Request(input, init);
       return vendo.handler(target);
