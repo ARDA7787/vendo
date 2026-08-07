@@ -7,9 +7,9 @@ import {
   EXPR_CALLS,
   KIT_WIRE_COMPONENT_NAMES,
   WIRE_COMPONENT_NAMES,
+  shapeFromJsonSchema,
   type JsonSchema,
   type NormalizedCatalog,
-  type ShapeType,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { AGGREGATE_FIELD_ARITY, screenTypings } from "./screen-typings.js";
@@ -30,15 +30,23 @@ const catalog: NormalizedCatalog = [
   { name: "MapleFreeform", description: "No schema at all" },
 ];
 
-const invoicesShape: ShapeType = {
-  kind: "object",
-  fields: {
+/** The same response, declared: the shape the host's own contract states. */
+const invoicesSchema: JsonSchema = {
+  type: "object",
+  properties: {
     data: {
-      kind: "array",
-      items: { kind: "object", fields: { id: { kind: "string" }, amount_cents: { kind: "number" } } },
+      type: "array",
+      items: {
+        type: "object",
+        properties: { id: { type: "string" }, amount_cents: { type: "number" } },
+        required: ["id", "amount_cents"],
+        additionalProperties: false,
+      },
     },
-    total: { kind: "number" },
+    total: { type: "number" },
   },
+  required: ["data", "total"],
+  additionalProperties: false,
 };
 
 describe("screenTypings", () => {
@@ -134,28 +142,75 @@ describe("screenTypings", () => {
     expect(dts).toContain("declare const invoices: { data: Array<{ amount_cents: number }> }");
   });
 
-  it("falls back to the observed ShapeType when no outputSchema is declared", () => {
+  it("types a query from the tool's declared outputSchema", () => {
     const dts = screenTypings({
       catalog: [],
       queries: [{ name: "invoices", tool: "maple_invoices_list" }],
-      toolShapes: { maple_invoices_list: invoicesShape },
+      toolOutputSchemas: { maple_invoices_list: invoicesSchema },
     });
     expect(dts).toContain("declare const invoices: { data: Array<{ id: string; amount_cents: number }>; total: number }");
   });
 
-  it("prefers the declared outputSchema over the observed shape", () => {
+  it("types a composed (allOf) declared outputSchema as the intersection, not any", () => {
     const dts = screenTypings({
       catalog: [],
-      queries: [{ name: "invoices", tool: "maple_invoices_list" }],
-      toolOutputSchemas: { maple_invoices_list: { type: "object", properties: { declared: { type: "string" } }, required: ["declared"], additionalProperties: false } },
-      toolShapes: { maple_invoices_list: invoicesShape },
+      queries: [{ name: "transfer", tool: "maple_transfer" }],
+      toolOutputSchemas: {
+        maple_transfer: {
+          type: "object",
+          properties: {
+            data: {
+              allOf: [
+                { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+                { type: "object", properties: { actor: { type: "string" } } },
+              ],
+            },
+          },
+          required: ["data"],
+        },
+      },
     });
-    expect(dts).toContain("declare const invoices: { declared: string }");
-    expect(dts).not.toContain("amount_cents");
+    expect(dts).toContain("declare const transfer: { data: { id: string } & { actor?: string } }");
   });
 
-  it("types a query permissively when neither schema nor shape is known", () => {
-    const dts = screenTypings({ catalog: [], queries: [{ name: "mystery", tool: "unsampled" }] });
+  it("drops a constraint-only allOf branch instead of collapsing the intersection to any", () => {
+    const dts = screenTypings({
+      catalog: [],
+      queries: [{ name: "transfer", tool: "maple_transfer" }],
+      toolOutputSchemas: {
+        maple_transfer: {
+          type: "object",
+          properties: {
+            data: { allOf: [{ type: "object", properties: { id: { type: "string" } } }, { required: ["id"] }] },
+          },
+          required: ["data"],
+        },
+      },
+    });
+    // `{ id?: string } & any` would be `any`, and every binding through it valid.
+    expect(dts).toContain("declare const transfer: { data: { id?: string } }");
+  });
+
+  it("keeps sibling properties alongside allOf, so both check floors agree", () => {
+    const data = {
+      allOf: [{ type: "object", properties: { id: { type: "string" }, actor: { type: "string" } }, required: ["id"] }],
+      properties: { total: { type: "number" } },
+      required: ["total"],
+    };
+    const dts = screenTypings({
+      catalog: [],
+      queries: [{ name: "transfer", tool: "maple_transfer" }],
+      toolOutputSchemas: { maple_transfer: { type: "object", properties: { data }, required: ["data"] } },
+    });
+    // Dropping `total` here would REJECT a binding the declared contract allows
+    // and core's shapeFromJsonSchema admits — a false finding, not a loose one.
+    expect(dts).toContain("declare const transfer: { data: { id: string; actor?: string } & { total: number } }");
+    const shape = shapeFromJsonSchema(data as JsonSchema);
+    expect(shape.kind === "object" ? Object.keys(shape.fields).sort() : []).toEqual(["actor", "id", "total"]);
+  });
+
+  it("types a query permissively when no schema is declared", () => {
+    const dts = screenTypings({ catalog: [], queries: [{ name: "mystery", tool: "undeclared" }] });
     expect(dts).toContain("declare const mystery: any;");
   });
 
@@ -168,7 +223,7 @@ describe("screenTypings", () => {
   });
 
   it("is deterministic — same input, byte-identical output", () => {
-    const input = { catalog, queries: [{ name: "invoices", tool: "maple_invoices_list" }], toolShapes: { maple_invoices_list: invoicesShape } };
+    const input = { catalog, queries: [{ name: "invoices", tool: "maple_invoices_list" }], toolOutputSchemas: { maple_invoices_list: invoicesSchema } };
     expect(screenTypings(input)).toBe(screenTypings(input));
   });
 

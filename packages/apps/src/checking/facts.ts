@@ -98,10 +98,10 @@ const shapeSchemaMismatch = (shape: ShapeType, schema: Record<string, unknown>):
   return null;
 };
 
-/** With tool shapes AND the catalog's prop schemas both in hand, a top-level
- *  `$path` prop on a host node can be kind-checked end to end. Existence is
- *  the wire compiler's shape check; this catches the type mismatches that
- *  render silently broken (empty chart, blank stat). */
+/** With the tools' declared response shapes AND the catalog's prop schemas both
+ *  in hand, a top-level `$path` prop on a host node can be kind-checked end to
+ *  end. Existence is the wire compiler's shape check; this catches the type
+ *  mismatches that render silently broken (empty chart, blank stat). */
 export const bindingKindIssues = (tree: Tree, deps: FloorDependencies): FactIssue[] => {
   if (deps.toolShapes === undefined) return [];
   const issues: FactIssue[] = [];
@@ -195,6 +195,14 @@ const KIND_PROBES: Partial<Record<ShapeType["kind"], unknown>> = {
   object: {},
 };
 
+/** The value a slot's zod schema is probed with. A DECLARED enum probes with
+ *  one of its OWN values: `"probe"` through a `"paid" | "void"` slot fails a
+ *  binding the host's contract actually permits. */
+const probeFor = (shape: ShapeType): unknown =>
+  "enum" in shape && shape.enum !== undefined && shape.enum.length > 0
+    ? shape.enum[0]
+    : KIND_PROBES[shape.kind];
+
 const KIT_WIRE_SET: ReadonlySet<string> = new Set(KIT_WIRE_COMPONENT_NAMES);
 
 export const kitSlotIssues = (tree: Tree, deps: FloorDependencies): FactIssue[] => {
@@ -216,7 +224,7 @@ export const kitSlotIssues = (tree: Tree, deps: FloorDependencies): FactIssue[] 
       if (shape === undefined) continue;
       const bound = shapeAtPointer(shape, rest.length === 0 ? "" : `/${rest.join("/")}`);
       if (bound === undefined || bound.kind === "json" || bound.kind === "null") continue;
-      const probe = KIND_PROBES[bound.kind];
+      const probe = probeFor(bound);
       if (probe === undefined) continue;
       if (!propSpec.schema.safeParse(probe).success) {
         issues.push(atProp(node.id, prop, `on <${node.component}> binds ${value.$path}, a ${bound.kind} field, but this slot takes a different RAW type (${propSpec.doc}) — bind the raw field with that type (e.g. the integer-cents field, not a pre-formatted display string).`));
@@ -520,12 +528,11 @@ const screenTypeFindings = (tree: Tree, document: AppDocument, deps: FloorDepend
   const typings = screenTypings({
     catalog: [...deps.catalog, ...generated],
     queries,
-    // The host's own declared response shapes, which outrank the samples: a
-    // sample erases what a declaration keeps (an enum field samples as a bare
-    // `string`, so a prop declared over that enum could never be satisfied).
+    // The host's own declared response shapes — the only source. A declaration
+    // keeps what a sample erased (an enum field samples as a bare `string`, so
+    // a prop declared over that enum could never be satisfied).
     toolOutputSchemas: Object.fromEntries((deps.tools ?? [])
       .flatMap((tool) => (tool.outputSchema === undefined ? [] : [[tool.name, tool.outputSchema] as const]))),
-    toolShapes: deps.toolShapes,
   });
   const screen = printWire({ tree, components: {}, name: document.name }, { includeIds: false });
   return screenTscFindings({ screen, typings });
