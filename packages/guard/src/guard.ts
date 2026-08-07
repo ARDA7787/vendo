@@ -93,7 +93,7 @@ function resolveBreakerLimit(configured: number | undefined, name: string, fallb
 
 const GRANTS_COLLECTION = "vendo_grants";
 const APPROVALS_COLLECTION = "vendo_approvals";
-/** One-time transition receipts for approvals (kill-list B5): `decided:<id>` /
+/** One-time transition receipts for approvals: `decided:<id>` /
  *  `consumed:<id>` rows in a guard-owned generic collection, written only via
  *  the store's atomic `insertIfAbsent` (02-store §4) so exactly one caller —
  *  across processes — wins each transition. Rows carry `refs.subject`, so the
@@ -339,7 +339,7 @@ function presenceMatches(grant: PermissionGrant, ctx: RunContext): boolean {
   return grant.appId === undefined || grant.appId === ctx.appId;
 }
 
-/** Re-gate 2026-07-26 finding 2: a read invoked from the APP venue renders a
+/** A read invoked from the APP venue renders a
  *  surface — the query resolver and island tool bridge consume the outcome at
  *  render time, and a parked read query is never resumed (apps resume only
  *  mutating actions). An "ask" on a present app-venue read is therefore a
@@ -425,7 +425,7 @@ class GuardImplementation implements VendoGuard {
    *  while a second, separately-intended identical call gets the next one. */
   readonly #effectOrdinals = new Map<string, Map<string, number>>();
   /** In-flight execution per effect key, so concurrent identical calls share one
-   *  execution instead of both racing past an empty ledger (finding 14). */
+   *  execution instead of both racing past an empty ledger. */
   readonly #effectsInFlight = new Map<string, Promise<ToolOutcome>>();
   readonly #config: CreateGuardConfig;
   readonly #policyConfig: PolicyConfigObject | undefined;
@@ -488,7 +488,7 @@ class GuardImplementation implements VendoGuard {
     return (await this.#checkWithMetadata(call, descriptor, ctx)).decision;
   }
 
-  /** genqa defect 1 — a preview of `check()`'s verdict for a caller that is
+  /** A preview of `check()`'s verdict for a caller that is
    *  about to make (or ask the SDK to make) the REAL, dispatching call
    *  itself: a "run" verdict here never spends the write-budget/call-rate
    *  breakers, because the caller's own follow-up (calling `check()` again,
@@ -544,7 +544,7 @@ class GuardImplementation implements VendoGuard {
     };
   }
 
-  /** AGENT-6: deny approvals the conversation abandoned. Rides the same
+  /** Deny approvals the conversation abandoned. Rides the same
    *  decide path as an explicit denial (audit + callbacks), but is
    *  idempotent: an already-decided (conflict) or unknown/foreign (not-found)
    *  approval already holds the state abandonment wants — only a real store
@@ -585,7 +585,7 @@ class GuardImplementation implements VendoGuard {
     return await this.#spendConsumedTransition(id, principal.subject);
   }
 
-  /** Spec 2026-07-20 (#5): the TTL backstop over the general approvals
+  /** The TTL backstop over the general approvals
    *  collection. Chat approvals are abandoned on the next thread turn and BYO
    *  parked calls have their own sweep, but away/automation/app approvals — and
    *  approvals from turns that errored mid-stream before their thread part
@@ -596,11 +596,14 @@ class GuardImplementation implements VendoGuard {
    *  swept. A `ttlMs <= 0` disables the sweep. */
   async sweepExpiredApprovals(ttlMs: number, at: number = Date.parse(now())): Promise<number> {
     if (ttlMs <= 0) return 0;
-    const records = await listAll(this.#store.records(APPROVALS_COLLECTION));
+    // Filtered by the store, not in JS: this runs every 60s for the life of the
+    // process, and the unfiltered read grows with every approval ever decided.
+    const records = await listAll(this.#store.records(APPROVALS_COLLECTION), {
+      refs: { status: "pending" },
+    });
     let swept = 0;
     for (const record of records) {
       const data = approvalData(record);
-      if (data.status !== "pending") continue;
       const parkedAt = Date.parse(data.request.createdAt);
       if (!Number.isFinite(parkedAt) || parkedAt + ttlMs > at) continue;
       try {
@@ -679,9 +682,9 @@ class GuardImplementation implements VendoGuard {
         // `withheldFromUnattended`, not `=== "destructive"`: an `ungraded` tool
         // is refused here too. The two laws land on the same answer — §12 keeps
         // irreversible actions off an unattended run, and the risk-grading
-        // redesign (D3) says a tool nobody has graded needs a PERSON — and an
+        // redesign says a tool nobody has graded needs a PERSON — and an
         // unattended venue has none to ask. Without this the merge left a real
-        // hole: extraction stopped guessing from names (D1), so Maple's
+        // hole: extraction stopped guessing from names, so Maple's
         // `host_transferMoney` reads `ungraded`, the vote that used to call it
         // destructive no longer speaks for it, and an enable-time standing grant
         // authorized an unattended transfer. Proved by the away drill: the run
@@ -702,7 +705,7 @@ class GuardImplementation implements VendoGuard {
         // them and the projection was their whole law.
         //
         // It refuses the PIN tools and nothing else. `vendo_make` carrying a
-        // `slot` is not refused here (ruled 2026-08-06): creation does not need
+        // `slot` is not refused here: creation does not need
         // a person present, only placement does, and blocking the call would
         // break every automation that legitimately builds a screen. The slot is
         // dropped at the tool's own door instead (`apps/agent-tools.ts`).
@@ -973,7 +976,7 @@ class GuardImplementation implements VendoGuard {
   }
 
   /**
-   * genqa defect 1 (double-count): a "run" verdict here mutates the call-rate
+   * Double-count: a "run" verdict here mutates the call-rate
    * window (#recordCall) and the write budget (below) as a side effect —
    * `check()`'s documented/tested contract is a fresh, un-memoized
    * evaluation every time (repeat calls with the identical id legitimately
@@ -994,8 +997,9 @@ class GuardImplementation implements VendoGuard {
    * contract, and `bind().execute()`'s internal use) from "decide, without
    * charging a run" (the PREVIEW-ONLY seam `previewCheck()` below exposes).
    * A previewed "run" is deliberately un-committed: the caller who asked to
-   * preview is never the one who gets to spend the budget — the very next
-   * real check (moments later, same call) does that once, for real. A
+   * preview is never the one who gets to spend the budget, the window slot, or
+   * a single-use approval — the very next real check (moments later, same
+   * call) does that once, for real. A
    * previewed "ask"/"block" is unaffected either way — parking and audit
    * already happen exactly once, because the SDK never calls `execute()` at
    * all for a call its own preview paused.
@@ -1026,7 +1030,7 @@ class GuardImplementation implements VendoGuard {
     const callsTripped = commitRun
       ? this.#recordCall(ctx.principal.subject)
       : this.#peekCallsTripped(ctx.principal.subject);
-    const metadata = await this.#pipeline(call, effectiveDescriptor, ctx);
+    const metadata = await this.#pipeline(call, effectiveDescriptor, ctx, commitRun);
     let draft = metadata.decision;
 
     // 05 §6: away runs hold only grants captured while present and bound to the
@@ -1294,18 +1298,19 @@ class GuardImplementation implements VendoGuard {
     call: ToolCall,
     descriptor: ToolDescriptor,
     ctx: RunContext,
+    commitRun: boolean,
   ): Promise<DecisionMetadata> {
     // An exact approved replay answers a confirmEach ask (05 §2 stays otherwise:
     // grants/rules/judge never suppress confirmEach).
-    let consumedReplay = false;
+    let replayable = false;
     if (descriptor.confirmEach === true) {
-      consumedReplay = await this.#consumeApprovedCall(call, descriptor, ctx);
-      if (!consumedReplay) {
+      replayable = await this.#approvedReplay(call, descriptor, ctx, commitRun);
+      if (!replayable) {
         return { decision: { action: "ask", decidedBy: "confirmEach" } };
       }
     }
 
-    if (consumedReplay || await this.#consumeApprovedCall(call, descriptor, ctx)) {
+    if (replayable || await this.#approvedReplay(call, descriptor, ctx, commitRun)) {
       return { decision: { action: "run", decidedBy: "grant" } };
     }
 
@@ -1678,10 +1683,16 @@ class GuardImplementation implements VendoGuard {
     });
   }
 
-  async #consumeApprovedCall(
+  /** Is there an approved, unspent replay for exactly this call — and, when
+   *  `claim` is true, spend it? `claim` is false for a preview (commitRun
+   *  false): a preview dispatches nothing, so spending the human's one yes
+   *  there would strand the real call moments later in park → approve → park,
+   *  with the tap burned. The real check that follows claims it, once. */
+  async #approvedReplay(
     call: ToolCall,
     descriptor: ToolDescriptor,
     ctx: RunContext,
+    claim: boolean,
   ): Promise<boolean> {
     const fingerprint = descriptorHash(descriptor);
     const store = this.#store.records(APPROVALS_COLLECTION);
@@ -1717,6 +1728,7 @@ class GuardImplementation implements VendoGuard {
       // next candidate — the same approved call parked twice yields two
       // approvals, each replayable once, exactly as before, and a lost claim can
       // also mean the person took the yes back between the list and here.
+      if (!claim) return true;
       if (await this.#spendConsumedTransition(record.id, ctx.principal.subject) !== "spent") continue;
       return true;
     }
