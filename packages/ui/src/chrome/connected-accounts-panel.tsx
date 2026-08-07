@@ -45,6 +45,32 @@ function ToolkitMark({ toolkit }: { toolkit: string }) {
   );
 }
 
+const refusalCode = (reason: unknown): unknown => (reason as { code?: unknown } | null)?.code;
+
+/** The broker answers not-found for any id outside the caller's own scope
+ *  (`ConnectorConnections`' frozen rule), so this is the account ALREADY being
+ *  gone — the person's intent, achieved. The row on screen is the stale half. */
+const alreadyGone = (reason: unknown): boolean => refusalCode(reason) === "not-found";
+
+/** The disconnect half of `connectRefusalCopy`. A refused disconnect leaves the
+ *  account connected — but only some of these clear on their own, and "try
+ *  again in a moment" sends the rest back to the same wall forever. */
+function disconnectRefusalCopy(reason: unknown, name: string): string {
+  const code = refusalCode(reason);
+  // The person can act, just not from here as they are.
+  if (code === "blocked") return `Sign in first, then disconnect ${name}.`;
+  if (code === "forbidden") return `You don’t have access to disconnect ${name} here.`;
+  // Nothing is behind the button on this deployment — no broker configured, or
+  // Cloud standing lapsed. No number of retries reaches it.
+  if (code === "not-implemented" || code === "cloud-required") {
+    return `Disconnecting ${name} isn’t set up here — there’s nothing you can do from this screen.`;
+  }
+  // Everything else: broker 5xx, timeouts, a dropped request — and `validation`,
+  // which the client also stamps on any envelope carrying no code of its own,
+  // so it is the unknown bucket rather than a verdict about the deployment.
+  return `We couldn’t disconnect ${name} — it is still connected. Try again in a moment.`;
+}
+
 interface Severing {
   /** Seconds left on the undo window (display only). */
   left: number;
@@ -71,11 +97,30 @@ export function ConnectedAccountsPanel({ undoMs = 10_000 }: ConnectedAccountsPan
   const [severing, setSevering] = useState<Record<string, Severing | undefined>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string>();
+  // Accounts the WIRE has confirmed gone. The list read that follows a sever is
+  // not what proves it: `useResource` keeps its last good page when a refresh
+  // fails, which would put the row back wearing a Connected chip.
+  const [severed, setSevered] = useState<Record<string, boolean>>({});
   const timers = useRef(new Map<string, { commit: number; tick: number }>());
   // Pending disconnects flush on unmount (an undone-looking row must never
   // silently survive navigation), so the latest wire args live in a ref.
   const pendingRef = useRef(new Map<string, { connector: string }>());
   const cancelled = useRef(false);
+
+  // …and never permanently. `not-found` is also what the composition throws
+  // when the CONNECTOR is missing rather than the account, and the client
+  // cannot tell those apart — so a list read the server actually ANSWERS
+  // overrules the sever: an account still on that page is live, whatever the
+  // disconnect said. `useResource` replaces this array only on a successful
+  // read, so a failed refresh never reaches here and the row stays gone.
+  useEffect(() => {
+    setSevered(current => {
+      const kept = Object.keys(current).filter(id => !connections.some(row => row.id === id));
+      return kept.length === Object.keys(current).length
+        ? current
+        : Object.fromEntries(kept.map(id => [id, true]));
+    });
+  }, [connections]);
 
   // The unmount flush must see the CURRENT disconnect without re-running the
   // effect (an effect keyed on `disconnect` would flush pending severs on any
@@ -130,12 +175,22 @@ export function ConnectedAccountsPanel({ undoMs = 10_000 }: ConnectedAccountsPan
         setBusy(current => ({ ...current, [id]: true }));
         try {
           await disconnect(id, connection.connector);
+          if (!cancelled.current) setSevered(current => ({ ...current, [id]: true }));
         } catch (reason) {
           // spec §16 law 3 — the wire's sentence is the developer's; the person
-          // is told that the account is still connected and nothing changed.
-          if (!cancelled.current) {
-            setError(`We couldn’t disconnect ${toolkitDisplayName(connection.toolkit)} — it is still connected. Try again in a moment.`);
-          }
+          // gets ours, and it names the refusal rather than a blanket retry.
+          // An account that is already gone is not a failure to report: the
+          // broker answers not-found for anything outside the caller's own
+          // scope, so the sever is a fact and only the row is stale.
+          if (cancelled.current) return;
+          if (alreadyGone(reason)) {
+            setSevered(current => ({ ...current, [id]: true }));
+            // The row is already gone from the page, so this read is not what
+            // proves it — it is the check on the claim. A successful one that
+            // still has the account brings it back (see the effect above); a
+            // failed one changes nothing.
+            await refresh();
+          } else setError(disconnectRefusalCopy(reason, toolkitDisplayName(connection.toolkit)));
         } finally {
           if (!cancelled.current) {
             setBusy(current => ({ ...current, [id]: false }));
@@ -189,12 +244,14 @@ export function ConnectedAccountsPanel({ undoMs = 10_000 }: ConnectedAccountsPan
     }
   };
 
+  const rows = connections.filter(connection => severed[connection.id] !== true);
+
   return (
     <ChromeRoot>
       <section aria-labelledby="vendo-accounts-heading" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <h2 id="vendo-accounts-heading" className="fl-auto-title" style={{ margin: 0 }}>Connected accounts</h2>
         {error ? <div role="alert" className="fl-error">{error}</div> : null}
-        {connections.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="fl-acct-ghost">
             <span className="fl-acct-ghost-title">No connected accounts yet</span>
             <p className="fl-acct-ghost-copy">
@@ -222,7 +279,7 @@ export function ConnectedAccountsPanel({ undoMs = 10_000 }: ConnectedAccountsPan
             ) : null}
           </div>
         ) : null}
-        {connections.map(connection => {
+        {rows.map(connection => {
           const name = toolkitDisplayName(connection.toolkit);
           const status = STATUS[connection.status];
           const sever = severing[connection.id];

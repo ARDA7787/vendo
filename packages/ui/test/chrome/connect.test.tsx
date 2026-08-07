@@ -429,6 +429,136 @@ describe("ConnectCard and ConnectedAccountsPanel", () => {
     );
   });
 
+  // A refusal the person cannot retry away must not be dressed as a wobble:
+  // "try again in a moment" sends them back to the same wall forever.
+  it.each([
+    ["blocked", 401, "Sign in first, then disconnect Gmail."],
+    ["forbidden", 403, "You don’t have access to disconnect Gmail here."],
+    ["not-implemented", 501, "Disconnecting Gmail isn’t set up here — there’s nothing you can do from this screen."],
+    ["cloud-required", 402, "Disconnecting Gmail isn’t set up here — there’s nothing you can do from this screen."],
+  ] as const)("a %s disconnect refusal says what to do instead of promising a retry", async (code, status, sentence) => {
+    render(<VendoProvider client={client}><ConnectedAccountsPanel undoMs={30} /></VendoProvider>);
+    await screen.findByText("Gmail");
+    wire.state.failures.push({
+      method: "DELETE",
+      path: "/connections/ca_1",
+      code,
+      message: "the wire's own sentence, which is the developer's",
+      status,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Gmail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(sentence);
+    // The wire's own words never reach the person (spec §16 law 3).
+    expect(alert.textContent).not.toContain("developer");
+  });
+
+  // The broker answers not-found for any id outside this person's own scope
+  // (`ConnectorConnections`' frozen rule), so the row on screen is stale: the
+  // account is ALREADY gone. Their intent is a fact — reporting a failure, or
+  // leaving the row sitting there, would both be lies.
+  it("a disconnect for an account that is already gone drops the row instead of erroring", async () => {
+    render(<VendoProvider client={client}><ConnectedAccountsPanel undoMs={30} /></VendoProvider>);
+    await screen.findByText("Gmail");
+    wire.state.failures.push({
+      method: "DELETE",
+      path: "/connections/ca_1",
+      code: "not-found",
+      message: "connection not found: ca_1",
+      status: 404,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Gmail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    // …and the server never had it: another tab, or the broker's own console.
+    wire.state.connections = [];
+
+    expect(await screen.findByText(/No connected accounts yet/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // not-found is also what `byoConnections` throws when the CONNECTOR is
+  // missing ("no connector named composio supports connections") — an absent
+  // broker, not an absent account, and the client cannot tell those apart. So
+  // dropping a row is never permanent: a list read the server actually answers
+  // that still carries the account overrules it, and the row comes back.
+  it("a severed row the server still reports comes back on the next read it answers", async () => {
+    render(<VendoProvider client={client}><ConnectedAccountsPanel undoMs={30} /></VendoProvider>);
+    await screen.findByText("Gmail");
+    // The account is live; it is the broker lookup that is missing.
+    wire.state.failures.push({
+      method: "DELETE",
+      path: "/connections/ca_1",
+      code: "not-found",
+      message: "no connector named composio supports connections",
+      status: 404,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Gmail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    // The read that follows answers, and it still has the account: it wins.
+    await waitFor(() => expect(screen.getByText(/via Composio · connected/)).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Disconnect Gmail" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // An account is gone the moment the WIRE says so — by the disconnect
+  // succeeding, or by it answering not-found. Neither may wait on the list read
+  // that follows to prove it: when that read fails the hook keeps its last
+  // page, so the row the person just disconnected sits there looking connected
+  // with nothing said. "The button did nothing" is the same lie as before.
+  it.each([
+    ["succeeded", undefined],
+    ["answered not-found", "not-found"],
+  ] as const)("a disconnect that %s drops the row even when the list read after it fails", async (situation, deleteCode) => {
+    render(<VendoProvider client={client}><ConnectedAccountsPanel undoMs={30} /></VendoProvider>);
+    await screen.findByText("Gmail");
+    if (deleteCode !== undefined) {
+      wire.state.failures.push({
+        method: "DELETE",
+        path: "/connections/ca_1",
+        code: deleteCode,
+        message: "connection not found: ca_1",
+        status: 404,
+      });
+    }
+    // The list read the disconnect chases with is the one that fails.
+    wire.state.failures.push({
+      method: "GET",
+      path: "/connections",
+      code: "unavailable",
+      message: `the list read failed after the disconnect ${situation}`,
+      status: 503,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Gmail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    expect(await screen.findByText(/No connected accounts yet/)).toBeTruthy();
+    expect(screen.queryByText(/via Composio · connected/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // Reserved for the faults that DO clear on their own. `validation` rides here
+  // deliberately: the client stamps it on any envelope that carries no code of
+  // its own, so it is the unknown bucket, not a statement about the deployment.
+  it.each([
+    ["conflict", 409],
+    ["validation", 400],
+    // What `raiseCloudError` stamps on a console 5xx — an unknown code to the
+    // client, and the shape every unmapped broker failure arrives in.
+    ["unavailable", 500],
+  ] as const)("a transient disconnect failure (%s) still offers the retry that can work", async (code, status) => {
+    render(<VendoProvider client={client}><ConnectedAccountsPanel undoMs={30} /></VendoProvider>);
+    await screen.findByText("Gmail");
+    wire.state.failures.push({ method: "DELETE", path: "/connections/ca_1", code, message: "broker busy", status });
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Gmail" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("We couldn’t disconnect Gmail — it is still connected. Try again in a moment.");
+  });
+
   it("drives connect-ahead chips from the host connector catalog and initiates through the broker", async () => {
     vi.stubGlobal("open", vi.fn());
     wire.state.connections = [];
