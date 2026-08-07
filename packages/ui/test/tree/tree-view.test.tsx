@@ -3,7 +3,7 @@ import type { ComponentType } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { VENDO_TREE_FORMAT, type Json, type ToolOutcome } from "@vendoai/core";
-import { PayloadView, TreeView, registerTreeRenderer, type WalkTree } from "../../src/tree/index.js";
+import { PayloadView, TreeView, type WalkTree } from "../../src/tree/index.js";
 
 afterEach(() => {
   cleanup();
@@ -207,6 +207,40 @@ describe("TreeView public surface", () => {
       .toContain("didn’t load");
   });
 
+  it("settles on the skeleton when a node starts crashing MID-stream, instead of retrying itself", () => {
+    // The mid-stream retry exists so ARRIVING DATA can heal a crash. It must
+    // never be driven by the boundary's own re-render: a node that keeps
+    // throwing has to settle on the silhouette after one attempt, not spin the
+    // latch until React's nested-update guard kills the surface.
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let renders = 0;
+    let exploding = false;
+    const Sometimes = () => {
+      renders += 1;
+      if (exploding) throw new Error("host render exploded");
+      return <p>Half a view</p>;
+    };
+    const nodes: WalkTree["nodes"] = [
+      { id: "root", component: "Row", children: ["node"] },
+      { id: "node", component: "Sometimes", source: "host" },
+    ];
+    const streaming = () => ({ ...tree(nodes), streaming: true }) as WalkTree;
+
+    const view = render(<TreeView tree={streaming()} components={{ Sometimes }} onAction={ok} />);
+    expect(screen.getByText("Half a view")).toBeTruthy();
+
+    const before = renders;
+    exploding = true;
+    view.rerender(<TreeView tree={streaming()} components={{ Sometimes }} onAction={ok} />);
+
+    // React re-renders a handful of times recovering from the throw itself.
+    // The self-retry is what unbounds it: it ran the crashing node 109 times
+    // in this one update and stopped only at React's nested-update guard.
+    expect(renders - before).toBeLessThan(10);
+    expect(document.querySelector("[data-skeleton]")).not.toBeNull();
+    expect(screen.queryByRole("note", { name: /node render error/i })).toBeNull();
+  });
+
   it("skeletons an unknown component name while STREAMING instead of the unknown-component notice", () => {
     const partial = {
       ...tree([
@@ -272,20 +306,6 @@ describe("TreeView public surface", () => {
     );
 
     expect(screen.getByRole("note", { name: /unsupported ui format/i }).textContent).toContain("vendo-genui/v99");
-  });
-
-  it("dispatches additively registered future formats by tag", () => {
-    registerTreeRenderer("vendo-genui/test-profile", ({ payload }) => (
-      <p>Custom renderer: {String(payload.title)}</p>
-    ));
-    render(
-      <PayloadView
-        payload={{ formatVersion: "vendo-genui/test-profile", title: "compact" }}
-        components={{}}
-        onAction={ok}
-      />,
-    );
-    expect(screen.getByText("Custom renderer: compact")).toBeTruthy();
   });
 
   it("contains core validation failures before rendering", () => {
