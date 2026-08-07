@@ -80,7 +80,9 @@ describe("doctor error-code registry", () => {
 
   it("builds a URL-valid fix_ref with the version param before the fragment", () => {
     const ref = doctorFixRef("E-AUTH-001", "1.2.3");
-    expect(ref).toBe("https://vendo.run/agents/verify?v=1.2.3#E-AUTH-001");
+    // docs.vendo.run serves the verify playbook directly; the marketing-site
+    // path 302s (FINDINGS F7a) and some agents refuse to follow the hop.
+    expect(ref).toBe("https://docs.vendo.run/agents/verify?v=1.2.3#E-AUTH-001");
     const url = new URL(ref);
     expect(url.searchParams.get("v")).toBe("1.2.3");
     expect(url.hash).toBe("#E-AUTH-001");

@@ -1175,7 +1175,7 @@ describe("vendo doctor v2 (live turn + --json + cloud + dev-server probe)", () =
 
 /** Agent-install DX (design 2026-07-19 §CLI-3) — every check carries a stable
  *  id; failures and warnings additionally carry a registry `error_code` and a
- *  full `fix_ref` URL into vendo.run/agents/verify. Passing checks carry
+ *  full `fix_ref` URL into docs.vendo.run/agents/verify. Passing checks carry
  *  neither (nothing to fix). */
 describe("vendo doctor error codes + fix_refs", () => {
   interface CodedCheck {
@@ -1213,7 +1213,7 @@ describe("vendo doctor error codes + fix_refs", () => {
       expect(check.id).toBeTruthy();
       expect(check.error_code).toMatch(/^E-[A-Z]+-\d{3}$/);
       expect(doctorErrorCodes).toContain(check.error_code);
-      expect(check.fix_ref).toBe(`https://vendo.run/agents/verify?v=${CLI_VERSION}#${check.error_code}`);
+      expect(check.fix_ref).toBe(`https://docs.vendo.run/agents/verify?v=${CLI_VERSION}#${check.error_code}`);
     }
     // The remediation surface is broad: wiring, config, live probes, auth, turn.
     const codes = new Set(failures.map((check) => check.error_code));
@@ -1639,6 +1639,87 @@ describe("vendo doctor error codes + fix_refs", () => {
       error_code: "E-CFG-001",
       fix_ref: doctorFixRef("E-CFG-001"),
     });
+  });
+
+  // FINDINGS F14 (linkwarden baseline): a console-managed deployment keeps the
+  // cloud-resolvable surfaces PUBLISHED, not on disk — file → cloud precedence
+  // (config-surface seam) makes a missing local file a resolution mode there,
+  // not a broken install. tools.json has no cloud leg and stays fatal.
+  it("degrades missing cloud-resolvable config files to warnings when VENDO_API_KEY is set", async () => {
+    const root = await healthy();
+    await rm(join(root, ".vendo", "brief.md"));
+    await rm(join(root, ".vendo", "policy.json"));
+    const { exit, report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+      env: { VENDO_API_KEY: "vnd_test_key" },
+      cloudProbe: async () => ({ present: true, ok: true, unlocks: ["x"] }),
+    });
+    expect(exit).toBe(0);
+    for (const id of ["config/brief.md", "config/policy.json"]) {
+      const check = report.checks.find((entry) => entry.id === id);
+      expect(check).toMatchObject({
+        status: "warning",
+        error_code: "E-CFG-001",
+        fix_ref: doctorFixRef("E-CFG-001"),
+      });
+      expect(check?.message).toContain("vendo config status");
+      expect(check?.message).toContain("published");
+    }
+    expect(report.checks.find((entry) => entry.id === "config/tools.json")).toMatchObject({ status: "ok" });
+  });
+
+  it("keeps a missing tools.json fatal even with VENDO_API_KEY set — it has no cloud leg", async () => {
+    const root = await healthy();
+    await rm(join(root, ".vendo", "tools.json"));
+    const { exit, report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+      env: { VENDO_API_KEY: "vnd_test_key" },
+      cloudProbe: async () => ({ present: true, ok: true, unlocks: ["x"] }),
+    });
+    expect(exit).toBe(1);
+    expect(report.checks.find((entry) => entry.id === "config/tools.json")).toMatchObject({
+      status: "broken",
+      error_code: "E-CFG-001",
+    });
+  });
+
+  // FINDINGS F7c (linkwarden baseline): a wire that ANSWERED with an error
+  // body was reported with the body thrown away, and an answered non-JSON
+  // error page was mislabeled "unreachable" — both pointed at the wrong fix.
+  it("carries the wire's own error body into E-LIVE-001 with the dev-server-log hint", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/status")) {
+        return Response.json({ error: { code: "not-implemented", message: "principal resolution failed: boom" } }, { status: 501 });
+      }
+      return Response.json({ error: { message: "unexpected probe" } }, { status: 404 });
+    });
+    const { exit, report } = await jsonChecks({ targetDir: await healthy(), fetchImpl });
+    expect(exit).toBe(1);
+    const check = report.checks.find((entry) => entry.id === "live/status");
+    expect(check).toMatchObject({ status: "broken", error_code: "E-LIVE-001" });
+    expect(check?.message).toContain("501");
+    expect(check?.message).toContain("not-implemented");
+    expect(check?.message).toContain("principal resolution failed: boom");
+    expect(check?.message).toContain("dev server log");
+  });
+
+  it("reports an answered non-JSON /status as E-LIVE-001 with its status, never as unreachable", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/status")) {
+        return new Response("<html>Internal Server Error</html>", { status: 500, headers: { "content-type": "text/html" } });
+      }
+      return Response.json({ error: { message: "unexpected probe" } }, { status: 404 });
+    });
+    const { report } = await jsonChecks({ targetDir: await healthy(), fetchImpl });
+    const check = report.checks.find((entry) => entry.id === "live/status");
+    expect(check).toMatchObject({ status: "broken", error_code: "E-LIVE-001" });
+    expect(check?.message).toContain("500");
+    expect(check?.message).toContain("not JSON");
+    expect(report.checks.some((entry) => entry.error_code === "E-LIVE-002")).toBe(false);
   });
 
   /** Spec 2026-08-06 §B1: the path prefix has ONE home, VENDO_BASE_URL. A spec

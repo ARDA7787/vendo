@@ -80,8 +80,10 @@ export type DoctorErrorCode = keyof typeof DOCTOR_ERROR_CODES;
 /** Complete list of every code doctor can emit, for CI enumeration. */
 export const doctorErrorCodes = Object.keys(DOCTOR_ERROR_CODES) as readonly DoctorErrorCode[];
 
-/** The verify playbook page the fix_ref URLs anchor into. */
-export const VERIFY_URL = "https://vendo.run/agents/verify";
+/** The verify playbook page the fix_ref URLs anchor into. The docs host
+    serves it directly — the marketing-site path 302s there, and some agent
+    HTTP clients refuse the hop (FINDINGS F7a). */
+export const VERIFY_URL = "https://docs.vendo.run/agents/verify";
 
 /** Full fix URL for a code: the installed vendoai version rides as a query
  *  param BEFORE the fragment so the URL stays valid and the verify page can

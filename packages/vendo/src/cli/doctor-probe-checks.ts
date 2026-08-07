@@ -112,32 +112,52 @@ export interface LiveComposition {
 
 export async function checkLiveStatus(run: DoctorRun): Promise<LiveComposition> {
   const { statusUrl, fetchImpl } = run;
+  // FINDINGS F7c — only a fetch that never answered is "unreachable". An
+  // answered error carries the wire's OWN error body into the message (the
+  // route often knows exactly what broke), and an answered non-JSON body is
+  // a wrong mount or an error page — a different fix than a dead server.
+  let statusAnswer: { status: number; ok: boolean; text: string } | null = null;
   try {
     const response = await fetchImpl(`${statusUrl}/status`, {
       headers: { accept: "application/json" },
     });
-    const body = await response.json() as {
-      posture?: unknown;
-      version?: unknown;
-      deprecated?: unknown;
-      blocks?: { mcp?: unknown; sandbox?: unknown } | null;
-    };
-    if (!response.ok || typeof body.posture !== "string" || typeof body.version !== "string"
-      || typeof body.blocks !== "object" || body.blocks === null) {
-      run.fail("live/status", "E-LIVE-001", `/status returned an invalid composition response (${response.status})`);
-      return { mcpPosture: false, live: false };
-    }
-    run.pass("live/status", `/status live round-trip (${body.version}, ${body.posture})`);
-    checkVersionSkew(run, body.version);
-    const mcpPosture = body.blocks.mcp === "broker" ? "broker"
-      : body.blocks.mcp === true || body.blocks.mcp === "local" ? "local"
-      : false;
-    checkVenue(run, body.blocks.sandbox);
-    return { mcpPosture, live: true };
+    statusAnswer = { status: response.status, ok: response.ok, text: await response.text() };
   } catch {
     run.fail("live/status", "E-LIVE-002", `/status is unreachable at ${statusUrl}/status — doctor expects the WIRE BASE (your app origin plus the mount path, e.g. http://localhost:3000/api/vendo); a bare site origin passed to --url is missing the /api/vendo part`);
     return { mcpPosture: false, live: false };
   }
+  type StatusBody = {
+    posture?: unknown;
+    version?: unknown;
+    deprecated?: unknown;
+    blocks?: { mcp?: unknown; sandbox?: unknown } | null;
+    error?: { code?: unknown; message?: unknown } | null;
+  };
+  let body: StatusBody | null = null;
+  try {
+    body = JSON.parse(statusAnswer.text) as StatusBody | null;
+  } catch {
+    body = null;
+  }
+  if (body === null || typeof body !== "object") {
+    run.fail("live/status", "E-LIVE-001", `/status answered HTTP ${statusAnswer.status} but the body is not JSON — something other than the Vendo wire is mounted there, or an error page answered for it; check the dev server log`);
+    return { mcpPosture: false, live: false };
+  }
+  if (!statusAnswer.ok || typeof body.posture !== "string" || typeof body.version !== "string"
+    || typeof body.blocks !== "object" || body.blocks === null) {
+    const detail = [body.error?.code, body.error?.message]
+      .filter((part): part is string => typeof part === "string" && part !== "")
+      .join(": ");
+    run.fail("live/status", "E-LIVE-001", `/status returned an invalid composition response (${statusAnswer.status}${detail === "" ? "" : `: ${detail}`}) — check the dev server log for the [vendo] wire error`);
+    return { mcpPosture: false, live: false };
+  }
+  run.pass("live/status", `/status live round-trip (${body.version}, ${body.posture})`);
+  checkVersionSkew(run, body.version);
+  const mcpPosture = body.blocks.mcp === "broker" ? "broker"
+    : body.blocks.mcp === true || body.blocks.mcp === "local" ? "local"
+    : false;
+  checkVenue(run, body.blocks.sandbox);
+  return { mcpPosture, live: true };
 }
 
 /** Render gate (0.4.1 E2E cert M3): a live wire proves nothing about the
