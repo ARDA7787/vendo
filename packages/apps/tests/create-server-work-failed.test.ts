@@ -91,7 +91,10 @@ const workingBox: FakeBoxAgent = ({ box }) => {
 describe("a create whose server work could not be built", () => {
   it("tells the caller, logs it, and does not report complete — while still resolving with the app", async () => {
     const runtime = setup(brokenBox);
-    const failures: Array<{ ok: false; reasons: string[] }> = [];
+    // The failure rides the CreateServerWork envelope's `failed` half (#881
+    // unified the failure-only signal into the envelope the success path
+    // publishes).
+    const failures: Array<{ failed?: string[] }> = [];
     const errors: string[] = [];
     const infos: string[] = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
@@ -112,8 +115,7 @@ describe("a create whose server work could not be built", () => {
       // The signal the door was missing, exactly once, carrying the box's own
       // words rather than a generic apology.
       expect(failures).toHaveLength(1);
-      expect(failures[0]?.ok).toBe(false);
-      expect(failures[0]?.reasons.join(" ")).toContain(BOX_GAVE_UP);
+      expect(failures[0]?.failed?.join(" ")).toContain(BOX_GAVE_UP);
 
       // Server-side it is an error, not a shrug.
       expect(errors.some((line) => line.includes("server work failed") && line.includes(app.id))).toBe(true);
