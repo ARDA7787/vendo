@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtractedTool, OverridesFile } from "@vendoai/actions";
 import { mergeOverrides, vendoSync } from "@vendoai/actions/sync";
+import { VendoError } from "@vendoai/core";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { scrubErrorDetail, type Telemetry } from "@vendoai/telemetry";
@@ -449,7 +450,17 @@ const SYNC_HOOKS = [
 ] as const;
 
 function packageWithSyncHooks(raw: string): string | null {
-  const manifest = JSON.parse(raw) as Record<string, unknown>;
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(raw) as Record<string, unknown>;
+  } catch (error) {
+    // A manifest npm itself would refuse deserves one clean sentence, never a
+    // raw SyntaxError stack (FINDINGS, linkwarden field test 2026-08-08).
+    throw new VendoError(
+      "validation",
+      `package.json is not valid JSON (${error instanceof Error ? error.message : String(error)}) — fix it and re-run vendo init`,
+    );
+  }
   const priorScripts = manifest["scripts"];
   const scripts = typeof priorScripts === "object" && priorScripts !== null && !Array.isArray(priorScripts)
     ? priorScripts as Record<string, unknown>
@@ -1773,10 +1784,27 @@ export async function runInit(options: InitOptions): Promise<number> {
   const root = resolve(options.targetDir);
   const env = options.env ?? process.env;
 
+  /** A plan failure the HOST must fix (a manifest npm itself would refuse)
+      exits with the CLI's normal one-line error instead of a raw stack. */
+  const explainedPlanFailure = (error: unknown): boolean => {
+    if (error instanceof VendoError && error.code === "validation") {
+      output.error(`vendo init: ${error.message}`);
+      return true;
+    }
+    return false;
+  };
+
   if (options.agent === true) {
     // Extraction runs before the plan is emitted so the plan carries real tool
     // names and risk advice; the throwaway out dir keeps --agent read-only.
-    const { plan } = await buildPlan(options);
+    let planned: Awaited<ReturnType<typeof buildPlan>>;
+    try {
+      planned = await buildPlan(options);
+    } catch (error) {
+      if (explainedPlanFailure(error)) return 1;
+      throw error;
+    }
+    const { plan } = planned;
     const extraction = await extractForPlan(root);
     output.log(JSON.stringify({
       ...plan,
@@ -1821,7 +1849,14 @@ export async function runInit(options: InitOptions): Promise<number> {
     ? undefined
     : (options.selectAuth ?? (pretty === null ? plainSelect : pretty.select));
   const detectStarted = Date.now();
-  const { plan, changes, edits, manualSteps, mount, authAdvice, authWired, compositionPath, layout, modelWritten, rewriteModels } = await buildPlan(options, confirmAuth, selectAuth);
+  let built: Awaited<ReturnType<typeof buildPlan>>;
+  try {
+    built = await buildPlan(options, confirmAuth, selectAuth);
+  } catch (error) {
+    if (explainedPlanFailure(error)) return 1;
+    throw error;
+  }
+  const { plan, changes, edits, manualSteps, mount, authAdvice, authWired, compositionPath, layout, modelWritten, rewriteModels } = built;
   const detectMs = Date.now() - detectStarted;
   let telemetry = telemetryFor(options, output, root);
   await telemetry.track("init_started", { framework: plan.framework });
