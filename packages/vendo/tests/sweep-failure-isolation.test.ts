@@ -6,19 +6,12 @@ import type { LanguageModel } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createVendo } from "../src/server.js";
 
-// A transient store failure inside the amortized on-request sweep must never
-// fail the request that happened to trigger it — a failed sweep just means the
-// idle session lives until the next interval (same posture as the background
-// timer leg, which catches and warns).
-vi.mock("@vendoai/store", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@vendoai/store")>();
-  return {
-    ...actual,
-    sweepEphemeralSubjects: vi.fn(async () => {
-      throw new Error("sweep boom (transient store failure)");
-    }),
-  };
-});
+// The amortized on-request sweep is a piece of housekeeping the request merely
+// happened to trigger. A transient store failure inside it must never 500 that
+// innocent request — the pass just warns and the reclaim waits for the next
+// interval (server.ts, the catch around startSweep(false)). The surviving leg
+// that can reject out of runSweep is the parked-BYO-call scan, so the fault is
+// injected at the store boundary for that one collection.
 
 const model = {
   specificationVersion: "v2",
@@ -36,18 +29,31 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("on-request sweep failure isolation (kill-list B3 review)", () => {
+describe("on-request sweep failure isolation", () => {
   it("serves the request that triggered a failing sweep instead of 500ing it", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "vendo-sweep-failure-"));
     const store = createStore({ dataDir });
     cleanups.push(async () => { await store.close(); await rm(dataDir, { recursive: true, force: true }); });
     await store.ensureSchema();
+
+    // Fault injection at the real store boundary: only the parked-call scan
+    // fails, everything the request itself reads stays real.
+    const realRecords = store.records.bind(store);
+    store.records = (collection: string) => {
+      const records = realRecords(collection);
+      if (collection !== "vendo_parked_call") return records;
+      return {
+        ...records,
+        list: async () => { throw new Error("sweep boom (transient store failure)"); },
+      };
+    };
+
     let now = 0;
     const vendo = createVendo({
       model,
-      principal: async () => null, // anonymous
+      principal: async () => ({ kind: "user", subject: "user_a" }),
       store,
-      sessions: { ttlMs: 1000, sweepIntervalMs: 100, now: () => now },
+      sweep: { intervalMs: 100, now: () => now },
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
@@ -56,8 +62,9 @@ describe("on-request sweep failure isolation (kill-list B3 review)", () => {
     const response = await vendo.handler(
       new Request("https://host.test/api/vendo/threads"),
     );
+
     expect(response.status).toBe(200);
     expect((await response.json()) as unknown[]).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("session sweep failed"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("TTL sweep failed"));
   });
 });
