@@ -129,13 +129,12 @@ const createAppCopyDoors = (
         id: `app_${globalThis.crypto.randomUUID()}`,
         forkedFrom: source.id,
       };
-      // execution-v2 — a fork never carries the machine (or the retired v1
-      // server snapshot); the copy re-graduates on its own.
+      // execution-v2 — a fork never carries the machine; the copy re-graduates
+      // on its own.
       delete fork.machine;
       // Lane E grant hygiene — egress approval never travels with a copy; the
       // fork re-approves its declaration.
       delete fork.egressApproved;
-      delete fork.server;
       // The conversation belongs to the owner who had it, not to the copy: the
       // persist already drops it (appRecordInput takes no session here), and the
       // RETURNED document must not hand it back either.
@@ -265,14 +264,14 @@ export const createAppsSurface = (
   deps: Pick<AppsRuntimeContext,
     "config" | "apps" | "caller" | "data" | "history" | "review" | "opener" | "interchange"
     | "inClientApprovals" | "egressApprovals" | "parkedActions" | "placementRows"
-    | "lifecycle" | "manifestTriggers" | "owned" | "requireOwned" | "requireMultiParty"
+    | "lifecycle" | "owned" | "requireOwned" | "requireMultiParty"
     | "grantedRecords" | "reportLifecycle" | "claimSlot" | "markUnbuilt"
     | "runtime">,
 ): Pick<AppsRuntime,
   "get" | "list" | "delete" | "fork" | "promote" | "share" | "publish"
   | "exportApp" | "importApp" | "history" | "open" | "call" | "agentTools"> => {
   const { config, apps, data, history, review, inClientApprovals } = deps;
-  const { egressApprovals, parkedActions, placementRows, lifecycle, manifestTriggers } = deps;
+  const { egressApprovals, parkedActions, placementRows, lifecycle } = deps;
   const { requireOwned, reportLifecycle, claimSlot, markUnbuilt, runtime } = deps;
   return {
     ...createAppReadDoors(deps),
@@ -285,7 +284,6 @@ export const createAppsSurface = (
       // graduated tree's fn: refs would fail a machine-cleared re-validation
       // and otherwise strand the provider snapshot.
       await lifecycle.destroyResources(app);
-      await manifestTriggers.clearLegacyState(appId);
       await data.clear(app, ctx.principal.subject, await history.documents(appId));
       await history.clear(appId);
       await inClientApprovals.clear(appId);
