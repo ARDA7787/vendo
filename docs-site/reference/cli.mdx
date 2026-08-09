@@ -58,7 +58,16 @@ composition and a Node HTTP-to-fetch adapter. Mount the adapter with
 `<VendoProvider>` to finish. See [vendo init](/reference/vendo-init) for
 detection precedence and the non-interactive `--framework` fallback.
 
-`dir` is the app to initialize and defaults to the current directory.
+`dir` is the app to initialize and defaults to the current directory. Point
+it at the package whose `package.json` declares your framework dependency: in
+a monorepo that is the app workspace (`npx vendo init apps/web`), never the
+repo root — detection reads the target's `package.json`, so a workspace root
+without a `next`/`express` dependency errors non-interactively or lands on
+the custom scaffold. Install `vendoai` into that same workspace with your
+package manager (`npm install vendoai -w apps/web`,
+`yarn workspace <app> add vendoai`, `pnpm --filter <app> add vendoai`)
+before running init, and run `login`, `doctor`, and `sync` from that
+directory too.
 
 Init also adds idempotent `predev`/`prebuild` `vendo sync` hooks to
 `package.json` and writes confirm-each risk answers to `.vendo/overrides.json`,
@@ -157,7 +166,11 @@ and is left untouched.
 Claims a Vendo Cloud key through the [auth.md](https://vendo.run/auth.md)
 user-claimed ceremony: the CLI opens a claim, shows the pairing code and
 approval URL, and polls until the request is approved in the browser. The
-minted `VENDO_API_KEY` is written to `.env.local` — never printed. The
+minted `VENDO_API_KEY` is written to `.env.local` — never printed — **in the
+current working directory**: run login from the same app directory you ran
+init in (the app workspace in a monorepo, not the repo root), or the key
+lands in a `.env.local` your framework never loads and every later command
+silently behaves keyless. The
 success message may suggest re-running `vendo init`; that applies only to a
 repo that is not wired yet. In an already-initialized repo nothing needs
 re-running — the runtime picks the key up from `.env.local` on the next
@@ -561,6 +574,10 @@ Exit codes:
   when `--strict` is set
 
 ## `vendo eject <surface> [dir]`
+
+Despite the name, `eject` does not remove Vendo — it is a customization
+command. Looking to uninstall or start over? See
+[Uninstall Vendo](/reference/uninstall).
 
 Copies a shipped chrome surface's presentation source out of the installed
 `@vendoai/ui` into your repo as code you own, shadcn-style. Pixels are

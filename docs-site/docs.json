@@ -135,6 +135,7 @@
         "pages": [
           "reference/cli",
           "reference/vendo-init",
+          "reference/uninstall",
           "reference/server-api",
           "reference/handler-options",
           "reference/hooks",
