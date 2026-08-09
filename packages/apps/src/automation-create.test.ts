@@ -6,10 +6,10 @@
  * Wave 9; the create door dropped them on the floor, so a first-ask
  * automation never raised a card and its pending grants were invisible.
  */
-import type { RunContext, ScreenAssembler, ToolRegistry } from "@vendoai/core";
+import { VENDO_APP_FORMAT, type RunContext, type ScreenAssembler, type ToolRegistry } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
 import { createApps } from "./index.js";
-import { fakeBoxSandbox, guardFixture, memoryStore, scriptedLanguageModel } from "./testing/index.js";
+import { fakeBoxSandbox, guardFixture, memoryStore, scriptedLanguageModel, seedAppRow } from "./testing/index.js";
 import type { CreateServerWork } from "./types.js";
 
 const APP_ID = "app_create_ladder";
@@ -89,6 +89,29 @@ const createWithLadder = async (
   }, ctx);
   return { document, work };
 };
+
+describe("schedule on an app with no automation", () => {
+  it("names the door back to vendo_make instead of a dead end", async () => {
+    // Field (linkwarden 2026-08-08): the refusal is the one sentence the
+    // calling model recovers from mid-turn, so it must carry the exact next
+    // move — the make door, this app named, schedule and action in one ask.
+    const store = memoryStore();
+    const runtime = createApps({ store, guard: guardFixture(), tools, catalog: [] });
+    await seedAppRow(store, {
+      format: VENDO_APP_FORMAT,
+      id: "app_view_only",
+      name: "Links",
+      ui: "tree",
+      tree: {
+        formatVersion: "vendo-genui/v2",
+        root: "app",
+        nodes: [{ id: "app", component: "Stack", source: "prewired", children: [] }],
+      },
+    }, ctx.principal.subject);
+    await expect(runtime.schedule("app_view_only", "*/5 * * * *", ctx))
+      .rejects.toThrow(/vendo_make/);
+  });
+});
 
 describe("create hands the server lane's outcome to its caller (#881)", () => {
   it("delivers the authored automation envelope through onServerWork", async () => {
