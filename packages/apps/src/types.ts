@@ -41,12 +41,11 @@ import type { LanguageModel } from "ai";
 import type { Check, Finding } from "./checking/types.js";
 import type { CloudAppsClient, PublishRecord, ShareSnapshot } from "./cloud.js";
 import type { GenerationDependencies } from "./generation/engine.js";
-import type { InClientVerdict } from "./inclient.js";
 import type { BuildMachineEnv, LifecycleClock } from "./machine-lifecycle.js";
-import type { AppMachineStatus, ManifestTriggerSync } from "./manifest-triggers.js";
+import type { AppMachineStatus } from "./manifest-triggers.js";
 import type { InClientApproval, PinBaseline, PinDrift } from "./pins.js";
 import type { RemixRejection, ReviewQueueEntry } from "./review.js";
-import type { SandboxAdapter, SandboxMachine } from "./sandbox.js";
+import type { SandboxAdapter } from "./sandbox.js";
 import type { ShipDiff } from "./ship-diff.js";
 
 /** 06-apps §1 plus block-plan decisions 3–4. */
@@ -318,24 +317,6 @@ export interface BoxResponse {
   headers: Record<string, string>;
   body: Uint8Array;
 }
-
-/**
- * ENG-345 — the in-sandbox status of one declared secret for one app.
- * `handle` is the Option B default; `exposed` means an active owner-approved
- * grant places its real value in the sandbox env; `pending` means a flip-on is
- * parked awaiting the high-risk guard approval.
- */
-export interface SecretExposureState {
-  secretName: string;
-  status: "handle" | "pending" | "exposed";
-  approvalId?: ApprovalId;
-}
-
-/** ENG-345 — the outcome of a setExposure() call. */
-export type SetExposureResult =
-  | { status: "handles" }
-  | { status: "exposed" }
-  | { status: "pending-approval"; approvalId: ApprovalId };
 
 /**
  * 06-apps §8 — the outcome of one pin rebase. `failed` persists NOTHING: the
@@ -714,8 +695,6 @@ export interface AppsRuntime {
    */
   inClient: {
     shipDiff(appId: AppId, ctx: RunContext): Promise<ShipDiff>;
-    approvals(appId: AppId, ctx: RunContext): Promise<InClientApproval[]>;
-    verdict(appId: AppId, ctx: RunContext): Promise<InClientVerdict>;
     approve(input: { appId: AppId; approvedBy: string }, ctx: RunContext): Promise<InClientApproval>;
   };
   /**
@@ -753,7 +732,6 @@ export interface AppsRuntime {
    * and the new version drops in-client approval by construction (§9).
    */
   pins: {
-    drift(appId: AppId, ctx: RunContext): Promise<PinDrift[]>;
     rebase(input: { appId: AppId; slot: string }, ctx: RunContext): Promise<PinRebaseResult>;
     /**
      * Gesture-owned forking (2026-07-21) — the deterministic fork the user's
@@ -768,7 +746,7 @@ export interface AppsRuntime {
   };
   /**
    * execution-v2 — additive machine lifecycle surface (same additive precedent
-   * as `inClient`/`pins`/`secrets`). An app with no `machine` on its document
+   * as `inClient`/`pins`). An app with no `machine` on its document
    * is a layer-1 tree app; presence of `machine` means layer 2+ — the layer is
    * always derived from presence, never stored. Wake single-flight and idle
    * auto-sleep live in-process; a multi-instance host can wake one app twice
@@ -788,14 +766,6 @@ export interface AppsRuntime {
      * decision still fails loudly on its own (`sandbox-unavailable`).
      */
     available(): boolean;
-    /** Create the machine from the base template, snapshot it, store the ref. Idempotent. */
-    provision(appId: AppId, ctx: RunContext): Promise<AppDocument>;
-    /** Resume the stored snapshot; concurrent wakes coalesce to one machine. */
-    wake(appId: AppId, ctx: RunContext): Promise<SandboxMachine>;
-    /** Snapshot the live machine, store the new ref, stop it. No-op when not awake. */
-    sleep(appId: AppId, ctx: RunContext): Promise<AppDocument>;
-    /** Destroy the sandbox and clear the document's machine field (de-graduation). */
-    destroy(appId: AppId, ctx: RunContext): Promise<AppDocument>;
     /**
      * Wave 7 H2 — the embed surface's keepalive: one cheap HEAD through the
      * idle-tracked machine wrapper, so user activity on an embedded served
@@ -806,42 +776,8 @@ export interface AppsRuntime {
      * shared is theirs to send, and it grants no more than seeing the app does.
      */
     ping(appId: AppId, ctx: RunContext): Promise<{ state: "awake" | "woke" }>;
-    /**
-     * Re-read the box's `vendo.json` and fold its `schedules` into the app's
-     * doc triggers (manifest-triggers.ts): each declaration becomes a schedule
-     * trigger running `fn:<name>`, armed through the arming seam and fired by
-     * the automations tick — the ONE scheduler. Editor-scoped, like every other
-     * edit: re-reading a shared app's manifest is part of editing it. Called
-     * automatically after a box server-edit; exposed because a manifest edited
-     * inside the box (an agent session, a layer-3 app) has no other way in.
-     */
-    syncManifest(appId: AppId, ctx: RunContext): Promise<ManifestTriggerSync>;
     /** Dev-only reporting for the doctor: which apps carry a machine, whether
      *  they are awake, and what their manifests schedule. */
     report(): Promise<AppMachineStatus[]>;
-  };
-  /**
-   * ENG-345 — additive guarded per-secret in-sandbox exposure surface (same
-   * additive precedent as `inClient`/`pins`, not part of the frozen §1 method
-   * table). Option B (handles + egress substitution) stays the default; this is
-   * the exception path, off by default, per-secret × per-app, OWNER-ONLY, and
-   * gated by the guard's existing high-risk approval flow. The grant NEVER
-   * travels with a copy: it lives in its own store collection keyed by the app
-   * id, so exportApp/importApp/fork/share/publish (all of which mint or copy a
-   * fresh app id) can never carry it. Requires a 06-apps §4.3 contract
-   * amendment (parked, Yousef-gated).
-   */
-  secrets: {
-    /** Current in-sandbox status of every declared secret for one app (owner-only). */
-    exposure(appId: AppId, ctx: RunContext): Promise<SecretExposureState[]>;
-    /**
-     * Flip one secret's in-sandbox exposure. Turning ON routes through the
-     * guard's high-risk approval flow and returns `pending-approval` until the
-     * owner decides it; turning OFF reverts to handles immediately.
-     */
-    setExposure(
-      input: { appId: AppId; secretName: string; expose: boolean },
-      ctx: RunContext,
-    ): Promise<SetExposureResult>;
   };
 }
