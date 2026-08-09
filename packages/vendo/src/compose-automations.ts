@@ -8,11 +8,44 @@ import type { VendoComposition } from "./compose-context.js";
 import { isHostedStore, reportHostedStoreOnce } from "./compose-store.js";
 import { assembleSystemPrompt } from "./prompt.js";
 
+/** How often a development process ticks its own scheduler. One minute is the
+ *  engine's own `start()` default: fine-grained enough for the shortest real
+ *  cadence people write ("every 5 minutes"), cheap enough to never matter. */
+const DEV_TICK_INTERVAL_MS = 60_000;
+
+/**
+ * Which trigger kinds THIS process fires. `undefined` means every kind — the
+ * engine's own default.
+ *
+ * Under the hosted store Cloud is the firing authority for schedule/external
+ * — EXCEPT in development (field: linkwarden 2026-08-09): Cloud's scheduler
+ * cannot reach a dev server (a localhost wire is in no deployment inventory),
+ * so deferring to it armed schedules nobody would ever fire. A dev process
+ * fires its own; the schedule-cursor claims are atomic in the shared store
+ * (insertIfAbsent / compareAndSwap), so two firers can never double-run one
+ * tick. An unmounted automations block never fires anything, whatever the
+ * store — that is the same statement about this process either way.
+ */
+export function localFiringKinds(input: {
+  hostedStoreComposed: boolean;
+  automationsMounted: boolean;
+  development: boolean;
+}): Set<"schedule" | "external"> | undefined {
+  if (!input.automationsMounted) return new Set();
+  if (input.hostedStoreComposed && !input.development) return new Set();
+  return undefined;
+}
+
 /** The automations engine, and the arming seam the apps runtime reads back. */
 export const composeAutomations = (composition: VendoComposition): Pick<VendoComposition,
-  "hostedStoreComposed" | "automations" | "automationsForArming"> => {
+  "hostedStoreComposed" | "automations" | "automationsForArming" | "startDevAutomationsTicker"> => {
   const { store, ops, apps, boundTools, guard, harness, files, capability, inference } = composition;
   const { system, resolveRisk, access, membershipsSeam, automationsMounted } = composition;
+  // The same derivation compose-wire's `development` uses: an explicit
+  // config.development wins either way; otherwise NODE_ENV=development.
+  const development = composition.config.development !== undefined
+    ? composition.config.development !== false
+    : composition.isDevelopmentEnv;
   // Wave 2 (Cloud auto): a keyed deployment's schedule- and external-triggered
   // automations already run on Vendo Cloud — its scheduler fires due schedules and
   // Composio delivers external events straight to Cloud. If this LOCAL engine also
@@ -24,7 +57,8 @@ export const composeAutomations = (composition: VendoComposition): Pick<VendoCom
   // so "once per composition" printed this paragraph 29 times in one short
   // session).
   const hostedStoreComposed = isHostedStore(store);
-  if (hostedStoreComposed) reportHostedStoreOnce();
+  if (hostedStoreComposed) reportHostedStoreOnce(development);
+  const firingKinds = localFiringKinds({ hostedStoreComposed, automationsMounted, development });
   const automations = createAutomations({
     apps,
     tools: boundTools,
@@ -65,12 +99,22 @@ export const composeAutomations = (composition: VendoComposition): Pick<VendoCom
     // request does; the callback is host server code in this deployment, so the
     // absence of a session is not in its way.
     ...(membershipsSeam === undefined ? {} : { memberships: membershipsSeam }),
-    // Nothing fires locally when Cloud is already the firing authority for this
-    // data — or when the host unmounted automations, which is the same
-    // statement about this process: it is not the one that fires.
-    ...(hostedStoreComposed || !automationsMounted
-      ? { localTriggerKinds: new Set<"schedule" | "external">() }
-      : {}),
+    // Which kinds THIS process fires — see localFiringKinds above (Cloud is
+    // the authority under the hosted store, except a development process,
+    // which Cloud cannot reach and must fire its own schedules).
+    ...(firingKinds === undefined ? {} : { localTriggerKinds: firingKinds }),
   });
-  return { hostedStoreComposed, automations, automationsForArming: automations };
+  // A development process drives its own scheduler tick: the production tick
+  // is an external caller's job (POST /tick with VENDO_TICK_SECRET, or Cloud
+  // for hosted deploys), and no laptop has one — armed by the ready() latch
+  // beside the background sweep, never at construction (timers are illegal in
+  // Workers global scope). Once per composition; the engine's interval is
+  // unref'd, so it never keeps a dev server from exiting.
+  let devTickerStarted = false;
+  const startDevAutomationsTicker = (): void => {
+    if (!development || !automationsMounted || devTickerStarted) return;
+    devTickerStarted = true;
+    automations.start(DEV_TICK_INTERVAL_MS);
+  };
+  return { hostedStoreComposed, automations, automationsForArming: automations, startDevAutomationsTicker };
 };
