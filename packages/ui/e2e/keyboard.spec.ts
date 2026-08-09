@@ -14,8 +14,8 @@ test("thread is keyboard-complete with visible focus", async ({ page }) => {
       + "chrome-css suppresses its outline and draws the keyboard ring on the "
       + "composer CARD instead (.fl-composer:has(:focus-visible), a 3px accent "
       + "halo). Every other fl-* interactive in thread/overlay/page/approval/"
-      + "automations/activity/waiting/affordances DOES ring (probed, all eight "
-      + "scenarios). Spec §9 freezes the composer's furniture, so the fix is in "
+      + "affordances DOES ring (probed across the scenarios). "
+      + "Spec §9 freezes the composer's furniture, so the fix is in "
       + "expectFocusIndicator — accept a ring drawn by the control's own container "
       + "— not in the CSS. Needs a design call, so it stays quarantined.",
   );
@@ -64,56 +64,6 @@ test("⌘K toggles the one conversation surface by keyboard alone", async ({ pag
   await expect(dialog).toBeHidden();
   await page.keyboard.press("Control+K");
   await expect(dialog).toBeVisible();
-});
-
-test("automation controls are all keyboard reachable and execute by Enter", async ({ page }) => {
-  await openScenario(page, "automations");
-  await expect(page.getByRole("switch")).toBeVisible();
-  await expectKeyboardReachability(page, 'main[data-scenario="automations"]');
-  await tabTo(page, async () => page.evaluate(() => document.activeElement?.getAttribute("role") === "switch"));
-  const before = await page.getByRole("switch").getAttribute("aria-checked");
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("switch")).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
-  await tabTo(page, async () => page.evaluate(() => document.activeElement?.textContent?.trim() === "Dry run"));
-  await page.keyboard.press("Enter");
-  await expect(page.getByLabel("Dry run for Invoice watcher")).toBeVisible();
-});
-
-test("a running automation is killed by keyboard from run history", async ({ page }) => {
-  await openScenario(page, "automations");
-  await expect(page.getByRole("switch")).toBeVisible();
-  await tabTo(page, async () => page.evaluate(() => document.activeElement?.textContent?.trim() === "Run history"));
-  await page.keyboard.press("Enter");
-  const history = page.getByLabel("Run history for Invoice watcher");
-  await expect(history.getByText("running")).toBeVisible();
-  await tabTo(page, async () => page.evaluate(() => document.activeElement?.textContent?.trim() === "Stop"));
-  await page.keyboard.press("Enter");
-  await expect(history.getByText("stopped")).toBeVisible();
-});
-
-test("activity load-more is keyboard reachable and appends a page", async ({ page }) => {
-  test.fixme(
-    true,
-    "asserts `tbody tr` — the activity ledger is a <ul role=list> of .fl-act-led-row items (ActivityLedger), never a table. The selectors were left behind when the ledger was rewritten; rewriting them is a behaviour change this lane isn't scoped to make blind.",
-  );
-  await openScenario(page, "activity");
-  const rows = page.locator('main[data-scenario="activity"] tbody tr');
-  await expect(rows).toHaveCount(2);
-  await tabTo(page, async () => page.evaluate(() => document.activeElement?.textContent?.trim() === "Load more"));
-  await page.keyboard.press("Enter");
-  await expect(rows).toHaveCount(3);
-});
-
-test("activity reaches an explicit end-of-list once history is exhausted", async ({ page }) => {
-  test.fixme(true, "same `tbody tr` selector as the case above — the ledger is a list, not a table.");
-  await openScenario(page, "activity");
-  const loadMore = page.getByRole("button", { name: "Load more" });
-  // First page appends aud_3; the second repeats seen rows → end of the list.
-  await loadMore.click();
-  await expect(page.locator('main[data-scenario="activity"] tbody tr')).toHaveCount(3);
-  await loadMore.click();
-  await expect(page.getByTestId("activity-end")).toBeVisible();
-  await expect(loadMore).toHaveCount(0);
 });
 
 test("a destructive approval can be denied entirely by keyboard", async ({ page }) => {

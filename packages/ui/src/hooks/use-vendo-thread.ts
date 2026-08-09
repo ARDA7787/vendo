@@ -53,10 +53,10 @@ const BEAT_PHASES: Record<BeatPhase, true> = {
  * carried none, would make the receiver the author of a fact the harness never
  * sent.
  *
- * The label itself is NOT rewritten. Ruling 14 (consumer-voice.ts) settled that
- * a regex set may not be the runtime authority for what a person may read — as
- * a gate it deleted good host copy while admitting raw JSON. The beat text rules
- * bind the PRODUCER; here the label is passed through as sent.
+ * The label itself is NOT rewritten. Ruling 14 settled that a regex set may not
+ * be the runtime authority for what a person may read — as a gate it deleted
+ * good host copy while admitting raw JSON. The beat text rules bind the
+ * PRODUCER; here the label is passed through as sent.
  */
 function vendoBeat(chunk: { type: string; data?: unknown }): VendoBeat | undefined {
   if (chunk.type !== VENDO_STATUS_PART) return undefined;
@@ -220,7 +220,7 @@ export function useVendoThread(threadId?: string) {
     };
   }, [client, threadId, chat.setMessages, chat.resumeStream]);
 
-  // LANE D (spec §2) — surfaces OUTSIDE the conversation (the launcher pill,
+  // Surfaces OUTSIDE the conversation (the launcher pill,
   // the badge) must be able to narrate a run whose state lives in here: the
   // panel hides itself on close and keeps streaming, and the pill is in a
   // different React tree. Every thread surface publishes its turn to the

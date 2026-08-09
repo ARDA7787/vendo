@@ -4,16 +4,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VendoProvider, createVendoClient, type VendoClient } from "../../src/index.js";
 import {
-  ActivityPanel,
   ApprovalCard,
-  AutomationsPanel,
   ChromeRoot,
   NoPolicyNotice,
   VendoOverlay,
   VendoPalette,
   VendoSlot,
   VendoThread,
-  WaitingQueue,
 } from "../../src/chrome/index.js";
 import { createWireServer } from "../wire-server.js";
 
@@ -149,8 +146,6 @@ describe("ApprovalCard and NoPolicyNotice exports", () => {
       <VendoOverlay open />,
       <VendoSlot appId="app_1" />,
       <ApprovalCard approval={approval} onDecide={() => undefined} />,
-      <WaitingQueue pollMs={0} />,
-      <ActivityPanel />,
     ];
     for (const surface of surfaces) {
       // The host's OWN explicit banner rides alongside: it renders only on a
@@ -173,29 +168,11 @@ describe("ApprovalCard and NoPolicyNotice exports", () => {
     expect(await screen.findByRole("region", { name: "Vendo is running without a policy" })).toBeTruthy();
   });
 
-  // ⚠️ These used to pin the AUTOMATIC banner (C1's defect): they asserted that
-  // ActivityPanel and AutomationsPanel each grew the developer banner on their
-  // own, which is the same code path that put it on a customer's thread, slot
-  // and embed. They now pin the guarantee instead — no chrome surface renders
-  // it, the host's explicit mount does.
-  it("no workspace surface grows the banner on its own — the host's mount is the one source", async () => {
-    wire.state.posture = "unconfigured";
-    const surfaces = [<ActivityPanel />, <AutomationsPanel />];
-
-    for (const surface of surfaces) {
-      render(<VendoProvider client={client}><NoPolicyNotice />{surface}</VendoProvider>);
-      await screen.findByRole("region", { name: "Vendo is running without a policy" });
-      expect(screen.getAllByRole("region", { name: "Vendo is running without a policy" })).toHaveLength(1);
-      cleanup();
-    }
-  });
-
   it("renders no notice on any chrome surface under rules posture", async () => {
     render(
       <VendoProvider client={client}>
         <NoPolicyNotice />
-        <ActivityPanel />
-        <AutomationsPanel />
+        <VendoThread threadId="thr_1" />
         <VendoPalette />
       </VendoProvider>,
     );

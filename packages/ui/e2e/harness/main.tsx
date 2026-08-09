@@ -20,11 +20,8 @@ import {
   type VendoClient,
 } from "../../src/index.js";
 import {
-  ActivityPanel,
   ApprovalCard,
-  AutomationsPanel,
   ConnectCard,
-  ConnectedAccountsPanel,
   NoPolicyNotice,
   VendoOverlay,
   VendoPalette,
@@ -32,7 +29,6 @@ import {
   VendoThread,
   VendoToasts,
   VendoToolResult,
-  WaitingQueue,
   vendoToast,
   type VendoCommand,
 } from "../../src/chrome/index.js";
@@ -1111,11 +1107,7 @@ function TwoMoneyScenario() {
 function UnconfiguredPostureScenario() {
   return (
     <VendoProvider client={unconfiguredClient} components={components} theme={mapleTheme}>
-      <div style={{ display: "grid", gap: 18 }}>
-        <div style={{ height: 420, display: "flex" }}><VendoThread threadId="thr_1" /></div>
-        <WaitingQueue pollMs={0} />
-        <ActivityPanel />
-      </div>
+      <div style={{ height: 420, display: "flex" }}><VendoThread threadId="thr_1" /></div>
     </VendoProvider>
   );
 }
@@ -1952,15 +1944,6 @@ function AffordancesScenario({ theme }: { theme: Partial<VendoTheme> }) {
   );
 }
 
-/** ENG-225 — the waiting-on-you queue over the wire fixture's pending approval. */
-function WaitingScenario() {
-  return (
-    <VendoProvider client={baseClient} components={components} theme={mapleTheme}>
-      <WaitingQueue pollMs={0} />
-    </VendoProvider>
-  );
-}
-
 /** ENG-225 — the toast stack: an automation delivery, an error, and a sticky
  *  approval-required card with its in-place Approve. */
 function ToastsScenario() {
@@ -2072,10 +2055,6 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/approval-descriptor": return { title: "Approval — model-instruction descriptor", content: <DescriptorHoleScenario />, ownProvider: true };
     case "/approval-two-money": return { title: "Approval — a fee beside the amount (C5)", content: <TwoMoneyScenario />, ownProvider: true };
     case "/unconfigured-posture": return { title: "Unconfigured posture — every consumer surface (C1)", content: <UnconfiguredPostureScenario />, ownProvider: true };
-    case "/accounts": return { title: "Connected accounts", theme: mapleTheme, content: <ConnectedAccountsPanel /> };
-    case "/activity": return { title: "Activity", content: <ActivityPanel /> };
-    case "/activity-dark": return { title: "Activity — dark", theme: darkTheme, content: <ActivityPanel /> };
-    case "/automations": return { title: "Automations", content: <AutomationsPanel /> };
     case "/notice": return { title: "Unconfigured policy", ownProvider: true, content: (<VendoProvider client={unconfiguredClient} components={components}><NoPolicyNotice /></VendoProvider>) };
     case "/tree": return { title: "Tree containment", content: <TreeScenario /> };
     case "/tree-jail": return { title: "Generated component jail", content: <TreeScenario jail /> };
@@ -2109,7 +2088,6 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/byo-embed-failed": return { title: "BYO chat — build failed", content: <ByoEmbedScenario appId="app_build_failed" title="Spending board" />, ownProvider: true };
     case "/affordances": return { title: "Affordances (Maple) — copy, attach, connect dock", content: <AffordancesScenario theme={mapleTheme} />, ownProvider: true };
     case "/affordances-dark": return { title: "Affordances — dark", content: <AffordancesScenario theme={darkTheme} />, ownProvider: true };
-    case "/waiting": return { title: "Waiting on you", content: <WaitingScenario />, ownProvider: true };
     case "/toasts": return { title: "Toasts", content: <ToastsScenario />, ownProvider: true };
     default: return { title: "Unknown scenario", content: <p role="alert">Unknown browser scenario: {pathname}</p> };
   }
@@ -2143,7 +2121,7 @@ function Harness() {
     );
   }
   return (
-    <main className={`harness-shell${globalThis.location.pathname === "/thread" || globalThis.location.pathname === "/activity-dark" ? " harness-dark" : ""}`} data-scenario={globalThis.location.pathname.slice(1)}>
+    <main className={`harness-shell${globalThis.location.pathname === "/thread" ? " harness-dark" : ""}`} data-scenario={globalThis.location.pathname.slice(1)}>
       <h1 className="harness-heading">{current.title}</h1>
       <div className="harness-surface">{content}</div>
     </main>

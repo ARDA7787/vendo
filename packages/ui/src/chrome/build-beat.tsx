@@ -14,7 +14,7 @@ import type { VendoBeat } from "./run-activity.js";
  * orb while working and a tick when done. Labels come from the ENG-216
  * humanization pipeline (host `ToolMeta` wins, else the prettified tool id —
  * never the raw slug or a lifecycle string). The mechanical record stays in
- * the Activity panel.
+ * the audit trail.
  */
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
@@ -53,7 +53,7 @@ export interface ToolPresentation {
   sub?: string;
   toolkit?: string;
   logoUrl?: string;
-  /** Lane pick 1-A — the consequence-first sentence, structured so the card
+  /** The consequence-first sentence, structured so the card
       can emphasize the artifact and target. Synthesized ONLY from the real
       inputs (same honesty rule as `description`); absent when the inputs
       don't support a truthful sentence, in which case the card keeps its
@@ -141,7 +141,6 @@ export interface ConsentWords {
  * "clean" descriptor sentence through a regex vocabulary; ruling 14 reversed
  * that — a regex set admitted raw JSON and exceptions while deleting good host
  * copy, so it cannot be the runtime authority for what a person may read.
- * `consumer-voice.ts` survives as the LAW's test oracle only.
  */
 export function consentWords(
   name: string,

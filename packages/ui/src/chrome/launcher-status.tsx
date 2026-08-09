@@ -1,6 +1,5 @@
 /**
- * LANE D (spec §2 G1, §3 H1, §4 N1) — what the launcher pill says while the
- * user is somewhere else.
+ * What the launcher pill says while the user is somewhere else.
  *
  * Closing the panel is leaving, not stopping. So the pill has three jobs
  * beyond opening the panel: narrate a run that is still going (humanized beat
@@ -27,8 +26,8 @@ import {
     (§3 — "an ignored toast withdraws"; the quiet dot survives it). */
 const TOAST_MS = 6_000;
 
-/** Ask-count cadence, matching the WaitingQueue and the toast feed so the
-    badge and the strip can never be a poll apart. */
+/** Ask-count cadence, matching the toast feed so the badge and the toasts can
+    never be a poll apart. */
 const ASK_POLL_MS = 5_000;
 
 export interface LauncherStatus {
