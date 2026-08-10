@@ -1,6 +1,6 @@
 import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createPrettyOutput, plainSelect, usePrettyOutput, type SelectInput } from "../../src/cli/pretty.js";
+import { createPrettyOutput, displayWidth, plainSelect, usePrettyOutput, type SelectInput } from "../../src/cli/pretty.js";
 import { plainSecret, plainText } from "../../src/cli/pretty.js";
 
 const ESC = "\u001b";
@@ -744,5 +744,312 @@ describe("createPrettyOutput (visual system)", () => {
     const settled = out.raw();
     vi.advanceTimersByTime(300);
     expect(out.raw()).toBe(settled); // no frames after stopSpin
+  });
+});
+
+/** The terminal's OWN arithmetic, deliberately independent of the renderer's:
+    a screen model that measured with the function under test could never
+    disagree with it, and would pass whatever the renderer believed. Two cells
+    for the wide blocks these tests use, none for a combining mark, one else. */
+const cells = (text: string): number => {
+  const grapheme = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  let width = 0;
+  for (const { segment } of grapheme.segment(text.replace(/\u001b\[[0-9;]*m/g, ""))) {
+    // One cluster is one glyph: emoji presentation is always two cells.
+    if (/[\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]/u.test(segment)) { width += 2; continue; }
+    const char = String.fromCodePoint(segment.codePointAt(0) ?? 0);
+    if (/^[\p{Mn}\p{Me}\p{Cf}]$/u.test(char)) continue;
+    if (/^\p{Emoji_Presentation}$/u.test(char)) { width += 2; continue; }
+    const point = char.codePointAt(0) ?? 0;
+    const wide = (point >= 0x1100 && point <= 0x115f)
+      || (point >= 0x2e80 && point <= 0xa4cf)
+      || (point >= 0xac00 && point <= 0xd7a3)
+      || (point >= 0xf900 && point <= 0xfaff)
+      || (point >= 0xff00 && point <= 0xff60);
+    width += wide ? 2 : 1;
+  }
+  return width;
+};
+
+/** The bytes a terminal is SENT are not what a person sees: the select rewinds
+    the cursor and redraws over itself, and the terminal wraps anything wider
+    than the window onto a second ROW of its own. This applies both — the moves
+    the renderer uses (newline, carriage return, cursor-up, erase-line,
+    erase-to-end-of-screen) and the wrap — to a row buffer, so the assertions
+    below are about the settled SCREEN, which is where these bugs were visible.
+    Writes only ever land at the end of a row or at column 0 after an erase,
+    which is why the model can treat column 0 as "replace the row". */
+function screen(columns: number): { write: (chunk: string) => void; rows: () => string[] } {
+  const rows: string[] = [""];
+  let at = 0;
+  let col = 0;
+  const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const put = (text: string): void => {
+    // A terminal places GLYPHS, so the model does too: a cluster never splits
+    // across the wrap.
+    for (const { segment: char } of graphemes.segment(text)) {
+      const cell = cells(char);
+      if (col + cell > columns) {
+        at += 1;
+        col = 0;
+        if (rows[at] === undefined) rows[at] = "";
+      }
+      if (col === 0) rows[at] = "";
+      rows[at] = (rows[at] ?? "") + char;
+      col += cell;
+    }
+  };
+  return {
+    write: (chunk) => {
+      for (const token of chunk.match(/\u001b\[[0-9;?]*[A-Za-z]|\n|\r|[^\u001b\n\r]+/g) ?? []) {
+        if (token === "\n") {
+          at += 1;
+          col = 0;
+          if (rows[at] === undefined) rows[at] = "";
+          continue;
+        }
+        if (token === "\r") { col = 0; continue; }
+        if (token.startsWith(ESC)) {
+          const up = /^\u001b\[(\d*)A$/.exec(token);
+          if (up !== null) { at = Math.max(0, at - (up[1] === "" ? 1 : Number(up[1]))); continue; }
+          if (token === `${ESC}[2K`) { rows[at] = ""; continue; }
+          if (token === `${ESC}[0J` || token === `${ESC}[J`) {
+            rows[at] = (rows[at] ?? "").slice(0, col);
+            rows.length = at + 1;
+            continue;
+          }
+          continue; // SGR and cursor visibility change no cell
+        }
+        put(token);
+      }
+    },
+    rows: () => rows,
+  };
+}
+
+/** The run's first question, verbatim from init's USE_CASE_OPTIONS — the list
+    that duplicated itself at 80 columns. */
+const USE_CASE_OPTIONS = [
+  { value: "embedded", label: "Embedded in my app — chat + generated UI", hint: "recommended" },
+  { value: "agent-loop", label: "Through my own agent loop (AI SDK / Mastra)" },
+  { value: "mcp", label: "From outside agents over MCP — Claude, ChatGPT, Cursor, or any MCP agent (experimental)" },
+] as const;
+
+const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+describe("createPrettyOutput (80 columns — the width most people run)", () => {
+  it("select: the answered block prints each option once, with exactly one ● bullet", async () => {
+    const term = screen(80);
+    const keys = fakeInput();
+    const pretty = createPrettyOutput({
+      write: term.write, input: keys.input, banner: false, columns: 80,
+    });
+    const choice = pretty.select("How will people use your agent?", [...USE_CASE_OPTIONS]);
+
+    // Live: one row per option, one ● — even though option 3 wraps.
+    keys.press("\u001b[B");
+    const live = term.rows().join("\n");
+    expect(occurrences(live, "●")).toBe(1);
+    for (const option of USE_CASE_OPTIONS) {
+      expect(occurrences(live, option.label.slice(0, 24))).toBe(1);
+    }
+
+    keys.press("3");
+    expect(await choice).toBe("mcp");
+    const settled = term.rows().join("\n");
+    // Settled: only the chosen option survives, and it survives once.
+    expect(occurrences(settled, "●")).toBe(1);
+    expect(occurrences(settled, "From outside agents over MCP")).toBe(1);
+    expect(settled).not.toContain("Embedded in my app");
+    expect(settled).not.toContain("Through my own agent loop");
+    expect(settled).not.toContain("○");
+  });
+
+  it("select: the settled long answer stays on the rail and still reads whole", async () => {
+    const term = screen(80);
+    const keys = fakeInput();
+    const pretty = createPrettyOutput({
+      write: term.write, input: keys.input, banner: false, columns: 80,
+    });
+    const choice = pretty.select("How will people use your agent?", [...USE_CASE_OPTIONS]);
+    keys.press("3");
+    expect(await choice).toBe("mcp");
+
+    const rows = term.rows().filter((row) => row !== "");
+    const answer = rows.slice(rows.findIndex((row) => row.includes("●")));
+    // It needed two rows at this width, and both ride the rail.
+    expect(answer).toHaveLength(2);
+    for (const row of answer) expect(row.startsWith("│  ")).toBe(true);
+    expect(answer.map((row) => row.slice(3)).join(" ")).toBe(`● ${USE_CASE_OPTIONS[2].label}`);
+  });
+
+  it("wraps every long line onto the rail — no continuation starts at column 0", () => {
+    const out = sink();
+    const pretty = createPrettyOutput({ write: out.write, banner: false, columns: 80 });
+    pretty.log("catalog.json: 5 discovered, 5 registered");
+    pretty.log("components: 12 captured, 3 updated, 1 removed because the source component is gone");
+    pretty.log("\nVendo Cloud (optional): not configured. A key unlocks team sharing & org governance"
+      + " across your whole company; hosted automations that keep running while you sleep.");
+    pretty.log("Run `vendo login` to claim a free API key; it lands in .env.local and nothing else changes.");
+    pretty.error("warning: .env.local holds a secret — add it to `.gitignore` before you commit it anywhere");
+    pretty.done(12400, true, "14 tools · brand captured · 1 paste left");
+
+    const rows = out.plain().split("\n").slice(0, -1);
+    // The header opens the rail; every row after it is a rail row, and nothing
+    // is wider than the terminal.
+    expect(rows[0]).toBe("┌  vendo init");
+    for (const row of rows.slice(1, -1)) {
+      expect(row).toMatch(/^[│◇◆└]/);
+      expect(row.length).toBeLessThanOrEqual(80);
+    }
+    // The wrapped body of a long line is a rail line too, not a naked tail.
+    const wrapped = rows.filter((row) => row.startsWith("│  ") && row.includes("while you sleep"));
+    expect(wrapped).toHaveLength(1);
+  });
+
+  it("closes the rail with a cancel line when Ctrl-C interrupts a question", () => {
+    const term = screen(80);
+    const keys = fakeInput();
+    const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit:${String(code)}`);
+    });
+    try {
+      const pretty = createPrettyOutput({
+        write: term.write, input: keys.input, banner: false, columns: 80,
+      });
+      void pretty.select("How will people use your agent?", [...USE_CASE_OPTIONS]).catch(() => undefined);
+      expect(() => keys.press("\u0003")).toThrow("exit:130");
+      expect(exit).toHaveBeenCalledWith(130);
+    } finally {
+      exit.mockRestore();
+    }
+    const rows = term.rows().filter((row) => row !== "");
+    expect(rows.at(-1)).toBe("└  Cancelled");
+    // The rail is closed, not left hanging under a half-drawn question.
+    expect(rows.at(-2)).toBe("│");
+    expect(rows.join("\n")).not.toContain("○");
+  });
+
+  it.each([
+    ["NO_COLOR on a TTY", { isTTY: true }, { NO_COLOR: "1" }],
+    ["CI on a TTY", { isTTY: true }, { CI: "true" }],
+    ["TERM=dumb on a TTY", { isTTY: true }, { TERM: "dumb" }],
+    ["piped stdout", { isTTY: false }, {}],
+  ] as const)("never wraps, restyles or re-rails a long line under %s", (_name, stream, env) => {
+    const out = sink();
+    const message = "components: 12 captured, 3 updated, 1 removed because the source component"
+      + " is gone — a 140-column line that a pipe must receive exactly as sync emits it";
+    if (usePrettyOutput(stream, env)) {
+      createPrettyOutput({ write: out.write, banner: false, columns: 80 }).log(message);
+    } else out.write(`${message}\n`);
+    expect(out.raw()).toBe(`${message}\n`);
+  });
+});
+
+/** A terminal measures CELLS, not code units. `.length` gets both directions
+    wrong — and because the select's rewind now counts the ROWS it emitted, a
+    miscount does not merely wrap badly: it puts the cursor-up on the wrong row
+    and brings back the duplicate answered block this suite exists to catch.
+    User content (tool names, product names, judgment prose) flows straight
+    through the renderer, so this is not a hypothetical width. */
+/** Six graphemes, decomposed: "e" plus a combining acute — twelve code units. */
+const ACCENTED = "e\u0301".repeat(6);
+
+describe("createPrettyOutput (display width — wide glyphs and combining marks)", () => {
+  it("counts an East Asian glyph as two cells and a combining mark as none", () => {
+    expect(displayWidth("界界界界")).toBe(8);
+    expect(displayWidth(ACCENTED)).toBe(6);
+    expect(ACCENTED.length).toBe(12); // twelve code units, six cells
+    // A surrogate pair is one code point, and this one is wide.
+    expect(displayWidth("\u{1F680}")).toBe(2);
+    expect(displayWidth(`${ESC}[2m界${ESC}[22m`)).toBe(2);
+  });
+
+  it("wraps a wide-glyph run that overflows the window", () => {
+    const out = sink();
+    createPrettyOutput({ write: out.write, banner: false, columns: 10 }).log("界界界界");
+    // `│  ` is 3 cells, so 8 more cells cannot share the row.
+    const rows = out.plain().split("\n").filter((row) => row.includes("界"));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(cells(row)).toBeLessThanOrEqual(10);
+    expect(rows.join("").replace(/│ {2}/g, "")).toBe("界界界界");
+  });
+
+  it("keeps combining marks on one row — they cost no cells", () => {
+    const out = sink();
+    createPrettyOutput({ write: out.write, banner: false, columns: 10 }).log(ACCENTED);
+    const rows = out.plain().split("\n").filter((row) => row.includes("\u0301"));
+    // Six graphemes are six cells: `│  ` + 6 fits in 10 and must not wrap.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toBe(`│  ${ACCENTED}`);
+  });
+
+  it("measures a composed emoji as the ONE glyph a terminal draws", () => {
+    // Code-point accounting over-counts these two...
+    expect(displayWidth("\u{1F44D}\u{1F3FD}")).toBe(2);                      // thumb + skin tone
+    expect(displayWidth("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}")).toBe(2); // ZWJ family
+    // ...and UNDER-counts this one, which is the direction that overflows a
+    // row: a one-cell base the variation selector promotes to emoji width.
+    expect(displayWidth("\u2714\uFE0F")).toBe(2);
+    expect(displayWidth("\u2714")).toBe(1);
+    // Emoji width is the Emoji_Presentation PROPERTY, not a hand-kept range
+    // table: a block Unicode added recently is two cells the day it lands...
+    expect(displayWidth("\u{1FA70}")).toBe(2);  // U+1FA70, Extended-A
+    expect(displayWidth("\u{1FAF6}")).toBe(2);  // U+1FAF6, added later still
+    // ...and a pictograph a terminal draws as TEXT stays one.
+    expect(displayWidth("\u2122")).toBe(1);     // ™
+    expect(displayWidth("\u2600")).toBe(1);     // ☀
+  });
+
+  it("select: an emoji option that a code-point count would under-measure still prints once", async () => {
+    const term = screen(24);
+    const keys = fakeInput();
+    const pretty = createPrettyOutput({
+      write: term.write, input: keys.input, banner: false, columns: 24,
+    });
+    // `│  ● ` is 5 cells and each ✔️ is 2, so twelve of them is 29 cells — wider
+    // than the window. A code-point count sees 12 and thinks the row fits.
+    const options = [
+      { value: "text", label: "\u2714\uFE0F".repeat(12) },
+      { value: "emoji", label: "\u{1F680}\uFE0F".repeat(12) },
+    ];
+    const choice = pretty.select("Pick", options);
+    keys.press("2");
+    expect(await choice).toBe("emoji");
+    const rows = term.rows().filter((row) => row !== "");
+    expect(occurrences(rows.join("\n"), "●")).toBe(1);
+    for (const row of rows) expect(cells(row)).toBeLessThanOrEqual(24);
+  });
+
+  it("select: an answered block of wide-glyph options still prints each option once", async () => {
+    const term = screen(40);
+    const keys = fakeInput();
+    const pretty = createPrettyOutput({
+      write: term.write, input: keys.input, banner: false, columns: 40,
+    });
+    const options = [
+      { value: "embedded", label: "嵌入我的应用程序中的聊天与生成式界面" },
+      { value: "mcp", label: "通过外部代理接入例如任何支持代理的客户端" },
+    ];
+    // Short in code units (a `.length` renderer thinks both fit), but 18 and 20
+    // East Asian glyphs are 36 and 40 CELLS — wider than the window with the
+    // rail in front, so the terminal wraps what the renderer thought was one row.
+    expect(options.every((option) => option.label.length < 40)).toBe(true);
+    const choice = pretty.select("用户将如何使用你的助手？", options);
+
+    keys.press("2");
+    expect(await choice).toBe("mcp");
+    const rows = term.rows().filter((row) => row !== "");
+    const settled = rows.join("\n");
+    expect(occurrences(settled, "●")).toBe(1);
+    expect(settled).not.toContain("嵌入我的应用程序");
+    // Every row the terminal shows fits the window, so no row silently became
+    // two and the rewind landed where it was drawn.
+    for (const row of rows) expect(cells(row)).toBeLessThanOrEqual(40);
+    const answer = rows.slice(rows.findIndex((row) => row.includes("●")));
+    // Whitespace-insensitive: the break may land on a space or, in an unspaced
+    // CJK run, between two glyphs.
+    const strip = (text: string): string => text.replace(/\s+/g, "");
+    expect(strip(answer.map((row) => row.slice(3)).join(""))).toBe(strip(`● ${options[1]!.label}`));
   });
 });

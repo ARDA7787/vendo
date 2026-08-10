@@ -100,6 +100,10 @@ export interface PrettyOutput extends Output {
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const BAR = dim("│");
 const CLEAR_LINE = `\r${ESC}[2K`;
+const RESET = `${ESC}[0m`;
+const SHOW_CURSOR = `${ESC}[?25h`;
+/** Columns the rail costs a continuation row: `│` plus the two-space body gap. */
+const RAIL_WIDTH = 3;
 /** The star ask, demoted from an interactive question to a dim last line —
     pretty-only, so a piped or NO_COLOR run never sees it. */
 const STAR_FOOTER = "Star us: vendo.run/star · docs.vendo.run";
@@ -181,6 +185,164 @@ const CTA_ALL = /`?vendo (cloud )?login`?/g;
     after it — `reopen` re-arms the enclosing color (error() passes it). */
 function styleInline(text: string, reopen = ""): string {
   return text.replace(/`([^`]+)`/g, (_match, code: string) => `${bold(lilac(code))}${reopen}`);
+}
+
+/** Invisible code points: combining marks (Mn/Me — the accent in a decomposed
+    `é`) and format characters (Cf — the zero-width joiner, variation
+    selectors' friends). A terminal draws them into the PREVIOUS cell. */
+const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
+/** Emoji are two cells wherever they live, and the ones that are two cells by
+    DEFAULT are exactly `Emoji_Presentation` — which is why this is a property
+    and not a list: a hand-kept emoji range table silently under-measures every
+    block Unicode adds next (it did: U+1FA70 `🩰` fell through as one cell), and
+    under-measuring is the direction that overflows a row. It also correctly
+    leaves `™`, `☀` and `✔` at one cell, since a terminal draws those as text
+    unless a variation selector says otherwise. */
+const EMOJI_WIDE = /^\p{Emoji_Presentation}$/u;
+/** The East Asian Wide and Fullwidth blocks, which are not an emoji property:
+    CJK, Kana, Hangul, fullwidth forms, CJK extensions. */
+const WIDE_RANGES: readonly (readonly [number, number])[] = [
+  [0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3],
+  [0xf900, 0xfaff], [0xfe10, 0xfe19], [0xfe30, 0xfe6f], [0xff00, 0xff60],
+  [0xffe0, 0xffe6], [0x20000, 0x3fffd],
+];
+
+/** What forces emoji presentation, whatever the base's own width would be: the
+    emoji variation selector, a skin tone modifier, or a ZWJ join. */
+const EMOJI_PRESENTATION = /[\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]/u;
+/** One GRAPHEME CLUSTER is one glyph on screen, however many code points it
+    took — `👍🏽` is two, a ZWJ family is four, a decomposed `é` is two, and each
+    is drawn as a single glyph. Measuring code points instead over-counts the
+    composed ones and under-counts `✔️` (a one-cell base that the variation
+    selector promotes to two), which is the direction that overflows a row. */
+function cellWidth(cluster: string): number {
+  if (EMOJI_PRESENTATION.test(cluster)) return 2;
+  const base = String.fromCodePoint(cluster.codePointAt(0) ?? 0);
+  if (ZERO_WIDTH.test(base)) return 0;
+  if (EMOJI_WIDE.test(base)) return 2;
+  const point = base.codePointAt(0) ?? 0;
+  return WIDE_RANGES.some(([from, to]) => point >= from && point <= to) ? 2 : 1;
+}
+
+/** Grapheme segmentation is a built-in (ES2022 / Node 16+) — no dependency. */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const clusters = (text: string): string[] =>
+  [...GRAPHEMES.segment(text)].map((entry) => entry.segment);
+
+/** The one measurement in this file: terminal CELLS a string occupies, with
+    SGR sequences taking none. Every width, wrap point and row count derives
+    from this — a miscount here puts the select's cursor-up on the wrong row. */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const cluster of clusters(text.replace(SGR, ""))) width += cellWidth(cluster);
+  return width;
+}
+
+/** What each closing SGR closes, matched on a sequence's FIRST code so the
+    truecolor swatch (`48;2;r;g;b`, closed by 49) is tracked like any other. */
+const CLOSED_BY: Record<string, RegExp> = {
+  "22": /^[12]$/,
+  "23": /^3$/,
+  "24": /^4$/,
+  "27": /^7$/,
+  "29": /^9$/,
+  "39": /^(3[0-8]|9[0-7])$/,
+  "49": /^(4[0-8]|10[0-7])$/,
+};
+
+const sgrCode = (sequence: string): string => sequence.slice(2, -1).split(";")[0] ?? "";
+
+/** Track the styles still in force, so a wrapped row can re-open them. Every
+    style this file writes nests, so a close pops the innermost match. */
+function trackStyle(open: string[], sequence: string): void {
+  const code = sgrCode(sequence);
+  if (code === "" || code === "0") {
+    open.length = 0;
+    return;
+  }
+  const closes = CLOSED_BY[code];
+  if (closes === undefined) {
+    open.push(sequence);
+    return;
+  }
+  for (let at = open.length - 1; at >= 0; at -= 1) {
+    if (closes.test(sgrCode(open[at]!))) {
+      open.splice(at, 1);
+      return;
+    }
+  }
+}
+
+/** The two things the wrapper moves: SGR sequences (no cells) and grapheme
+    clusters (one glyph each). Splitting on the sequences first keeps an ESC
+    from being folded into the cluster beside it. */
+function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  let at = 0;
+  for (const match of text.matchAll(/\u001b\[[0-9;]*m/g)) {
+    tokens.push(...clusters(text.slice(at, match.index)), match[0]);
+    at = match.index + match[0].length;
+  }
+  tokens.push(...clusters(text.slice(at)));
+  return tokens;
+}
+
+/** Wrap one composed line to the terminal, ANSI-aware: every continuation row
+    carries the rail, so a long line still reads as one rail body line, and no
+    emitted row is wider than the terminal — which is what makes the select's
+    cursor-up redraw (it counts ROWS) land on the rows it printed. Unknown
+    width (a pipe, a test writer) means no wrapping at all. */
+function wrapRail(text: string, columns: number): string[] {
+  if (!Number.isFinite(columns) || columns <= RAIL_WIDTH + 1) return [text];
+  if (displayWidth(text) <= columns) return [text];
+  const rows: string[] = [];
+  const open: string[] = [];
+  let atWord: string[] = [];
+  let row = "";
+  let used = 0;
+  let gap = "";
+  let word = "";
+  let width = 0;
+  const breakRow = (): void => {
+    rows.push(atWord.length === 0 ? row : `${row}${RESET}`);
+    row = `${BAR}  ${atWord.join("")}`;
+    used = RAIL_WIDTH;
+    gap = "";
+  };
+  /** Commit the pending word, breaking first when it no longer fits. */
+  const place = (): void => {
+    if (word === "") return;
+    if (used > 0 && used + gap.length + width > columns) breakRow();
+    row += `${gap}${word}`;
+    used += gap.length + width;
+    gap = "";
+    word = "";
+    width = 0;
+  };
+  for (const token of tokenize(text)) {
+    if (word === "") atWord = [...open];
+    if (token.startsWith(ESC)) {
+      word += token;
+      trackStyle(open, token);
+      continue;
+    }
+    if (token === " ") {
+      place();
+      gap += " ";
+      continue;
+    }
+    // A word too long for a row of its own (a URL, an unspaced CJK run) has to
+    // be broken somewhere: break it BEFORE the glyph that would overflow a row,
+    // so a combining mark is never orphaned from the glyph it decorates.
+    const cell = cellWidth(token);
+    if (cell > 0 && width + cell > columns - RAIL_WIDTH) place();
+    word += token;
+    width += cell;
+  }
+  place();
+  if (row !== "") rows.push(row);
+  return rows;
 }
 
 /** The plain-terminal select for non-pretty interactive runs: numbered list +
@@ -511,6 +673,9 @@ export interface PrettyOptions {
   /** The settled banner above the header. */
   banner?: boolean;
   env?: Record<string, string | undefined>;
+  /** Terminal width to wrap to. Unset follows the real stdout, and an unknown
+      width (a pipe, an injected test writer) never wraps. */
+  columns?: number;
 }
 
 export function createPrettyOutput(options: PrettyOptions = {}): PrettyOutput {
@@ -528,15 +693,31 @@ export function createPrettyOutput(options: PrettyOptions = {}): PrettyOutput {
   let frame = 0;
   const state: RenderState = { absorb: 0, catalog: [], impact: [], judgment: null, paste: null };
 
-  const line = (text: string): void => {
-    write(`${text}\n`);
+  /** True when this renderer draws on the real terminal. Only then does it
+      follow stdout's width and answer the interrupt signal; an injected
+      writer (tests, embedders) stays deterministic. */
+  const ownsTerminal = options.write === undefined;
+  /** Read per line, so a resize mid-run wraps to the new width. */
+  const columns = (): number => {
+    if (options.columns !== undefined) return options.columns;
+    if (!ownsTerminal) return Number.POSITIVE_INFINITY;
+    return stdout.columns ?? Number.POSITIVE_INFINITY;
+  };
+  /** One logical line — and the number of terminal ROWS it took, which is what
+      a cursor-up redraw has to rewind. */
+  const line = (text: string): number => {
+    const rows = wrapRail(text, columns());
+    for (const row of rows) write(`${row}\n`);
     lastWasBar = text === BAR;
+    return rows.length;
   };
   const rail: Rail = {
     bar: (): void => {
       if (!lastWasBar) line(BAR);
     },
-    body: (text: string, reopen = ""): void => line(`${BAR}  ${styleInline(text, reopen)}`),
+    body: (text: string, reopen = ""): void => {
+      line(`${BAR}  ${styleInline(text, reopen)}`);
+    },
     section: (marker: string, title: string): void => {
       rail.bar();
       line(`${marker}  ${title}`);
@@ -574,6 +755,22 @@ export function createPrettyOutput(options: PrettyOptions = {}): PrettyOutput {
     ensureHeader();
     flush();
   };
+  /** Ctrl-C: give the cursor back and CLOSE the rail, so an interrupted run
+      still ends in a `└` instead of a bare `^C` under an open block. The exit
+      code is the caller's — this only draws. */
+  const cancel = (): void => {
+    stopSpin();
+    write(SHOW_CURSOR);
+    ensureHeader();
+    rail.bar();
+    line(`${dim("└")}  ${yellow("Cancelled")}`);
+  };
+  if (ownsTerminal) {
+    process.once("SIGINT", () => {
+      cancel();
+      process.exit(130);
+    });
+  }
 
   return {
     log(message) {
@@ -694,10 +891,18 @@ export function createPrettyOutput(options: PrettyOptions = {}): PrettyOutput {
         const hint = option.hint === undefined ? "" : ` ${dim(`(${option.hint})`)}`;
         return `${BAR}  ${marker} ${label}${hint}`;
       };
-      for (const [at, option] of options.entries()) line(optionLine(option, at));
+      // ROWS, not options: a wrapped option owns more than one terminal row,
+      // and rewinding by the option COUNT redraws on top of the wrong rows.
+      let drawn = 0;
+      const draw = (): void => {
+        drawn = 0;
+        for (const [at, option] of options.entries()) drawn += line(optionLine(option, at));
+      };
+      draw();
+      const rewind = (): void => { write(`${ESC}[${drawn}A${ESC}[0J`); };
       const redraw = (): void => {
-        write(`${ESC}[${options.length}A`);
-        for (const [at, option] of options.entries()) write(`${ESC}[2K${optionLine(option, at)}\n`);
+        rewind();
+        draw();
       };
       const chosen = await new Promise<number>((resolveChoice) => {
         const cleanup = (): void => {
@@ -737,7 +942,8 @@ export function createPrettyOutput(options: PrettyOptions = {}): PrettyOutput {
             pending = pending.slice(1);
             if (key === "\u0003") { // Ctrl+C
               cleanup();
-              write("\n");
+              rewind();
+              cancel();
               process.exit(130);
             }
             if (key === "\r" || key === "\n") {
@@ -760,7 +966,7 @@ export function createPrettyOutput(options: PrettyOptions = {}): PrettyOutput {
         input.on("data", onData);
       });
       // Collapse the option list to the chosen answer.
-      write(`${ESC}[${options.length}A${ESC}[0J`);
+      rewind();
       line(`${BAR}  ${lilac("●")} ${options[chosen]!.label}`);
       return options[chosen]!.value;
     },
