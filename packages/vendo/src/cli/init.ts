@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -8,13 +7,23 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { scrubErrorDetail, type Telemetry } from "@vendoai/telemetry";
 import { detectDepVersions, installedAiVersion } from "./dep-versions.js";
-import { AUTH_MD_URL, runCloudStep, upsertEnvLocal, warnEnvLocalNotIgnored, type CloudStepOptions } from "./cloud-init.js";
+import { AUTH_MD_URL, ensureEnvLocalIgnored, runCloudStep, upsertEnvLocal, type CloudStepOptions } from "./cloud-init.js";
+import { runDoctor } from "./doctor.js";
 import type { InitPolishSeam } from "./init-judgment.js";
+import { planMcp, type McpPosture } from "./init-mcp.js";
 import { runSyncFlow, type SyncFlowResult } from "./sync-flow.js";
 import { BRIEF_TEMPLATE } from "./extract/stages.js";
 import { ENV_KEY_VARS, resolveDevCredential, describeDevCredential, type DevCredential } from "../dev-creds/resolve.js";
 import { detectFramework, detectVendoWiring, workspaceHostCandidates, type HostFramework } from "./framework.js";
-import { resolveScaffoldAuth, type AuthMatch, type AuthPresetName, type ConfirmAuth, type SelectAuth } from "./init-auth.js";
+import {
+  AUTH_FAMILY_INFO,
+  detectAuthPreset,
+  resolveScaffoldAuth,
+  type AuthMatch,
+  type AuthPresetName,
+  type ConfirmAuth,
+  type SelectAuth,
+} from "./init-auth.js";
 import { ensureProviderDeps, ensureZodFloor, type InstallRunner } from "./provider-deps.js";
 import {
   customServerSource,
@@ -28,7 +37,7 @@ import {
   serverActionsWiring,
   VENDO_ENV_EXAMPLE,
 } from "./init-scaffolds.js";
-import { createPrettyOutput, plainSelect, usePrettyOutput, type PrettyOutput, type SelectOption } from "./pretty.js";
+import { createPrettyOutput, plainSecret, plainSelect, plainText, usePrettyOutput, type PrettyOutput, type SelectOption } from "./pretty.js";
 import { contrastingText } from "./theme/color.js";
 import {
   applyThemeDraft,
@@ -43,6 +52,7 @@ import {
   clientRoot,
   cloudProjectProps,
   consoleOutput,
+  detectPackageManager,
   envFileValueSync,
   errorClass,
   exists,
@@ -105,8 +115,18 @@ export interface ManualEdit {
   why: string;
 }
 
+/** How the host's people will reach the agent — the run's FIRST question. It
+    decides what gets scaffolded and how the run ends; the wired route is the
+    same in all three, so picking wrong costs nothing. */
+export type InitUseCase = "embedded" | "agent-loop" | "mcp";
+
+export const INIT_USE_CASES: readonly InitUseCase[] = ["embedded", "agent-loop", "mcp"];
+
 export interface InitPlan {
   framework: Exclude<HostFramework, "unknown"> | "custom";
+  /** --use-case only: absent on a run that never named one, so an unattended
+      plan stays byte-identical to the one agents parse today. */
+  useCase?: InitUseCase;
   root: string;
   writes: string[];
   codeChanges: Array<{ path: string; diff: string }>;
@@ -147,6 +167,22 @@ export interface InitOptions {
   cloudKey?: string;
   /** --byo: answer the cloud-login offer with "no — bring my own key". */
   byo?: boolean;
+  /** --use-case: answer the first question without asking. Unattended runs
+      take "embedded" — today's behaviour, so no existing script changes. */
+  useCase?: InitUseCase;
+  /** --base-url: answer "where will this deploy?" without asking. Written to
+      .env.example ONLY, by replacing init's own localhost placeholder — never
+      .env.local, where a production URL would repoint local dev's discovery,
+      callbacks and credential forwarding at the deployed origin. */
+  baseUrl?: string;
+  /** --posture: how outside agents sign in (MCP use case only). */
+  posture?: McpPosture;
+  /** --service-key: set up a machine-to-machine key (MCP use case only). */
+  serviceKey?: boolean;
+  /** --check / --no-check: run `vendo doctor` at the end. Only OFFERED when
+      the run owes no paste — doctor grades the paste, and the paste happens
+      after init exits. Never changes init's exit code either way. */
+  check?: boolean;
   /** --ai / --no-ai (`--ai-polish` is the legacy spelling of `--ai`): `true`
       runs the judgment pass with no prompt, `false` forces it off, and
       `undefined` asks in an interactive run and skips otherwise. No answer is
@@ -179,7 +215,8 @@ export interface InitOptions {
   extract?: InitPolishSeam;
   /** Test seam: the detect+confirm auth question, asked only in interactive
       runs when exactly one auth family is detected and init is creating the
-      composition. Mirrors the AI-polish consent's confirm shape. */
+      composition — and the MCP service-key confirm, which has the same shape.
+      Mirrors the AI-polish consent's confirm shape. */
   confirmAuth?: (question: string, defaultYes: boolean) => Promise<boolean>;
   /** Test seam: the auth picker shown when the confirm is declined or when
       several families are detected. Receives the choice list (value/label/
@@ -188,36 +225,34 @@ export interface InitOptions {
   /** Test seam: interactivity override for the auth confirm (default: TTY),
       mirroring the judgment step's `interactive`. */
   interactive?: boolean;
-  /** Test seam: the star ask — the ONE consent question that ends a fully
-      successful interactive run. Mirrors the auth confirm's shape. */
-  confirmStar?: (question: string, defaultYes: boolean) => Promise<boolean>;
-  /** Test seam: the gh spawn behind a "yes" to the star ask. */
-  spawnStar?: (command: string, args: string[]) => StarProcess;
+  /** Test seam: the use-case question, and the MCP posture select that hangs
+      off it. Mirrors the auth picker's shape. */
+  selectUseCase?: (question: string, options: SelectOption[]) => Promise<string>;
+  /** Test seam: the free-text asks (the base URL). "" is a decline. */
+  askText?: (question: string, hint?: string) => Promise<string>;
+  /** Test seam: the live-check offer. Mirrors the auth confirm's shape. */
+  confirmCheck?: (question: string, defaultYes: boolean) => Promise<boolean>;
+  /** Test seam: the live check itself (default: `vendo doctor`). */
+  runCheck?: (root: string) => Promise<boolean>;
   /** Uncertain-slot review — asked ONLY when the model reports uncertainty. */
   themeReview?: (summary: ThemeSummary) => Promise<Record<string, string>>;
 }
 
 const THEME_PALETTE_SLOTS = ["accent", "background", "surface", "text", "mutedText", "border", "danger"] as const;
 
-/** ANSI truecolor swatch when interactive; plain hex otherwise. */
-function swatch(hex: string): string {
-  const match = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!match || !stdout.isTTY) return "";
-  const [r, g, b] = [0, 2, 4].map((index) => parseInt(match[1]!.slice(index, index + 2), 16));
-  return `\u001b[48;2;${r};${g};${b}m  \u001b[0m `;
-}
-
 /** One-glance confirm (§B2): the extracted palette, where each slot came
     from is visible in defaulted/errors, and theme.json stays the editable
-    source of truth. */
+    source of truth. One emission, plain — the renderer's `Theme:` rule turns
+    it into the ◆ block. Nothing here may carry colour: an ANSI swatch written
+    at this layer is exactly the escape that leaked under NO_COLOR. */
 function printThemeSummary(summary: ThemeSummary, output: Output): void {
-  const palette = THEME_PALETTE_SLOTS
-    .map((slot) => `${swatch(summary.slots[slot])}${slot} ${summary.slots[slot]}`)
-    .join(" · ");
-  output.log(`Theme: ${palette}`);
   const headings = summary.slots.headingFamily === summary.slots.fontFamily
     ? ""
     : ` · headings ${summary.slots.headingFamily}`;
+  const palette = THEME_PALETTE_SLOTS
+    .map((slot) => `${slot} ${summary.slots[slot]}`)
+    .join(" · ");
+  output.log(`Theme: ${palette}`);
   output.log(`Type: ${summary.slots.fontFamily}${headings} · radius ${summary.slots.radius}`);
   const missing = summary.defaulted.filter((slot) =>
     (THEME_PALETTE_SLOTS as readonly string[]).includes(slot) || slot === "fontFamily");
@@ -244,6 +279,48 @@ async function defaultThemeReview(summary: ThemeSummary): Promise<Record<string,
     prompt.close();
   }
   return overrides;
+}
+
+/** The framework the run scaffolds for. "unknown" detection lands on the
+    runtime-neutral custom scaffold — the safe default that exists now
+    (guessing the Next layout into a Worker host was the field failure). */
+async function resolveFramework(
+  root: string,
+  options: InitOptions,
+): Promise<Exclude<HostFramework, "unknown"> | "custom"> {
+  const detected = options.framework ?? await detectFramework(root);
+  return detected === "unknown" ? "custom" : detected;
+}
+
+const FRAMEWORK_NAMES: Record<Exclude<HostFramework, "unknown"> | "custom", string> = {
+  next: "Next.js",
+  express: "Express",
+  custom: "Custom runtime",
+};
+
+/** The detection read-back, printed before the first question. Nothing here
+    is newly computed — framework, router style, language, package manager and
+    auth family are all detected today and none of them is ever shown, so the
+    first thing the user sees is a question about a package they were never
+    told we found. Print, never re-detect. */
+export async function stackLines(
+  root: string,
+  framework: Exclude<HostFramework, "unknown"> | "custom",
+): Promise<string[]> {
+  const router = await detectRouter(root, framework);
+  const auth = await detectAuthPreset(root);
+  return [
+    [
+      FRAMEWORK_NAMES[framework],
+      ...(router === "none" ? [] : [router === "app" ? "App Router" : "Pages Router"]),
+      await exists(join(root, "tsconfig.json")) ? "TypeScript" : "JavaScript",
+      await detectPackageManager(root),
+    ].join(" · "),
+    ...(auth.matches.length === 0 ? [] : [
+      `${auth.matches.map((match) => AUTH_FAMILY_INFO[match.preset].name).join(" / ")} auth `
+      + `(${auth.matches.map((match) => match.dependency).join(", ")})`,
+    ]),
+  ];
 }
 
 /** Telemetry `router` enum (init_completed): app | pages | none, from the
@@ -552,42 +629,260 @@ async function agentTailLines(args: {
   return lines;
 }
 
-/** The slice of the spawned gh process the star step observes (injectable —
-    tests drive it with a plain EventEmitter). */
-export interface StarProcess {
-  on(event: "error", listener: (error: Error) => void): unknown;
-  on(event: "exit", listener: (code: number | null) => void): unknown;
+const USE_CASE_OPTIONS: SelectOption[] = [
+  { value: "embedded", label: "Embedded in my app — chat + generated UI", hint: "recommended" },
+  { value: "agent-loop", label: "Through my own agent loop (AI SDK / Mastra)" },
+  { value: "mcp", label: "From outside agents over MCP — Claude, ChatGPT, Cursor, or any MCP agent (experimental)" },
+];
+
+/** The run's FIRST question. Every path shares the same wired route, so a
+    wrong pick costs nothing; the right one saves a docs round trip. --yes and
+    non-interactive runs take "embedded" — today's behaviour, so no existing
+    script changes shape. */
+async function resolveUseCase(input: {
+  options: InitOptions;
+  pretty: PrettyOutput | null;
+  interactive: boolean;
+}): Promise<InitUseCase> {
+  const { options, pretty, interactive } = input;
+  if (options.useCase !== undefined) return options.useCase;
+  if (options.yes === true || !interactive) return "embedded";
+  const select = options.selectUseCase ?? (pretty === null ? plainSelect : pretty.select);
+  const picked = await select("How will people use your agent?", USE_CASE_OPTIONS);
+  return (INIT_USE_CASES as readonly string[]).includes(picked) ? picked as InitUseCase : "embedded";
 }
 
-const STAR_REPO = "runvendo/vendo";
-// Tracked star link (vendo-web star-worker): captures star_link_clicked
-// {src: cli} server-side, then redirects to the repo.
-const STAR_LINK = "https://vendo.run/star?src=cli";
+const BASE_URL_PLACEHOLDER = "VENDO_BASE_URL=http://localhost:3000";
 
-/** Star the repo via gh (agent-install-dx §CLI-5). Every failure mode — gh
-    not installed (spawn error), a non-zero exit, a throwing seam, or a gh
-    that hangs past `timeoutMs` — is plain `false`: the caller prints the
-    repo URL instead, one line, no error noise. Exported for the timeout's
-    direct unit test only. */
-export function starViaGh(spawnStar: NonNullable<InitOptions["spawnStar"]>, timeoutMs = 5_000): Promise<boolean> {
-  return new Promise((resolveStar) => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const settle = (starred: boolean): void => {
-      if (timer !== null) clearTimeout(timer);
-      resolveStar(starred);
+/** "Where will this deploy?" — one Enter to decline, and the answer replaces
+    init's OWN placeholder in .env.example. Nowhere else: a production URL in
+    .env.local would repoint local dev's discovery, callbacks and credential
+    forwarding at the deployed origin, and dev already trusts the request's
+    own origin. Returns the captured URL, or null when skipped. */
+export async function captureBaseUrl(input: {
+  root: string;
+  options: InitOptions;
+  output: Output;
+  pretty: PrettyOutput | null;
+  interactive: boolean;
+}): Promise<string | null> {
+  const { root, options, output, pretty, interactive } = input;
+  // plainText carries plainSelect's guard — a non-TTY input or output returns
+  // the fallback and never prompts — so a piped run stays byte-identical while
+  // a NO_COLOR terminal still gets the question. Making this pretty-only would
+  // silently delete the feature for anyone who sets NO_COLOR.
+  const ask = options.baseUrl !== undefined
+    ? async () => options.baseUrl!
+    : options.askText
+      ?? (options.yes === true || !interactive ? undefined : (pretty === null ? plainText : pretty.text));
+  if (ask === undefined) return null;
+  const url = (await ask("Where will this deploy?", "e.g. https://app.acme.com — Enter to skip")).trim();
+  if (url === "") return null;
+  const path = join(root, ".env.example");
+  const current = await readOptional(path);
+  if (current === null || !current.includes(BASE_URL_PLACEHOLDER)) return url;
+  await writeText(path, current.replace(BASE_URL_PLACEHOLDER, `VENDO_BASE_URL=${url}`));
+  output.log("written to .env.example — set it in your deploy platform's env");
+  return url;
+}
+
+/** The footer's stats. It never claims more than the run achieved: an
+    outstanding paste renders "1 paste left", never "agent live". */
+export function runStats(input: {
+  toolCount: number;
+  brandCaptured: boolean;
+  handSteps: number;
+  checkPassed: boolean;
+}): string {
+  return [
+    `${input.toolCount} tool${input.toolCount === 1 ? "" : "s"}`,
+    ...(input.brandCaptured ? ["brand captured"] : []),
+    input.handSteps > 0
+      ? `${input.handSteps} paste${input.handSteps === 1 ? "" : "s"} left`
+      : input.checkPassed ? "agent live" : "wired",
+  ].join(" · ");
+}
+
+/** Variant B — the user's own agent loop. Which snippet prints is read off
+    the same package.json init already parses (`ai` → AI SDK, `@mastra/core`
+    → Mastra); the generated route stays either way, because it is what
+    serves apps and approvals to the embeds. Mastra's principal step is a
+    step of its own, not a footnote: vendoMastraTools reads the principal off
+    the request context and a call without one fails closed. */
+async function agentLoopSteps(root: string): Promise<ManualEdit[]> {
+  let dependencies: Record<string, unknown> = {};
+  try {
+    const manifest = JSON.parse((await readOptional(join(root, "package.json"))) ?? "{}") as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
     };
-    let child: StarProcess;
-    try {
-      child = spawnStar("gh", ["api", "-X", "PUT", `user/starred/${STAR_REPO}`]);
-    } catch {
-      settle(false);
-      return;
-    }
-    timer = setTimeout(() => settle(false), timeoutMs);
-    timer.unref?.();
-    child.on("error", () => settle(false));
-    child.on("exit", (code) => settle(code === 0));
+    dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
+  } catch {
+    // No readable manifest — neither snippet is honest, so print neither.
+  }
+  if (Object.hasOwn(dependencies, "@mastra/core")) {
+    return [
+      {
+        file: join("src", "mastra", "agents", "<your-agent>.ts"),
+        lines: [
+          `import { vendoMastraTools } from "@vendoai/vendo/mastra";`,
+          `… then spread the pack: tools: async () => ({ ...yourTools, ...(await vendoMastraTools(vendo)) })`,
+        ],
+        why: "Your loop, your model — Vendo adds guarded vendo_* tools, vendo_make (inline micro-apps) and vendo_delegate. https://docs.vendo.run/existing-agents/mastra",
+      },
+      {
+        file: join("app", "api", "chat", "route.ts"),
+        lines: [
+          `import { VENDO_PRINCIPAL_KEY } from "@vendoai/vendo/mastra";`,
+          `… then set the per-request principal: requestContext.set(VENDO_PRINCIPAL_KEY, principal);`,
+        ],
+        why: "vendoMastraTools reads the principal off the request context — a call without one fails closed, so an install that skips this looks broken at the first tool call.",
+      },
+    ];
+  }
+  if (Object.hasOwn(dependencies, "ai")) {
+    return [{
+      file: join("app", "api", "chat", "route.ts"),
+      lines: [
+        `import { vendoTools } from "@vendoai/vendo/ai-sdk";`,
+        `… then inside streamText: tools: { ...yourTools, ...(await vendoTools(vendo, { principal })) }`,
+      ],
+      why: "Your loop, your model — Vendo adds guarded vendo_* tools, vendo_make (inline micro-apps) and vendo_delegate. https://docs.vendo.run/existing-agents/ai-sdk",
+    }];
+  }
+  return [];
+}
+
+const POSTURE_OPTIONS: SelectOption[] = [
+  {
+    value: "broker",
+    label: "Vendo Cloud broker — keys managed in the console, stable tenant URL, OAuth surface stays off your domain",
+    hint: "recommended with your Cloud account",
+  },
+  { value: "local", label: "Local — your app serves its own OAuth (zero config, fully standard)" },
+];
+
+/** Variant C. Init asks two more questions here and then WRITES what it
+ *  legitimately owns: it creates the composition file, so putting `mcp: true`
+ *  and a serviceAuth key into a file it is authoring is not editing anyone's
+ *  code. It never discovers posture and never reaches a broker — it prints
+ *  environment lines for the operator, exactly as the console would.
+ *
+ *  The posture select only appears when the run holds a Cloud key: a keyless
+ *  run cannot use a broker, so local is simply the default. */
+async function planMcpScaffold(input: {
+  root: string;
+  options: InitOptions;
+  output: Output;
+  pretty: PrettyOutput | null;
+  interactive: boolean;
+  changes: PlannedChange[];
+  framework: Exclude<HostFramework, "unknown"> | "custom";
+  authWired: AuthMatch | null;
+  cloudKey: boolean;
+  baseUrl: string | null;
+}): Promise<ReturnType<typeof planMcp> | null> {
+  const { root, options, output, pretty, interactive, changes, framework, authWired, cloudKey, baseUrl } = input;
+  const ask = options.yes === true || !interactive;
+
+  let posture: McpPosture = options.posture ?? "local";
+  if (options.posture === undefined && cloudKey && !ask) {
+    const select = options.selectUseCase ?? (pretty === null ? plainSelect : pretty.select);
+    posture = (await select("How should outside agents sign in?", POSTURE_OPTIONS)) as McpPosture;
+  }
+
+  let serviceKey = options.serviceKey === true;
+  if (options.serviceKey === undefined && !ask) {
+    const confirm = options.confirmAuth ?? (pretty === null ? askYesNo : pretty.confirm);
+    serviceKey = await confirm("Will your own backend call these tools machine-to-machine?", false);
+  }
+
+  const mcp = planMcp({
+    root,
+    appDir: await appDirectory(root),
+    framework,
+    authWired,
+    serverActions: (await requiredServerActions(root)).length > 0,
+    cloudKey,
+    posture,
+    serviceKey,
+    // Not optional: a null base URL is an ANSWER the plan reads, and it is
+    // what makes steps[] lead with the recoverable version of E-MCP-009's
+    // failure instead of assuming an origin.
+    baseUrl,
   });
+  if (mcp.blocked !== undefined) {
+    // Nothing MCP was written and the reason says what to do about it. The
+    // rest of the install stands — this is an advisory, not a failure.
+    output.error(`warning: ${mcp.blocked}`);
+    return null;
+  }
+  // The route init is already CREATING becomes the MCP one — same file, the
+  // thin body over the composition module. The planner cannot know whether
+  // that file exists, so it hands back the source and the caller pushes it
+  // with the `before` it already read; a route init did not write this run
+  // has no planned change here and is left alone, as always.
+  const route = changes.find((change) => change.before === null && change.path.endsWith(`${sep}route.ts`));
+  if (route !== undefined && mcp.routeSource !== null) {
+    route.after = mcp.routeSource;
+    route.diff = diff(route.path, null, mcp.routeSource);
+  }
+  // The composition module and the origin-root discovery route are both new.
+  for (const change of mcp.changes) {
+    if (changes.some((planned) => planned.absolute === change.absolute)) continue;
+    changes.push({
+      absolute: change.absolute,
+      path: change.path,
+      before: null,
+      after: change.after,
+      diff: diff(change.path, null, change.after),
+    });
+  }
+  if (mcp.serviceKeyValue !== undefined) {
+    await upsertEnvLocal(root, "VENDO_SERVICE_KEY", mcp.serviceKeyValue);
+    output.log(`Generated VENDO_SERVICE_KEY → .env.local (…${mcp.serviceKeyValue.slice(-4)})`);
+    await ensureEnvLocalIgnored(root, output);
+  }
+  return mcp;
+}
+
+/** The live check — `vendo doctor`, the one thing that turns "wired" into
+ *  "proven". It only OFFERS itself when the run owes no hand step: doctor
+ *  grades whether the <VendoProvider> paste landed, and the paste happens
+ *  after init exits, so offering it on a run that still owes one would fail a
+ *  run that did nothing wrong. Nothing here can change init's exit code. */
+async function offerLiveCheck(input: {
+  root: string;
+  options: InitOptions;
+  output: Output;
+  pretty: PrettyOutput | null;
+  interactive: boolean;
+}): Promise<boolean> {
+  const { root, options, output, pretty, interactive } = input;
+  try {
+    if (options.check === false) return false;
+    if (options.check !== true) {
+      const confirm = options.confirmCheck
+        ?? (options.yes === true || !interactive || stdin.isTTY !== true
+          ? undefined
+          : (pretty === null ? askYesNo : pretty.confirm));
+      if (confirm === undefined) return false;
+      if (!(await confirm("Start your dev server and run a live check now?", true))) return false;
+    }
+    pretty?.spin("vendo doctor — starting dev server…");
+    const check = options.runCheck ?? (async (target: string) =>
+      (await runDoctor({ targetDir: target, yes: true, output })) === 0);
+    const passed = await check(root);
+    pretty?.stopSpin();
+    output.log(passed
+      ? "Live turn passed — your door answers"
+      : "The live check did not pass — `npx vendo doctor` prints what is missing.");
+    return passed;
+  } catch {
+    // Best-effort by design: init already succeeded.
+    pretty?.stopSpin();
+    return false;
+  }
 }
 
 /** Whether the visible surface is already mounted in the host's own source —
@@ -784,12 +1079,9 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
   layout: LayoutWiring;
 }> {
   const root = resolve(options.targetDir);
-  // "unknown" detection lands on the runtime-neutral custom scaffold — the
-  // safe default that exists now (guessing the Next layout into a Worker
-  // host was the field failure; the non-interactive guard still demands an
-  // explicit --framework so agents never inherit a guess silently).
-  const detected = options.framework ?? await detectFramework(root);
-  const framework: "next" | "express" | "custom" = detected === "unknown" ? "custom" : detected;
+  // The non-interactive guard still demands an explicit --framework, so
+  // agents never inherit resolveFramework's custom fall-through silently.
+  const framework = await resolveFramework(root, options);
   const scaffold = framework === "custom"
     ? await planCustomComposition(root, options, confirmAuth, selectAuth)
     : framework === "express"
@@ -852,6 +1144,9 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
     layout,
     plan: {
       framework,
+      // Only when the run named one: an unattended plan stays byte-identical
+      // to the one agents parse today.
+      ...(options.useCase === undefined ? {} : { useCase: options.useCase }),
       root,
       writes,
       codeChanges: changes.map(({ path, diff: rendered }) => ({ path, diff: rendered })),
@@ -1015,46 +1310,6 @@ function printClosingSteps(input: {
   output.log(`${handSteps.length === 0 ? "" : "\n"}Verify everything: \`npx vendo doctor\` (it can start the server and run a live turn).`);
 }
 
-/** Star ask (agent-install-dx §CLI-5): the interactive success screen
- *  ends with ONE consent question — never shown non-interactively (the
- *  playbook owns the agent-path ask; deterministic runs stay that way),
- *  and never fatal: nothing in this step can change init's exit code.
- *  Yes stars via gh; any failure degrades to the repo URL, one line.
- *  No does nothing — no guilt text. */
-async function askForStar(input: {
-  options: InitOptions;
-  pretty: PrettyOutput | null;
-  output: Output;
-  telemetry: Telemetry;
-}): Promise<void> {
-  const { options, pretty, output, telemetry } = input;
-  try {
-    // Consent guard: an unshown prompt is NEVER a yes. On a non-TTY
-    // stdin (programmatic `interactive: true`, `init < file`) both real
-    // confirms would resolve the default — pretty.confirm returns it,
-    // askYesNo would block — and starring is an account action, so the
-    // answer without a real keyboard is false, regardless of path.
-    const confirmStar = options.confirmStar
-      ?? (async (question: string, defaultYes: boolean) =>
-        stdin.isTTY === true
-          ? (pretty === null ? askYesNo : pretty.confirm)(question, defaultYes)
-          : false);
-    if (await confirmStar(`Star ${STAR_REPO} to support the project?`, true)) {
-      const starred = await starViaGh(
-        options.spawnStar ?? ((command, args) => spawn(command, args, { stdio: "ignore" })),
-      );
-      if (!starred) output.log(`Star it anytime: ${STAR_LINK}`);
-      // Star attribution: `starred` is an exact star-from-the-CLI signal
-      // (closed outcome enum; counts-and-enums promise holds).
-      await telemetry.track("star_prompt", { outcome: starred ? "starred" : "star-failed" });
-    } else {
-      await telemetry.track("star_prompt", { outcome: "declined" });
-    }
-  } catch {
-    // The ask is best-effort by design; init already succeeded.
-  }
-}
-
 /** An undetectable framework has NO safe default: a non-interactive run
  *  (agents) errors with the exact flag instead of guessing the Next layout
  *  into an unknown host. An interactive run keeps today's fall-through to the
@@ -1114,7 +1369,15 @@ async function resolveModelCredential(input: {
   }
   let credential = await (options.resolveCredential ?? resolveDevCredential)({ env: effectiveEnv });
   if (credential.rung === "env-key") {
-    output.log(`Model: ${describeDevCredential(credential)} — production uses this same key server-side.`);
+    // Their key is a decision already made, so this stays a statement and
+    // never a prompt — but it now names the door. A BYO user used to finish
+    // init without learning Vendo Cloud exists at all, because the offer
+    // vanishes entirely on this branch. The renderer's CTA rule picks the
+    // command out; the copy is written once, here.
+    output.log(
+      `Model: ${describeDevCredential(credential)} — Vendo Cloud adds hosted automations + the console; `
+      + "run `vendo login` anytime.",
+    );
   }
   const cloud = await runCloudStep({
     root,
@@ -1130,7 +1393,20 @@ async function resolveModelCredential(input: {
     env: effectiveEnv,
     // The step's own command_run row rides init's telemetry seams.
     ...(options.telemetry === undefined ? {} : { telemetry: options.telemetry }),
+    // The models select and the bring-your-own paste belong to every human
+    // terminal, not just a colourful one: NO_COLOR is a normal thing for a
+    // developer to set, and a question that only exists in pretty mode is a
+    // feature that disappears for them. The plain pair carries plainSelect's
+    // non-TTY guard, and cloud-init only reaches for either on a real TTY.
+    select: pretty === null ? plainSelect : pretty.select,
+    askSecret: pretty === null ? plainSecret : pretty.secret,
     ...(pretty === null ? {} : { confirm: pretty.confirm }),
+    // --byo is an ANSWER to the models question, so it rides `models`.
+    // --cloud-key is not: it lands the key in .env.local before this step
+    // runs, so the probe finds it and the question never gets asked. Passing
+    // "cloud" here instead would send a run that ALREADY HAS a key into the
+    // mint ceremony — a live device login for a key the user just supplied.
+    ...(options.byo === true ? { models: "byo" as const } : {}),
     ...(options.cloud ?? {}),
   });
   // Same-run pickup: a starter key minted just now lands in .env.local —
@@ -1139,6 +1415,15 @@ async function resolveModelCredential(input: {
     const minted = envFileValueSync(root, "VENDO_API_KEY");
     if (minted !== null) {
       effectiveEnv = { ...effectiveEnv, VENDO_API_KEY: minted };
+      credential = await (options.resolveCredential ?? resolveDevCredential)({ env: effectiveEnv });
+    }
+  }
+  // A provider key the user just pasted counts the same way: this run's
+  // model passes benefit from it, not the next one.
+  if (cloud.wroteKeyVar !== undefined) {
+    const pasted = envFileValueSync(root, cloud.wroteKeyVar);
+    if (pasted !== null) {
+      effectiveEnv = { ...effectiveEnv, [cloud.wroteKeyVar]: pasted };
       credential = await (options.resolveCredential ?? resolveDevCredential)({ env: effectiveEnv });
     }
   }
@@ -1276,6 +1561,83 @@ async function ensureHostDeps(input: {
   });
 }
 
+/** The run's ending, as its own phase — the same reason wireAndScaffold and
+ *  resolveModelCredential are their own functions. The last question, then
+ *  everything still the user's to paste, then the live check on the runs that
+ *  owe nothing, and finally the stats the footer carries. Returns those stats;
+ *  it never decides the exit code. */
+async function finishRun(input: {
+  root: string;
+  options: InitOptions;
+  output: Output;
+  pretty: PrettyOutput | null;
+  interactive: boolean;
+  useCase: InitUseCase;
+  mcp: ReturnType<typeof planMcp> | null;
+  mount: ManualEdit | null;
+  edits: ManualEdit[];
+  manualSteps: string[];
+  credential: DevCredential;
+  cloud: { keyValid: boolean };
+  compositionPath: string | null;
+  framework: Exclude<HostFramework, "unknown"> | "custom";
+  authWired: AuthMatch | null;
+  layout: LayoutWiring;
+  toolCount: number;
+  brandCaptured: boolean;
+}): Promise<string> {
+  const {
+    root, options, output, pretty, interactive, useCase, mcp, mount, edits, manualSteps,
+    credential, cloud, compositionPath, framework, authWired, layout, toolCount, brandCaptured,
+  } = input;
+
+  // Where will this deploy? — every path but MCP, which needed the answer
+  // before it wrote. One Enter declines and the placeholder stands. The answer
+  // is written to .env.example inside, so there is nothing to read back here.
+  if (useCase !== "mcp") await captureBaseUrl({ root, options, output, pretty, interactive });
+
+  // Variant B: the wired route stays (it serves apps and approvals to the
+  // embeds) — what is added is the one snippet for their own loop.
+  const handSteps = [
+    ...(mount === null ? [] : [mount]),
+    ...edits,
+    ...(useCase === "agent-loop" ? await agentLoopSteps(root) : []),
+  ];
+  printClosingSteps({ output, handSteps, manualSteps, credential, cloud, compositionPath });
+  if (mcp !== null) {
+    const lines = [...mcp.steps, ...mcp.envLines];
+    if (pretty === null) for (const line of lines) output.log(`  ${line}`);
+    else pretty.block("Steps that are yours", lines, "◇");
+  }
+
+  // The live check offers itself ONLY when nothing is left to paste: doctor
+  // grades the paste, and the paste happens after init exits.
+  const checkPassed = handSteps.length === 0
+    && await offerLiveCheck({ root, options, output, pretty, interactive });
+
+  // Agent tail (agent-install-dx): the --yes-or-non-TTY path is agent-driven
+  // — the run's FINAL block is the repo-specific pointers an agent parses.
+  // Interactive human runs keep the clack-style output untouched; --agent
+  // never reaches here (its read-only JSON plan returned above).
+  if (options.yes === true || !interactive) {
+    output.log("\nAgent tail:");
+    const tail = await agentTailLines({ root, framework, compositionPath, authWired, layout, edits, cloudKeyMissing: credential.rung === "none" });
+    for (const line of tail) output.log(`  ${line}`);
+  }
+  // The run's LAST word is the outstanding paste (self-serve audit F5: the
+  // one step that matters used to scroll off-screen). The frame itself stays
+  // up-screen — the agent tail's "the lines above" pointers depend on that
+  // order — so the closer is a one-line echo of it, not a second copy. A human
+  // terminal has the paste block six lines up and legible, and gets the count
+  // in the footer instead.
+  if (handSteps.length > 0 && pretty === null) {
+    output.log(handSteps.length === 1
+      ? `\n→ Don't forget the paste in ${handSteps[0]!.file} (frame above)`
+      : `\n→ Don't forget the ${handSteps.length} pastes above (frame above)`);
+  }
+  return runStats({ toolCount, brandCaptured, handSteps: handSteps.length, checkPassed });
+}
+
 export async function runInit(options: InitOptions): Promise<number> {
   // The clack-style renderer rides the SAME Output seam: it restyles the
   // exact plain messages below, and is selected only for a human terminal
@@ -1309,9 +1671,15 @@ export async function runInit(options: InitOptions): Promise<number> {
   const interactive = options.interactive
     ?? (!invokedByPackageScript() && Boolean(stdin.isTTY) && Boolean(stdout.isTTY));
   if (!await guardUndetectedFramework({ root, options, output, interactive })) return 1;
-  // (No stdin-TTY guard on these defaults, unlike the star ask's: an unshown
-  // auth confirm resolving its default just wires the detected preset — the
-  // very accept the non-interactive path performs silently anyway.)
+
+  // The read-back first: every fact below is already detected for other
+  // reasons, and showing it is the moment the tool proves it looked.
+  if (pretty !== null) pretty.block("Your stack", await stackLines(root, await resolveFramework(root, options)));
+  const useCase = await resolveUseCase({ options, pretty, interactive });
+
+  // (No stdin-TTY guard on these defaults: an unshown auth confirm resolving
+  // its default just wires the detected preset — the very accept the
+  // non-interactive path performs silently anyway.)
   const confirmAuth = options.yes === true || !interactive
     ? undefined
     : (options.confirmAuth ?? (pretty === null ? askYesNo : pretty.confirm));
@@ -1331,7 +1699,7 @@ export async function runInit(options: InitOptions): Promise<number> {
     if (options.cloudKey !== undefined) {
       await upsertEnvLocal(root, "VENDO_API_KEY", options.cloudKey);
       output.log("Wrote VENDO_API_KEY to .env.local (--cloud-key).");
-      await warnEnvLocalNotIgnored(root, output);
+      await ensureEnvLocalIgnored(root, output);
     }
     const { credential, cloud } = await resolveModelCredential({ root, env, options, output, pretty });
     // A key that landed in .env.local THIS run (--cloud-key upsert or the
@@ -1342,7 +1710,22 @@ export async function runInit(options: InitOptions): Promise<number> {
       telemetry = telemetryFor(options, output, root);
     }
 
+    // The MCP door derives every discovery URL from VENDO_BASE_URL and both
+    // extra answers change the composition's own source, so that path needs
+    // all three BEFORE it writes. Every other path asks the URL at the end,
+    // where it is one Enter to decline.
+    let mcp: ReturnType<typeof planMcp> | null = null;
+    if (useCase === "mcp") {
+      const baseUrl = await captureBaseUrl({ root, options, output, pretty, interactive });
+      mcp = await planMcpScaffold({
+        root, options, output, pretty, interactive, changes, baseUrl,
+        framework: plan.framework, authWired, cloudKey: cloud.keyValid,
+      });
+    }
+
+    pretty?.spin("Wiring your app…");
     const wiringMs = await wireAndScaffold({ root, changes, force: options.force === true });
+    pretty?.stopSpin();
 
     // Summary — what changed. What was LEARNED is the shared flow's report,
     // printed by the flow itself a few lines down.
@@ -1428,31 +1811,15 @@ export async function runInit(options: InitOptions): Promise<number> {
       output.error(`warning: installed ai@${aiVersion} is unsupported — Vendo supports ai@6; downgrade (npm install ai@^6 @ai-sdk/anthropic@^3 @ai-sdk/react@^3) or track github.com/runvendo/vendo/issues/478`);
     }
 
-    const handSteps = [...(mount === null ? [] : [mount]), ...edits];
-    printClosingSteps({ output, handSteps, manualSteps, credential, cloud, compositionPath });
-
-    // Agent tail (agent-install-dx): the --yes-or-non-TTY path is agent-driven
-    // — the run's FINAL block is the repo-specific pointers an agent parses.
-    // Interactive human runs keep the clack-style output untouched; --agent
-    // never reaches here (its read-only JSON plan returned above).
-    if (options.yes === true || !interactive) {
-      output.log("\nAgent tail:");
-      const tail = await agentTailLines({ root, framework: plan.framework, compositionPath, authWired, layout, edits, cloudKeyMissing: credential.rung === "none" });
-      for (const line of tail) output.log(`  ${line}`);
-    } else {
-      await askForStar({ options, pretty, output, telemetry });
-    }
-    // The run's LAST word is the outstanding paste, on both paths (self-serve
-    // audit F5: interactive installs used to end on the star ask with the one
-    // step that matters scrolled off-screen). The frame itself stays up-screen
-    // — the agent tail's "the lines above" pointers depend on that order — so
-    // the closer is a one-line echo of it, not a second copy.
-    if (handSteps.length > 0) {
-      output.log(handSteps.length === 1
-        ? `\n→ Don't forget the paste in ${handSteps[0]!.file} (frame above)`
-        : `\n→ Don't forget the ${handSteps.length} pastes above (frame above)`);
-    }
-    pretty?.done(Date.now() - started, true);
+    // Called on its OWN line, never inside `pretty?.done(…)`: optional
+    // chaining short-circuits its arguments, so a null `pretty` — every
+    // non-TTY run — would skip the entire ending without a trace.
+    const stats = await finishRun({
+      root, options, output, pretty, interactive, useCase, mcp, mount, edits, manualSteps,
+      credential, cloud, compositionPath, framework: plan.framework, authWired, layout,
+      toolCount, brandCaptured: themeSummary !== null,
+    });
+    pretty?.done(Date.now() - started, true, stats);
     return 0;
   } catch (error) {
     await telemetry.track("init_failed", {
