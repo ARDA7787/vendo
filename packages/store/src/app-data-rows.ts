@@ -1,5 +1,6 @@
 import {
   APP_DATA_COLLECTION_PATTERN,
+  APP_DATA_OWNER_PATTERN,
   VendoError,
   type AppDataTarget,
   type BlobStore,
@@ -8,8 +9,8 @@ import {
   type VendoRecord,
 } from "@vendoai/core";
 import type { Db } from "./db.js";
-import { jsonParam } from "./helpers/utils.js";
-import { createRecordStore } from "./records.js";
+import { jsonParam, requireKnownApp } from "./helpers/utils.js";
+import { createRecordStore, recordFromRow } from "./records.js";
 import type { VendoStore } from "./store.js";
 import { invalid } from "./validate.js";
 
@@ -45,9 +46,21 @@ export function appDataNamespace(target: AppDataTarget): string {
   return appDataCollection(target);
 }
 
-/** Files carry no refs, so their owner rides the key instead of a stamp. */
+/** The owner leg of a target, checked. Every verb composes it, because an
+ *  owner outside the grammar is refused rather than repaired: rewriting one
+ *  would land two different people in one drawer. */
+export function appDataOwner(owner: string): string {
+  if (!APP_DATA_OWNER_PATTERN.test(owner)) {
+    invalid(`app data owner ${JSON.stringify(owner)} must be non-empty and free of "/"`);
+  }
+  return owner;
+}
+
+/** Files carry no refs, so their owner rides the key instead of a stamp — which
+ *  is exactly why {@link appDataOwner} exists: `<owner>/<key>` cannot tell
+ *  owner "a/b" apart from owner "a" writing "b/…". */
 export function appDataFileKey(owner: string, key: string): string {
-  return `${owner}/${key}`;
+  return `${appDataOwner(owner)}/${key}`;
 }
 
 /** A caller who supplies `refs.subject` is writing (or reading) as someone
@@ -75,42 +88,59 @@ export interface AppDataRows {
 export function appDataRows(db: Db, target: AppDataTarget): AppDataRows {
   const collection = appDataCollection(target);
   const records = createRecordStore(db, collection);
-  const stamp = { [APP_DATA_OWNER_REF]: target.owner };
+  const stamp = { [APP_DATA_OWNER_REF]: appDataOwner(target.owner) };
 
   return {
     /** An id another owner holds is a `conflict`, not an overwrite:
      *  `records.put` is an unconditional upsert on (collection, id), so without
-     *  this a caller could destroy and re-stamp a row it can neither read nor
-     *  delete. The refusal never names the holder — it only says the id is
-     *  taken, which is all a caller who cannot see the row may learn.
+     *  a predicate a caller could destroy and re-stamp a row it can neither
+     *  read nor delete. The refusal never names the holder — it only says the
+     *  id is taken, which is all a caller who cannot see the row may learn.
      *
-     *  Race-free rather than check-then-write: the insert decides the create
-     *  atomically, and when it loses, `FOR UPDATE` locks the row that beat it,
-     *  so a concurrent writer blocks instead of interleaving. That lock lives
-     *  until COMMIT, so this needs a transaction-scoped handle (ops.ts hands
-     *  one in) — a bare `BEGIN` is READ COMMITTED, where an unlocked read would
-     *  see a snapshot the following write does not honor. */
+     *  ONE owner-predicated statement, like `delete` below, because a
+     *  read-then-write cannot express this: `SELECT … FOR UPDATE` locks NOTHING
+     *  when the row is absent, so a holder deleting the id while a third owner
+     *  recreates it leaves both racers seeing "absent" and both upserting, and
+     *  the loser's row is destroyed and re-stamped. Here the arbitration is the
+     *  database's — `ON CONFLICT … DO UPDATE` takes the conflicting row's lock
+     *  BEFORE it evaluates its `WHERE`, so a foreign holder makes the whole
+     *  statement touch no rows. The in-statement `vendo_apps` gate is the same
+     *  one `createRecordStore` carries on every row-creating write. */
     async put(record) {
       refuseCallerOwner(record.refs);
-      const stamped = { ...record, refs: { ...record.refs, ...stamp } };
-      const created = await records.atomic!.insertIfAbsent(stamped);
-      if (created !== null) return created;
-
-      const held = await db.query(
-        "SELECT refs FROM vendo_records WHERE collection = $1 AND id = $2 FOR UPDATE",
-        [collection, record.id],
+      // Pre-check for the clean unknown-app signal; the statement's own gate is
+      // the structural guarantee (a gate lost to a racing sweep writes nothing).
+      await requireKnownApp(db, target.appId);
+      const now = new Date().toISOString();
+      const result = await db.query(
+        `INSERT INTO vendo_records (collection, id, data, refs, created_at, updated_at, revision)
+         SELECT $1::text, $2::text, $3::jsonb, $4::jsonb, $5::timestamptz, $5::timestamptz, 1
+         WHERE EXISTS (SELECT 1 FROM vendo_apps WHERE id = $6)
+         ON CONFLICT (collection, id) DO UPDATE
+           SET data = EXCLUDED.data, refs = EXCLUDED.refs, updated_at = EXCLUDED.updated_at,
+               revision = vendo_records.revision + 1
+           WHERE vendo_records.refs @> $7::jsonb
+         RETURNING id, data, refs, created_at, updated_at, revision`,
+        [
+          collection,
+          record.id,
+          jsonParam(record.data),
+          jsonParam({ ...record.refs, ...stamp }),
+          now,
+          target.appId,
+          jsonParam(stamp),
+        ],
       );
-      const row = held.rows[0];
-      // No row means the holder deleted it while we looked; the upsert below
-      // recreates it as ours.
-      if (row !== undefined
-        && (row["refs"] as Record<string, string> | null)?.[APP_DATA_OWNER_REF] !== target.owner) {
-        throw new VendoError(
-          "conflict",
-          `app data id ${JSON.stringify(record.id)} is already held in this collection`,
-        );
-      }
-      return await records.put(stamped);
+      const row = result.rows[0];
+      if (row !== undefined) return recordFromRow(row);
+      // Nothing was written, so the outcome is already decided and this read
+      // only picks WHICH refusal to report: the app vanished under the
+      // pre-check, or the id belongs to someone else.
+      await requireKnownApp(db, target.appId);
+      throw new VendoError(
+        "conflict",
+        `app data id ${JSON.stringify(record.id)} is already held in this collection`,
+      );
     },
 
     async get(id) {
@@ -149,7 +179,8 @@ export function appDataRows(db: Db, target: AppDataTarget): AppDataRows {
  *  onto the owner leg before the query, not filtered after the strip. */
 export function appDataFiles(store: VendoStore, target: AppDataTarget): BlobStore {
   const blobs = store.blobs(appDataNamespace(target));
-  const owned = (key: string): string => appDataFileKey(target.owner, key);
+  const owner = appDataOwner(target.owner);
+  const owned = (key: string): string => appDataFileKey(owner, key);
 
   return {
     async put(key, bytes, meta) {
@@ -163,7 +194,7 @@ export function appDataFiles(store: VendoStore, target: AppDataTarget): BlobStor
     },
     async list(prefix = "") {
       const keys = await blobs.list(owned(prefix));
-      return keys.map((key) => key.slice(target.owner.length + 1));
+      return keys.map((key) => key.slice(owner.length + 1));
     },
   };
 }
