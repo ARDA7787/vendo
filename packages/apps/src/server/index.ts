@@ -22,10 +22,8 @@ export {
   type EditFailure,
   type EditResult,
   type OpenSurface,
+  type SeedFromInput,
   type PlacementEntry,
-  type PinForkInput,
-  type PinForkResult,
-  type PinRebaseResult,
   type VersionEntry,
 } from "./runtime/runtime.js";
 // The slot registry — which slots a host's surfaces mount, reported by the
@@ -60,13 +58,17 @@ export {
   type PublishRecord,
   type ShareSnapshot,
 } from "./persistence/cloud.js";
+export { inClientApprovalSchema, type InClientApproval } from "./remix/inclient.js";
 export {
-  pinBaselineSchema,
-  pinComponentName,
-  type InClientApproval,
-  type PinBaseline,
-  type PinDrift,
-} from "./remix/pins.js";
+  seedBaselineSchema,
+  seedComponentName,
+  seedDrift,
+  seedForkSource,
+  isSeedComponentName,
+  hasDefaultExport,
+  type SeedBaseline,
+  type SeedDrift,
+} from "../contract/index.js";
 export { appVersionHash } from "./remix/version-hash.js";
 export {
   type InClientVenueState,
