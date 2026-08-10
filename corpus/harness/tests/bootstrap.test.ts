@@ -93,6 +93,60 @@ describe("bootstrapRepo", () => {
     await expect(readFile(path.join(repoDir, ".corpus", "logs", "bootstrap.stdout.log"), "utf8")).rejects.toThrow();
   });
 
+  it("relaxes engine-strict for the install so a pinned checkout's engines field cannot fail it", async () => {
+    const { corpusRoot, repo, repoDir } = await makeRepo();
+    await writeInstallScript(repoDir, `
+      import { writeFileSync } from "node:fs";
+      writeFileSync("engine-env.json", JSON.stringify({
+        npm: process.env.npm_config_engine_strict,
+        pnpm: process.env.PNPM_CONFIG_ENGINE_STRICT,
+      }));
+    `);
+
+    await bootstrapRepo(repo, {
+      context: createRunContext({ corpusRoot }),
+      env: { npm_config_engine_strict: "true", PNPM_CONFIG_ENGINE_STRICT: "true" },
+    });
+
+    await expect(readFile(path.join(repoDir, "engine-env.json"), "utf8")).resolves.toBe(
+      JSON.stringify({ npm: "false", pnpm: "false" }),
+    );
+  });
+
+  it("neutralizes engine-strict in the checkout's own .npmrc, keeping its other settings", async () => {
+    const { corpusRoot, repo, repoDir } = await makeRepo();
+    const context = createRunContext({ corpusRoot });
+    await writeFile(path.join(repoDir, ".npmrc"), [
+      "engine-strict=true",
+      "public-hoist-pattern[]=*import-in-the-middle*",
+      "",
+    ].join("\n"));
+    await writeInstallScript(repoDir, `console.log("ok");`);
+
+    await bootstrapRepo(repo, { context });
+
+    await expect(readFile(path.join(repoDir, ".npmrc"), "utf8")).resolves.toBe([
+      "engine-strict=false",
+      "public-hoist-pattern[]=*import-in-the-middle*",
+      "",
+    ].join("\n"));
+    await expect(readFile(path.join(context.logsDir(repo.name), "bootstrap.stdout.log"), "utf8"))
+      .resolves.toMatch(/set engine-strict=false/);
+  });
+
+  it("leaves a checkout without an engine-strict .npmrc untouched", async () => {
+    const { corpusRoot, repo, repoDir } = await makeRepo();
+    const context = createRunContext({ corpusRoot });
+    await writeFile(path.join(repoDir, ".npmrc"), "public-hoist-pattern[]=*in-the-middle*\n");
+    await writeInstallScript(repoDir, `console.log("ok");`);
+
+    await bootstrapRepo(repo, { context });
+
+    await expect(readFile(path.join(repoDir, ".npmrc"), "utf8")).resolves.toBe("public-hoist-pattern[]=*in-the-middle*\n");
+    await expect(readFile(path.join(context.logsDir(repo.name), "bootstrap.stdout.log"), "utf8"))
+      .resolves.not.toMatch(/engine-strict/);
+  });
+
   it("materializes .env from envTemplate placeholders and literal values", async () => {
     const { corpusRoot, repo, repoDir } = await makeRepo();
     repo.bootstrap.envTemplate = {
@@ -281,7 +335,7 @@ describe("bootstrapRepo", () => {
     );
   });
 
-  it("retries once and succeeds when the install fails with a transient resolver/registry error (nextcrm flake class)", async () => {
+  it("retries once and succeeds when the install fails with a transient registry error", async () => {
     const { corpusRoot, repo, repoDir } = await makeRepo();
     const context = createRunContext({ corpusRoot });
     const attemptFile = path.join(repoDir, "attempt.txt");
@@ -291,7 +345,7 @@ describe("bootstrapRepo", () => {
       const attempt = existsSync(marker) ? Number(readFileSync(marker, "utf8")) + 1 : 1;
       writeFileSync(marker, String(attempt));
       if (attempt === 1) {
-        console.error("ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @types/react@^19.0.0");
+        console.error("ECONNRESET  socket hang up while fetching from registry");
         process.exit(1);
       }
       console.log("install stdout attempt " + attempt);
@@ -305,7 +359,7 @@ describe("bootstrapRepo", () => {
     expect(stdoutLog).toContain("install stdout attempt 2");
   });
 
-  it("does not retry a non-transient install failure (fails immediately on attempt 1)", async () => {
+  it("does not retry a deterministic install failure — resolution or config — on attempt 1", async () => {
     const { corpusRoot, repo, repoDir } = await makeRepo();
     const context = createRunContext({ corpusRoot });
     const attemptFile = path.join(repoDir, "attempt.txt");
@@ -314,6 +368,7 @@ describe("bootstrapRepo", () => {
       const marker = ${JSON.stringify(attemptFile)};
       const attempt = existsSync(marker) ? Number(readFileSync(marker, "utf8")) + 1 : 1;
       writeFileSync(marker, String(attempt));
+      console.error("ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @types/react@^19.0.0");
       console.error("SyntaxError: Unexpected token in package.json");
       process.exit(1);
     `);
