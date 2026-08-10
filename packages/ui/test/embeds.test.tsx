@@ -81,13 +81,18 @@ describe("existing-agents embeds", () => {
       mount(<VendoApprovalEmbed refValue={approvalRef} />);
 
       // The pending request feeds the existing ApprovalCard machinery.
+      // ⚠️ TEST EDIT (M1 · Sentence): the recipient used to be a field-table dd
+      // of its own. It is now one of the labelled notes on the card's quiet
+      // line — still displayed, still verbatim.
       const approve = await screen.findByRole("button", { name: "Approve" });
-      expect(screen.getByText("a@example.com")).toBeDefined();
+      expect(document.querySelector(".fl-approval-sub")!.textContent).toContain("To: a@example.com");
 
       fireEvent.click(approve);
 
-      // The wire executes the parked call; the embed resolves in place.
+      // The wire executes the parked call; the embed resolves in place — a
+      // succeeded receipt wears no error register (its failed twin does).
       await waitFor(() => expect(screen.getByText("Approved — ran")).toBeDefined());
+      expect(document.querySelector(".fl-approval-sub--failed")).toBeNull();
       expect(wire.requests).toContainEqual(
         expect.objectContaining({
           method: "POST",
@@ -118,6 +123,12 @@ describe("existing-agents embeds", () => {
       await waitFor(() => expect(screen.getByText(/couldn't finish/i)).toBeDefined());
       expect(screen.getByText(/Nothing changed/)).toBeDefined();
       expect(document.body.textContent).not.toContain("downstream exploded");
+      // …and it LOOKS failed: the thread's danger ✕ in front of the line, in the
+      // error register. Muted to the same grey as "Approved — ran", the words
+      // were the only thing telling a landed call from one that didn't.
+      const line = document.querySelector(".fl-approval-sub")!;
+      expect(line.classList.contains("fl-approval-sub--failed")).toBe(true);
+      expect(line.querySelector("svg")).not.toBeNull();
     });
 
     it("keeps the wire's sentence for developers — dev mode only", async () => {

@@ -8,7 +8,7 @@ import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import { useEffect, useRef, useState } from "react";
 import { useVendoProvider } from "../context.js";
 import { developmentMode } from "./dev-mode.js";
-import { memberSchema } from "./field-rows.js";
+import { memberSchema, type CardFieldRow } from "./field-rows.js";
 import { argValue, humanizeToolName, toolTitle, type ToolMeta } from "./humanize.js";
 import type { VendoBeat } from "./run-activity.js";
 
@@ -44,35 +44,35 @@ export function toolkitLogoUrl(toolkit: string): string {
 /**
  * The consent-surface presentation of one tool call, layered on the ENG-216
  * pipeline: the title is the humanized tool label (host meta wins), the
- * eyebrow marks an automation when the REAL inputs carry a recurrence
- * (`trigger`/`every`/`schedule`), and the description explains what granting
- * means in plain words — host meta first, else synthesized from the inputs,
- * never invented beyond them.
+ * question is the ask a person answers, and the description explains what
+ * granting means in plain words — host meta first, else synthesized from the
+ * inputs, never invented beyond them.
  */
 export interface ToolPresentation {
   title: string;
-  eyebrow: string;
   description?: string;
   /** Short toast byline for the post-approve notification. */
   sub?: string;
   toolkit?: string;
   logoUrl?: string;
-  /** The consequence-first sentence, structured so the card
-      can emphasize the artifact and target. Synthesized ONLY from the real
-      inputs (same honesty rule as `description`); absent when the inputs
-      don't support a truthful sentence, in which case the card keeps its
-      always-open fields layout. */
-  consequence?: ToolConsequence;
+  /** The ask as a QUESTION, with the one key value inline ("Send $47.50 to
+      Acme Utilities?"). Synthesized ONLY from the real inputs (same honesty
+      rule as `description`); absent when the inputs don't support a truthful
+      one, and a consent card asks with the tool's own label instead. */
+  question?: string;
+  /** The input KEYS the question already names — the TOP-LEVEL arg keys,
+      verbatim, so each one identifies its own `CardFieldRow.key` exactly.
+      Never a substring scan of the question (a boolean input renders "No", and
+      "No" lives inside plenty of innocent sentences), and never the humanized
+      LABEL: `humanizeToolName` is many-to-one, so labelling `recipient_name`
+      as consumed also hid a real `recipientName` the question never printed. */
+  questionKeys?: string[];
+  /** When approving takes effect and whose authority it runs on ("Sends now,
+      as you"), in the ask's own verb — the promise under the question. */
+  agency: string;
 }
 
-/** "Vendo will post ‹artifact› to ‹target› — now, as you." in parts. */
-export interface ToolConsequence {
-  pre: string;
-  artifact?: string;
-  mid?: string;
-  target?: string;
-  post: string;
-}
+const agencyLine = (verb: string, trigger?: string): string => `${verb} ${trigger ?? "now"}, as you`;
 
 /** Fields whose value can NAME the other side of an action, most specific
     first. Only these: a sentence may never guess who the counterparty is. */
@@ -110,33 +110,36 @@ export function consentClassLine(risk: string): string {
   return CLASS_LINE[risk] ?? "This hasn’t been checked, so we can’t say what it changes — it runs as you.";
 }
 
-/** A consequence as one flat string — what a queue row renders, and what the
-    card's own emphasized spans add up to, so the two are the same sentence. */
-export function consequenceText(consequence: ToolConsequence): string {
-  return [consequence.pre, consequence.artifact, consequence.mid, consequence.target, consequence.post]
-    .filter((piece): piece is string => piece !== undefined)
-    .join("");
+/** The M1 consent ask: the question a person answers, and the quiet notes under
+    it. A card renders the notes dot-separated on one muted line. */
+export interface ConsentAsk {
+  question: string;
+  notes: string[];
 }
 
-/** The mandatory plain-words line for a consent ask, and (when the ladder got
-    there) the structured consequence a card can emphasize. */
-export interface ConsentWords {
-  sentence: string;
-  consequence?: ToolConsequence;
-}
+/** The grade in plain words, where it changes what a person should weigh. A
+    read or an ordinary write is already covered by the agency phrase. */
+const GRADE_NOTE: Record<string, string[]> = {
+  destructive: ["Can’t be undone"],
+  ungraded: ["Nobody has checked what this changes"],
+};
 
 /**
- * RULING 14 — the ONE plain-words ladder, shared by the approval card and its
- * queue row so a card and its row can never say different things about one ask.
+ * RULING 14 in M1's shape — the ONE plain-words ladder, shared by the approval
+ * card and its queue row so a card and its row can never say different things
+ * about one ask.
  *
- * Precedence, most local authority first:
- *   1. the HOST's own sentence for this tool (in-code `ToolMeta.description`) —
+ * The question is the ask; the notes are what approving DOES (§16 law 3 lives
+ * across the pair). Precedence, most local authority first:
+ *   1. the question synthesized from the REAL inputs (names the actual money and
+ *      counterparty), else the ask's own humanized label as a question;
+ *   2. the HOST's own sentence for this tool (in-code `ToolMeta.description`) —
  *      the only human-authored copy in the system;
- *   2. the consequence synthesized from the REAL inputs (names the actual money
- *      and counterparty — more specific than any generic sentence);
- *   3. the sentence WE synthesized for a known toolkit ("Vendo will send this
- *      email as you.") — ours, not the wire's;
- *   4. the consequence CLASS (`consentClassLine`) — never the tool's own label.
+ *   3. the agency phrase — when it happens, and that it happens as the person
+ *      approving;
+ *   4. the consequence CLASS (`consentClassLine`) when neither 1 nor 2 spoke —
+ *      never the tool's own label, and it already ends "as you", so it stands
+ *      alone.
  *
  * A DESCRIPTOR's description is not on this ladder at any rung. It is authored
  * for the MODEL (demo-bank's "Amounts are integer cents (e.g. 285000 =
@@ -146,22 +149,42 @@ export interface ConsentWords {
  * that — a regex set admitted raw JSON and exceptions while deleting good host
  * copy, so it cannot be the runtime authority for what a person may read.
  */
-export function consentWords(
-  name: string,
+export function consentAsk(
   risk: string,
   presentation: ToolPresentation,
+  rows: readonly CardFieldRow[],
   meta?: ToolMeta,
-): ConsentWords {
+): ConsentAsk {
   const host = meta?.description?.trim();
-  if (host !== undefined && host.length > 0 && host !== presentation.title) return { sentence: host };
-  if (presentation.consequence !== undefined) {
-    return { sentence: consequenceText(presentation.consequence), consequence: presentation.consequence };
-  }
-  // `presentation.description` is the host's sentence (returned above) or one
-  // this module composed from the real inputs; nothing from the wire.
-  const ours = presentation.description?.trim();
-  if (ours !== undefined && ours.length > 0 && ours !== presentation.title) return { sentence: ours };
-  return { sentence: consentClassLine(risk) };
+  const authored = host !== undefined && host.length > 0 && host !== presentation.title ? host : undefined;
+  const question = presentation.question ?? `${presentation.title}?`;
+  const does = authored === undefined && presentation.question === undefined
+    ? [consentClassLine(risk)]
+    : [...(authored === undefined ? [] : [authored]), presentation.agency, ...(GRADE_NOTE[risk] ?? [])];
+  // Rung 3 of the old description ladder — `presentation.description` — is
+  // deliberately NOT read here, and the drop is loud on purpose: it is either
+  // the host's `ToolMeta.description` (already `authored` above, read from the
+  // host's own meta) or the connector sentence `toolPresentation` composes
+  // ("Vendo will post to #renewals on your behalf, running as you."), which
+  // says the question over again in weaker words. It still rides the surfaces
+  // that have no question — the standing-access rows (`grant-set-card.tsx`).
+  //
+  // The dedupe is IDENTITY: `questionKeys` are top-level arg keys and so is
+  // `CardFieldRow.key`, so a consumed input drops its own row and nothing
+  // else's. Matching on the humanized LABEL hid `recipientName: "Bob Smith"`
+  // when the question named `recipient_name` — a real input, displayed nowhere,
+  // which is exactly what the honesty law forbids.
+  const named = new Set(presentation.questionKeys ?? []);
+  return {
+    question,
+    // THE HONESTY LAW (card-shell.tsx L37) — every real input is displayed,
+    // always. The question carries the key ones; the rest are here, visible by
+    // default, never behind a fold.
+    notes: [
+      ...rows.filter(row => !named.has(row.key)).map(row => `${row.label}: ${row.value}`),
+      ...does,
+    ],
+  };
 }
 
 /**
@@ -182,15 +205,28 @@ export function consentWords(
  * ask is about, so the card says no sentence and keeps every row in sight.
  * The host's formatter still supplies the DISPLAY for that one field.
  */
-function moneyValue(args: Record<string, unknown>, meta?: ToolMeta, inputSchema?: JsonSchema): string | undefined {
-  const declared: { key: string; value: number; schema: JsonSchema | undefined }[] = [];
+function moneyValue(
+  args: Record<string, unknown>,
+  meta?: ToolMeta,
+  inputSchema?: JsonSchema,
+): { key: string; shown: string } | undefined {
+  const declared: { path: string[]; value: number; schema: JsonSchema | undefined }[] = [];
   collectMoney(args, inputSchema, declared);
   if (declared.length !== 1) return undefined;
-  const { key, value, schema } = declared[0]!;
+  const { path, value, schema } = declared[0]!;
+  // The question may only name an input that OWNS A ROW, because dropping the
+  // row it named is the only way the amount prints exactly once. A NESTED
+  // amount has no row of its own — `{ charge: { amount_cents: 1850 } }` is one
+  // "Charge: Amount cents: $18.50" row, whose siblings would go dark if the
+  // whole row were dropped — so it earns no question, and every input stays in
+  // sight once. (The descent above still COUNTS at any depth: two amounts
+  // anywhere means no single amount the ask is about.)
+  if (path.length !== 1) return undefined;
+  const key = path[0]!;
   const shown = meta?.formatField?.(key, value as Json)
     ?? argValue(key, value, schema === undefined ? undefined : { [key]: schema });
-  // An undeclared unit says so out loud; that is not a sentence.
-  return shown.includes("unit not specified") ? undefined : shown;
+  // An undeclared unit says so out loud; that is not a question.
+  return shown.includes("unit not specified") ? undefined : { key, shown };
 }
 
 /**
@@ -211,21 +247,25 @@ function moneyValue(args: Record<string, unknown>, meta?: ToolMeta, inputSchema?
 function collectMoney(
   value: unknown,
   schema: JsonSchema | undefined,
-  found: { key: string; value: number; schema: JsonSchema | undefined }[],
-  key = "",
+  found: { path: string[]; value: number; schema: JsonSchema | undefined }[],
+  /** The keys walked to get here — the LAST is the field's own name (what
+      declares the unit), the FIRST is the row it would print on. */
+  path: readonly string[] = [],
 ): void {
+  const key = path[path.length - 1] ?? "";
   if (value !== null && typeof value === "object") {
     if (Array.isArray(value)) {
-      for (const item of value) collectMoney(item, memberSchema(schema, key), found, key);
+      // An array's members share their parent's name, schema and row.
+      for (const item of value) collectMoney(item, memberSchema(schema, key), found, path);
       return;
     }
     for (const [child, item] of Object.entries(value)) {
-      collectMoney(item, memberSchema(schema, child), found, child);
+      collectMoney(item, memberSchema(schema, child), found, [...path, child]);
     }
     return;
   }
   if (typeof value === "number" && Number.isFinite(value) && declaredMoneyUnit(key, schema) !== undefined) {
-    found.push({ key, value, schema });
+    found.push({ path: [...path], value, schema });
   }
 }
 
@@ -254,40 +294,50 @@ export function toolPresentation(
     : typeof flat.every === "string" ? `every ${flat.every}`
     : typeof flat.schedule === "string" ? flat.schedule
     : undefined;
-  const eyebrow = trigger ? "Automation · needs your approval" : "Needs your approval";
   const title = slug === undefined
     ? toolTitle(name, meta, descriptorTitle)
     : toolTitle(slug, meta);
 
   let description = meta?.description;
   let sub: string | undefined;
-  let consequence: ToolConsequence | undefined;
+  let question: string | undefined;
+  let questionKeys: string[] | undefined;
+  // The neutral promise, for an ask whose inputs name no verb of their own.
+  let agency = agencyLine("Runs", trigger);
+  // The host's own display for a field is its display EVERYWHERE a person reads
+  // it — most of all inside the QUESTION, which is the one place the field's row
+  // no longer prints. Interpolating the raw value instead put the formatted one
+  // nowhere on the card: with `formatField("recipient_name") → "Maple Savings"`,
+  // the ask read "Send $47.50 to acct_8820?" and the name the host wrote was
+  // gone. (`moneyValue` already reads the formatter for the amount.)
+  const shown = (key: string, value: string): string => meta?.formatField?.(key, value) ?? value;
   if (toolkit === "slack" && typeof flat.channel === "string") {
+    const channel = shown("channel", flat.channel);
     description ??= trigger
-      ? `Vendo will post to ${flat.channel} on your behalf, ${trigger}. It runs as you.`
-      : `Vendo will post to ${flat.channel} on your behalf, running as you.`;
-    sub = trigger ? `Posts to ${flat.channel} ${trigger}` : `Posts to ${flat.channel} as you`;
+      ? `Vendo will post to ${channel} on your behalf, ${trigger}. It runs as you.`
+      : `Vendo will post to ${channel} on your behalf, running as you.`;
+    sub = trigger ? `Posts to ${channel} ${trigger}` : `Posts to ${channel} as you`;
     if (typeof flat.message === "string" && flat.message.trim().length > 0) {
-      consequence = {
-        pre: "Vendo will post ",
-        artifact: `“${flat.message}”`,
-        mid: " to ",
-        target: flat.channel,
-        post: trigger ? `, ${trigger} — as you.` : " — now, as you.",
-      };
+      question = `Post “${shown("message", flat.message)}” to ${channel}?`;
+      questionKeys = ["message", "channel"];
+      agency = agencyLine("Posts", trigger);
     }
   } else if (toolkit === "gmail" && typeof flat.to === "string") {
+    const to = shown("to", flat.to);
     description ??= `Vendo will send this email as you${trigger ? `, ${trigger}` : ""}.`;
-    sub = `Emails ${flat.to} as you`;
-    // No consequence for Gmail: the email's subject/body/copied recipients ARE
-    // the message, and a sentence naming only `to` would fold them out of
-    // sight. The fold is only earned when the sentence carries the full
-    // content (the Slack branch above) — otherwise the card keeps its open
-    // fields so the user reviews the real inputs before approving.
+    sub = `Emails ${to} as you`;
+    // Gmail used to synthesize nothing, because a sentence naming only `to`
+    // would have FOLDED the subject/body/copied recipients out of sight. M1
+    // retired the fold: every input the question doesn't name rides the quiet
+    // line beneath it, visible by default — so naming the recipient in the
+    // question hides nothing.
+    question = `Send an email to ${to}?`;
+    questionKeys = ["to"];
+    agency = agencyLine("Sends", trigger);
   } else {
     // The general money case — the same idea as the Slack branch, for the asks
     // that actually gate money: a DECLARED amount plus a named counterparty is
-    // enough for one truthful sentence ("Sends $47.50 to Acme Utilities"),
+    // enough for one truthful question ("Send $47.50 to Acme Utilities?"),
     // which is what the robotic `Vendo will run Send money as you.` replaced.
     //
     // The INPUTS decide, not the name. This branch used to be gated on the
@@ -297,22 +347,22 @@ export function toolPresentation(
     // as money (`moneyValue` → `declaredMoneyUnit`) AND a field from
     // `TARGET_FIELDS` naming the counterparty. That input shape IS the money
     // movement; a word list was never what made the sentence true.
-    const amount = moneyValue(flat, meta, inputSchema);
+    const money = moneyValue(flat, meta, inputSchema);
     const target = TARGET_FIELDS
-      .map(field => flat[field])
-      .find((value): value is string => typeof value === "string" && value.trim().length > 0);
-    if (amount !== undefined && target !== undefined) {
-      consequence = {
-        pre: "Sends ",
-        artifact: amount,
-        mid: " to ",
-        target,
-        post: trigger ? `, ${trigger} — as you.` : " — now, as you.",
-      };
-      sub ??= trigger ? `Sends ${amount} to ${target} ${trigger}` : `Sends ${amount} to ${target} as you`;
+      .map(field => [field, flat[field]] as const)
+      .find((entry): entry is [string, string] =>
+        typeof entry[1] === "string" && entry[1].trim().length > 0);
+    if (money !== undefined && target !== undefined) {
+      const to = shown(target[0], target[1]);
+      question = `Send ${money.shown} to ${to}?`;
+      questionKeys = [money.key, target[0]];
+      agency = agencyLine("Sends", trigger);
+      sub ??= trigger
+        ? `Sends ${money.shown} to ${to} ${trigger}`
+        : `Sends ${money.shown} to ${to} as you`;
     }
   }
-  return { title, eyebrow, description, sub, toolkit, logoUrl, consequence };
+  return { title, description, sub, toolkit, logoUrl, question, questionKeys, agency };
 }
 
 /** Live elapsed clock for an in-flight line; 0 (never ticking) under
@@ -345,8 +395,9 @@ export function WorkingBeat({ label = "Working" }: { label?: string }) {
   );
 }
 
-/** How a beat's mark reads: in flight, settled, failed, or refused. */
-type BeatMark = "working" | "done" | "error" | "declined";
+/** How a beat's mark reads: in flight, parked on the user, settled, failed, or
+    refused. */
+type BeatMark = "working" | "waiting" | "done" | "error" | "declined";
 
 /**
  * The ONE beat line — its mark and its words, nothing else.
@@ -369,7 +420,10 @@ function BeatLine({ mark, label }: { mark: BeatMark; label: string }) {
       ) : mark === "done" ? (
         <BeatTick />
       ) : (
-        <span className="fl-beat-orb" aria-hidden="true" />
+        // The orb is a static position marker (§8 build calm). A beat PARKED on
+        // the user is the one exception: nothing on our side moves, so the
+        // marker turns instead — the launcher's indeterminate arc, at orb size.
+        <span className={`fl-beat-orb${mark === "waiting" ? " fl-beat-ring" : ""}`} aria-hidden="true" />
       )}
       <span className="fl-beat-label">{label}</span>
     </>
@@ -494,7 +548,8 @@ export function BuildBeat({
   const declined = part.state === "output-denied";
   const label = toolTitle(name, tools[name]);
   const result = done ? toolResultSummary(part.output) : undefined;
-  const mark: BeatMark = error ? "error" : declined ? "declined" : done ? "done" : "working";
+  const mark: BeatMark = error ? "error" : declined ? "declined" : done ? "done"
+    : waiting ? "waiting" : "working";
   const state = mark === "error" ? "fl-beat-error"
     : mark === "done" || mark === "declined" ? "fl-beat-done"
     : "fl-beat-working";

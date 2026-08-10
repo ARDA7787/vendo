@@ -4,7 +4,7 @@ import { Fragment, useRef, useState } from "react";
 import { BeatSummary } from "../build-beat.js";
 import { useCopyFeedback } from "../clipboard.js";
 import { SentAttachment, type FilePart } from "./attachments.js";
-import { assistantText, collapseToolRuns, isAgentContext, toolCallIsContent, toolCallPending, userText } from "./message-data.js";
+import { assistantText, collapseToolRuns, isAgentContext, toolCallIsContent, toolCallParked, toolCallPending, userText } from "./message-data.js";
 import { ThreadPart } from "./parts.js";
 import { TurnCitations } from "./turn-citations.js";
 
@@ -63,12 +63,10 @@ export function ThreadMessage({ message, restored, risks, busy, activeAssistantI
     && message.parts.every(part => part.type === "file" || isAgentContext(part));
   // Every settled turn carries a Copy action (hover-
   // revealed, see chrome-css); Edit stays on the last user turn and
-  // Regenerate on the last assistant turn. The actively
-  // streaming turn gets no actions — its text is still arriving.
+  // Regenerate on the last assistant turn.
   const streamingTurn = busy && message.role === "assistant" && message.id === activeAssistantId;
   const showEdit = !busy && message.role === "user" && message.id === lastUserId;
   const showRegenerate = !busy && message.role === "assistant" && message.id === lastAssistantId;
-  const showActions = !streamingTurn && (bubbleText.length > 0 || showEdit || showRegenerate);
   // The turn's beats fold into ONE summary row once the whole turn
   // has settled: while any call is still working (or parked on an approval)
   // every beat stays open, and the fold waits. Restored history arrives folded,
@@ -76,6 +74,19 @@ export function ThreadMessage({ message, restored, risks, busy, activeAssistantI
   const items = collapseToolRuns(message.parts);
   const calls = items.filter(item => isToolUIPart(item.part));
   const pending = streamingTurn || calls.some(item => toolCallPending(item.part));
+  // A turn whose text is still arriving gets no actions, and neither does one
+  // PARKED on a consent card: the row reserved 33px between the "waiting for
+  // your approval" beat and the card under it, breaking them into two separate
+  // moments. On the last turn that row is not even invisible — chrome-css's
+  // `.fl-turn-assistant:last-child .fl-turn-actions` reveals it without a
+  // hover — so this is a real gap, not just reserved space.
+  //
+  // The gate is the PARKED ask, never the broad `pending`: a turn stopped
+  // mid-call keeps a tool part in `input-available` forever (thread.stop()
+  // does not reconcile the aborted call), so `pending` stays true and
+  // Copy/Regenerate would never come back on the last turn.
+  const parked = calls.some(item => toolCallParked(item.part));
+  const showActions = !streamingTurn && !parked && (bubbleText.length > 0 || showEdit || showRegenerate);
   // A failed or declined call is not one of the "things I did", and its ✕ beat
   // never folds — so the count is the work that actually landed, and
   // the failure keeps its own line right where it happened.
