@@ -289,6 +289,37 @@ describe("runDeviceLogin", () => {
     expect(messages.errors.join("\n")).toContain("Too many open claims");
   });
 
+  // The piped ceremony is a parsed contract, not prose: the numbered form and
+  // its exact wording are what an agent (and every non-pretty caller: --agent,
+  // CI, standalone `vendo login`) reads the URL, the code and the outcome out
+  // of. The rail's phrasings belong to the pretty path and NOWHERE else.
+  it("keeps the five-line ceremony byte for byte on the non-pretty path", async () => {
+    const opened: string[] = [];
+    const { fetchImpl } = scriptedFetch([
+      { status: 200, body: { access_token: KEY, token_type: "Bearer" } },
+    ]);
+    const messages = output();
+    const exit = await runDeviceLogin(["--api-url", "https://console.test"], {
+      output: messages.sink,
+      fetchImpl,
+      root: await tempRoot(),
+      home: await tempRoot(),
+      sleep: async () => {},
+      env: {},
+      isTty: false,
+      openBrowser: (url) => opened.push(url),
+    });
+    expect(exit).toBe(0);
+    expect(messages.logs.slice(0, 5)).toEqual([
+      "Vendo Cloud device login — ask your human to approve this request:",
+      "  1. Open https://console.test/claim?code=BCDF-GHJK",
+      "  2. Confirm the code: BCDF-GHJK",
+      "Waiting for approval (the code expires in 10 minutes)…",
+      `Approved — wrote VENDO_API_KEY (…${KEY.slice(-4)}) to .env.local.`,
+    ]);
+    expect(opened).toEqual([]);
+  });
+
   it("opens the browser at verification_uri_complete when a TTY human is watching", async () => {
     const opened: string[] = [];
     const { fetchImpl } = scriptedFetch([
@@ -303,6 +334,7 @@ describe("runDeviceLogin", () => {
       sleep: async () => {},
       env: {},
       isTty: true,
+      pretty: true,
       openBrowser: (url) => opened.push(url),
     });
     expect(exit).toBe(0);
@@ -314,7 +346,7 @@ describe("runDeviceLogin", () => {
     expect(messages.logs.join("\n")).not.toContain("https://console.test/claim");
   });
 
-  it("holds the expiry sentence back until the ceremony has visibly stalled", async () => {
+  it("holds the expiry sentence back until the pretty ceremony has visibly stalled", async () => {
     // Leading with "the code expires in 10 minutes" is noise for an approval
     // that lands in ten seconds. It arrives when it becomes relevant, once,
     // and carries the URL a TTY run no longer prints up front.
@@ -336,6 +368,7 @@ describe("runDeviceLogin", () => {
       now: () => clock,
       env: {},
       isTty: true,
+      pretty: true,
       openBrowser: () => {},
     });
     expect(exit).toBe(0);
