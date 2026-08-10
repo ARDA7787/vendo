@@ -1,5 +1,111 @@
 # @vendoai/vendo
 
+## 0.13.0
+
+### Minor Changes
+
+- 031195f: The generic `records.*` store ops are deprecated. They still work; they will be
+  removed in `0.13.0`.
+
+  **What is happening.** `records.*` was one untyped door onto every row in the
+  store — a host's data, an app's data and Vendo's own bookkeeping all went through
+  the same seven verbs, and nothing in the call said which was which. Two named
+  families replaced it: `appData.*` for the rows and files a generated app invents
+  (the owner is stamped for you, so one user's data cannot be read by another's app
+  session), and `engine.*` for Vendo's own collections (the same seven verbs, behind
+  the `ENGINE_COLLECTIONS` allowlist). Everything `records.*` can do, one of those
+  two can do with the ownership question answered.
+
+  **Nothing breaks in this release.** All seven `records.*` ops stay on the wire and
+  keep their exact behaviour. This release only _announces_ the retirement, in the
+  two places a caller will actually see it:
+
+  - `status()` (`GET /status`) now returns `minClientVersion` and `deprecated` — the
+    seven `records.*` op names — beside the existing `format` and `ops: 42`. Clients
+    that already parse the handshake get the notice for free; the fields are
+    optional on `StoreWireStatus`, so an older client ignores them.
+  - `vendo doctor` warns `E-LIVE-008` when a mount advertises deprecated ops, naming
+    them and the removal release. It is a warning, never a failure — doctor still
+    exits 0.
+
+  **What you need to do before `0.13.0`.** Find your `records.*` calls and move each
+  one to the family that owns the data:
+
+  - Rows and files belonging to a generated app → `appData.put/get/list/delete` and
+    `appData.putFile/getFile/listFiles/deleteFile`. The target carries `appId`,
+    `collection` and `owner`; you no longer invent a collection-name prefix to keep
+    users apart.
+  - Vendo's own collections (threads, runs, grants, the audit log, effects, apps,
+    automations schedules and deliveries) → `engine.*`, same arguments, same
+    returns. A name outside the allowlist is refused with `blocked` and told where
+    its data belongs.
+
+  If you host your own store mount, `STORE_WIRE_DEPRECATED_OPS` and
+  `STORE_WIRE_DEPRECATED_REMOVED_IN` (both `@vendoai/core`) are what the handshake
+  advertises, so your mount can say the same thing without hardcoding the list.
+  `STORE_WIRE_MIN_CLIENT_VERSION` names the release the mount was built from.
+
+  After `0.13.0`, a `records.*` call answers `not-implemented` (501). There is no
+  flag to keep the old door open.
+
+### Patch Changes
+
+- 395fc1e: automations reaches its own drawers through the `engine` op family
+
+  Every collection this engine owns — `vendo_apps`, `vendo_runs`, `vendo_grants`,
+  `vendo_approvals`, the captures, the arm rows, the schedule cursors, the webhook
+  secrets, the delivery ledger, and both sponsorship drawers — was reached through
+  the generic `store.records(...)` door a host uses for its own data. All 41 call
+  sites now go through `ops.engine.*`, so the allowlist gate in
+  `assertEngineCollection` applies to every one of them.
+
+  `AutomationsConfig` gains an optional `ops: StoreOps` beside `store`, threaded
+  from composition. It stays optional because `selectStoreOps` answers `undefined`
+  for a store with neither its own ops surface nor a SQL handle, and because a
+  host may construct the block directly with nothing but a `StoreAdapter`.
+
+  `engineOverAdapter` (new, in core) is that store's engine family: the allowlist
+  gate in front, the adapter's own record door behind. It lives in core because
+  automations, guard and apps all need it and none of them may import
+  `@vendoai/store`. Where `RecordStore.atomic` is absent it keeps exactly the
+  degradation those blocks used to hand-roll — `insertIfAbsent` becomes a
+  check-then-put, `compareAndSwap` a last write — so moving onto the family does
+  not turn a working BYO adapter into a `not-implemented`.
+
+  No behavior change: same collection, same verb, same arguments, same order.
+
+- 62d84ca: `vendo init`'s banner arrival now composites over the detection scan: the wave keeps playing above while the tagline, the header and a checkmarked scan of your app build below it, so the facts land as `✓` lines instead of after a flash.
+
+  The MCP path's closing steps gain real formatting — numbered headlines with their detail indented under them, and the two broker environment values as their own group.
+
+- 9034bcc: guard's own drawers ride the `engine` family
+
+  Approvals, grants, the audit log, the effect ledger, the freeze switch and the
+  one-time transition receipts all reached the store through the generic
+  `records.*` door a host uses for its own rows. They now go through
+  `ops.engine.*` — the same seven verbs, the same collections, the same order,
+  with the allowlist gate in front of every one of them.
+
+  `createGuard` takes an optional `ops: StoreOps` beside `store`, threaded from
+  the composition. Unset (a `StoreAdapter` with neither its own ops nor a SQL
+  handle — every BYO adapter), the same seven verbs are served off the adapter's
+  own record doors, gate included.
+
+- Updated dependencies [395fc1e]
+- Updated dependencies [9034bcc]
+- Updated dependencies [031195f]
+  - @vendoai/automations@0.13.0
+  - @vendoai/core@0.13.0
+  - @vendoai/guard@0.13.0
+  - @vendoai/store@0.13.0
+  - @vendoai/actions@0.13.0
+  - @vendoai/agents@0.13.0
+  - @vendoai/apps@0.13.0
+  - @vendoai/harnesses@0.13.0
+  - @vendoai/knowledge@0.13.0
+  - @vendoai/mcp@0.13.0
+  - @vendoai/ui@0.13.0
+
 ## 0.12.0
 
 ### Minor Changes
