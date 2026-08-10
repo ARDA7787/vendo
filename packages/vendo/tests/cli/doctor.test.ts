@@ -1609,6 +1609,124 @@ describe("vendo doctor error codes + fix_refs", () => {
     expect(report.checks.some((entry) => entry.id === "wiring/server-actions")).toBe(false);
   });
 
+  // The MCP path splits the composition out of route.ts — a Next.js route
+  // module may export only handlers, and the origin-root discovery route has to
+  // import the SAME instance. Doctor must grade the file that holds
+  // createVendo, or it goes silent on a host that is correctly wired.
+  describe("the split composition the MCP path writes", () => {
+    async function splitHost(composition: string): Promise<string> {
+      const root = await healthy();
+      await mkdir(join(root, "app", "actions"), { recursive: true });
+      await writeFile(join(root, "app", "actions", "later.ts"),
+        '"use server";\n\nexport async function later() {\n  return 1;\n}\n');
+      await writeFile(join(root, "app", "api", "vendo", "[...vendo]", "vendo-actions.ts"),
+        'export const serverActions = {\n  "app/actions/later.ts#later": async () => 1,\n};\n');
+      await writeFile(join(root, "app", "api", "vendo", "[...vendo]", "route.ts"),
+        'import { nextVendoHandler } from "@vendoai/vendo/server";\nimport { vendo } from "./vendo";\n\nexport const { GET, POST } = nextVendoHandler(vendo);\n');
+      await writeFile(join(root, "app", "api", "vendo", "[...vendo]", "vendo.ts"), composition);
+      return root;
+    }
+
+    it("reads a thin route.ts as wired, not missing", async () => {
+      const root = await splitHost('import { createVendo } from "@vendoai/vendo/server";\nimport { serverActions } from "./vendo-actions";\nexport const vendo = createVendo({ serverActions, mcp: true });\n');
+      const { report } = await jsonChecks({
+        targetDir: root,
+        fetchImpl: successfulProbeFetch(),
+        env: { VENDO_BASE_URL: "https://app.acme.com" },
+      });
+      expect(report.checks.find((entry) => entry.id === "wiring/next-route")).toMatchObject({ status: "ok" });
+      expect(report.checks.find((entry) => entry.id === "wiring/server-actions")).toMatchObject({ status: "ok" });
+    });
+
+    it("names the composition, not the thin route, when the wiring is missing there", async () => {
+      const root = await splitHost('import { createVendo } from "@vendoai/vendo/server";\nexport const vendo = createVendo({ mcp: true });\n');
+      const { report } = await jsonChecks({
+        targetDir: root,
+        fetchImpl: successfulProbeFetch(),
+        env: { VENDO_BASE_URL: "https://app.acme.com" },
+      });
+      const check = report.checks.find((entry) => entry.id === "wiring/server-actions");
+      expect(check).toMatchObject({ status: "broken", error_code: "E-WIRE-009" });
+      expect(check?.message).toContain("app/api/vendo/[...vendo]/vendo.ts does not pass serverActions");
+    });
+  });
+
+  // The one thing the MCP path must not do: a door whose discovery points at
+  // the wrong origin is invisible at install time and surfaces hours later, in
+  // someone else's terminal, as "Claude can't find my server". A FAILURE.
+  describe("E-MCP-009 — an MCP-wired host with no base URL", () => {
+    async function mcpHost(composition: string): Promise<string> {
+      const root = await healthy();
+      await writeFile(join(root, "app", "api", "vendo", "[...vendo]", "vendo.ts"), composition);
+      return root;
+    }
+    const wired = 'import { createVendo } from "@vendoai/vendo/server";\nexport const vendo = createVendo({ mcp: true });\n';
+
+    it("fails, and exits 1", async () => {
+      const { exit, report } = await jsonChecks({
+        targetDir: await mcpHost(wired),
+        fetchImpl: successfulProbeFetch(),
+      });
+      expect(exit).toBe(1);
+      const check = report.checks.find((entry) => entry.id === "mcp/base-url");
+      expect(check).toMatchObject({ status: "broken", error_code: "E-MCP-009" });
+      expect(check?.message).toContain("VENDO_BASE_URL is not set");
+    });
+
+    it("passes once VENDO_BASE_URL is set", async () => {
+      const { report } = await jsonChecks({
+        targetDir: await mcpHost(wired),
+        fetchImpl: successfulProbeFetch(),
+        env: { VENDO_BASE_URL: "https://app.acme.com" },
+      });
+      expect(report.checks.find((entry) => entry.id === "mcp/base-url")).toMatchObject({ status: "ok" });
+    });
+
+    // Host config beats the environment default, so a composition that names
+    // its own public origin needs no variable.
+    it("passes on mcp: { baseUrl } with no variable at all", async () => {
+      const { report } = await jsonChecks({
+        targetDir: await mcpHost('import { createVendo } from "@vendoai/vendo/server";\nexport const vendo = createVendo({ mcp: { baseUrl: "https://app.acme.com" } });\n'),
+        fetchImpl: successfulProbeFetch(),
+      });
+      expect(report.checks.find((entry) => entry.id === "mcp/base-url")).toMatchObject({ status: "ok" });
+    });
+
+    it("says nothing at all when no door is wired", async () => {
+      const { report } = await jsonChecks({ targetDir: await healthy(), fetchImpl: successfulProbeFetch() });
+      expect(report.checks.some((entry) => entry.id === "mcp/base-url")).toBe(false);
+    });
+
+    // Regression (Greptile P1 on #1142): the scan was `mcp:\s*\{[^}]*baseUrl`,
+    // and a character class cannot cross a closing brace — so a NESTED option
+    // written before baseUrl (serviceAuth, remoteAs, federation; the local
+    // service-key path scaffolds one) ended the window at its own `}` and
+    // baseUrl was never seen. E-MCP-009 is a hard FAIL, so that rejected a
+    // correctly configured deployment over property ORDER alone.
+    it.each([
+      ["a nested option BEFORE baseUrl", '{ serviceAuth: { keys: ["k1", "k2"] }, baseUrl: "https://app.acme.com" }'],
+      ["a nested option AFTER baseUrl", '{ baseUrl: "https://app.acme.com", serviceAuth: { keys: ["k1"] } }'],
+      ["two nested options around it", '{ federation: { secret: "s" }, baseUrl: "https://app.acme.com", remoteAs: { issuer: "https://i", audience: "https://a" } }'],
+    ])("passes with %s — order must not decide the verdict", async (_label, mcp) => {
+      const { report } = await jsonChecks({
+        targetDir: await mcpHost(`import { createVendo } from "@vendoai/vendo/server";\nexport const vendo = createVendo({ mcp: ${mcp} });\n`),
+        fetchImpl: successfulProbeFetch(),
+      });
+      expect(report.checks.find((entry) => entry.id === "mcp/base-url")).toMatchObject({ status: "ok" });
+    });
+
+    // …and the nested option must not smuggle a pass either: a baseUrl that is
+    // not the door's own top-level option leaves the deployment unconfigured.
+    it("still fails when the only baseUrl sits inside a nested option", async () => {
+      const { report } = await jsonChecks({
+        targetDir: await mcpHost('import { createVendo } from "@vendoai/vendo/server";\nexport const vendo = createVendo({ mcp: { remoteAs: { issuer: "https://i", audience: "https://a", baseUrl: "https://nope" } } });\n'),
+        fetchImpl: successfulProbeFetch(),
+      });
+      expect(report.checks.find((entry) => entry.id === "mcp/base-url"))
+        .toMatchObject({ status: "broken", error_code: "E-MCP-009" });
+    });
+  });
+
   // Regression (review 4): a tool a human disabled is one the runtime never
   // dispatches — hard-failing on its registration demands work that buys
   // nothing. The rest of doctor honors overrides; this check does too.
