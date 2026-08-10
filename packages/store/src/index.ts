@@ -2,10 +2,21 @@
  *  Postgres-only consumers: import from `@vendoai/store/postgres` instead to
  *  keep the PGlite wasm engine out of the bundle graph. */
 export { createStore } from "./create-store.js";
-export { type VendoStore } from "./store.js";
-// The StoreOps local backend (02-store): the 27-op named-operation contract
+export { maybeDbFor, type VendoStore } from "./store.js";
+// The StoreOps local backend (02-store): the 35-op named-operation contract
 // served off this store's own Postgres, transactions at verb boundaries.
 export { createStoreOps } from "./ops.js";
+// The one composer of appData names and the owner stamp: everything that
+// serves the family (the local backend here, the surfaces above it) spells
+// `app:<appId>:<collection>` and `<owner>/<key>` through these and nowhere else.
+export {
+  appDataFiles,
+  appDataRows,
+  appDataCollection,
+  appDataNamespace,
+  appDataFileKey,
+  APP_DATA_OWNER_REF,
+} from "./app-data-rows.js";
 // The reserved-collection map (02-store §2): exported so remote StoreAdapters
 // (the umbrella's hostedStore) can mirror this engine's per-collection
 // capability shape — claim on non-routed collections, atomic on generic
