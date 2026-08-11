@@ -9,7 +9,9 @@ import { useApprovalModal } from "./approval-modal.js";
 import { BeatRail } from "./build-beat.js";
 import { ChromeRoot } from "./chrome-root.js";
 import { hasSeen, markSeen, type VendoDiscoverability, type VendoGreeting } from "./discoverability.js";
+import { HistoryPicker } from "./history-picker.js";
 import { inertBehind } from "./inert-behind.js";
+import { forgetThread, lastThreadId, rememberThread } from "./last-thread.js";
 import { LauncherFace, LauncherToast, useLauncherStatus } from "./launcher-status.js";
 import { deliverPrefill, PrefillScopeContext, registerOverlayOpener } from "./overlay-registry.js";
 import { usePinAction, usePinNudge } from "./pin-ceremony.js";
@@ -391,6 +393,25 @@ export function VendoOverlay({
   // key so the next turn starts with no threadId (the server mints a fresh
   // one). Combined with the prop so the hook's newConversation() works too.
   const [conversationEpoch, setConversationEpoch] = useState(0);
+  // F10 (ENG-388) — the conversation a fresh mount resumes, plus the
+  // previous-conversations picker. The remembered id is read in an effect
+  // (storage convention: never during render); a stale or foreign id
+  // self-heals to a fresh thread inside useVendoThread, so restoring is safe.
+  const [resumeThreadId, setResumeThreadId] = useState<string>();
+  const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => {
+    const remembered = lastThreadId();
+    if (remembered !== undefined) setResumeThreadId(remembered);
+  }, []);
+  // An external conversationKey bump means "discard and start fresh"
+  // (ENG-221) — the remembered conversation goes with it.
+  const previousConversationKey = useRef(conversationKey);
+  useEffect(() => {
+    if (previousConversationKey.current === conversationKey) return;
+    previousConversationKey.current = conversationKey;
+    setResumeThreadId(undefined);
+    forgetThread();
+  }, [conversationKey]);
   const theme = useVendoTheme();
   const takeover = useMobileTakeover();
   const pin = usePinAction();
@@ -661,6 +682,12 @@ export function VendoOverlay({
   // results. The panel's own thread id scopes the toast to runs this panel can
   // actually show.
   const [panelThreadId, setPanelThreadId] = useState<string>();
+  // F10 — whatever conversation the thread adopts (restored, picked, or
+  // freshly minted on the first send) is the one a reload resumes.
+  const adoptThreadId = useCallback((threadId: string) => {
+    setPanelThreadId(threadId);
+    rememberThread(threadId);
+  }, []);
   // §3.4 + §10.2 — the running turn's beats, for the stage's rail. The thread
   // lives in the OTHER pane's React tree, so this rides the run-activity store
   // the launcher pill already reads — the one channel for what a surface
@@ -687,9 +714,27 @@ export function VendoOverlay({
 
   const newConversation = () => {
     setConversationEpoch(epoch => epoch + 1);
+    // F10 — an explicit fresh start also forgets the remembered conversation
+    // (and closes the picker if it was open).
+    setResumeThreadId(undefined);
+    forgetThread();
+    setHistoryOpen(false);
     // The remounted thread lands on the empty composer — put focus there so
     // the affordance reads as "ready for a fresh start", not a dead click.
     queueMicrotask(() => dialog.current?.querySelector<HTMLElement>("textarea:not([disabled])")?.focus());
+  };
+
+  // F10 — picking a previous conversation remounts the thread onto it; the
+  // composer gets focus exactly like a fresh start does.
+  const resumeConversation = (threadId: string) => {
+    setHistoryOpen(false);
+    setResumeThreadId(threadId);
+    queueMicrotask(() => dialog.current?.querySelector<HTMLElement>("textarea:not([disabled])")?.focus());
+  };
+  const cancelHistory = () => {
+    setHistoryOpen(false);
+    // Focus returns to the opener, the dialog-cancel convention.
+    queueMicrotask(() => dialog.current?.querySelector<HTMLElement>(".fl-overlay-history")?.focus());
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -757,6 +802,23 @@ export function VendoOverlay({
         onKeyDown={onKeyDown}
       >
         <strong className="fl-sr-only">Vendo</strong>
+        {/* F10 (ENG-388) — previous conversations: opens the picker card over
+            the conversation. Rendered in the takeover too, where it takes the
+            hidden expand button's slot (the ladder in chrome-css.ts). */}
+        <button
+          className="fl-overlay-close fl-overlay-history"
+          type="button"
+          aria-label="Previous conversations"
+          aria-expanded={historyOpen}
+          onClick={() => setHistoryOpen(value => !value)}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M12 7v5l4 2" />
+          </svg>
+          <span className="fl-sr-only">Previous conversations</span>
+        </button>
         <WorkspaceToggle
           hidden={takeover.active}
           expanded={expanded}
@@ -778,6 +840,13 @@ export function VendoOverlay({
           </svg>
           <span className="fl-sr-only">Close</span>
         </button>
+        {historyOpen ? (
+          <HistoryPicker
+            activeThreadId={panelThreadId ?? resumeThreadId}
+            onResume={resumeConversation}
+            onCancel={cancelHistory}
+          />
+        ) : null}
         {/* The split shell is ALWAYS in the tree with the thread in the same
             slot, so expanding/collapsing never remounts the conversation
             (the same invariant close/reopen honors, ENG-221). Collapsed, the
@@ -800,10 +869,11 @@ export function VendoOverlay({
             <div className="fl-split-rail" key="rail">
               <PrefillScopeContext.Provider value={prefillScope.current}>
                 <Thread
-                  key={`${conversationKey ?? 0}:${conversationEpoch}`}
+                  key={`${conversationKey ?? 0}:${conversationEpoch}:${resumeThreadId ?? "new"}`}
+                  {...(resumeThreadId === undefined ? {} : { threadId: resumeThreadId })}
                   discoverability={dial}
                   firstRunGreeting={greeting}
-                  onThreadId={setPanelThreadId}
+                  onThreadId={adoptThreadId}
                 />
               </PrefillScopeContext.Provider>
             </div>

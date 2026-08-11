@@ -95,6 +95,13 @@ Wire it in [the client mount](#the-client-mount) above; control it
 programmatically with
 [useVendoOverlay](/reference/hooks#overlay-control-usevendooverlay).
 
+Conversations survive: a page reload resumes the one you were in (the overlay
+remembers it per browser and deployment, and a mid-stream reply picks back up),
+and the header's previous-conversations button lists your earlier threads —
+pick one to resume it, or cancel to stay. New conversation still starts fresh
+and clears the remembered one; a remembered conversation that no longer
+exists falls back to a fresh start on its own.
+
 ### Tune it
 
 `VendoOverlay` comes from `@vendoai/vendo/react`, or from `@vendoai/ui/chrome`
