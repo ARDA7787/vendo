@@ -1608,21 +1608,37 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
   transition: border-color .12s ease, background .12s ease; }
 .fl-cite-btn svg { flex: none; color: var(--vendo-fg-muted); }
 .fl-cite-btn:hover, .fl-cite--open .fl-cite-btn { border-color: var(--vendo-border-strong); }
-/* The snippet popover: click-toggled everywhere, hover-revealed on pointer
-   devices (the mockup's chip:hover behavior). */
+/* The snippet popover. Open state is the ONE source of truth (turn-citations.tsx
+   drives it from hover intent, click-to-pin, Escape and outside-click): the card
+   sits 8px below its chip, and a :hover rule cannot survive that gap — nor could
+   an open card be dismissed under a pointer still resting on the chip. The left
+   below is only the resting anchor: a chip near a narrow surface's right edge
+   gets an inline left from the same component, so nothing here may shorthand it. */
 .fl-cite-pop { position: absolute; left: 0; top: calc(100% + 8px); width: 292px; z-index: 5;
   background: var(--vendo-surface); border: 1px solid var(--vendo-border); border-radius: 10px;
   box-shadow: var(--vendo-shadow-float); padding: 12px 14px; text-align: left; cursor: default;
   display: none; }
 .fl-cite--open .fl-cite-pop { display: block; }
-@media (hover: hover) { .fl-cite:hover .fl-cite-pop { display: block; } }
 .fl-cite-ptitle { font-size: 12.5px; font-weight: 600; color: var(--vendo-fg);
   display: flex; align-items: center; gap: 6px; }
 .fl-cite-ptitle svg { color: var(--vendo-fg-muted); }
 .fl-cite-psnippet { display: block; font-size: 12px; color: var(--vendo-fg-muted); line-height: 1.6;
   margin: 7px 0 9px; border-left: 2px solid var(--vendo-border); padding-left: 9px; }
+/* nowrap + wrap, together: a nowrap container makes each segment unbreakable —
+   kind and visibility are anonymous flex items, so this is the only place they
+   can be reached — and wrapping then happens only BETWEEN them. Without the
+   pair the row is one nowrap line whose items shrink to min-content, which is
+   what split the kind label "Product docs" down the middle next to a long
+   help.maple.bank source.
+   The source is the one segment that can outgrow the card by itself, and nowrap
+   leaves it no break at all: a 64-char help.maple.bank path painted 77px past
+   the border and handed .fl-msglist horizontal scroll. So it is a real element
+   rather than a third anonymous item — min-width:0 lifts the min-content floor
+   every flex item carries, and the ellipsis spends the cut on the tail, which
+   restates the card's own title, keeping the origin host readable. */
 .fl-cite-porigin { font-size: 11px; color: var(--vendo-fg-muted);
-  display: flex; align-items: center; gap: 5px; }
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap; white-space: nowrap; }
+.fl-cite-psource { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .fl-cite-sep { color: var(--vendo-border-strong); }
 .fl-know-searched { display: flex; align-items: center; gap: 7px; margin-top: 10px;
   font-size: 11.5px; color: var(--vendo-fg-muted); }
