@@ -188,15 +188,12 @@ describe("devModel (env-resolving default model)", () => {
     ]);
   });
 
-  it("honors VENDO_CLOUD_URL and the VENDO_CLOUD_MODEL alias override on the vendo-cloud rung", async () => {
+  it("honors VENDO_CLOUD_URL on the vendo-cloud rung", async () => {
     const seen: Array<{ baseURL: string }> = [];
     const controller = new DevModelController({
       env: {
         VENDO_API_KEY: "vnd_x",
         VENDO_CLOUD_URL: "http://localhost:3001/",
-        VENDO_CLOUD_MODEL: "vendo-strong",
-        // The anthropic env-key override must NOT leak onto the cloud rung.
-        VENDO_DEV_ANTHROPIC_MODEL: "claude-opus-4-8",
       },
       importModule: async () => ({
         createAnthropic: (config: { apiKey: string; baseURL: string }) => {
@@ -212,7 +209,7 @@ describe("devModel (env-resolving default model)", () => {
         },
       }),
     });
-    expect(await controller.doGenerate({ prompt: [] })).toEqual({ modelId: "vendo-strong" });
+    expect(await controller.doGenerate({ prompt: [] })).toEqual({ modelId: "vendo" });
     expect(seen).toEqual([{ baseURL: "http://localhost:3001/api/v1" }]);
   });
 
@@ -260,9 +257,9 @@ describe("devModel (env-resolving default model)", () => {
     expect(seen).toEqual(["sk-a"]);
   });
 
-  it("honors the model-override env var for the resolved provider", async () => {
+  it("honors the VENDO_MODEL pin for the resolved provider", async () => {
     const controller = new DevModelController({
-      env: { ...BYO.anthropic, VENDO_DEV_ANTHROPIC_MODEL: "claude-opus-4-8" },
+      env: { ...BYO.anthropic, VENDO_MODEL: "claude-opus-4-8" },
       importModule: async () => ({
         createAnthropic: () => (modelId: string) => ({
           specificationVersion: "v3",
@@ -522,32 +519,6 @@ describe("vendoModel (the vendo model family entry)", () => {
       env: { ...BYO.anthropic, VENDO_MODEL: "claude-sonnet-4-6" },
       importModule: scriptedProvider("createAnthropic"),
     }))).toBe("claude-sonnet-4-6");
-    // The new pin outranks the deprecated per-provider var.
-    expect(await resolvedId(vendoModel(undefined, {
-      env: {
-        ...BYO.anthropic,
-        VENDO_MODEL: "claude-sonnet-4-6",
-        VENDO_DEV_ANTHROPIC_MODEL: "claude-opus-4-8",
-      },
-      importModule: scriptedProvider("createAnthropic"),
-    }))).toBe("claude-sonnet-4-6");
-  });
-
-  it("keeps the deprecated VENDO_DEV_*_MODEL / VENDO_CLOUD_MODEL pins working on the agent slot only", async () => {
-    expect(await resolvedId(vendoModel(undefined, {
-      env: { ...BYO.anthropic, VENDO_DEV_ANTHROPIC_MODEL: "claude-opus-4-8" },
-      importModule: scriptedProvider("createAnthropic"),
-    }))).toBe("claude-opus-4-8");
-    expect(await resolvedId(vendoModel(undefined, {
-      env: { VENDO_API_KEY: "vnd_x", VENDO_CLOUD_MODEL: "vendo-strong" },
-      importModule: scriptedProvider("createAnthropic"),
-    }))).toBe("vendo-strong");
-    // The deprecated pins never leak onto the paint slot.
-    expect(await resolvedId(vendoModel(undefined, {
-      slot: "paint",
-      env: { ...BYO.anthropic, VENDO_DEV_ANTHROPIC_MODEL: "claude-opus-4-8" },
-      importModule: scriptedProvider("createAnthropic"),
-    }))).toBe("claude-haiku-4-5");
   });
 
   it("VENDO_MODEL_PAINT pins the paint slot; VENDO_MODEL does not", async () => {
