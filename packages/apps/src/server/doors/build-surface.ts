@@ -360,6 +360,13 @@ const createCreateDoor = (
       return structuredClone(app);
     }
     await reportLifecycle("create", app.id, ctx);
+    // A create used to swallow this whole lane: `edit` read `served.failed` and
+    // refused, `create` read nothing at all and the catch below only warned, so
+    // an app whose server side never got built painted its skeleton and reported
+    // itself complete — a live empty app declared successful (2026-08-11). The
+    // app still RESOLVES, because it is real and on screen; what it no longer
+    // does is claim the server work landed.
+    let serverWorkFailed: string[] | undefined;
     try {
       const served = await runServerWork({
         plan: planned,
@@ -368,21 +375,38 @@ const createCreateDoor = (
         request: input.prompt,
       }, ctx, generationDeps);
       app = served.document;
+      if (served.failed !== undefined) serverWorkFailed = served.failed;
+      // A plan that asked to be SERVED and did not get its surface is the same
+      // half-built app: the box ran, but the flip was refused (`issues`), so the
+      // person is looking at a skeleton with nothing behind it. `edit` hands
+      // these back to its caller as `issues`; a create returns a document, so
+      // this callback is its only channel for them. `served` is compiler-gated
+      // to kind="box" (plan/compile.ts), so no automation issue arrives here.
+      else if (planned.server?.served === true && served.issues !== undefined) {
+        serverWorkFailed = served.issues;
+      }
       for (const finding of served.findings) {
         console.info(findingLine(finding));
       }
     } catch (error) {
+      serverWorkFailed = [safeErrorMessage(error)];
+    }
+    // Reported OUTSIDE the try on purpose: reporting from inside it let a
+    // throwing consumer re-enter this very catch as a second "server work
+    // failed", call the callback twice, and take `paintSettledTree` with it.
+    if (serverWorkFailed !== undefined) {
+      input.onServerWork?.({ ok: false, reasons: serverWorkFailed });
       log({
-        code: "apps.server-work-skipped",
-        level: "warn",
-        message: `[vendo] server work skipped for ${appId} (the app stands without it): ${safeErrorMessage(error)}`,
+        code: "apps.server-work-failed",
+        level: "error",
+        message: `[vendo] server work failed for ${appId} (the screen stands, its server side does not): ${serverWorkFailed.join("; ")}`,
       });
     }
     await paintSettledTree(caller, app, ctx, input.onView, appId);
     log({
       code: "apps.gen-create-complete",
       level: "info",
-      message: `[vendo] gen create complete app=${appId} total=${((Date.now() - createStartedAt) / 1000).toFixed(1)}s`,
+      message: `[vendo] gen create complete${serverWorkFailed === undefined ? "" : " (server work failed)"} app=${appId} total=${((Date.now() - createStartedAt) / 1000).toFixed(1)}s`,
     });
     return structuredClone(app);
   };
