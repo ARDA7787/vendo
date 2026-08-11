@@ -1,5 +1,5 @@
 import type { SandboxAdapter, SandboxMachine, SandboxResumePolicy } from "@vendoai/apps";
-import { defaultFetch, log, safeErrorMessage, VendoError } from "@vendoai/core";
+import { defaultFetch, log, VendoError } from "@vendoai/core";
 import { deploymentIdentityHeaders } from "./deployment-identity.js";
 import { raiseCloudError } from "./cloud-console.js";
 import {
@@ -200,14 +200,40 @@ const decodeSnapshotRef = (snapshotRef: string): CloudSnapshotState => {
 const isGone = (error: unknown): boolean =>
   error instanceof VendoError && error.code === "not-found";
 
-/** Decode a ref, and report WHICH ref when it will not decode.
+/** Every snapshot-ref scheme this repo mints, longest match first — "vendo:"
+ * is a strict prefix of "vendo:v2:". Classification reports the MATCHED
+ * CONSTANT from this list, never a slice of the input. */
+const KNOWN_REF_SCHEMES = [
+  CLOUD_SNAPSHOT_REF_PREFIX,
+  "e2b:v2:",
+  "fake-v2:",
+  "fake:",
+  CONSOLE_SNAPSHOT_REF_PREFIX,
+] as const;
+
+const UNKNOWN_REF_SCHEME = "(no known scheme)";
+
+/** Decode a ref, and report which ref failed when it will not decode.
  *
  * The decoder's message says which WAY a ref is wrong; it cannot say which
- * ref, because it is one authored sentence and a ref does not belong inside
- * one. That left an operator reading "a ref was malformed" with no way to find
- * it. The ref reaches the `sdk_error` stream from here instead, under the
- * allowlisted `snapshotRef` key (sdk-events.ts). The error the caller sees is
- * unchanged — this only observes it on the way past. */
+ * one, because it is one authored sentence and a ref does not belong inside
+ * one. That left an operator reading "a ref was malformed" with no way to tell
+ * them apart. A CLASSIFICATION of the ref reaches the `sdk_error` stream from
+ * here instead (allowlisted in sdk-events.ts).
+ *
+ * Classification, never an echo: `resume` and `destroy` are public methods, so
+ * their argument is the caller's, and a ref that failed to decode is BY
+ * DEFINITION not one Vendo minted — it is arbitrary caller content, up to and
+ * including a secret passed to the wrong function. A prefix of that content is
+ * still that content, so the scheme is matched against the closed set above
+ * and reported as the constant that matched; the rest travels only as a length.
+ *
+ * NOTHING here reads the whole value. There is deliberately no digest: an
+ * unkeyed hash of caller content is a confirmation oracle (hash your candidate
+ * secrets offline, compare), and hashing an unbounded argument on a public
+ * failure path is a free CPU sink. Cross-report correlation of the same bad ref
+ * is the accepted cost — do not re-add one. The error the caller sees is
+ * unchanged; this only observes it on the way past. */
 const decodeOrReport = (snapshotRef: string): CloudSnapshotState => {
   try {
     return decodeSnapshotRef(snapshotRef);
@@ -215,8 +241,17 @@ const decodeOrReport = (snapshotRef: string): CloudSnapshotState => {
     log({
       code: "vendo.snapshot-ref-undecodable",
       level: "error",
-      message: `[vendo] ${safeErrorMessage(error)} Reference:`,
-      data: { snapshotRef },
+      // Vendo's OWN fixed sentence, not the decoder's. The decoder writes for
+      // the CALLER and names the unrecognised scheme it read out of the ref
+      // (`notMintedHere`), so relaying that sentence here would carry a
+      // caller-controlled slice into telemetry. The caller still gets the full
+      // sentence — it is on the error being rethrown, untouched.
+      message: "[vendo] a Vendo Cloud snapshot reference could not be decoded:",
+      data: {
+        snapshotRefScheme: KNOWN_REF_SCHEMES.find((scheme) => snapshotRef.startsWith(scheme))
+          ?? UNKNOWN_REF_SCHEME,
+        snapshotRefLength: snapshotRef.length,
+      },
     });
     throw error;
   }
