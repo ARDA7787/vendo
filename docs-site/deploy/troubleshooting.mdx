@@ -338,9 +338,17 @@ of `tools.json`, `overrides.json`, `policy.json`, `brief.md`, `theme.json`.
 **Cause:** `vendo init` was never run in this directory, or the file was
 deleted.
 
+With `VENDO_API_KEY` set, a missing `overrides.json`, `policy.json`,
+`brief.md`, or `theme.json` is a **warning**, not a failure: those surfaces
+are cloud-resolvable, so a console-managed deployment legitimately keeps them
+published instead of on disk (a local file wins when present). `tools.json`
+has no cloud leg and its absence is always a failure.
+
 **Fix:** Run `npx vendo init`; it recreates missing `.vendo/` files and never
 overwrites existing ones. A missing `tools.json` alone can also be regenerated
-with `npx vendo sync`.
+with `npx vendo sync`. On a keyed deployment where the warning is expected,
+`npx vendo config status` shows which layer — local file or published cloud
+config — owns each surface.
 
 #### E-CFG-002 {#E-CFG-002}
 
@@ -404,20 +412,34 @@ throws at boot and Postgres is the only option.
 
 #### E-DEP-001 {#E-DEP-001}
 
-**Symptom:** The installed `ai` package is major version 7 or newer; the
-message names the exact version found.
+**Symptom:** The installed `ai` package is outside the supported major — 7 or
+newer, or older than 6; the message names the exact version found.
 
 **Cause:** `@vendoai/vendo` drives the host's `ai` package with AI SDK v6
 calls (peer range `ai >=6 <7`), but npm installs the peer conflict without
 failing. Every static check passes on such a host — and then every internal
-Vendo turn throws `AI_InvalidPromptError`, because ai@7 removed system-role
-messages from the messages array.
+Vendo turn fails: ai@7 removed system-role messages
+(`AI_InvalidPromptError`), and a pre-v6 `ai` predates the v6 call shapes
+entirely. The pre-v6 case is usually a *hoisted* copy — another package in
+the workspace depends on ai@5, the workspace root hoists it, and the app
+resolves that copy because it never declared its own.
 
-**Fix:** Downgrade to the supported majors:
+**Fix:** For ai@7+, downgrade to the supported majors:
 
 ```bash
 npm install ai@^6 @ai-sdk/anthropic@^3 @ai-sdk/react@^3
 ```
+
+For a pre-v6 `ai`, give the app its own v6 with your package manager (the
+doctor message names the right command for your workspace), e.g.:
+
+```bash
+npm install ai@^6
+```
+
+In a workspace whose root pins another package's ai@5, an override or
+packageExtension (`resolutions`, pnpm `overrides`, yarn `packageExtensions`)
+also works — anything that makes the app resolve v6 wins.
 
 ai@7 support is tracked in
 [runvendo/vendo#478](https://github.com/runvendo/vendo/issues/478).
@@ -499,21 +521,29 @@ attempt the start; agents own the dev server.
 
 #### E-LIVE-001 {#E-LIVE-001}
 
-**Symptom:** `/status` returned an invalid composition response.
+**Symptom:** `/status` answered, but not with a valid composition response.
+The message carries what actually came back: the HTTP status, plus the wire's
+own `error.code`/`error.message` when the body was a Vendo error, or a
+"body is not JSON" note when an error page answered.
 
 **Cause:** Something answered at `<base>/status` but not with the Vendo status
-shape (`posture`, `version`, `blocks`). Usually another handler owns the path,
-the mount is wrong, or the base URL points at the wrong app.
+shape (`posture`, `version`, `blocks`). A JSON error body means the wire
+itself is mounted but failing — the dev server log has the matching `[vendo]`
+wire error with the full stack. A non-JSON body means another handler owns
+the path, the mount is wrong, or the base URL points at the wrong app.
 
-**Fix:** Confirm the Vendo handler is mounted at the probed base (Next:
-`app/api/vendo/[...vendo]/route.ts`; Express: `app.use("/api/vendo",
-mountVendo())`, where `mountVendo` is the adapter init generated into your own
-`vendo/server.ts` — no package exports it) and that `--url`/`VENDO_URL` points
-at it.
+**Fix:** For a JSON error, read the carried `error.message` and the dev
+server log — the wire is telling you what broke (a failing principal
+resolver, a missing adapter). For a non-JSON body, confirm the Vendo handler
+is mounted at the probed base (Next: `app/api/vendo/[...vendo]/route.ts`;
+Express: `app.use("/api/vendo", mountVendo())`, where `mountVendo` is the
+adapter init generated into your own `vendo/server.ts` — no package exports
+it) and that `--url`/`VENDO_URL` points at it.
 
 #### E-LIVE-002 {#E-LIVE-002}
 
-**Symptom:** `/status` is unreachable.
+**Symptom:** `/status` is unreachable — the fetch itself never answered. A
+server that answered with an error is E-LIVE-001, never this.
 
 **Cause:** Nothing is listening at the probed base: the dev server is not
 running, it runs on a different port than the probe target, or `--url` was
@@ -648,15 +678,20 @@ runs once `/status` answers.
 
 #### E-AUTH-004 {#E-AUTH-004}
 
-**Symptom:** actAs mint + host verification failed.
+**Symptom:** actAs mint + host verification failed. The doctor line carries
+the wire's own failure reason (a missing module, the mint's error) when the
+probe surfaced one.
 
-**Cause:** The composition minted an away credential but the host did not
-verify it. The verifier middleware is missing, or the secret the preset signs
-with differs from the one the host verifies with.
+**Cause:** The composition minted an away credential but the composition's own
+principal resolver did not accept it over the wire — or the mint itself
+errored. Note the probe's scope: it verifies against the composition's
+resolver, not the host app's session middleware, so a pass still depends on
+the host verifying real away calls.
 
-**Fix:** Check `createVendo({ auth })` (or the hand-wired `actAs`), its
-verifier middleware on the host API, and the host principal resolver. For
-Clerk/Auth0, `VENDO_AWAY_TOKEN_SECRET` must be the same value on both sides.
+**Fix:** Start from the reason in the doctor line. Then check
+`createVendo({ auth })` (or the hand-wired `actAs`), its verifier middleware
+on the host API, and the host principal resolver. For Clerk/Auth0,
+`VENDO_AWAY_TOKEN_SECRET` must be the same value on both sides.
 See [Host auth](/deploy/auth).
 
 #### E-AUTH-005 {#E-AUTH-005}
@@ -683,11 +718,27 @@ preset), and re-run doctor.
 
 **Cause:** The composition has neither an `auth` preset nor an `actAs` seam,
 so the agent cannot act through the host API while the user is away. Present
-(user-in-the-room) calls still work.
+(user-in-the-room) calls still work. (A configured seam that *declines* the
+probe is a different state — see [E-AUTH-008](#E-AUTH-008).)
 
 **Fix:** Wire an auth preset (`auth: authJs()` and friends fill `actAs`) or
 pass `createVendo({ actAs })` before enabling away host actions. Acceptable to
 leave for a present-only install; this never blocks doctor.
+
+#### E-AUTH-008 {#E-AUTH-008}
+
+**Symptom (warning):** actAs is configured but declined the doctor probe's
+synthetic principal.
+
+**Cause:** The actAs seam is wired and answered — with a no. Expected when a
+`subject→user` resolver only mints for subjects in the host's real user table
+(the doctor's synthetic subject is not one), or when the preset's secret is
+unset so the mint declines. The doctor line carries the wire's reason.
+
+**Fix:** Nothing, if the decline is your resolver refusing unknown subjects —
+that is the fail-closed behavior working; real away runs depend on the
+resolver accepting real subjects. If the reason names a missing secret,
+set it (`AUTH_SECRET` / the preset's documented variable) and re-run.
 
 ### MCP door
 

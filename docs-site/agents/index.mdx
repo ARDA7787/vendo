@@ -54,12 +54,35 @@ surface as any other install: do the install below, then [MCP door](#mcp-door).
    env)`, which your runtime mounts in one line
    ([Edge runtimes](/deploy/edge-runtimes)).
 
+   **Workspace repos: pick the app package first.** A root `package.json`
+   with a `workspaces` field (or a `pnpm-workspace.yaml`) means the framework
+   dependency lives in an app package (`apps/web`, `packages/app`, …), not at
+   the root — and detection reads the `package.json` of the directory init
+   targets. Run at the root of a workspace repo and detection finds no
+   framework: init errors non-interactively, or lands on the runtime-neutral
+   custom scaffold a Next or Express app should not get. Choose the app
+   package now; the install in step 3 targets it, and every later command
+   runs in (or is pointed at) that directory.
+
 3. **Install the package, then verify what actually resolved.**
 
    ```bash
    npm install vendoai @vendoai/vendo
    npx vendo --version   # must be >= 0.4.0
    ```
+
+   In a workspace repo, install into the app package with the host's own
+   package manager instead — a plain root `npm install` fights the workspace
+   lockfile:
+
+   ```bash
+   npm install vendoai @vendoai/vendo --workspace apps/web   # npm workspaces
+   yarn workspace <app-package-name> add vendoai @vendoai/vendo
+   pnpm --filter <app-package-name> add vendoai @vendoai/vendo
+   ```
+
+   Then run the version check — and every `npx vendo …` step below — from
+   that same app directory.
 
    `vendoai` is a thin alias of `@vendoai/vendo`, and every file init writes
    imports `@vendoai/vendo/*` — so install BOTH: with the alias alone, pnpm's
@@ -91,7 +114,12 @@ surface as any other install: do the install below, then [MCP door](#mcp-door).
    the mismatch.
 
 4. **Run init with value flags.** Every wizard question has a flag, so a
-   non-interactive run never hangs on a prompt. Answer auth
+   non-interactive run never hangs on a prompt. Both commands below run from
+   the app package directory (step 2's pick). `vendo init` can also be
+   pointed at it from the root (`npx vendo init apps/web`), but `vendo login`
+   writes the minted key to `.env.local` **in the directory it runs from** —
+   a login at a workspace root lands the key where the framework never loads
+   it, and everything afterward silently behaves keyless. Answer auth
    ([which preset?](/deploy/auth)) and the model-key question explicitly:
 
    ```bash

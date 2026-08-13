@@ -129,6 +129,19 @@ with neither lands on the custom scaffold. A non-interactive run (`--yes` or
 no TTY) with no detected framework still errors and asks for an explicit
 `--framework` rather than guessing on an agent's behalf.
 
+<Note>
+  **Monorepos: init targets the app package, not the repo root.** Detection
+  reads the `package.json` of the directory init runs in — or the one you
+  point it at (`npx vendo init apps/web`). In a workspace repo the framework
+  dependency lives in the app package, so that is init's target, and the
+  `vendoai` install itself goes into that workspace with your package manager
+  (`npm install vendoai -w apps/web`, `yarn workspace <app> add vendoai`,
+  `pnpm --filter <app> add vendoai`). Run `vendo login`, `doctor`, and `sync`
+  from that same directory: login writes the minted key to `.env.local` in
+  the current working directory, and doctor/sync read that directory's
+  `.vendo/` and `package.json`.
+</Note>
+
 ### Auth
 
 Init reads `package.json` and detects one auth family: `next-auth`/`@auth/*`
@@ -248,6 +261,8 @@ it wired call `vendo sync` on every build, which is what keeps
 only when the detected surface changes in a way sync can't scaffold for, for
 example adding Express to a Next app or turning on an auth provider. See
 [`vendo sync`](/reference/cli#vendo-sync-dir) for what a sync run does.
+Starting over — or removing Vendo — has its own page:
+[Uninstall / start over](/reference/uninstall).
 
 ## Verify
 
