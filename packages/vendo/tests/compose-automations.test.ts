@@ -8,7 +8,7 @@
  * in the shared store, so a second firer can never double-run a tick.
  */
 import { describe, expect, it } from "vitest";
-import { armDevTickerOnce, localFiringKinds } from "./compose-automations.js";
+import { armDevTickerOnce, localFiringKinds } from "../src/compose-automations.js";
 
 describe("localFiringKinds — which process is the firing authority", () => {
   it("fires every kind on a self-hosted store (the engine's own default)", () => {
