@@ -8,7 +8,7 @@
  * in the shared store, so a second firer can never double-run a tick.
  */
 import { describe, expect, it } from "vitest";
-import { localFiringKinds } from "./compose-automations.js";
+import { armDevTickerOnce, localFiringKinds } from "./compose-automations.js";
 
 describe("localFiringKinds — which process is the firing authority", () => {
   it("fires every kind on a self-hosted store (the engine's own default)", () => {
@@ -35,5 +35,16 @@ describe("localFiringKinds — which process is the firing authority", () => {
           .toEqual(new Set());
       }
     }
+  });
+});
+
+describe("armDevTickerOnce — one dev ticker per process, not per composition", () => {
+  it("a second composition's arming is a no-op (Next dev module churn, #1250)", () => {
+    const host: Record<symbol, unknown> = {};
+    let started = 0;
+    armDevTickerOnce(() => { started += 1; }, host);
+    armDevTickerOnce(() => { started += 1; }, host);
+    armDevTickerOnce(() => { started += 1; }, host);
+    expect(started).toBe(1);
   });
 });

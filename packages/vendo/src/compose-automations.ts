@@ -13,6 +13,22 @@ import { assembleSystemPrompt } from "./prompt.js";
  *  cadence people write ("every 5 minutes"), cheap enough to never matter. */
 const DEV_TICK_INTERVAL_MS = 60_000;
 
+const DEV_TICKER_ARMED = Symbol.for("vendo.dev-automations-ticker-armed");
+
+/** Arm the dev scheduler tick at most once per PROCESS — not per composition.
+ *  Next dev re-evaluates route modules on every recompile, and each evaluation
+ *  builds a fresh composition whose closure guard (and module state) resets
+ *  with it; after hours of recompiles a dev server carried dozens of live
+ *  tickers, all sweeping the store every minute (field: linkwarden
+ *  2026-08-13, #1250). The flag rides globalThis via Symbol.for so it
+ *  survives module re-evaluation. First composition wins — churned
+ *  re-creations of the same dev deployment are exactly the case this guards. */
+export function armDevTickerOnce(start: () => void, host: Record<symbol, unknown> = globalThis as unknown as Record<symbol, unknown>): void {
+  if (host[DEV_TICKER_ARMED] === true) return;
+  host[DEV_TICKER_ARMED] = true;
+  start();
+}
+
 /**
  * Which trigger kinds THIS process fires. `undefined` means every kind — the
  * engine's own default.
@@ -108,13 +124,11 @@ export const composeAutomations = (composition: VendoComposition): Pick<VendoCom
   // is an external caller's job (POST /tick with VENDO_TICK_SECRET, or Cloud
   // for hosted deploys), and no laptop has one — armed by the ready() latch
   // beside the background sweep, never at construction (timers are illegal in
-  // Workers global scope). Once per composition; the engine's interval is
-  // unref'd, so it never keeps a dev server from exiting.
-  let devTickerStarted = false;
+  // Workers global scope). Once per PROCESS (armDevTickerOnce, #1250); the
+  // engine's interval is unref'd, so it never keeps a dev server from exiting.
   const startDevAutomationsTicker = (): void => {
-    if (!development || !automationsMounted || devTickerStarted) return;
-    devTickerStarted = true;
-    automations.start(DEV_TICK_INTERVAL_MS);
+    if (!development || !automationsMounted) return;
+    armDevTickerOnce(() => automations.start(DEV_TICK_INTERVAL_MS));
   };
   return { hostedStoreComposed, automations, automationsForArming: automations, startDevAutomationsTicker };
 };
