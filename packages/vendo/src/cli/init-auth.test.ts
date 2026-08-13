@@ -62,7 +62,10 @@ describe("next-auth v4 advisory (#871)", () => {
     expect(auth.advice).toContain("next-auth v4");
   });
 
-  it("the confirm-accept path surfaces the advisory and names v4 in the question", async () => {
+  it("the confirm-accept path surfaces the advisory beside the decision question", async () => {
+    // The question copy asks what is being DECIDED ("act as your signed-in
+    // Auth.js user?") and stays version-silent by design; the v4 story is the
+    // ADVISORY's to tell, and an accept still carries it as advice.
     const root = await hostRoot({ dependencies: { "next-auth": "^4.24.11" } });
     let question = "";
     const auth = await resolveScaffoldAuth(root, COMPOSITION, undefined, async (asked) => {
@@ -70,7 +73,7 @@ describe("next-auth v4 advisory (#871)", () => {
       return true;
     }, undefined);
     expect(auth.wired?.preset).toBe("authJs");
-    expect(question).toContain("next-auth v4");
+    expect(question).toContain("act as your signed-in");
     expect(auth.advice).toContain("next-auth v4");
   });
 

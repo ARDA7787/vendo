@@ -101,6 +101,61 @@ export interface VendoOverlayProps {
  *  enough to stay ambient (~6s per the §6 decision). */
 const WHISPER_MS = 6000;
 
+/** A spreadable style prop that stays ABSENT when there is nothing to set —
+ *  exactOptionalPropertyTypes forbids `style={undefined}`. */
+const styleProp = (style: CSSProperties | undefined): { style?: CSSProperties } =>
+  style === undefined ? {} : { style };
+
+/** F10 — the spreadable resume prop for the Thread (absent = fresh). */
+const resumeThreadProps = (resumeThreadId: string | undefined): { threadId?: string } =>
+  resumeThreadId === undefined ? {} : { threadId: resumeThreadId };
+
+/** Move focus to the first match inside the dialog on the next microtask —
+ *  after the remount/close that motivated the move has committed. */
+const focusInDialog = (dialog: { current: HTMLElement | null }, selector: string): void => {
+  queueMicrotask(() => dialog.current?.querySelector<HTMLElement>(selector)?.focus());
+};
+
+/** F12 (ENG-388) — the host offset as CSS variables the corner calcs fold in
+ *  (default 0px), or undefined when the host set none. */
+function launcherOffsetVariables(offset: { x?: number; y?: number } | undefined): CSSProperties | undefined {
+  if (offset === undefined) return undefined;
+  return {
+    ...(offset.x === undefined ? {} : { "--vendo-launcher-x": `${offset.x}px` }),
+    ...(offset.y === undefined ? {} : { "--vendo-launcher-y": `${offset.y}px` }),
+  } as CSSProperties;
+}
+
+/** F10 (ENG-388) — the remembered-conversation state: restore on mount (a
+ *  read in an effect, never during render — the storage convention), forget
+ *  on explicit fresh starts, and the picker's open state. A stale or foreign
+ *  restored id self-heals to a fresh thread inside useVendoThread, so
+ *  restoring is safe. Its own hook so the overlay component stays under the
+ *  complexity ceiling. */
+function useRememberedConversation(conversationKey: string | number | undefined) {
+  const [resumeThreadId, setResumeThreadId] = useState<string>();
+  const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => {
+    const remembered = lastThreadId();
+    if (remembered !== undefined) setResumeThreadId(remembered);
+  }, []);
+  // An external conversationKey bump means "discard and start fresh"
+  // (ENG-221) — the remembered conversation goes with it.
+  const previousConversationKey = useRef(conversationKey);
+  useEffect(() => {
+    if (previousConversationKey.current === conversationKey) return;
+    previousConversationKey.current = conversationKey;
+    setResumeThreadId(undefined);
+    forgetThread();
+  }, [conversationKey]);
+  const forgetForFreshStart = (): void => {
+    setResumeThreadId(undefined);
+    forgetThread();
+    setHistoryOpen(false);
+  };
+  return { resumeThreadId, setResumeThreadId, historyOpen, setHistoryOpen, forgetForFreshStart };
+}
+
 /* ------------------------------------------------------------------ */
 /* The expand/collapse embed morph (MorphToast's ghost pattern)        */
 /* ------------------------------------------------------------------ */
@@ -404,24 +459,9 @@ export function VendoOverlay({
   // one). Combined with the prop so the hook's newConversation() works too.
   const [conversationEpoch, setConversationEpoch] = useState(0);
   // F10 (ENG-388) — the conversation a fresh mount resumes, plus the
-  // previous-conversations picker. The remembered id is read in an effect
-  // (storage convention: never during render); a stale or foreign id
-  // self-heals to a fresh thread inside useVendoThread, so restoring is safe.
-  const [resumeThreadId, setResumeThreadId] = useState<string>();
-  const [historyOpen, setHistoryOpen] = useState(false);
-  useEffect(() => {
-    const remembered = lastThreadId();
-    if (remembered !== undefined) setResumeThreadId(remembered);
-  }, []);
-  // An external conversationKey bump means "discard and start fresh"
-  // (ENG-221) — the remembered conversation goes with it.
-  const previousConversationKey = useRef(conversationKey);
-  useEffect(() => {
-    if (previousConversationKey.current === conversationKey) return;
-    previousConversationKey.current = conversationKey;
-    setResumeThreadId(undefined);
-    forgetThread();
-  }, [conversationKey]);
+  // previous-conversations picker (useRememberedConversation above).
+  const { resumeThreadId, setResumeThreadId, historyOpen, setHistoryOpen, forgetForFreshStart } =
+    useRememberedConversation(conversationKey);
   const theme = useVendoTheme();
   const takeover = useMobileTakeover();
   const pin = usePinAction();
@@ -540,15 +580,9 @@ export function VendoOverlay({
   const launcherPosition: VendoLauncherPosition =
     typeof launcher === "string" && launcher !== "none" ? launcher : launcherConfig.position ?? "bottom-right";
   const launcherHidden = launcher === "none";
-  // F12 — host offsets ride CSS variables the corner calcs fold in (default
-  // 0px), applied to every fixed element of the cluster so the pill, the
-  // whisper, and the completion toast move together.
-  const launcherOffsetStyle: CSSProperties | undefined = launcherConfig.offset === undefined
-    ? undefined
-    : {
-        ...(launcherConfig.offset.x === undefined ? {} : { "--vendo-launcher-x": `${launcherConfig.offset.x}px` }),
-        ...(launcherConfig.offset.y === undefined ? {} : { "--vendo-launcher-y": `${launcherConfig.offset.y}px` }),
-      } as CSSProperties;
+  // F12 — the offset variables ride every fixed element of the cluster so
+  // the pill, the whisper, and the completion toast move together.
+  const launcherOffsetStyle = launcherOffsetVariables(launcherConfig.offset);
   // Empty/whitespace labels collapse to the blob-only orb exactly like null —
   // otherwise `label: ""` would render an icon-only button with no accessible
   // name (cubic PR#391 finding).
@@ -734,13 +768,11 @@ export function VendoOverlay({
   const newConversation = () => {
     setConversationEpoch(epoch => epoch + 1);
     // F10 — an explicit fresh start also forgets the remembered conversation
-    // (and closes the picker if it was open).
-    setResumeThreadId(undefined);
-    forgetThread();
-    setHistoryOpen(false);
-    // The remounted thread lands on the empty composer — put focus there so
-    // the affordance reads as "ready for a fresh start", not a dead click.
-    queueMicrotask(() => dialog.current?.querySelector<HTMLElement>("textarea:not([disabled])")?.focus());
+    // (and closes the picker if it was open). The remounted thread lands on
+    // the empty composer — put focus there so the affordance reads as "ready
+    // for a fresh start", not a dead click.
+    forgetForFreshStart();
+    focusInDialog(dialog, "textarea:not([disabled])");
   };
 
   // F10 — picking a previous conversation remounts the thread onto it; the
@@ -748,12 +780,12 @@ export function VendoOverlay({
   const resumeConversation = (threadId: string) => {
     setHistoryOpen(false);
     setResumeThreadId(threadId);
-    queueMicrotask(() => dialog.current?.querySelector<HTMLElement>("textarea:not([disabled])")?.focus());
+    focusInDialog(dialog, "textarea:not([disabled])");
   };
   const cancelHistory = () => {
     setHistoryOpen(false);
     // Focus returns to the opener, the dialog-cancel convention.
-    queueMicrotask(() => dialog.current?.querySelector<HTMLElement>(".fl-overlay-history")?.focus());
+    focusInDialog(dialog, ".fl-overlay-history");
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -889,7 +921,7 @@ export function VendoOverlay({
               <PrefillScopeContext.Provider value={prefillScope.current}>
                 <Thread
                   key={`${conversationKey ?? 0}:${conversationEpoch}:${resumeThreadId ?? "new"}`}
-                  {...(resumeThreadId === undefined ? {} : { threadId: resumeThreadId })}
+                  {...resumeThreadProps(resumeThreadId)}
                   discoverability={dial}
                   firstRunGreeting={greeting}
                   onThreadId={adoptThreadId}
@@ -923,7 +955,7 @@ export function VendoOverlay({
           ref={launcherRef}
           className="fl-launcher"
           data-vendo-launcher={launcherPosition}
-          {...(launcherOffsetStyle === undefined ? {} : { style: launcherOffsetStyle })}
+          {...styleProp(launcherOffsetStyle)}
           // Blob-only orb when the host clears the label (`label: null`).
           {...(launcherLabel === null ? { "data-vendo-launcher-bare": "" } : {})}
           // Present only while the whisper is live: keys the one-time pulse
@@ -951,7 +983,7 @@ export function VendoOverlay({
         <div
           className="fl-whisper"
           data-vendo-launcher={launcherPosition}
-          {...(launcherOffsetStyle === undefined ? {} : { style: launcherOffsetStyle })}
+          {...styleProp(launcherOffsetStyle)}
           role="status"
         >
           <strong>You can reshape this app</strong>
@@ -965,7 +997,7 @@ export function VendoOverlay({
         <LauncherToast
           result={status.toast}
           position={launcherPosition}
-          {...(launcherOffsetStyle === undefined ? {} : { style: launcherOffsetStyle })}
+          {...styleProp(launcherOffsetStyle)}
           onView={status.view}
           onDismiss={status.dismissToast}
         />

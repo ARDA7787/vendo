@@ -1786,7 +1786,21 @@ export async function runInit(options: InitOptions): Promise<number> {
 
   /** A plan failure the HOST must fix (a manifest npm itself would refuse)
       exits with the CLI's normal one-line error instead of a raw stack. */
-  const explainedPlanFailure = (error: unknown): boolean => {
+  /** #478 short-term + FINDINGS F3 — the end-of-run summary warns on an `ai`
+ *  outside the v6 peer contract instead of waiting for doctor's E-DEP-001:
+ *  npm installs the ai@7 conflict without failing (every internal turn then
+ *  throws AI_InvalidPromptError), and the re-read only sees a pre-v6 copy
+ *  when ensureProviderDeps could not install over the hoisted one. */
+async function warnOffContractAi(root: string, output: Output): Promise<void> {
+  const aiVersion = await installedAiVersion(root);
+  if (aiVersion !== null && Number.parseInt(aiVersion, 10) >= 7) {
+    output.error(`warning: installed ai@${aiVersion} is unsupported — Vendo supports ai@6; downgrade (npm install ai@^6 @ai-sdk/anthropic@^3 @ai-sdk/react@^3) or track github.com/runvendo/vendo/issues/478`);
+  } else if (aiVersion !== null && aiBelowPeerFloor(aiVersion)) {
+    output.error(`warning: installed ai@${aiVersion} predates the ai@6 peer contract — every turn fails at runtime until the app resolves its own ai@6 (E-DEP-001).`);
+  }
+}
+
+const explainedPlanFailure = (error: unknown): boolean => {
     if (error instanceof VendoError && error.code === "validation") {
       output.error(`vendo init: ${error.message}`);
       return true;
@@ -1794,16 +1808,25 @@ export async function runInit(options: InitOptions): Promise<number> {
     return false;
   };
 
+  // The one explained-failure funnel for both plan calls (--agent and the
+  // scaffolding run): a validation-shaped failure prints its one clean
+  // sentence and the caller exits 1; anything else propagates untouched.
+  const buildPlanOrExplained = async (
+    ...args: Parameters<typeof buildPlan>
+  ): Promise<Awaited<ReturnType<typeof buildPlan>> | null> => {
+    try {
+      return await buildPlan(...args);
+    } catch (error) {
+      if (explainedPlanFailure(error)) return null;
+      throw error;
+    }
+  };
+
   if (options.agent === true) {
     // Extraction runs before the plan is emitted so the plan carries real tool
     // names and risk advice; the throwaway out dir keeps --agent read-only.
-    let planned: Awaited<ReturnType<typeof buildPlan>>;
-    try {
-      planned = await buildPlan(options);
-    } catch (error) {
-      if (explainedPlanFailure(error)) return 1;
-      throw error;
-    }
+    const planned = await buildPlanOrExplained(options);
+    if (planned === null) return 1;
     const { plan } = planned;
     const extraction = await extractForPlan(root);
     output.log(JSON.stringify({
@@ -1849,13 +1872,8 @@ export async function runInit(options: InitOptions): Promise<number> {
     ? undefined
     : (options.selectAuth ?? (pretty === null ? plainSelect : pretty.select));
   const detectStarted = Date.now();
-  let built: Awaited<ReturnType<typeof buildPlan>>;
-  try {
-    built = await buildPlan(options, confirmAuth, selectAuth);
-  } catch (error) {
-    if (explainedPlanFailure(error)) return 1;
-    throw error;
-  }
+  const built = await buildPlanOrExplained(options, confirmAuth, selectAuth);
+  if (built === null) return 1;
   const { plan, changes, edits, manualSteps, mount, authAdvice, authWired, compositionPath, layout, modelWritten, rewriteModels } = built;
   const detectMs = Date.now() - detectStarted;
   let telemetry = telemetryFor(options, output, root);
@@ -2012,17 +2030,7 @@ export async function runInit(options: InitOptions): Promise<number> {
       output.log("No model key yet: select one in your composition — models: { default: anthropic(\"claude-sonnet-4-6\") } — with ANTHROPIC_API_KEY in .env.local, or run `vendo login` for a free dev key (VENDO_API_KEY). A provider key alone no longer selects a model.");
     }
 
-    // #478 short-term — npm installs the ai@7 peer conflict without failing
-    // and every internal turn then throws AI_InvalidPromptError; warn in the
-    // end-of-run summary instead of waiting for doctor to fail (E-DEP-001).
-    // The same warning fires below the contract (FINDINGS F3) — the re-read
-    // only sees a pre-v6 copy when ensureProviderDeps could not install over it.
-    const aiVersion = await installedAiVersion(root);
-    if (aiVersion !== null && Number.parseInt(aiVersion, 10) >= 7) {
-      output.error(`warning: installed ai@${aiVersion} is unsupported — Vendo supports ai@6; downgrade (npm install ai@^6 @ai-sdk/anthropic@^3 @ai-sdk/react@^3) or track github.com/runvendo/vendo/issues/478`);
-    } else if (aiVersion !== null && aiBelowPeerFloor(aiVersion)) {
-      output.error(`warning: installed ai@${aiVersion} predates the ai@6 peer contract — every turn fails at runtime until the app resolves its own ai@6 (E-DEP-001).`);
-    }
+    await warnOffContractAi(root, output);
 
     // Called on its OWN line, never inside `pretty?.done(…)`: optional
     // chaining short-circuits its arguments, so a null `pretty` — every

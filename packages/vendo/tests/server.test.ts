@@ -1725,13 +1725,18 @@ describe("09 §2.1 — host-identity presets (auth)", () => {
     vi.stubEnv("AUTH_SECRET", authJsSecret);
     const store = await tempStore("vendo-auth-actas-declined-");
     // A subject→user resolver backed by a real user table declines the doctor's
-    // synthetic subject — a correctly wired host, not a missing seam.
+    // synthetic subject — a correctly wired host, not a missing seam. The
+    // probe route is development-only now, and the wire refuses a caller with
+    // no identity — the CALLER's own session resolves fine; it is the actAs
+    // mint for the synthetic subject that declines.
     const vendo = createVendo({
       model: {} as LanguageModel,
       store,
       auth: authJs({ user: async () => null }),
+      development: true,
     });
-    const probe = await vendo.handler(request("POST", "/doctor/act-as", {}));
+    const session = { cookie: await mintSessionCookie("user_actas_declined") };
+    const probe = await vendo.handler(request("POST", "/doctor/act-as", {}, session));
     expect(probe.status).toBe(409);
     const body = await probe.json() as { ok: boolean; error?: { code?: string; message?: string } };
     expect(body.ok).toBe(false);
@@ -1741,10 +1746,13 @@ describe("09 §2.1 — host-identity presets (auth)", () => {
 
   it("an ABSENT actAs seam still answers act-as-not-configured (#873)", async () => {
     const store = await tempStore("vendo-auth-actas-absent-");
+    // The auth object resolves the caller (the wire refuses anonymity) but
+    // wires NO actAs seam — the truly absent case E-AUTH-007 narrates.
     const vendo = createVendo({
       model: {} as LanguageModel,
       store,
-      auth: { principal: async () => null },
+      auth: { principal: async () => ({ kind: "user", subject: "user_actas_absent" }) },
+      development: true,
     });
     const probe = await vendo.handler(request("POST", "/doctor/act-as", {}));
     expect(probe.status).toBe(501);
