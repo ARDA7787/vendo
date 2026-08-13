@@ -1,7 +1,7 @@
 import { VendoError, type Principal } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
-import { createContextResolver } from "./context.js";
-import type { WireDeps } from "./shared.js";
+import { createContextResolver } from "../../src/wire/context.js";
+import type { WireDeps } from "../../src/wire/shared.js";
 
 /** #872 — a throwing principal resolver must surface its own actionable
     message (the presets write those to be shown), not vanish into the
@@ -26,7 +26,6 @@ describe("#872 — principal-resolver failures are named", () => {
       depsFor(async () => {
         throw new Error("authJs() has no session secret: set AUTH_SECRET or pass authJs({ secret }).");
       }),
-      {},
     );
     const failure = await resolve(request(), "chat").then(
       () => null,
@@ -43,7 +42,6 @@ describe("#872 — principal-resolver failures are named", () => {
       depsFor(async () => {
         throw original;
       }),
-      {},
     );
     await expect(resolve(request(), "chat")).rejects.toBe(original);
   });
@@ -53,7 +51,6 @@ describe("#872 — principal-resolver failures are named", () => {
       depsFor(async () => {
         throw "string failure"; // eslint-disable-line no-throw-literal -- the point of the case
       }),
-      {},
     );
     await expect(resolve(request(), "chat")).rejects.toThrow(/principal resolution failed: string failure/);
   });
