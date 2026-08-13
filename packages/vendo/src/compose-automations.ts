@@ -13,20 +13,24 @@ import { assembleSystemPrompt } from "./prompt.js";
  *  cadence people write ("every 5 minutes"), cheap enough to never matter. */
 const DEV_TICK_INTERVAL_MS = 60_000;
 
-const DEV_TICKER_ARMED = Symbol.for("vendo.dev-automations-ticker-armed");
+const DEV_TICKER = Symbol.for("vendo.dev-automations-ticker");
 
-/** Arm the dev scheduler tick at most once per PROCESS — not per composition.
- *  Next dev re-evaluates route modules on every recompile, and each evaluation
- *  builds a fresh composition whose closure guard (and module state) resets
- *  with it; after hours of recompiles a dev server carried dozens of live
- *  tickers, all sweeping the store every minute (field: linkwarden
- *  2026-08-13, #1250). The flag rides globalThis via Symbol.for so it
- *  survives module re-evaluation. First composition wins — churned
- *  re-creations of the same dev deployment are exactly the case this guards. */
-export function armDevTickerOnce(start: () => void, host: Record<symbol, unknown> = globalThis as unknown as Record<symbol, unknown>): void {
-  if (host[DEV_TICKER_ARMED] === true) return;
-  host[DEV_TICKER_ARMED] = true;
-  start();
+/** Arm the newest composition's dev ticker and retire the previous one —
+ *  ADOPT, never duplicate (#1250). Next dev re-evaluates route modules on
+ *  every recompile, and each evaluation builds a fresh composition whose
+ *  closure guard (and module state) resets with it; after hours of
+ *  recompiles a dev server carried dozens of live tickers, all sweeping the
+ *  store every minute (field: linkwarden 2026-08-13). A boolean once-guard
+ *  stopped the stacking but left the FIRST composition's ticker firing
+ *  through a retired engine forever (PR #1254 review) — so arming stops the
+ *  predecessor's interval (the engine's own `start()` hands back its stop)
+ *  and starts the newcomer's, keeping exactly one ticker, bound to the
+ *  composition actually serving requests. The slot rides globalThis via
+ *  Symbol.for so it survives module re-evaluation. */
+export function armDevTicker(start: () => () => void, host: Record<symbol, unknown> = globalThis as unknown as Record<symbol, unknown>): void {
+  const previousStop = host[DEV_TICKER];
+  if (typeof previousStop === "function") (previousStop as () => void)();
+  host[DEV_TICKER] = start();
 }
 
 /**
@@ -124,11 +128,12 @@ export const composeAutomations = (composition: VendoComposition): Pick<VendoCom
   // is an external caller's job (POST /tick with VENDO_TICK_SECRET, or Cloud
   // for hosted deploys), and no laptop has one — armed by the ready() latch
   // beside the background sweep, never at construction (timers are illegal in
-  // Workers global scope). Once per PROCESS (armDevTickerOnce, #1250); the
-  // engine's interval is unref'd, so it never keeps a dev server from exiting.
+  // Workers global scope). One ticker per PROCESS, adopted by the newest
+  // composition (armDevTicker, #1250); the engine's interval is unref'd, so
+  // it never keeps a dev server from exiting.
   const startDevAutomationsTicker = (): void => {
     if (!development || !automationsMounted) return;
-    armDevTickerOnce(() => automations.start(DEV_TICK_INTERVAL_MS));
+    armDevTicker(() => automations.start(DEV_TICK_INTERVAL_MS));
   };
   return { hostedStoreComposed, automations, automationsForArming: automations, startDevAutomationsTicker };
 };

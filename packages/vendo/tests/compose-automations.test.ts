@@ -8,7 +8,7 @@
  * in the shared store, so a second firer can never double-run a tick.
  */
 import { describe, expect, it } from "vitest";
-import { armDevTickerOnce, localFiringKinds } from "../src/compose-automations.js";
+import { armDevTicker, localFiringKinds } from "../src/compose-automations.js";
 
 describe("localFiringKinds — which process is the firing authority", () => {
   it("fires every kind on a self-hosted store (the engine's own default)", () => {
@@ -38,13 +38,18 @@ describe("localFiringKinds — which process is the firing authority", () => {
   });
 });
 
-describe("armDevTickerOnce — one dev ticker per process, not per composition", () => {
-  it("a second composition's arming is a no-op (Next dev module churn, #1250)", () => {
+describe("armDevTicker — the newest composition ADOPTS the ticker", () => {
+  it("a replacement composition stops the stale ticker and runs its own (#1250)", () => {
+    // Adopt, never duplicate — and never leave the FIRST composition's ticker
+    // firing through a retired engine forever (PR #1254 review): arming stops
+    // the predecessor's interval and starts the newcomer's.
     const host: Record<symbol, unknown> = {};
-    let started = 0;
-    armDevTickerOnce(() => { started += 1; }, host);
-    armDevTickerOnce(() => { started += 1; }, host);
-    armDevTickerOnce(() => { started += 1; }, host);
-    expect(started).toBe(1);
+    let stopsA = 0;
+    let startsB = 0;
+    armDevTicker(() => () => { stopsA += 1; }, host);
+    expect(stopsA).toBe(0);
+    armDevTicker(() => { startsB += 1; return () => undefined; }, host);
+    expect(stopsA).toBe(1);
+    expect(startsB).toBe(1);
   });
 });
