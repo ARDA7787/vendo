@@ -203,7 +203,7 @@ describe("a create whose server work could not be built", () => {
     // create returns a document, so without this they went nowhere and the app
     // reported complete on a skeleton — the same bug, one branch over.
     const runtime = setup(unservedBox);
-    const failures: Array<{ ok: false; reasons: string[] }> = [];
+    const failures: Array<{ failed?: string[] }> = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const infos: string[] = [];
     const infoSpy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
@@ -218,7 +218,7 @@ describe("a create whose server work could not be built", () => {
       // The tree was never replaced, because the flip was refused.
       expect(app.ui).toBe("tree");
       expect(failures).toHaveLength(1);
-      expect(failures[0]?.reasons.join(" ")).toContain("did not produce a verified served web app");
+      expect(failures[0]?.failed?.join(" ")).toContain("did not produce a verified served web app");
       const completion = infos.filter((line) => line.includes("gen create complete"));
       expect(completion[0]).toContain("gen create complete (server work failed)");
     } finally {
@@ -234,7 +234,7 @@ describe("a create whose server work could not be built", () => {
     // exception is still the host's — it propagates, once — but it is never
     // relabelled as another server-work failure.
     const runtime = setup(brokenBox);
-    const seen: Array<{ ok: false; reasons: string[] }> = [];
+    const seen: Array<{ failed?: string[] }> = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const infoSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
@@ -246,7 +246,7 @@ describe("a create whose server work could not be built", () => {
         },
       }, ctx)).rejects.toThrow("the host's own listener blew up");
       expect(seen).toHaveLength(1);
-      expect(seen[0]?.reasons.join(" ")).toContain(BOX_GAVE_UP);
+      expect(seen[0]?.failed?.join(" ")).toContain(BOX_GAVE_UP);
     } finally {
       errorSpy.mockRestore();
       infoSpy.mockRestore();

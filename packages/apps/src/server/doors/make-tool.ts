@@ -248,13 +248,15 @@ const makeNewApp = async (
     // No `slot`: the claim went down at the mint above, which is the
     // same instant `create` would have made it for an id of its own.
     onUnsaved: (reason) => { unsaved = reason; },
-    // The lane's whole envelope (#881): the automation raises the card below,
-    // and `failed` — server work the plan required that did not get built —
-    // reaches the receipt's STATUS too, not just its words (see the return
-    // below): `create` resolves with the document either way, and an
-    // unqualified "it's on your screen" is how an empty app gets declared
-    // successful.
-    onServerWork: (work) => { serverWork = work; },
+    // The lane's outcome arrives in up to two calls on one envelope shape
+    // (#881): the success half (the automation that raises the card below,
+    // caveat issues) and the failure report (`failed` — server work the plan
+    // required that did not get built), which reaches the receipt's STATUS
+    // too, not just its words (see the return below): `create` resolves with
+    // the document either way, and an unqualified "it's on your screen" is
+    // how an empty app gets declared successful. Merged, never overwritten —
+    // a failure must not erase the automation that DID land, or vice versa.
+    onServerWork: (work) => { serverWork = { ...serverWork, ...work }; },
     ...(stream === undefined ? {} : {
       onView: (part) => stream({ id: vendoViewStreamId(part.appId), part }),
     }),

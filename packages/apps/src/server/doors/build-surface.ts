@@ -395,13 +395,20 @@ const createCreateDoor = (
       const work: CreateServerWork = {
         ...(served.automation === undefined ? {} : { automation: served.automation }),
         ...(served.graduated === undefined ? {} : { graduated: served.graduated }),
-        // Issues that a plan-required serve escalated into serverWorkFailed
-        // (same array, above) are the failure report's to carry — publishing
-        // them here too would tell the person the same sentence twice.
+        // Failure sentences — `served.failed`, and the issues a plan-required
+        // serve escalated (both collected into serverWorkFailed above) — are
+        // the outside failure report's to carry, exactly once. The envelope
+        // carries what the SUCCESS half produced: the automation that raises
+        // the thread card, and non-escalated caveat issues.
         ...((served.issues ?? []).length === 0 || serverWorkFailed === served.issues ? {} : { issues: served.issues }),
-        ...((served.failed ?? []).length === 0 ? {} : { failed: served.failed }),
       };
-      if (Object.keys(work).length > 0) input.onServerWork?.(work);
+      // `graduated` alone is not a callback-worthy event — a box succeeding is
+      // the normal case, and a clean build stays SILENT (the failure-only
+      // contract this door shipped with). The envelope fires when it carries
+      // an automation or caveat issues; graduated rides along.
+      if (work.automation !== undefined || work.issues !== undefined) {
+        input.onServerWork?.(work);
+      }
     } catch (error) {
       serverWorkFailed = [safeErrorMessage(error)];
     }
