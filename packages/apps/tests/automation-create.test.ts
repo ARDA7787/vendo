@@ -6,11 +6,16 @@
  * Wave 9; the create door dropped them on the floor, so a first-ask
  * automation never raised a card and its pending grants were invisible.
  */
-import { VENDO_APP_FORMAT, type RunContext, type ScreenAssembler, type ToolRegistry } from "@vendoai/core";
+import { engineOverAdapter, VENDO_APP_FORMAT, type RunContext, type ToolRegistry } from "@vendoai/core";
+import { type ScreenAssembler } from "../src/contract/index.js";
 import { describe, expect, it } from "vitest";
-import { createApps } from "./index.js";
-import { fakeBoxSandbox, guardFixture, memoryStore, scriptedLanguageModel, seedAppRow } from "./testing/index.js";
-import type { CreateServerWork } from "./types.js";
+import { createApps } from "../src/server/index.js";
+import { fakeBoxSandbox } from "../src/server/testing/fake-box.js";
+import { guardFixture } from "../src/server/testing/guard-fixture.js";
+import { memoryStore } from "../src/server/testing/memory-store.js";
+import { scriptedLanguageModel } from "../src/server/testing/scripted-model.js";
+import { seedAppRow } from "../src/server/testing/seed-app-row.js";
+import type { CreateServerWork } from "../src/server/runtime/types.js";
 
 const APP_ID = "app_create_ladder";
 
@@ -97,7 +102,7 @@ describe("schedule on an app with no automation", () => {
     // move — the make door, this app named, schedule and action in one ask.
     const store = memoryStore();
     const runtime = createApps({ store, guard: guardFixture(), tools, catalog: [] });
-    await seedAppRow(store, {
+    await seedAppRow(engineOverAdapter(store), {
       format: VENDO_APP_FORMAT,
       id: "app_view_only",
       name: "Links",

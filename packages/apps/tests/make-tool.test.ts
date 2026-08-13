@@ -13,9 +13,9 @@ import {
   type VendoViewStreamingToolCall,
 } from "@vendoai/core";
 import { describe, expect, it } from "vitest";
-import type { AgentToolsDataDependencies } from "./agent-tools.js";
-import { runMakeTool } from "./make-tool.js";
-import type { AppsRuntime, CreateServerWork } from "./types.js";
+import type { AgentToolsDataDependencies } from "../src/server/doors/agent-tools.js";
+import { runMakeTool } from "../src/server/doors/make-tool.js";
+import type { AppsRuntime, CreateServerWork } from "../src/server/runtime/types.js";
 
 const ctx: RunContext = {
   principal: { kind: "user", subject: "user_ada" },
@@ -27,6 +27,7 @@ const ctx: RunContext = {
 const AUTOMATION: NonNullable<CreateServerWork["automation"]> = {
   mode: "agentic",
   trigger: {
+    id: "trg_nudges",
     on: { kind: "schedule", every: "1d" },
     run: { kind: "agentic", prompt: "Decide who deserves a nudge.", budget: { maxToolCalls: 5 } },
   },
@@ -70,9 +71,9 @@ const makeCall = (): { call: VendoViewStreamingToolCall; updates: VendoViewStrea
   return { call, updates };
 };
 
-const receiptOf = (outcome: Awaited<ReturnType<typeof runMakeTool>>): { id: string; say: string } => {
+const receiptOf = (outcome: Awaited<ReturnType<typeof runMakeTool>>): { id: string; say: string; status: string } => {
   if (outcome.status !== "ok") throw new Error(`expected ok, got ${outcome.status}`);
-  return outcome.output as unknown as { id: string; say: string };
+  return outcome.output as unknown as { id: string; say: string; status: string };
 };
 
 describe("vendo_make publishes the create-path automation card (#881)", () => {
@@ -105,9 +106,13 @@ describe("vendo_make publishes the create-path automation card (#881)", () => {
       runtimeWith({ failed: ["the box did not produce a verified served web app"] }),
       deps, call, ctx,
     );
-    const { say } = receiptOf(outcome);
-    expect(say).toContain("could not be built");
-    expect(say).toContain("the box did not produce a verified served web app");
+    // The merged shape (#881 + upstream's partial-status receipt): the words
+    // carry the reason AND the status branches — a reader that only checks
+    // `status` no longer sees plain "ready" on a half-built app.
+    const receipt = receiptOf(outcome);
+    expect(receipt.say).toContain("didn't get built");
+    expect(receipt.say).toContain("the box did not produce a verified served web app");
+    expect(receipt.status).toBe("partial");
   });
 
   it("publishes no card and no caveat when the lane authored nothing", async () => {

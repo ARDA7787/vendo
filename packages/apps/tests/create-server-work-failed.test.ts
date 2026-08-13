@@ -255,7 +255,7 @@ describe("a create whose server work could not be built", () => {
 
   it("stays silent when the box builds what the plan asked for (the signal is failure-only)", async () => {
     const runtime = setup(workingBox);
-    const failures: Array<{ ok: false; reasons: string[] }> = [];
+    const failures: Array<{ failed?: string[] }> = [];
     const infos: string[] = [];
     const infoSpy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
       infos.push(String(line));
