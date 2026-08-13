@@ -32,6 +32,9 @@ import { VendoThread, type VendoThreadProps } from "./thread/index.js";
 
 const FOCUSABLE = "button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),a[href],[tabindex]:not([tabindex='-1'])";
 
+/** F12 (ENG-388) — the launcher's viewport corners. */
+export type VendoLauncherPosition = "bottom-right" | "bottom-left" | "top-right" | "top-left";
+
 export interface VendoOverlayProps {
   /** Controlled open state — pair with `onOpenChange`. Omit for uncontrolled. */
   open?: boolean;
@@ -46,14 +49,21 @@ export interface VendoOverlayProps {
    * `"none"` to hide it and drive the overlay programmatically (via
    * `open`/`onOpenChange` or the `useVendoOverlay` hook), or the object form
    * to customize: `label` accepts any host string (`null` collapses the pill
-   * to a blob-only orb) and `icon` swaps the blob for a host element.
+   * to a blob-only orb), `icon` swaps the blob for a host element, and
+   * `offset` nudges the whole launcher cluster (pill, whisper, toast) inward
+   * from its corner when the host's own UI already lives there (F12,
+   * ENG-388).
    */
-  launcher?: "bottom-right" | "bottom-left" | "none" | {
-    position?: "bottom-right" | "bottom-left";
+  launcher?: VendoLauncherPosition | "none" | {
+    position?: VendoLauncherPosition;
     /** Pill text. Default "AI agent"; `null` renders the blob-only orb. */
     label?: string | null;
     /** Replaces the circle mark (a host logo, custom glyph, …). */
     icon?: ReactNode;
+    /** Extra pixels pushed inward from the anchored corner: `x` from the
+     *  anchored side, `y` from the anchored edge. Safe-area insets still
+     *  apply on top. */
+    offset?: { x?: number; y?: number };
   };
   /**
    * Change to discard the current conversation and start a fresh thread
@@ -527,9 +537,18 @@ export function VendoOverlay({
   // object form adds white-label text/icon control. Default label is "AI
   // agent" — deliberately not a product name (white-label rule).
   const launcherConfig = typeof launcher === "object" ? launcher : {};
-  const launcherPosition: "bottom-right" | "bottom-left" =
+  const launcherPosition: VendoLauncherPosition =
     typeof launcher === "string" && launcher !== "none" ? launcher : launcherConfig.position ?? "bottom-right";
   const launcherHidden = launcher === "none";
+  // F12 — host offsets ride CSS variables the corner calcs fold in (default
+  // 0px), applied to every fixed element of the cluster so the pill, the
+  // whisper, and the completion toast move together.
+  const launcherOffsetStyle: CSSProperties | undefined = launcherConfig.offset === undefined
+    ? undefined
+    : {
+        ...(launcherConfig.offset.x === undefined ? {} : { "--vendo-launcher-x": `${launcherConfig.offset.x}px` }),
+        ...(launcherConfig.offset.y === undefined ? {} : { "--vendo-launcher-y": `${launcherConfig.offset.y}px` }),
+      } as CSSProperties;
   // Empty/whitespace labels collapse to the blob-only orb exactly like null —
   // otherwise `label: ""` would render an icon-only button with no accessible
   // name (cubic PR#391 finding).
@@ -904,6 +923,7 @@ export function VendoOverlay({
           ref={launcherRef}
           className="fl-launcher"
           data-vendo-launcher={launcherPosition}
+          {...(launcherOffsetStyle === undefined ? {} : { style: launcherOffsetStyle })}
           // Blob-only orb when the host clears the label (`label: null`).
           {...(launcherLabel === null ? { "data-vendo-launcher-bare": "" } : {})}
           // Present only while the whisper is live: keys the one-time pulse
@@ -928,7 +948,12 @@ export function VendoOverlay({
           the overlay ends it early (it has done its job). role="status" keeps
           it polite for assistive tech. */}
       {!launcherHidden && whisperActive && !open ? (
-        <div className="fl-whisper" data-vendo-launcher={launcherPosition} role="status">
+        <div
+          className="fl-whisper"
+          data-vendo-launcher={launcherPosition}
+          {...(launcherOffsetStyle === undefined ? {} : { style: launcherOffsetStyle })}
+          role="status"
+        >
           <strong>You can reshape this app</strong>
           <span>Ask Vendo to build the view you need.</span>
         </div>
@@ -940,6 +965,7 @@ export function VendoOverlay({
         <LauncherToast
           result={status.toast}
           position={launcherPosition}
+          {...(launcherOffsetStyle === undefined ? {} : { style: launcherOffsetStyle })}
           onView={status.view}
           onDismiss={status.dismissToast}
         />

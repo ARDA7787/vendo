@@ -1154,9 +1154,15 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
    one below the scrim so the open overlay covers it. Placement variants keyed
    off data-vendo-launcher so bare .fl-launcher keeps its in-flow behavior. */
 .fl-launcher[data-vendo-launcher="bottom-right"], .fl-launcher[data-vendo-launcher="bottom-left"] {
-  position: fixed; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); z-index: 2147482999; }
-.fl-launcher[data-vendo-launcher="bottom-right"] { right: calc(20px + env(safe-area-inset-right, 0px)); }
-.fl-launcher[data-vendo-launcher="bottom-left"] { left: calc(20px + env(safe-area-inset-left, 0px)); }
+  position: fixed; bottom: calc(20px + var(--vendo-launcher-y, 0px) + env(safe-area-inset-bottom, 0px)); z-index: 2147482999; }
+/* F12 (ENG-388): the top corners, plus host offsets ridden as CSS variables
+   (default 0px — every existing install stays pixel-identical). */
+.fl-launcher[data-vendo-launcher="top-right"], .fl-launcher[data-vendo-launcher="top-left"] {
+  position: fixed; top: calc(20px + var(--vendo-launcher-y, 0px) + env(safe-area-inset-top, 0px)); z-index: 2147482999; }
+.fl-launcher[data-vendo-launcher="bottom-right"], .fl-launcher[data-vendo-launcher="top-right"] {
+  right: calc(20px + var(--vendo-launcher-x, 0px) + env(safe-area-inset-right, 0px)); }
+.fl-launcher[data-vendo-launcher="bottom-left"], .fl-launcher[data-vendo-launcher="top-left"] {
+  left: calc(20px + var(--vendo-launcher-x, 0px) + env(safe-area-inset-left, 0px)); }
 
 /* The launcher mark: a plain accent circle — the recognition cue, in place of
    any glyph or product name. Static by design (2026-08-11: the morphing blob
@@ -1187,9 +1193,14 @@ export const CHROME_CSS = ONEST_FONT_CSS + `/* @vendoai/ui chrome — the S1 des
 .fl-whisper span { color: var(--vendo-fg-muted); }
 /* Fixed variants sit just above the pill, matching its corner. */
 .fl-whisper[data-vendo-launcher="bottom-right"], .fl-whisper[data-vendo-launcher="bottom-left"] {
-  position: fixed; bottom: calc(72px + env(safe-area-inset-bottom, 0px)); z-index: 2147482999; }
-.fl-whisper[data-vendo-launcher="bottom-right"] { right: calc(20px + env(safe-area-inset-right, 0px)); }
-.fl-whisper[data-vendo-launcher="bottom-left"] { left: calc(20px + env(safe-area-inset-left, 0px)); }
+  position: fixed; bottom: calc(72px + var(--vendo-launcher-y, 0px) + env(safe-area-inset-bottom, 0px)); z-index: 2147482999; }
+/* F12: in top corners the whisper sits BELOW the pill — same 72px rhythm. */
+.fl-whisper[data-vendo-launcher="top-right"], .fl-whisper[data-vendo-launcher="top-left"] {
+  position: fixed; top: calc(72px + var(--vendo-launcher-y, 0px) + env(safe-area-inset-top, 0px)); z-index: 2147482999; }
+.fl-whisper[data-vendo-launcher="bottom-right"], .fl-whisper[data-vendo-launcher="top-right"] {
+  right: calc(20px + var(--vendo-launcher-x, 0px) + env(safe-area-inset-right, 0px)); }
+.fl-whisper[data-vendo-launcher="bottom-left"], .fl-whisper[data-vendo-launcher="top-left"] {
+  left: calc(20px + var(--vendo-launcher-x, 0px) + env(safe-area-inset-left, 0px)); }
 
 /* ---------- generative dashboard slot (vendo-slot) ---------- */
 .fl-slot { position: relative; width: 100%; min-height: var(--fl-slot-min-h, 370px);
@@ -1992,9 +2003,16 @@ ul.fl-approval-sub { padding: 0; list-style: none; }
   padding: 10px 10px 10px 14px; border: 1px solid var(--vendo-border); border-radius: 14px;
   background: var(--vendo-surface); box-shadow: var(--vendo-shadow-float);
   font-size: 12.5px; line-height: 1.45; color: var(--vendo-fg);
-  position: fixed; z-index: 2147482999; bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
-.fl-launcher-toast[data-vendo-launcher="bottom-right"] { right: calc(20px + env(safe-area-inset-right, 0px)); }
-.fl-launcher-toast[data-vendo-launcher="bottom-left"] { left: calc(20px + env(safe-area-inset-left, 0px)); }
+  position: fixed; z-index: 2147482999; }
+.fl-launcher-toast[data-vendo-launcher="bottom-right"], .fl-launcher-toast[data-vendo-launcher="bottom-left"] {
+  bottom: calc(72px + var(--vendo-launcher-y, 0px) + env(safe-area-inset-bottom, 0px)); }
+/* F12: top corners — the toast sits below the pill, same rhythm as the whisper. */
+.fl-launcher-toast[data-vendo-launcher="top-right"], .fl-launcher-toast[data-vendo-launcher="top-left"] {
+  top: calc(72px + var(--vendo-launcher-y, 0px) + env(safe-area-inset-top, 0px)); }
+.fl-launcher-toast[data-vendo-launcher="bottom-right"], .fl-launcher-toast[data-vendo-launcher="top-right"] {
+  right: calc(20px + var(--vendo-launcher-x, 0px) + env(safe-area-inset-right, 0px)); }
+.fl-launcher-toast[data-vendo-launcher="bottom-left"], .fl-launcher-toast[data-vendo-launcher="top-left"] {
+  left: calc(20px + var(--vendo-launcher-x, 0px) + env(safe-area-inset-left, 0px)); }
 .fl-launcher-toast-head { flex: 1; min-width: 0; font-weight: 550;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .fl-launcher-toast-actions { display: flex; align-items: center; gap: 4px; flex: none; }
