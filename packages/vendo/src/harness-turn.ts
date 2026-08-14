@@ -34,7 +34,7 @@ import {
   hostComponentFiles,
   type NormalizedCatalog,
 } from "@vendoai/apps/contract";
-import { ThreadRepository, type Thread, type ThreadSummary } from "./threads.js";
+import { deriveTitle, ThreadRepository, type Thread, type ThreadSummary } from "./threads.js";
 import {
   HOT_PATH_WATCH,
   hotPathAppId,
@@ -386,7 +386,25 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
         // title, exactly as a `createAgent` turn's persist does. The workspace
         // open beside it reads file rows only — nothing it serves depends on the
         // thread row landing, and the runtime that writes messages runs after both.
-        threads.persist(thread, [input.message], { fresh }),
+        //
+        // ONE persistence path per turn: `persist` writes the whole transcript
+        // under a compare-and-swap, which is what CREATING the row needs and
+        // what every later turn was paying for nothing. Once the row exists the
+        // same three effects — the user's message, a touched `updated_at` and a
+        // refreshed title — are one append, and two overlapping turns writing
+        // disjoint message ids can no longer collide at all.
+        fresh
+          ? threads.persist(thread, [input.message], { fresh })
+          // No position is passed: the store assigns one while it holds the
+          // thread row, so two turns racing on this conversation cannot claim
+          // the same slot. An answer to a pending approval matches an existing
+          // id and keeps the position it already has.
+          : transcript.upsertMany(
+            input.ctx.principal,
+            thread.id,
+            [input.message],
+            { title: deriveTitle(thread.messages) },
+          ),
         // §9.7 — the turn's façade mounts every org the wire asserted for this
         // request, so an agent turn can read and write the team's files at all.
         workspaces.open(input.ctx.principal, {

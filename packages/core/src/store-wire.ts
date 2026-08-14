@@ -39,12 +39,13 @@ export const STORE_WIRE_PATHS = {
   "appData.getFile": "/app-data/getFile",
   "appData.listFiles": "/app-data/listFiles",
   "appData.deleteFile": "/app-data/deleteFile",
-  // transcripts (6)
+  // transcripts (7)
   "transcripts.putThread": "/transcripts/putThread",
   "transcripts.getThread": "/transcripts/getThread",
   "transcripts.listThreads": "/transcripts/listThreads",
   "transcripts.deleteThread": "/transcripts/deleteThread",
   "transcripts.putMessage": "/transcripts/putMessage",
+  "transcripts.appendMessages": "/transcripts/appendMessages",
   "transcripts.recordAnswer": "/transcripts/recordAnswer",
   // harness (3)
   "harness.get": "/harness/get",
@@ -243,6 +244,47 @@ export const storeWireTranscriptsPutMessageRequestSchema = z.object({
   threadId: z.string().min(1),
   message: z.unknown(),
 }).passthrough();
+
+/** Append a batch of messages to a thread the CALLER names the owner of, so the
+    service can enforce ownership in its own statement instead of handing the
+    client a whole thread to check first. The answer is `{revision, count}` and
+    deliberately NOT the thread: returning it would put the entire conversation
+    back on the wire on every turn, which is the cost this op exists to remove. */
+export const storeWireTranscriptsAppendMessagesRequestSchema = z.object({
+  threadId: z.string().min(1),
+  subject: z.string().min(1),
+  messages: z.array(z.unknown()).min(1),
+  title: z.string().optional(),
+}).passthrough();
+
+export interface StoreWireAppendMessagesResult {
+  revision: string;
+  count: number;
+}
+
+/** The op count a mount must report on `/status` before a client may send
+    `transcripts.appendMessages` — the 36th op, and the first one a shipped
+    client has to feature-detect. The wire has no capability list and needs
+    none: `/status` is already the discovery handshake, and the count is its
+    only signal. Compared with `>=`, and FROZEN at the count this op shipped
+    with — `===` would refuse the op the day a 37th is added, pinning every
+    client on the slow path forever with nothing to see; and
+    `Object.keys(STORE_WIRE_PATHS).length` would do the same from the client's
+    side.
+
+    ⚠ ADDING OP 37? READ THIS. The count is a PROXY for capability, and it
+    holds only while ops are ONLY EVER ADDED. Remove one while adding another
+    and the count still reaches 36 on a mount that no longer serves this op —
+    the client then believes it is supported, sends it, and takes the loud 501
+    this whole mechanism exists to avoid. That is not hypothetical: console
+    #468 ("restore the `records.*` store wire deleted by #456") is a production
+    incident from exactly that shape. Deleting a wire op means retiring this
+    constant, not renumbering it.
+
+    Detect once, cache, and route to the older getThread + putMessage path when
+    the mount is behind — never send it blind and read the 501 as a fallback
+    signal (#1251: a failed mutation is not a capability answer). */
+export const STORE_WIRE_APPEND_MESSAGES_OPS = 36;
 
 export const storeWireTranscriptsRecordAnswerRequestSchema = z.object({
   threadId: z.string().min(1),
