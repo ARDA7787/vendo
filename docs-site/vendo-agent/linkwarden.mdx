@@ -60,6 +60,11 @@ const vendo = createVendo({
 });
 ```
 
+The cast works because Next's App Router hands the route a `NextRequest`,
+whose `cookies` is the shape v4's `getToken` reads natively — the wire passes
+that object through untouched. On a non-Next runtime, adapt the cookie header
+into your session library's expected shape instead.
+
 If your product uses Auth.js v5, Clerk, Supabase, or Auth0, this section
 doesn't apply — the zero-arg presets do it in one line. This recipe is for any
 session scheme the presets don't speak.
