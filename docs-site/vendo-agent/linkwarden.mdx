@@ -103,7 +103,24 @@ serverExternalPackages: ["esbuild", "@electric-sql/pglite"],
 Without it, Next tries to bundle the build engine and the dev store's native
 pieces into the server bundle.
 
-## 6. `VENDO_BASE_URL`, before you need it
+## 6. Older tsconfigs: `moduleResolution`
+
+Linkwarden's tsconfig carried the legacy `"moduleResolution": "node"`, which
+cannot resolve `@vendoai/*` subpath **types** (`@vendoai/vendo/server`,
+`@vendoai/ui/chrome`). Dev mode never type-checks, so everything *runs* — the
+first `next build` fails. The fix is one line:
+
+```json
+"moduleResolution": "bundler"
+```
+
+One knock-on to know about: bundler resolution makes every dependency's
+`exports` map authoritative. Linkwarden had a single bare
+`import { Provider } from "next-auth/providers"` that only legacy resolution
+tolerated — it becomes `next-auth/providers/index`. Run your app's production
+build once right after integrating; it catches this whole class.
+
+## 7. `VENDO_BASE_URL`, before you need it
 
 Set the deployment's full public URL (locally, `http://localhost:3000`):
 same-origin trust, the MCP door's base, and **the callback URLs handed to
@@ -111,7 +128,7 @@ sandbox machines** all hang off it — machine provisioning fails without it,
 and `vendo init` writes it into `.env.example`, not your live env file.
 See [Environment variables](/reference/environment-variables).
 
-## 7. What you get
+## 8. What you get
 
 Sign in, click the launcher: ask for things the product has no UI for ("show my
 dead links by collection", "tag everything from last week") and the agent
