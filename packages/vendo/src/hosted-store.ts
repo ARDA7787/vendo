@@ -20,6 +20,7 @@ import {
 } from "@vendoai/store";
 import { consoleSender, raiseCloudError } from "./cloud-console.js";
 import { keepAliveFetch } from "./keep-alive-fetch.js";
+import { environment } from "./wire/shared.js";
 
 /** The console mounts the hosted-store surface here
  * (apps/console/app/api/v1/store/*). */
@@ -279,6 +280,29 @@ export function hostedStore(options: HostedStoreOptions): HostedStore {
  * op names even where the console's door sits at a different path. */
 type StoreWireOp = keyof typeof STORE_WIRE_PATHS;
 
+/** Measurement instrument, not a feature: with VENDO_STORE_TRACE set, every
+ * call through the store client below — the 35 ops AND the StoreAdapter façade,
+ * which rides the same client — emits one greppable stderr line naming the op,
+ * its path, the round trip in milliseconds (the body read included, since that
+ * is what the caller waits for), the response size in bytes and the outcome.
+ * Read ONCE at import, like the skew latch below: a debug switch belongs to the
+ * process, so the adapter itself still reads nothing at construction or on any
+ * call, and unset there is no wrapper to pay for. */
+const TRACE = environment("VENDO_STORE_TRACE") !== undefined;
+
+/** The `outcome=` field of a FAILED call's trace line. Failures are the tail of
+ * the latency distribution, not an afterthought: an exhausted 30s budget is the
+ * slowest call this client ever makes, so tracing successes alone would drop
+ * exactly the calls the measurement exists to find and make a turn read as fast
+ * as its lucky requests. The server's code where there is one (VendoError and
+ * the console's mapped errors both carry it), else the error's name —
+ * `TimeoutError` for a spent budget. */
+const traceOutcome = (error: unknown): string => {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === "string") return code;
+  return error instanceof Error ? error.name : "unknown";
+};
+
 /** ONE key per LOGICAL mutation. The retry below replays it verbatim — that
  * replay is the only reason the server can tell "do it again" from "you
  * already did it"; a fresh key per attempt would double-apply the write. */
@@ -355,7 +379,7 @@ function storeWireClient(
     raise,
   });
 
-  const call = async (op: StoreWireOp, path: string, init?: RequestInit): Promise<Response> => {
+  const wire = async (op: StoreWireOp, path: string, init?: RequestInit): Promise<Response> => {
     const attempt = (): Promise<Response> => send(path, init);
     try {
       // The retry sends the SAME init — same key, same body — so a mutation
@@ -384,6 +408,45 @@ function storeWireClient(
       }
       throw error;
     }
+  };
+
+  /** Untraced, `call` IS `wire` — see {@link TRACE}. */
+  const call: typeof wire = !TRACE ? wire : async (op, path, init) => {
+    const started = performance.now();
+    const line = (bytes: number, outcome: string): void =>
+      console.error(
+        `vendo-store-trace op=${op} path=${path} ms=${Math.round(performance.now() - started)} bytes=${bytes} outcome=${outcome}`,
+      );
+    let response: Response;
+    try {
+      response = await wire(op, path, init);
+    } catch (error) {
+      // A refusal has a body, but `wire` already consumed it to build this
+      // error — the bytes are gone and the failure is what mattered anyway.
+      line(0, traceOutcome(error));
+      throw error;
+    }
+    // Measure a CLONE and hand back the response `wire` returned, untouched.
+    // Rebuilding it instead would be a real behavior change on a null-body
+    // status — `new Response(body, { status: 204 })` throws — and would put the
+    // instrument in the path of every hosted call it is supposed to observe.
+    //
+    // Measuring must never FAIL the call it is measuring either. A body stream
+    // that breaks mid-read is not an error to this client: `json`'s catch reads
+    // it as `{}`, which a void mutation ignores entirely and a payload reader
+    // reports as service misbehavior. Letting the measurement's own rejection
+    // escape would turn tracing on into "some calls now fail", which is the one
+    // thing an instrument may not do — so a broken read is a fact ABOUT the
+    // call, recorded in the line, not a fact that changes it.
+    let bytes = 0;
+    let outcome = "ok";
+    try {
+      bytes = (await response.clone().arrayBuffer()).byteLength;
+    } catch {
+      outcome = "unreadable-body";
+    }
+    line(bytes, outcome);
+    return response;
   };
 
   const json = async (response: Response): Promise<unknown> => response.json().catch(() => ({}));
