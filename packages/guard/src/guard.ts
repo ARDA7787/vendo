@@ -125,6 +125,10 @@ const FREEZE_ROW = "freeze";
 /** The block a frozen guard returns — the same words at the check and at the
  *  execute re-read, so the two agree. */
 const FROZEN_REASON = "vendo is frozen — nothing runs until it is unfrozen";
+/** How long a CHECK-TIME freeze answer may be reused (the execute gate never
+ *  reuses one). A freeze flipped in another process therefore starts blocking
+ *  new checks within this window, and blocks every DISPATCH immediately. */
+const FROZEN_CACHE_MS = 10_000;
 /** Build contract §7 — the effect ledger: one row per completed mutating call,
  *  keyed by (run, tool, exact input). It is what makes fail-and-re-run correct:
  *  a re-run of a run that already sent the payment must not send it again. */
@@ -491,6 +495,8 @@ class GuardImplementation implements VendoGuard {
   readonly #callWindows = new Map<string, number[]>();
   readonly #writeCounts = new Map<string, { count: number; touchedAt: number }>();
   #lastSweepAt = 0;
+  /** The last freeze answer a fresh read produced (see {@link frozen}). */
+  #frozenCache: { at: number; value: boolean } | undefined;
   readonly #approvalCallbacks = new Set<(id: ApprovalId, approved: boolean) => void>();
   readonly #approvalRequestedCallbacks = new Set<(request: ApprovalRequest) => void>();
 
@@ -874,7 +880,21 @@ class GuardImplementation implements VendoGuard {
     await this.#setFrozen(false, by);
   }
 
-  async frozen(): Promise<boolean> {
+  /** Reads the flag row every time, unless the caller says a slightly stale
+   *  answer will do (`cached`). Only the CHECK-TIME read does: it is one static
+   *  row, read on every tool call, and the gate immediately before dispatch
+   *  (`bind().execute`) is uncached — so the freeze a cached check missed still
+   *  cannot reach a tool. Every fresh read refreshes the cached value, this
+   *  guard's own freeze()/unfreeze() included, so an in-process flip is visible
+   *  at once and only another process's flip can be up to
+   *  {@link FROZEN_CACHE_MS} stale. */
+  async frozen(opts?: { cached?: boolean }): Promise<boolean> {
+    if (
+      opts?.cached === true && this.#frozenCache !== undefined
+      && Date.now() - this.#frozenCache.at < FROZEN_CACHE_MS
+    ) {
+      return this.#frozenCache.value;
+    }
     let record: VendoRecord | null;
     try {
       record = await this.#engine.get(CONTROLS_COLLECTION, FREEZE_ROW);
@@ -884,17 +904,24 @@ class GuardImplementation implements VendoGuard {
       // in the pipeline is contained — never let it escape check()/execute() as
       // an unhandled rejection while the guard silently stops gating.
       await this.#reportUnreadableControl(errorMessage(error));
-      return true;
+      return this.#rememberFrozen(true);
     }
     // Absent row: the switch was never pulled — normal, unfrozen.
-    if (record === null) return false;
+    if (record === null) return this.#rememberFrozen(false);
     const frozen = (record.data as { frozen?: unknown }).frozen;
-    if (typeof frozen === "boolean") return frozen;
+    if (typeof frozen === "boolean") return this.#rememberFrozen(frozen);
     // A control row that EXISTS but does not parse is a kill switch we can no
     // longer read. Fail CLOSED — treat it as frozen — rather than let a corrupt
     // switch read as "run everything".
     await this.#reportUnreadableControl();
-    return true;
+    return this.#rememberFrozen(true);
+  }
+
+  /** What the next check-time read may answer with. Fail-closed answers are
+   *  cached like any other: the safe direction stays safe for at most a TTL. */
+  #rememberFrozen(value: boolean): boolean {
+    this.#frozenCache = { at: Date.now(), value };
+    return value;
   }
 
   /** The kill switch could not be read as a boolean — the row is corrupt, or
@@ -960,6 +987,7 @@ class GuardImplementation implements VendoGuard {
       id: FREEZE_ROW,
       data: { frozen, by, at: now() },
     });
+    this.#rememberFrozen(frozen);
     await this.report({
       id: makeId("aud_"),
       at: now(),
@@ -1023,7 +1051,7 @@ class GuardImplementation implements VendoGuard {
     // `risk` (01-core §7) does not promise: it is the EFFECTIVE grade. Rather
     // than chip a possibly-wrong label, the frozen row OMITS `risk` entirely
     // (the console feed degrades cleanly to venue-led when risk is absent).
-    if (await this.frozen()) {
+    if (await this.frozen({ cached: true })) {
       // The block is the truth; the audit is best-effort. A `vendo_audit` that
       // is momentarily unavailable must never turn a freeze into an error (or,
       // worse, an un-block) — swallow the write failure and still return the
@@ -1315,6 +1343,15 @@ class GuardImplementation implements VendoGuard {
     // exactly as it was — the replay verdict is read first, the grant only
     // after it — and the replay's single-use CAS spend still happens once,
     // because `#approvedReplay` is still called once.
+    //
+    // Neither read is shared with the PREVIEW pass that precedes the real one,
+    // and the grant read is the reason: a grant is not a decision input the way
+    // a rule is — it IS the authority the call executes on, so reusing the
+    // preview's answer would leave a window in which a permission the person
+    // just took back still runs the tool. That is the same window the freeze
+    // re-read below `bind().execute` exists to close, and it gets the same
+    // answer: read it again. (The replay is unshared for its own reason — the
+    // single-use CAS spend belongs to the real pass.)
     const [replayable, matched] = await Promise.all([
       this.#approvedReplay(call, descriptor, ctx, commitRun),
       this.#matchingGrant(call, descriptor, ctx),
@@ -1820,8 +1857,12 @@ class GuardImplementation implements VendoGuard {
     descriptor: ToolDescriptor,
     ctx: RunContext,
   ): Promise<{ grant?: PermissionGrant; invalidated: PermissionGrant[] }> {
+    // `tool` is an indexed column on the routed grants door — (subject, tool) —
+    // so the predicate rides the query instead of paging every grant the
+    // subject ever held back to filter it here. The rest of the tests below
+    // read fields no door indexes, which is why they stay in JavaScript.
     const records = await listAll(this.#engine, GRANTS_COLLECTION, {
-      refs: { subject: ctx.principal.subject },
+      refs: { subject: ctx.principal.subject, tool: call.tool },
     });
     const fingerprint = descriptorHash(descriptor);
     const at = Date.now();
@@ -1831,7 +1872,6 @@ class GuardImplementation implements VendoGuard {
       const grant = grantData(record);
       const expiresAt = grant.expiresAt === undefined ? undefined : Date.parse(grant.expiresAt);
       if (grant.subject !== ctx.principal.subject) continue;
-      if (grant.tool !== call.tool) continue;
       if (grant.revokedAt !== undefined) continue;
       if (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= at)) continue;
       if (!durationMatches(grant, ctx) || !presenceMatches(grant, ctx)) continue;

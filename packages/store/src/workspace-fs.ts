@@ -15,7 +15,12 @@ import {
   type WorkspaceFs,
   type WriteFileOptions,
 } from "@vendoai/core";
-import type { PreparedWrite, WorkspaceFileMeta, WorkspaceRows } from "./workspace-rows.js";
+import type {
+  PreparedWrite,
+  WorkspaceCommitEntry,
+  WorkspaceFileMeta,
+  WorkspaceRows,
+} from "./workspace-rows.js";
 
 /** Build contract §3.1 — the frozen layout. `/user` is the subject's, rw;
     `/orgs/<orgId>` is one mount per ASSERTED membership (§9.7), owned by the
@@ -522,26 +527,35 @@ export class WorkspaceStoreFs implements WorkspaceFs {
    * Only paths whose bytes actually changed are written (§3.5), so `changed` is
    * the honest O(files changed) count. `/user/scratch/**` never lands.
    */
-  async commit(opts?: { message?: string }): Promise<CommitResult> {
-    // Build contract §8/§9.3 — the box is born filtered, so `can()` runs at
-    // exactly two moments; this is the second. Live rows, per changed path,
-    // BEFORE anything is placed: a mid-session revoke must bite here even
-    // though the reads it already served stand.
-    if (this.mounts.canCommit !== undefined) {
-      for (const path of [...this.staged.keys(), ...this.removed]) {
-        if (!this.persists(path)) continue;
-        if (!(await this.mounts.canCommit(path))) {
-          // §9.4 — `forbidden` says "you can see this, but not change it", and
-          // the fork offer renders off exactly that. A caller who cannot even
-          // view the path gets what a path that isn't there gets, or the code
-          // itself becomes an existence oracle for every org app id.
-          if (this.mounts.canView !== undefined && !(await this.mounts.canView(path))) {
-            throw pathNotFound(path);
-          }
-          throw pathForbidden(path);
-        }
+  /**
+   * Build contract §8/§9.3 — the box is born filtered, so `can()` runs at
+   * exactly two moments; this is the second. Live rows, per changed path,
+   * BEFORE anything is placed: a mid-session revoke must bite here even though
+   * the reads it already served stand.
+   */
+  private async assertCommittable(): Promise<void> {
+    if (this.mounts.canCommit === undefined) return;
+    for (const path of [...this.staged.keys(), ...this.removed]) {
+      if (!this.persists(path)) continue;
+      if (await this.mounts.canCommit(path)) continue;
+      // §9.4 — `forbidden` says "you can see this, but not change it", and the
+      // fork offer renders off exactly that. A caller who cannot even view the
+      // path gets what a path that isn't there gets, or the code itself becomes
+      // an existence oracle for every org app id.
+      if (this.mounts.canView !== undefined && !(await this.mounts.canView(path))) {
+        throw pathNotFound(path);
       }
+      throw pathForbidden(path);
     }
+  }
+
+  async commit(opts?: { message?: string }): Promise<CommitResult> {
+    // The harness commits after EVERY tool call (harnesses/runtime.ts), and
+    // almost none of them touched a file. Nothing staged and nothing removed is
+    // nothing to place, nothing to land and nothing to say — answer without
+    // touching the store at all.
+    if (this.staged.size === 0 && this.removed.size === 0) return { status: "ok", changed: [] };
+    await this.assertCommittable();
     const landing: PreparedWrite[] = [];
     for (const [path, staged] of this.staged) {
       if (!this.persists(path)) continue;
@@ -574,43 +588,67 @@ export class WorkspaceStoreFs implements WorkspaceFs {
       if (prepared !== "unchanged") landing.push(prepared);
     }
 
-    const changed: string[] = [];
-    const conflicts: string[] = [];
-    for (const path of [...this.removed].filter((candidate) => this.persists(candidate))) {
-      if (await this.rows.remove(this.ownerOf(path)!, path, opts?.message)) {
-        this.index.delete(path);
-        changed.push(path);
+    // One batched commit per OWNER: the store's commit verb addresses one
+    // drawer, and a mount's owner is a pure function of its path — so a turn
+    // that touched `/user` and `/orgs` sends two, which is also what keeps an
+    // org conflict from taking the same turn's `/user` edit down with it.
+    const byOwner = new Map<string, WorkspaceCommitEntry[]>();
+    const entriesFor = (owner: string): WorkspaceCommitEntry[] => {
+      let entries = byOwner.get(owner);
+      if (entries === undefined) {
+        entries = [];
+        byOwner.set(owner, entries);
       }
+      return entries;
+    };
+    for (const path of [...this.removed].filter((candidate) => this.persists(candidate))) {
+      entriesFor(this.ownerOf(path)!).push({ path, delete: true });
     }
-    this.removed.clear();
     for (const prepared of landing) {
       // Build contract §9.7 — commit policy is PER MOUNT: `/user` keeps the
       // last-write-wins re-aim loop, `/orgs` is strict compare-and-swap, so a
       // lost swap comes back as `conflict` for the harness to re-read and
       // re-apply rather than silently overwriting a colleague.
-      const owner = this.ownerOf(prepared.path)!;
-      const strict = !under(prepared.path, USER_MOUNT);
-      const written = await this.rows.land(owner, prepared, opts?.message, {
-        strict,
+      entriesFor(this.ownerOf(prepared.path)!).push({
+        path: prepared.path,
+        write: prepared,
+        strict: !under(prepared.path, USER_MOUNT),
         // The revision this TURN opened with (§3.5's checkout base), not the
         // head at commit time — the whole point of CAS is to notice the edit
         // that landed in between.
         expectedRevision: this.index.get(prepared.path)?.revision ?? null,
       });
-      if (written.conflict === true) {
-        conflicts.push(prepared.path);
-        continue;
+    }
+
+    const changed: string[] = [];
+    const conflicts: string[] = [];
+    const placed = new Map(landing.map((prepared) => [prepared.path, prepared.bytes]));
+    for (const [owner, entries] of byOwner) {
+      const result = await this.rows.commitAll(owner, entries, opts?.message);
+      conflicts.push(...result.conflicts);
+      // A refused commit removed nothing, so the deletions stay STAGED: the
+      // caller re-reads and re-applies the same turn, and a delete it never
+      // landed must be part of what it re-applies.
+      if (result.conflicts.length === 0) {
+        for (const entry of entries) if ("delete" in entry) this.removed.delete(entry.path);
       }
-      this.index.set(prepared.path, {
-        path: prepared.path,
-        owner,
-        bytes: prepared.bytes,
-        revision: written.revision,
-        updatedAt: written.updatedAt,
-      });
-      // A concurrent commit may have already stored these exact bytes, in which
-      // case this commit wrote nothing and must not claim the file changed.
-      if (written.landed) changed.push(prepared.path);
+      for (const path of result.removed) {
+        this.index.delete(path);
+        changed.push(path);
+      }
+      for (const written of result.landed) {
+        this.index.set(written.path, {
+          path: written.path,
+          owner,
+          bytes: placed.get(written.path)!,
+          revision: written.revision,
+          updatedAt: written.updatedAt,
+        });
+        // A concurrent commit may have already stored these exact bytes, in
+        // which case this commit wrote nothing and must not claim the file
+        // changed.
+        if (written.changed) changed.push(written.path);
+      }
     }
     if (conflicts.length > 0) return { status: "conflict", paths: conflicts.sort() };
     // Committed files now read through the store like everything else.
