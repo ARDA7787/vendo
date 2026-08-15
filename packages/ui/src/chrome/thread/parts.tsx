@@ -1,4 +1,4 @@
-import { riskLabelSchema, type AppId, type RiskLabel, type UIPayload, type VendoAutomationPart, type VendoBuildFailedPart, type VendoConnectPart, type VendoGrantSetPart, type VendoStepLimitPart, type VendoTurnErrorPart, type VendoViewPart } from "@vendoai/core";
+import { riskLabelSchema, VENDO_MAKE_TOOL, type AppId, type RiskLabel, type UIPayload, type VendoAutomationPart, type VendoBuildFailedPart, type VendoConnectPart, type VendoGrantSetPart, type VendoStepLimitPart, type VendoTurnErrorPart, type VendoViewPart } from "@vendoai/core";
 import { isToolUIPart, type DynamicToolUIPart, type ToolUIPart, type UIMessage } from "ai";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useVendoProvider } from "../../context.js";
@@ -149,6 +149,29 @@ function ThreadErrorBlock({ marker, headline, detail }: {
   );
 }
 
+/** The app card BEFORE its first view bytes: the same frame, the same
+    "Building your view…" bar and sweeping hairline the streaming card wears,
+    over one resting silhouette of the view to come. Build calm (spec §8) holds
+    here too — the hairline is the only moving thing. */
+function ThreadFormingCard() {
+  return (
+    <div className="fl-uihost fl-appcard" data-vendo-app-forming="">
+      <div className="fl-appcard-bar" data-state="building">
+        <span className="fl-appcard-dot" aria-hidden="true" />
+        <span className="fl-appcard-name fl-boot-building" role="status">Building your view…</span>
+        <span className="fl-boot-hairline" aria-hidden="true" />
+      </div>
+      <div className="fl-appcard-body">
+        {/* The renderer's own placeholder skin (`Skeleton`), written out: this
+            directory ships as an eject template and may only import the public
+            surface, which a loading placeholder is deliberately not on. */}
+        <span className="fl-glass fl-glass-shimmer" data-skeleton="" aria-hidden="true"
+          style={{ display: "block", height: 72 }} />
+      </div>
+    </div>
+  );
+}
+
 /** A native tool call at its transcript position: the connector's ConnectCard
     when the call ended `connect-required`, otherwise its build beat.
 
@@ -160,12 +183,19 @@ function ThreadErrorBlock({ marker, headline, detail }: {
         stays visible either way (spec §15: the ✕ stays in the record);
       · D1 — an app-building call renders no beat, from the moment the build
         starts, because its card IS that step (the summary still counts it). */
-function ToolCallPart({ part, risks, count, connectLive, hideBeats, sendMessage, siblingParts }: {
+function ToolCallPart({ part, risks, count, connectLive, hideBeats, turnLive, restored, sendMessage, siblingParts }: {
   part: ToolUIPart | DynamicToolUIPart;
   risks: Map<string, RiskLabel>;
   count: number;
   connectLive: boolean;
   hideBeats: boolean;
+  /** Spec §8 — a turn that is over is never still forming: an abandoned build
+      must not leave the empty card sweeping forever. This is the turn RUNNING,
+      not the turn pending: `stop()` never reconciles the aborted call, so a
+      stopped build sits in `input-available` — and reads as pending — for good. */
+  turnLive: boolean;
+  /** Whether this turn was already in the transcript when the surface arrived. */
+  restored: boolean;
   sendMessage?: ((message: { text: string }) => unknown) | undefined;
   siblingParts?: UIMessage["parts"] | undefined;
 }) {
@@ -182,7 +212,24 @@ function ToolCallPart({ part, risks, count, connectLive, hideBeats, sendMessage,
   }
   // The narration check runs FIRST: a failed build is content (its ✕ stays in
   // the record), but its record is the build-failed block, not a second ✕.
-  if (narratedByAppCard(part, siblingParts ?? [])) return null;
+  if (narratedByAppCard(part, siblingParts ?? [])) {
+    // …except in the build's FIRST seconds. `vendo_make` is on the wire and its
+    // beat is suppressed as "narrated by the app card" — but that card only
+    // mounts on the first `data-vendo-view` part, so the window between the ask
+    // and the first view bytes rendered nothing at all. The card arrives EMPTY
+    // instead, in the place the view will fill, and ThreadAppCard replaces it
+    // the moment the first partial lands.
+    // …and only while the build can still be running. The turn we WATCHED end
+    // is the only one we can rule out: the parts cannot tell an abandoned build
+    // from one still running on the server, and a reader who reloads mid-build
+    // restores exactly this shape. `restored` is already the chrome's word for
+    // "we did not watch this" (see the turn clock in message.tsx).
+    const forming = (turnLive || restored)
+      && toolName(part) === VENDO_MAKE_TOOL
+      && (part.state === "input-streaming" || part.state === "input-available")
+      && !(siblingParts ?? []).some(sibling => sibling.type === "data-vendo-view");
+    return forming ? <ThreadFormingCard /> : null;
+  }
   if (hideBeats && !toolCallIsContent(part)) return null;
   return <BuildBeat part={part} risk={risks.get(part.toolCallId) ?? "read"} count={count} />;
 }
@@ -190,7 +237,7 @@ function ToolCallPart({ part, risks, count, connectLive, hideBeats, sendMessage,
 /** One stream part in a turn: text (user verbatim / assistant markdown with the
     ENG-217 caret choreography), assistant files, tool build beats, and the
     jailed generated-view app card (06-apps §§8–9). */
-export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, hideBeats = false, turnPending = true, sendMessage, siblingParts, respond }: {
+export function ThreadPart({ part, partKey, role, restored, count = 1, risks, connectLive = false, hideBeats = false, turnPending = true, turnLive = turnPending, sendMessage, siblingParts, respond }: {
   part: UIMessage["parts"][number];
   partKey: string;
   role: UIMessage["role"];
@@ -205,6 +252,11 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
       will ever flip it to ready. Defaults to pending so a part rendered on its
       own (or by a host composing its own list) keeps today's behavior. */
   turnPending?: boolean;
+  /** Spec §8 — whether this turn is RUNNING, which is not the same question:
+      `stop()` leaves the aborted call in `input-available`, so a stopped build
+      reads as pending forever and its empty card would sweep forever with it.
+      Defaults to `turnPending` for a part rendered on its own. */
+  turnLive?: boolean;
   /** Whether a connect-required outcome in this turn is still the actionable
       ask (this is the LATEST assistant turn). Stale turns render the quiet
       Connected record instead — see ConnectCard's `live`. */
@@ -244,6 +296,8 @@ export function ThreadPart({ part, partKey, role, restored, count = 1, risks, co
         count={count}
         connectLive={connectLive}
         hideBeats={hideBeats}
+        turnLive={turnLive}
+        restored={restored}
         sendMessage={sendMessage}
         siblingParts={siblingParts}
       />
@@ -826,8 +880,16 @@ export function ThreadApprovals({ approvals, risks, guardApprovals, cardRefs, re
               allowRemember={guardApprovalId !== undefined}
               onDecide={async decision => {
                 // The approved card lifts into the top-right notification
-                // (ENG-205 morph) as the run resumes underneath it.
-                if (decision.approve) {
+                // (ENG-205 morph) as the run resumes underneath it — for an
+                // AUTOMATION's ask only. A person answering their own live
+                // conversation is already looking at the answer, so flying the
+                // card to a corner notification narrates a handoff that never
+                // happened; an automation's ask is the one that settles
+                // somewhere the person isn't, so it earns the flight.
+                // The in-thread wire carries no ctx, so every ask built here is
+                // venue `chat` (approval-wire.ts) and nothing in the thread
+                // morphs today — this is the rule, not a switch.
+                if (decision.approve && approval.ctx.venue === "automation") {
                   const card = cardRefs.current.get(part.approval.id)?.querySelector<HTMLElement>(".fl-approval");
                   if (card) {
                     // L38 — the toast's title must be the CARD's title: without
