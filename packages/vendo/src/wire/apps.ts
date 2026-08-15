@@ -63,10 +63,12 @@ function decodeSlot(slot: string): string {
   }
 }
 
-/** Existing-agents polish — the embed's build-window poll. The app record
-    lands only at build completion, so until then open() (and the meta
-    route alike) answers not-found, and every 1.2s poll logged a browser
-    console 404. Under the additive ?pending=1 flag, ONLY that expected
+/** Existing-agents polish — the embed's build-window poll. A screen's record
+    lands at its FIRST painting save and carries `building` until the assembler
+    returns, so open() (and the meta route alike) answers not-found for the whole
+    build either way — no row at first, then a row still being written — and
+    every 1.2s poll logged a browser console 404. Under the additive
+    ?pending=1 flag, ONLY that expected
     pre-servable miss becomes a quiet 200 {kind:"pending"}; unflagged
     callers keep the contracted 404, and every other failure keeps its
     envelope and status either way. A record that DOES exist — just not
@@ -153,10 +155,10 @@ export const appRoutes: RouteEntry[] = [
     }
     return undefined;
   }),
-  // 06-apps §8 — the ✦ gesture (2026-07-21): the deterministic seed the user's
-  // Remix gesture invokes. The engine mints an ordinary app whose seeded seat
-  // holds the captured baseline — no model call, and the model never decides to
-  // seed. An optional instruction then rides the ordinary edit path on it.
+  // 06-apps §8 — the ✦ gesture: the remix the user's Remix gesture invokes.
+  // There are no bare forks — the gesture collects the instruction first, and
+  // the runtime mints an app carrying the remix's provenance and then runs that
+  // instruction through the ordinary edit door, as ONE operation.
   // ORDER IS LOAD-BEARING: this entry (and /apps/import below) must stay
   // ahead of the "/apps/:appId/*" catch-all, whose rest pattern would
   // otherwise capture appId="seed".
@@ -165,8 +167,8 @@ export const appRoutes: RouteEntry[] = [
     const body = await requestJson(request);
     return json(await deps.apps.seed.from({
       component: string(body["component"], "component"),
+      instruction: string(body["instruction"], "instruction"),
       ...(body["slot"] === undefined ? {} : { slot: string(body["slot"], "slot") }),
-      ...(body["instruction"] === undefined ? {} : { instruction: string(body["instruction"], "instruction") }),
     }, ctx));
   }),
   // Remix final shape (2026-08-02) — the review seam for the host's console:

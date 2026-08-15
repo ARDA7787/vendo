@@ -25,10 +25,10 @@ import {
 import {
   checkComponentScreen,
   reviewComponentScreenInput,
-  screenCatalog,
   screenName,
   type ComponentScreenCheck,
 } from "../../src/server/checking/component-screen.js";
+import { screenCatalog } from "../../src/server/checking/screen-typings.js";
 import type { HostToolInfo } from "../../src/server/checking/deps.js";
 
 const pendingSchema: JsonSchema = {
@@ -539,7 +539,7 @@ export default function S() {
     // fixed yet, so only the scan's finding is reported.
     const { codes, text } = await refusal(`import { z } from "zod";
 import { Text } from "@vendo/screen";
-export default function S() { return <div><Text text={String(z)} /></div>; }
+export default function S() { return <img><Text text={String(z)} /></img>; }
 `);
 
     expect(codes).toEqual(["import"]);
@@ -548,15 +548,15 @@ export default function S() { return <div><Text text={String(z)} /></div>; }
 });
 
 describe("stage 3 — the real compiler, with no DOM", () => {
-  it("refuses an HTML element, and says what to lay out with instead", async () => {
+  it("refuses an HTML element that is not a display brick, and names the ones that are", async () => {
     const { codes, text } = await refusal(`import { Text } from "@vendo/screen";
-export default function S() { return <div><Text text="x" /></div>; }
+export default function S() { return <img><Text text="x" /></img>; }
 `);
 
     expect(codes).toEqual(["types"]);
-    expect(text).toContain("line 2: writes the HTML element <div>");
-    expect(text).toContain("It renders only the components it imports from \"@vendo/screen\": Stack, Row, Card, Text, Money, DateTime, Button, Callout.");
-    expect(text).toContain("Lay out with <Stack>/<Row>/<Grid> and write text with <Text>.");
+    expect(text).toContain("line 2: writes the HTML element <img>");
+    expect(text).toContain("The HTML a screen has is display-only: div, span, section");
+    expect(text).toContain("Anything with behavior comes from \"@vendo/screen\": Stack, Row, Card, Text, Money, DateTime, Button, Callout.");
     // The closing tag is the same break; a repair list that says everything
     // twice reads as two problems.
     expect(text.match(/writes the HTML element/gu)).toHaveLength(1);
@@ -841,12 +841,12 @@ export default function Everything() {
 }
 `);
 
-    // The screen ran fine — it is the TREE that is not one a surface can hold, and
-    // the check measures it with the format's own validator rather than a second
-    // implementation.
-    expect(codes).toEqual(["tree"]);
-    expect(text).toContain("the rendered screen is not a valid tree");
-    expect(text).toContain("too many nodes (max 5000)");
+    // The cap is the format's own number (core's TREE_MAX_NODES), counted INSIDE
+    // the VM before the JSON crosses — so the refusal now arrives from the run,
+    // one stage before the tree check that used to catch it.
+    expect(codes).toEqual(["run"]);
+    expect(text).toContain("the screen would not paint");
+    expect(text).toContain("more than 5000 nodes");
   });
 
   /** Wide enough to write a chart, a table and a slot. Its own list because the

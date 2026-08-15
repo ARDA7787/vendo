@@ -9,6 +9,7 @@ import {
   type UIPayload,
 } from "@vendoai/core";
 import {
+  buildInFlight,
   componentSources,
   validateTree,
   type AppDocument,
@@ -308,6 +309,16 @@ export const createAppOpener = (
    */
   venueState?: (app: AppDocument, ctx: RunContext) => Promise<Record<string, unknown> | undefined>,
 ): ((app: AppDocument, ctx: RunContext) => Promise<OpenSurface>) => async (app, ctx) => {
+  // A build that is still WRITING this app has nothing terminal to serve. Its row
+  // lands at the first painting save, tens of seconds before the reviewer pass and
+  // its repair round finish, and mounting on the row alone put people in front of
+  // a draft — a wrong NUMBER included — that the build then corrected where nobody
+  // was looking. Not-found is the same answer the app gave a moment earlier with
+  // no row at all, so the wire's build window turns it into the `{kind:"pending"}`
+  // every embed already waits on.
+  if (buildInFlight(app.building)) {
+    throw new VendoError("not-found", `app ${app.id} is still being built`, { appId: app.id });
+  }
   // A terminally failed build never becomes servable: resolve the poll now
   // with the persisted reason (approvals resolve to denied/expired the same
   // way) instead of leaving the embed to spin to its client deadline.
@@ -373,6 +384,15 @@ export const createAppOpener = (
   }
 
   if (app.tree === undefined) {
+    // A remix's row lands the instant ✦ fires; its screen is what the first edit
+    // GENERATES, tens of seconds later. "Not ready yet" is not "broken", so it
+    // answers the same not-found every app gives before its build lands — which
+    // the wire's build window (openWithPendingWindow, wire/apps.ts) turns into
+    // {kind:"pending"} for a caller who can see the app. A validation failure
+    // here is what left the ✦ pill on "Remixing…" until a page reload.
+    if (app.seed !== undefined) {
+      throw new VendoError("not-found", `app ${app.id} has no screen yet`);
+    }
     throw new VendoError("validation", "tree app has no ui payload");
   }
   // v2 spec §§1–2 — the canonical vendo-genui/v2 tree: validate, resolve

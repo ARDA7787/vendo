@@ -320,6 +320,12 @@ export async function createWireServer(options: WireServerOptions = {}) {
     /** PR3 — apps served as an `{kind:"http"}` surface (app id → url): the
      *  second surface kind a slot must mount. */
     httpApps: new Map<string, string>(),
+    /** ⚠️ TEST EDIT (infrastructure) — how many open polls a SEEDED app answers
+     *  before the screen its first edit generates lands (app id → polls left).
+     *  Mirrors the real door: a remix's row exists tens of seconds before its
+     *  screen, and "not ready yet" is the build window's pending, never a
+     *  failure (persistence/open.ts, wire/apps.ts). */
+    pendingScreens: new Map<string, number>(),
     approvals: [approval()],
     // Existing-agents — decided approvals move here so GET /approvals/:id can
     // answer the embed's poll; tests may also seed terminal states directly.
@@ -1071,7 +1077,7 @@ export async function createWireServer(options: WireServerOptions = {}) {
       // (W0) so a raced double-tap can never mint two. It answers with the app
       // document itself; there is no fork result envelope.
       if (method === "POST" && url.pathname === "/apps/seed") {
-        const { component, slot } = parsedBody as { component: string; slot?: string; instruction?: string };
+        const { component, slot, instruction } = parsedBody as { component: string; slot?: string; instruction: string };
         const componentName = seedComponentName(component);
         const deduped = state.apps.find(item => item.seed?.component === component);
         if (deduped) return json(response, deduped);
@@ -1093,7 +1099,7 @@ export async function createWireServer(options: WireServerOptions = {}) {
           ],
           components: { [componentName]: `export default function Fork() { return <p>${component} fork</p>; }` },
         } as AppDocument["tree"];
-        minted.seed = { component, baseline: "sha256:fixture" };
+        minted.seed = { component, baseline: "sha256:fixture", instruction };
         state.apps.push(minted);
         return json(response, minted);
       }
@@ -1219,20 +1225,22 @@ export async function createWireServer(options: WireServerOptions = {}) {
           && --state.buildingOpensRemaining <= 0) {
           state.apps.push(app(id, "Trip planner"));
         }
+        // #492 — a terminally failed build resolves open() with its reason
+        // whether or not the poll carried the pending flag (the failure record
+        // exists), so the embed shows the reason promptly. It also wins over the
+        // app row: a ✦ remix's seed row lands FIRST and its build fails after,
+        // so the app is listable and its screen is still a dead end.
+        if (action === "open" && method === "GET" && state.failedApps.has(id)) {
+          const failure = state.failedApps.get(id)!;
+          return json(response, {
+            kind: "failed",
+            reason: failure.reason,
+            ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
+            ...(failure.prompt === undefined ? {} : { prompt: failure.prompt }),
+          });
+        }
         const index = state.apps.findIndex(item => item.id === id);
         if (index < 0) {
-          // #492 — a terminally failed build resolves open() with its reason
-          // whether or not the poll carried the pending flag (the failure
-          // record exists), so the embed shows the reason promptly.
-          if (action === "open" && method === "GET" && state.failedApps.has(id)) {
-            const failure = state.failedApps.get(id)!;
-            return json(response, {
-              kind: "failed",
-              reason: failure.reason,
-              ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
-              ...(failure.prompt === undefined ? {} : { prompt: failure.prompt }),
-            });
-          }
           // The real wire's flag-gated build-window answer: a flagged open
           // poll gets a quiet 200 pending envelope instead of the 404.
           if (action === "open" && method === "GET" && url.searchParams.get("pending") === "1") {
@@ -1241,6 +1249,13 @@ export async function createWireServer(options: WireServerOptions = {}) {
           return wireError(response, "not-found", "App not found", 404);
         }
         if (action === "open" && method === "GET") {
+          const screenPolls = state.pendingScreens.get(id) ?? 0;
+          if (screenPolls > 0) {
+            state.pendingScreens.set(id, screenPolls - 1);
+            return url.searchParams.get("pending") === "1"
+              ? json(response, { kind: "pending" })
+              : wireError(response, "not-found", `app ${id} has no screen yet`, 404);
+          }
           // A served (rung-4) app answers with its machine url; everything else
           // is a tree. Both must mount in a slot.
           const served = state.httpApps.get(id);

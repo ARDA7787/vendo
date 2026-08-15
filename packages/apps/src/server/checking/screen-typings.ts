@@ -12,7 +12,7 @@
  * and aggregates over field names the rows really have.
  *
  * Everything here is DERIVED. No hand-written component list, no hand-written
- * prop list: the component vocabulary comes from `WIRE_COMPONENT_NAMES` + the
+ * prop list: the component vocabulary comes from `KIT_SCREEN_COMPONENT_NAMES` + the
  * catalog. There is no CALL vocabulary to declare any more — a `{...}` gap is a
  * JavaScript expression, so `invoices.data.reduce((t, r) => t + r.amount, 0)`
  * type-checks against the query's own declared result type with nothing
@@ -27,7 +27,9 @@ import {
   type JsonSchema,
 } from "@vendoai/core";
 import {
-  KIT_WIRE_COMPONENT_NAMES,
+  DISPLAY_TAG_NAMES,
+  KIT_COMPONENT_NAMES,
+  KIT_SCREEN_COMPONENT_NAMES,
   kitSpec,
   type NormalizedCatalog,
   type PropSpec,
@@ -284,7 +286,7 @@ export function screenTypings(input: ScreenTypingsInput): string {
   // The Kit first: a built-in shadows a host component of the same name,
   // because the renderer resolves a built-in name before it looks at the
   // catalog (facts.ts `catalogIssues`). V4: the Kit specs are the only source.
-  for (const name of KIT_WIRE_COMPONENT_NAMES) {
+  for (const name of KIT_SCREEN_COMPONENT_NAMES) {
     const spec = kitSpec(name);
     if (spec !== undefined) push(name, propsTextFrom(spec.props));
   }
@@ -356,6 +358,38 @@ export type ScreenCatalogEntry = string | { readonly name: string; readonly prop
 export const screenCatalogNames = (catalog: readonly ScreenCatalogEntry[]): string[] =>
   catalog.map((entry) => (typeof entry === "string" ? entry : entry.name));
 
+/**
+ * What a screen may import from `@vendo/screen`: the WHOLE Kit plus this host's
+ * own catalog.
+ *
+ * The whole Kit, not the wire-safe subset — a screen writes JSX, so the
+ * element-valued slots the wire dialect could never express (`Accordion`) are
+ * ordinary here.
+ *
+ * Composed once, and to match the RENDERER exactly (`packages/ui` renderer.tsx
+ * boots the VM with `[...KIT_COMPONENT_NAMES, ...host components]`): a name this
+ * check admits and the renderer does not is a screen that passes every gate and
+ * paints nothing, and a name the renderer has and the check does not is a type
+ * error over working code.
+ *
+ * A host entry brings its derived props schema along, because the type check has
+ * no other way to learn a host component's props and a name alone degrades every
+ * one of them to `any` — which makes a guessed prop on a host component compile,
+ * the one thing the skill promises it will not. The Kit half stays bare NAMES:
+ * those are typed from their own zod specs, the stricter source.
+ */
+export const screenCatalog = (
+  catalog: readonly { name: string; propsJsonSchema?: JsonSchema }[],
+): ScreenCatalogEntry[] => [
+  ...KIT_COMPONENT_NAMES,
+  ...catalog.map(({ name, propsJsonSchema }) =>
+    (propsJsonSchema === undefined ? name : { name, propsJsonSchema })),
+];
+
+/** `Promise`, and no DOM: a handler awaits a tool call, and `document`/`fetch`
+ *  must stay undeclared so reaching for them is an error. */
+export const COMPONENT_SCREEN_LIB = ["lib.es2020.d.ts"];
+
 export interface ComponentScreenTypingsInput {
   /** The components this screen may import. A Kit name is typed from its own zod
    *  spec; anything else is a host component, typed from the one props schema it
@@ -392,15 +426,19 @@ const HANDLER_TYPE = "(event?: { target: { value?: string; checked?: boolean } }
  *  one cannot be imported by a screen either. */
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
 
-/** Everything the frame needs and nothing more. `IntrinsicElements` is EMPTY on
- *  purpose — that is what makes `<div>` an error — and `IntrinsicAttributes`
- *  carries `key`, because a list rendered with `.map()` writes one and it is
- *  React's, not the component's. */
+/** Everything the frame needs and nothing more. `IntrinsicElements` lists the
+ *  display bricks and NOTHING else — that is what keeps `<img>` and `<script>`
+ *  errors while `<div>` compiles — and each one takes only children and an
+ *  inline style, so `className`, `onClick` and `dangerouslySetInnerHTML` are
+ *  type errors on the tag itself. `IntrinsicAttributes` carries `key`, because a
+ *  list rendered with `.map()` writes one and it is React's, not the tag's. */
 const JSX_FRAME = `declare namespace JSX {
   interface Element {}
   interface ElementChildrenAttribute { children: {} }
   interface IntrinsicAttributes { key?: string | number }
-  interface IntrinsicElements {}
+  interface IntrinsicElements {
+${DISPLAY_TAG_NAMES.map((tag) => `    ${tag}: { children?: any; style?: Record<string, string | number> };`).join("\n")}
+  }
 }`;
 
 /** React as a screen may use it: the hooks, the two frame values, and the
@@ -414,6 +452,8 @@ const REACT_MODULE = `declare module "react" {
   export function useRef<T>(initial: T): { current: T };
   export function createElement(...args: any[]): JSX.Element;
   export const Fragment: (props: { children?: any }) => JSX.Element;
+  /** So a screen can name the type of a style it hoists out of the JSX. */
+  export interface CSSProperties { [property: string]: string | number }
   const React: {
     useState: typeof useState; useMemo: typeof useMemo; useCallback: typeof useCallback;
     useEffect: typeof useEffect; useRef: typeof useRef;

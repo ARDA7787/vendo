@@ -190,10 +190,15 @@ export const appMemorySchema = z.object({
  * `slot` is the placement the ✦ gesture came from (a convenience for the chrome,
  * never the location of record — that is a placement ROW), and `review` carries
  * the captured baseline's review kind.
+ *
+ * `instruction` is what the person asked for when they made the remix, VERBATIM.
+ * There are no bare forks — the ✦ gesture collects it before it fires — and it is
+ * what a re-seed replays against the host's new baseline.
  */
 export interface AppSeed {
   component: string;
   baseline: string;
+  instruction: string;
   slot?: string;
   review?: boolean;
 }
@@ -202,6 +207,7 @@ export interface AppSeed {
 export const appSeedSchema = z.object({
   component: z.string(),
   baseline: z.string(),
+  instruction: z.string(),
   slot: z.string().optional(),
   review: z.boolean().optional(),
 }).passthrough() satisfies z.ZodType<AppSeed>;
@@ -273,9 +279,8 @@ export interface AppDocument {
   storage?: Record<string, StorageDecl>;
   /**
    * Contract §3.2 — the app's own code, at rest. Keys are POSIX-relative paths
-   * inside the app directory ("src/App.tsx", "vendo.json"). The wire surface
-   * (`app.vendo`) is NOT here: it stays {@link AppDocument.tree}, which is what
-   * the render seam paints from.
+   * inside the app directory ("src/App.tsx", "vendo.json"), the app's own
+   * screen (`app.tsx`) included.
    *
    * With this present, `machine.snapshotRef` is a CACHE: an app can always be
    * rebuilt from here onto a fresh box, and nothing may read a snapshot to
@@ -314,6 +319,16 @@ export interface AppDocument {
    */
   buildFailed?: AppBuildFailure;
   /**
+   * A build still WRITING this app — the time its first painting save landed.
+   * `buildFailed`'s live half: a screen saves as it goes, so its row exists
+   * tens of seconds before the mandatory reviewer pass and its repair round
+   * finish, and mounting on the row alone showed people a draft the build was
+   * about to correct. `open()` answers not-found until it clears, which the
+   * wire's build window already turns into the `{kind:"pending"}` every embed
+   * waits on. Server-written; cleared when the assembler returns.
+   */
+  building?: IsoDateTime;
+  /**
    * What this app remembers about itself. Server-written — stripped from a
    * generated document before persist and pinned from the stored row on every
    * edit, so only the memory door ever changes it.
@@ -348,6 +363,7 @@ const appDocumentShapeSchema = z.object({
   seed: appSeedSchema.optional(),
   forkedFrom: appIdSchema.optional(),
   buildFailed: appBuildFailureSchema.optional(),
+  building: isoDateTimeSchema.optional(),
   memory: appMemorySchema.optional(),
 }).passthrough() satisfies z.ZodType<AppDocument>;
 

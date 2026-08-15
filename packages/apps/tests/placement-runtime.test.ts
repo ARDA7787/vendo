@@ -15,7 +15,7 @@ import {
   placementStore,
 } from "../src/server/persistence/placements.js";
 import { seedGrantRows, storeAccessFixture } from "./app-access-fixture.js";
-import { authoringAssembler, scriptedAssembler } from "../src/server/testing/authoring-assembler.js";
+import { authoringAssembler, scriptedAssembler, scriptedScreenAssembler } from "../src/server/testing/screen-assembler.js";
 import { guardFixture } from "../src/server/testing/guard-fixture.js";
 import { memoryStore } from "../src/server/testing/memory-store.js";
 import { basicLanguageModel, scriptedLanguageModel } from "../src/server/testing/scripted-model.js";
@@ -460,7 +460,16 @@ describe("two writers racing for one slot", () => {
 });
 
 describe("vendo_make's `slot` on a run with nobody there", () => {
-  const generated = '<App name="Nightly digest"><Text text="Ready"/><Disclaimer reason="Fixture app."/></App>';
+  const generated = `import { Stack, Text } from "@vendo/screen";
+
+export default function NightlyDigest() {
+  return (
+    <Stack gap={12}>
+      <Text text="Ready" variant="heading" />
+    </Stack>
+  );
+}
+`;
 
   const away: RunContext = {
     principal: ctx.principal,
@@ -513,7 +522,16 @@ const until = async <T>(read: () => Promise<T>, ok: (value: T) => boolean): Prom
   }
 };
 
-const GENERATED = '<App name="Spending"><Text text="Spending"/><Disclaimer reason="Fixture app."/></App>';
+const GENERATED = `import { Stack, Text } from "@vendo/screen";
+
+export default function Spending() {
+  return (
+    <Stack gap={12}>
+      <Text text="Spending" variant="heading" />
+    </Stack>
+  );
+}
+`;
 
 /** The one engine, held until the test releases it — which is what makes "the
  *  slot shows the build forming" observable without a sleep. It is the ASSEMBLER
@@ -563,11 +581,18 @@ describe("a slot-targeted create claims its slot at mint (B1)", () => {
 describe("the empty-slot Remix gesture places its mint", () => {
   it("writes a placement row instead of a document placement", async () => {
     const store = memoryStore();
-    const runtime = createApps({
+    let runtime: AppsRuntime;
+    // The gesture's first edit has to LAND: a remix whose build never happened
+    // carries the same terminal marker any other failed build does, and the
+    // slot reads it as "failed" rather than "ready".
+    runtime = createApps({
       store,
       guard: guardFixture(),
       tools,
       catalog: [],
+      model: basicLanguageModel(),
+      screen: scriptedScreenAssembler(() => runtime, () =>
+        "export default function Screen() {\n  return <strong>$1.2M</strong>;\n}\n"),
       seedBaselines: [{
         slot: "net-worth-card",
         source: "export default function NetWorthCard() { return <strong>$1.2M</strong>; }",
@@ -577,7 +602,10 @@ describe("the empty-slot Remix gesture places its mint", () => {
       }],
     });
 
-    const forked = await runtime.seed.from({ component: "net-worth-card", slot: "net-worth-card" }, ctx);
+    const forked = await runtime.seed.from(
+      { component: "net-worth-card", slot: "net-worth-card", instruction: "show it as a chart" },
+      ctx,
+    );
     expect(await runtime.placements({}, ctx)).toEqual([
       { slot: "net-worth-card", app: forked.id, title: forked.name, status: "ready" },
     ]);

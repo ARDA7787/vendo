@@ -13,11 +13,11 @@ import { openVendoConversation } from "./overlay-registry.js";
 
 /**
  * The remixable-surface affordance (2026-08-02 final shape): the host marking
- * one of its own components as forkable. Remix always means fork — the ✦
- * gesture executes the deterministic fork through the wire (the engine copies
- * the captured baseline; no model call, and the model never decides to fork),
- * and the user's fork mounts JAILED, IN PLACE, replacing the wrapped child at
- * this boundary for that user only.
+ * one of its own components as remixable. There are no bare forks — the ✦
+ * gesture COLLECTS AN INSTRUCTION first and sends it with the wire seed, so the
+ * fork and its first edit are one operation — and the resulting screen mounts
+ * IN PLACE, replacing the wrapped child at this boundary for that user only.
+ * Until that screen is ready the host's own live original stays on the page.
  *
  * At rest a 9px muted ✦ seed sits inside the wrapped element's top-right
  * corner — visible if you look for it, invisible while you are working.
@@ -97,6 +97,28 @@ function serializableProps(children: ReactNode): Record<string, Json> {
 
 const NO_APPS: AppDocument[] = [];
 
+/** Either ✦ popover dismisses like any menu: Escape, or pointer-down outside
+ *  it. Returns the ref that marks "inside". */
+function useMenuDismiss(open: boolean, onToggle: (open: boolean) => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !ref.current?.contains(event.target)) onToggle(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onToggle(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onToggle]);
+  return ref;
+}
+
 /** Remix discovery: the user's remix for this component is the app whose `seed`
  *  names it (provenance — the 2026-08-02 provenance/placement split). An
  *  in-place remix needs no placement: its location IS the wrapper it replaced,
@@ -121,9 +143,15 @@ function useRemixFork(slot: string | null) {
 /** The popover's status line, read straight off the open payload — the venue
  *  verdict is SERVER-authoritative (lane W1c owns the review lifecycle; this
  *  only renders what the payload reports). */
-function remixStatus(review: boolean, surface: OpenSurface | undefined): string {
-  if (!review) return "Sandboxed — only you see this";
+function remixStatus(review: boolean, surface: OpenSurface | undefined, failed: boolean): string {
+  // The server said terminally why, so say that rather than the generic
+  // sentence below — on either kind of remix.
   if (surface?.kind === "failed") return surface.reason;
+  // The bounded load gave up (use-app.ts) — the generation outran the build
+  // window, or the wire stopped answering. Same sentence either way: the fact,
+  // and the reassurance that the host's own component is still what is on screen.
+  if (failed) return "The remix didn’t load — nothing changed on the page.";
+  if (!review) return "Sandboxed — only you see this";
   if (surface?.kind !== "tree") return "Waiting for review";
   const venue = (surface.payload as { inClient?: InClientVenue }).inClient;
   if (venue?.granted === true) {
@@ -156,30 +184,13 @@ function RemixedFork({ appId, slot, review, liveProps, menuOpen, onMenuToggle, o
 }) {
   const { client, components } = useVendoProvider();
   const { surface, error, isLoading } = useApp(appId);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const menuRef = useMenuDismiss(menuOpen, onMenuToggle);
   const [reverting, setReverting] = useState(false);
   // A press inside the mounted fork that parks on the guard asks its question
   // over this surface (the VendoSlot seam). The modal hangs off the ✦ chrome
   // below rather than the fork's own boundary: it must outlive a fork that
   // unmounts (a revert) while a decision is still in flight.
   const approval = useApprovalModal();
-
-  // The popover dismisses like any menu: Escape, or pointer-down outside it.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Node) || !menuRef.current?.contains(event.target)) onMenuToggle(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onMenuToggle(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [menuOpen, onMenuToggle]);
 
   useEffect(() => {
     if (!isLoading && error !== undefined && developmentMode()) {
@@ -236,6 +247,20 @@ function RemixedFork({ appId, slot, review, liveProps, menuOpen, onMenuToggle, o
   const underReview = venue?.granted !== true
     && (review || (venue !== undefined && !venue.granted && venue.reason === "pending-review"));
 
+  // The seed's provenance row lands the instant the fork is minted; its screen
+  // arrives tens of seconds later (until then `open` answers the build window's
+  // pending, which `useApp` keeps asking through rather than failing). The
+  // pill reads that OPEN PAYLOAD — the same signal the mount below waits on —
+  // or it claims "Remixed" over the host's untouched original for the whole
+  // generation, which reads as broken.
+  const pending = surface === undefined && error === undefined;
+  // That wait is bounded, so the pill needs a third state in the slot's own
+  // failure voice ("This view didn't load"): claiming work forever is the same
+  // lie "Remixed" was, one step later. A terminal `{kind:"failed"}` surface is
+  // the same dead end arriving as an answer rather than as a timeout — it
+  // mounts no screen, so it must not read "Remixed" either.
+  const failed = surface?.kind === "failed" || (surface === undefined && error !== undefined);
+
   // Until the fork's surface arrives (or if it never does), the original child
   // is the honest content — the wrapper never trades working host markup for
   // a skeleton, and a crashing fork drops back to it (PinMount).
@@ -265,14 +290,15 @@ function RemixedFork({ appId, slot, review, liveProps, menuOpen, onMenuToggle, o
             aria-label={`Manage the ${slot} remix`}
             aria-haspopup="true"
             aria-expanded={menuOpen}
+            aria-busy={pending || undefined}
             onClick={() => onMenuToggle(!menuOpen)}
           >
             <span aria-hidden="true" className="fl-remix-pill-mark">✦</span>
-            Remixed
+            {failed ? "Didn’t load" : pending ? "Remixing…" : "Remixed"}
           </button>
           {menuOpen ? (
             <div className="fl-remix-menu" role="group" aria-label={`Remix of ${slot}`}>
-              <span className="fl-remix-status" role="status">{remixStatus(review, surface)}</span>
+              <span className="fl-remix-status" role="status">{remixStatus(review, surface, failed)}</span>
               <button
                 type="button"
                 onClick={() => {
@@ -320,10 +346,13 @@ export function Remixable({ review = false, children }: RemixableProps) {
   const slot = slotOf(children);
   const { appId, refresh } = useRemixFork(slot);
 
-  // The management popover's open state lives HERE so it can hold the bloom:
-  // closing the reveal on pointer-leave would rip the popover out from under
-  // the cursor.
+  // Both ✦ popovers — the instruction the gesture collects, and the management
+  // menu on an existing remix — share this open state, because it holds the
+  // bloom: closing the reveal on pointer-leave would rip the popover out from
+  // under the cursor. `RemixedFork` runs its own dismissal, so this one is armed
+  // only while the ask is the popover on screen.
   const [menuOpen, setMenuOpen] = useState(false);
+  const askRef = useMenuDismiss(menuOpen && appId === undefined, setMenuOpen);
 
   // The gesture latch. The ref (not state) is the double-fire guard — a second
   // synchronous tap can never mint a second call, and the server's
@@ -356,14 +385,16 @@ export function Remixable({ review = false, children }: RemixableProps) {
     grace.current = window.setTimeout(() => setRevealed(false), GRACE_MS);
   };
 
-  // The ✦ gesture is pure sugar over create-with-seed (2026-07-21, the unchanged
-  // trust foundation): it asks the wire for an ordinary app that starts from this
-  // component. No model call — and nothing here can fire a turn.
-  const fork = () => {
+  // The ✦ gesture asks the wire for an ordinary app that starts from this
+  // component AND for the person's first edit on it, as one call. Nothing here
+  // can fire a turn; the host's original stays on the page until that app has a
+  // screen to mount.
+  const fork = (instruction: string) => {
     if (forking.current || appId !== undefined) return;
     forking.current = true;
+    setMenuOpen(false);
     setLatched(true);
-    client.apps.seedFrom({ component: slot })
+    client.apps.seedFrom({ component: slot, instruction })
       .then(() => refresh())
       .catch((reason: unknown) => {
         setLatched(false);
@@ -408,17 +439,43 @@ export function Remixable({ review = false, children }: RemixableProps) {
           {children}
           <ChromeRoot className="fl-remixable-chrome">
             <span className="fl-remix-seed" aria-hidden="true">✦</span>
-            <button
-              type="button"
-              className="fl-remix-pill"
-              aria-label={`Remix ${slot} with Vendo`}
-              aria-busy={latched || undefined}
-              disabled={latched}
-              onClick={fork}
-            >
-              <span aria-hidden="true" className="fl-remix-pill-mark">✦</span>
-              {latched ? "Remixing…" : "Remix"}
-            </button>
+            <div className="fl-remix-menu-wrap" ref={askRef}>
+              <button
+                type="button"
+                className="fl-remix-pill"
+                aria-label={`Remix ${slot} with Vendo`}
+                aria-haspopup="true"
+                aria-expanded={menuOpen}
+                aria-busy={latched || undefined}
+                disabled={latched}
+                onClick={() => setMenuOpen(!menuOpen)}
+              >
+                <span aria-hidden="true" className="fl-remix-pill-mark">✦</span>
+                {latched ? "Remixing…" : "Remix"}
+              </button>
+              {menuOpen ? (
+                // The instruction IS the gesture: a remix is what the person
+                // asked for, so nothing is minted until they have said it.
+                <form
+                  className="fl-remix-menu"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const asked = new FormData(event.currentTarget).get("instruction");
+                    const instruction = typeof asked === "string" ? asked.trim() : "";
+                    if (instruction !== "") fork(instruction);
+                  }}
+                >
+                  <input
+                    className="fl-remix-ask"
+                    name="instruction"
+                    autoFocus
+                    aria-label={`What should your ${slot} do?`}
+                    placeholder="What should this do instead?"
+                  />
+                  <button type="submit">Remix it</button>
+                </form>
+              ) : null}
+            </div>
           </ChromeRoot>
         </>
       )}

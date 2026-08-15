@@ -11,13 +11,14 @@ import { describe, expect, it } from "vitest";
 import { createInClientApprovals } from "../src/server/remix/inclient.js";
 import { createAppHistory } from "../src/server/persistence/history.js";
 import { createApps, type AppsRuntime } from "../src/server/index.js";
-import { seedComponentName, type SeedBaseline } from "../src/contract/index.js";
+import { SCREEN_FILE, type SeedBaseline } from "../src/contract/index.js";
 import { createReviewLifecycle } from "../src/server/remix/review.js";
-import { scriptedAssembler } from "../src/server/testing/authoring-assembler.js";
+import { scriptedAssembler } from "../src/server/testing/screen-assembler.js";
 import { guardFixture } from "../src/server/testing/guard-fixture.js";
 import { memoryStore } from "../src/server/testing/memory-store.js";
 import { basicLanguageModel } from "../src/server/testing/scripted-model.js";
 import { seedAppRow } from "../src/server/testing/seed-app-row.js";
+import { inlineSourceFile } from "../src/server/persistence/app-source.js";
 import { appVersionHash } from "../src/server/remix/version-hash.js";
 
 const tools: ToolRegistry = {
@@ -64,15 +65,27 @@ const doc = (slot: string, overrides: Partial<AppDocument> = {}): AppDocument =>
     root: "root",
     nodes: [
       { id: "root", component: "Stack", source: "prewired", children: ["fork"] },
-      { id: "fork", component: seedComponentName(slot), source: "generated" },
+      { id: "fork", component: "Fork", source: "generated" },
     ],
   },
-  seed: { component: slot, baseline: `sha256:${slot === "transfer-panel" ? "transfer" : "hero"}-base` },
-  components: {
-    [seedComponentName(slot)]: "export default function Fork() { return <b>fork</b>; }",
+  // A remix's provenance names the host component; the code is the person's
+  // own, under whatever name their build gave it.
+  seed: {
+    component: slot,
+    baseline: `sha256:${slot === "transfer-panel" ? "transfer" : "hero"}-base`,
+    instruction: "make it mine",
   },
+  components: { Fork: "export default function Fork() { return <b>fork</b>; }" },
   ...overrides,
 });
+
+/** What every edit below saves — the app's name is its default export's. */
+const EDITED_SCREEN = `import { Stack, Text } from "@vendo/screen";
+
+export default function EditedName() {
+  return <Stack gap={12}><Text text="Edited" variant="heading" /></Stack>;
+}
+`;
 
 /** Round-2 hardening: reviewing takes the composition's explicit assertion —
  *  these tests assert it for exactly the host_reviewer subject. `setup({})`
@@ -87,17 +100,12 @@ const setup = (review: { reviewer?(ctx: RunContext): boolean } = { reviewer: (ct
     tools,
     catalog: [],
     seedBaselines: [reviewedBaseline, instantBaseline],
-    // A rename, as the ONE builder does it: the assembler opens the app's own
-    // document, writes it out again under a new name and saves the whole thing.
-    // The remixed island travels with it, because a rewrite that dropped the
-    // person's fork would be a different app, not a renamed one.
-    screen: scriptedAssembler(() => runtime, (_request, current) => {
-      const component = seedComponentName(current?.seed?.component ?? "hero-card");
-      const source = current?.components?.[component];
-      return `<App name="Edited name">${source === undefined
-        ? ""
-        : `<${component} /><Island name="${component}">${source}</Island>`}</App>`;
-    }),
+    // A rename, as the ONE builder does it: the assembler writes the app's
+    // `app.tsx` out again under a new name and saves the whole thing. The
+    // remixed island travels with it — `authoredScreen` carries the rest of the
+    // document through, because a rewrite that dropped the person's fork would
+    // be a different app, not a renamed one.
+    screen: scriptedAssembler(() => runtime, () => EDITED_SCREEN),
     model: basicLanguageModel(),
     review,
   });
@@ -391,7 +399,11 @@ describe("rejection", () => {
 describe("review queue", () => {
   it("lists pending review-kind versions with requester, slot, hash, submission time, resubmissions and the ship-diff", async () => {
     const { store, runtime } = setup();
-    const app = doc("transfer-panel");
+    // What the approver reads is the person's own screen against the host
+    // component it stands in for.
+    const app = doc("transfer-panel", {
+      source: { [SCREEN_FILE]: inlineSourceFile("export default function Fork() { return <b>fork</b>; }") },
+    });
     await seedAppRow(engineOverAdapter(store), app, owner.principal.subject);
 
     const queue = await runtime.review.queue(reviewer);

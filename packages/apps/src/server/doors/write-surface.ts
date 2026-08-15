@@ -1,6 +1,6 @@
 /**
  * The doors that CHANGE a stored app: the files-first save every author's
- * `app.vendo` lands through, the app's own source commit, the one instruction
+ * `app.tsx` lands through, the app's own source commit, the one instruction
  * door, its memory, and its cron.
  *
  * Lifted out of `createApps` unchanged.
@@ -17,90 +17,20 @@ import {
 import {
   SCREEN_FILE,
   bundleOf,
-  isSeedComponentName,
   type AppDocument,
-  type WireCompileResult,
 } from "../../contract/index.js";
 import { rememberedMemory } from "../persistence/app-memory.js";
 import { commitApp, inlineSourceFile } from "../persistence/app-source.js";
 import { NO_MACHINE } from "./build-messages.js";
 import { rungFor } from "../persistence/edit-journal.js";
-import { asPayload } from "../generation/engine.js";
-import { escalatedServer, escalationNeedsMachine } from "../generation/lanes.js";
 import { findingLine } from "./build-messages.js";
 import { generationDependencies } from "../runtime/generation-context.js";
-import {
-  compilePlan,
-  stripServerAuthoritativeFields,
-  type AppData,
-  type AppPlan,
-} from "../../contract/index.js";
-import { createProgressiveQueryResolver } from "../persistence/open.js";
+import type { AppData } from "../../contract/index.js";
 import { APPS_COLLECTION, appRecordInput, enabledAfterDocumentEdit, rowFromRecord } from "../persistence/persistence.js";
 import type { AppsRuntimeContext } from "../runtime/runtime-context.js";
-import { asTree } from "../generation/engine.js";
 import type { AppsRuntime, EditResult, VersionEntry } from "../runtime/types.js";
 
 
-/**
- * §1.6 files-first — the app a harness wrote as `app.vendo`, as a document.
- *
- * The tree, the name and the islands are the model's; on an app that ALREADY
- * exists, everything else — trigger, storage, machine, pins, description, the
- * egress grant — is the app's own history and survives untouched. That is
- * exactly `documentFromEdit`'s rule (generation/validation/validate.ts), applied
- * without a model, because saving a file is not a generation.
- *
- * `componentTools` is deliberately NOT stamped: stamping is island admission's
- * job (`prepareIslands`, behind the checking floor), and a manifest invented here
- * would either lie about the sources or carry the PREVIOUS version's islands. Left
- * absent, the renderer derives each island's tool surface from the source it was
- * handed — the pre-stamped rule, and the same posture the mid-turn paint already
- * has (the seam emits raw compiled islands too).
- */
-const authoredDocument = (
-  appId: AppId,
-  compiled: WireCompileResult,
-  previous: AppDocument | undefined,
-): AppDocument => {
-  const name = compiled.name?.trim();
-  const document: AppDocument = {
-    ...(previous === undefined ? { format: "vendo/app@1" as const } : structuredClone(previous)),
-    id: appId,
-    // A save mid-build often has no name yet, and the stored name is the app's
-    // title in the person's list — so an unnamed document keeps whatever title
-    // the app already had rather than losing it.
-    name: name === undefined || name === "" ? previous?.name ?? "Untitled app" : name,
-    ui: "tree",
-    tree: asPayload(structuredClone(compiled.tree)),
-  };
-  // documentFromEdit's seeded/model split: a SEEDED seat holds host source
-  // captured on the furnishing trust path, and it is the app's own provenance —
-  // not a file save's to drop. The compile still wins for a name it does carry
-  // (a seeded island IS editable through the wire); a save whose text omits it
-  // keeps the stored bundle, furnishings and all.
-  //
-  // By NAME, never by `origin`: `componentEntrySchema` still accepts a bare
-  // source string, which is how every remix forked before the seed rewrite is
-  // stored, and `bundleOf` reads those as `authored`. Keyed on the origin, the
-  // carry never fires for them and a save that omits the component deletes the
-  // remix outright.
-  const carried = Object.entries(previous?.components ?? {})
-    .filter(([name]) => isSeedComponentName(name) && compiled.components[name] === undefined);
-  const components = { ...Object.fromEntries(carried), ...compiled.components };
-  if (Object.keys(components).length === 0) {
-    delete document.components;
-  } else {
-    document.components = structuredClone(components);
-  }
-  delete document.componentTools;
-  // The same rule at rest as at serve time (create's own line): a model-forged
-  // venue verdict or drift report is never persisted, and a file save can never
-  // resurrect a terminal build failure.
-  if (document.tree !== undefined) stripServerAuthoritativeFields(document.tree);
-  delete document.buildFailed;
-  return document;
-};
 
 /** What a refused save leaves behind — see the three intent slots in
  *  `edit-journal.ts`. The app is on screen, it just is not in the list. */
@@ -184,12 +114,12 @@ const createAuthoredSaver = (
         changed = JSON.stringify(previous) !== JSON.stringify(document);
         if (changed) {
           // The person's own words when THIS runtime asked for the save
-          // (`edit`, and the trail `pins.rebase` replays); "Saved app.vendo"
+          // (`edit`, and the trail `pins.rebase` replays); "Saved app.tsx"
           // for every other author, which is all a bare file save can say.
           const intent = editIntents.get(input.appId);
           const entry: VersionEntry = {
             at: new Date().toISOString(),
-            intent: intent ?? "Saved app.vendo",
+            intent: intent ?? `Saved ${SCREEN_FILE}`,
             rung: rungFor(document),
           };
           // ONE clock read for this save: when the save is an `edit`'s, that
@@ -238,44 +168,6 @@ const createAuthoredSaver = (
   };
 };
 
-const createAuthoredDoor = (
-  deps: Pick<AppsRuntimeContext, "engine" | "caller" | "holds"> & {
-    saveAuthoredDocument: ReturnType<typeof createAuthoredSaver>;
-  },
-): AppsRuntime["authored"] => {
-  const { engine, caller, holds, saveAuthoredDocument } = deps;
-  return async (input, ctx) => {
-    const record = await engine.get(APPS_COLLECTION, input.appId);
-    const row = record === null ? null : rowFromRecord(record);
-    // A row that already exists belongs to whoever holds it. `/user/**` is its
-    // subject's at EVERY level (core `accessForPath`), so a harness can write
-    // `/user/apps/<someone-else's-id>/app.vendo` in its own mount and the
-    // workspace lands the file — this is the only place that can refuse to let
-    // that rewrite the other person's app. A row that does NOT exist can only
-    // have come from this caller's own `/user` mount: a fresh
-    // `/orgs/<org>/apps/<id>/` path has no app row to grant on, so `canCommit`
-    // refuses it and the file never lands at all.
-    const mayWrite = row === null || await holds(input.appId, ctx, "editor", record);
-    // And refusing the WRITE is not the whole refusal: `previous` is what these
-    // queries resolve against, and `fn:` routes on `app.machine` ALONE (fn.ts)
-    // with no ctx — so an inherited machine ref would send this file's `fn:`
-    // queries onto SOMEONE ELSE'S sandbox and hand back the answer. A file the
-    // caller may not write is painted from the compile alone.
-    const previous = row === null || !mayWrite
-      ? undefined
-      : row.doc;
-    const document = authoredDocument(input.appId, input.compiled, previous);
-    if (mayWrite) await saveAuthoredDocument({ appId: input.appId, document, previous, row }, ctx);
-    // The queries, through the SAME guard-bound caller `open()` resolves with:
-    // one guard decision per query, this person's authority, `venue: "app"`. When
-    // one FAILED, the seam is told, so the painted view says "Data didn't load"
-    // instead of an empty app that looks like real, empty data.
-    const queries = createProgressiveQueryResolver(caller, document, ctx);
-    queries.update(asTree(document.tree));
-    const data = await queries.complete();
-    return { data, ...(queries.dataUnavailable() ? { dataUnavailable: true as const } : {}) };
-  };
-};
 
 /**
  * The remix SEAT, carrying the person's own screen.
@@ -320,13 +212,37 @@ const withScreenInSeat = (document: AppDocument, source: string): AppDocument =>
 const screenDocument = (
   input: { appId: AppId; name: string; source: string },
   previous: AppDocument | undefined,
-): AppDocument => withScreenInSeat({
-  ...(previous === undefined ? { format: VENDO_APP_FORMAT } : structuredClone(previous)),
-  id: input.appId,
-  name: input.name,
-  ui: "tree",
-  source: { ...previous?.source, [SCREEN_FILE]: inlineSourceFile(input.source) },
-}, input.source);
+  /** An assembler is running for this app, so this save is a BUILD's. */
+  building: boolean,
+): AppDocument => {
+  const document = withScreenInSeat({
+    ...(previous === undefined ? { format: VENDO_APP_FORMAT } : structuredClone(previous)),
+    // The window a build paints inside, which is not over when it first paints:
+    // the reviewer pass and its repair round run after (`assemble`,
+    // screen-agent.ts). `building` holds the row back from mounting until the
+    // assembler returns and settles it.
+    //
+    // Keyed on the BUILD, never on the row being new: a ✦ remix's row is written
+    // by the gesture before its screen exists, and an edit's row always
+    // pre-exists, so "no previous document" gated the create path alone and left
+    // the number-changing repair the person actually watches — the remix — mounting
+    // its draft (live, 2026-08-15). `??` is what makes the stamp the build's
+    // first paint rather than its latest. A harness writing `app.tsx` straight
+    // through the workspace is untouched: no build behind that save to be
+    // unfinished.
+    ...(building ? { building: previous?.building ?? new Date().toISOString() } : {}),
+    id: input.appId,
+    name: input.name,
+    ui: "tree",
+    source: { ...previous?.source, [SCREEN_FILE]: inlineSourceFile(input.source) },
+  }, input.source);
+  // A screen that painted is an app that works, so a terminal build failure
+  // recorded before it cannot outlive it: `open()` serves a `buildFailed` row as
+  // a failure and `list()` skips it, so a late success would otherwise leave the
+  // app invisible and unopenable forever.
+  delete document.buildFailed;
+  return document;
+};
 
 /**
  * The row a painted COMPONENT screen gets, on EVERY save that paints.
@@ -337,7 +253,7 @@ const screenDocument = (
  * (`SEAM_OWNED` in app-source.ts): it cannot tell a passing screen from a refused
  * one, and it landed the bytes of screens the floor would not render.
  *
- * A re-save is a real save, through the SAME versioned saver `app.vendo` uses: the
+ * A re-save is a real save, through the SAME versioned saver every screen uses: the
  * CAS bracket, the version filed under the person's own words, the §9.9
  * announcement. One artifact must not get a weaker contract than the other — this
  * used to refuse to rewrite a row it had not created, so a component app's whole
@@ -348,11 +264,11 @@ const screenDocument = (
  * own mount.
  */
 const createAuthoredScreenDoor = (
-  deps: Pick<AppsRuntimeContext, "engine" | "holds"> & {
+  deps: Pick<AppsRuntimeContext, "engine" | "holds" | "buildingNow"> & {
     saveAuthoredDocument: ReturnType<typeof createAuthoredSaver>;
   },
 ): AppsRuntime["authoredScreen"] => {
-  const { engine, holds, saveAuthoredDocument } = deps;
+  const { engine, holds, buildingNow, saveAuthoredDocument } = deps;
   return async (input, ctx) => {
     const record = await engine.get(APPS_COLLECTION, input.appId);
     const row = record === null ? null : rowFromRecord(record);
@@ -365,7 +281,7 @@ const createAuthoredScreenDoor = (
     if (row?.doc.source?.[SCREEN_FILE]?.text === input.source) return;
     await saveAuthoredDocument({
       appId: input.appId,
-      document: screenDocument(input, row?.doc),
+      document: screenDocument(input, row?.doc, buildingNow(input.appId)),
       previous: row?.doc,
       row,
     }, ctx);
@@ -481,34 +397,24 @@ const createEditDoor = (
     let graduated: boolean | undefined;
     const issues: string[] = [];
     // ── The escalation ladder, from an app that already exists ──────────────
-    // The assembler could not make this change out of components, so it wrote a
-    // plan and asked for the builder — the same §4.5 hand-off a create takes,
-    // landing ADDITIVELY on the stored app: an automation on the existing
-    // engine, or a box that writes real code and may flip the surface.
+    // The assembler could not make this change out of components, so it asked
+    // for the builder — the same §4.5 hand-off a create takes, landing
+    // ADDITIVELY on the stored app: a box that writes real code.
     if (edited.kind === "escalate") {
-      const planText = await config.escalatedPlan?.(appId, ctx).catch(() => undefined);
       const deps = generationDependencies(config, config.model, await generationToolContext(ctx));
-      const compiled = planText === undefined ? undefined : compilePlan(planText, {
-        tools: (deps.tools ?? []).map(({ name }) => name),
-        components: config.catalog.map(({ name }) => name),
-      });
-      const base: AppPlan = compiled?.plan
-        ?? { name: previous.name, groups: [], queries: [], cannot: [] };
-      const planned = { ...base, server: escalatedServer(base, instruction) };
-      // The SAME expression create gates on — two rungs, one door, one test.
-      if (escalationNeedsMachine(planned.server) && !lifecycle.available()) {
+      // The SAME gate create runs — one door, one test.
+      if (!lifecycle.available()) {
         return failedEdit(previous, instruction, [NO_MACHINE], false);
       }
       try {
         const served = await runServerWork({
-          plan: planned,
-          ...(planText === undefined ? {} : { planText }),
           document: previous,
           request: instruction,
+          why: edited.why,
         }, ctx, deps);
         if (served.failed !== undefined) {
-          // The plan REQUIRED this server work and it could not be built, so
-          // no edit happened: the stored app is untouched and says why.
+          // The server work could not be built, so no edit happened: the stored
+          // app is untouched and says why.
           return failedEdit(previous, instruction, served.failed);
         }
         app = served.document;
@@ -550,18 +456,17 @@ const createEditDoor = (
 /** The write slice of `AppsRuntime`. */
 export const createWriteSurface = (
   deps: Pick<AppsRuntimeContext,
-    "config" | "engine" | "caller" | "history" | "holds" | "lifecycle" | "requireOwned"
+    "config" | "engine" | "caller" | "history" | "holds" | "buildingNow" | "lifecycle" | "requireOwned"
     | "updateAppDocument" | "assembleEdit" | "failedEdit" | "takeEditVersion"
     | "generationToolContext" | "runServerWork" | "editServerViaBox" | "pruneHistory"
     | "reportLifecycle" | "reportDocumentEdit" | "discardVersion"
     | "editIntents" | "editVersions" | "editRefusals">,
 ): Pick<AppsRuntime,
-  "authored" | "authoredScreen" | "refusedScreen" | "commitSource" | "edit" | "remember" | "schedule"> => {
+  "authoredScreen" | "refusedScreen" | "commitSource" | "edit" | "remember" | "schedule"> => {
   const { config, engine, requireOwned, updateAppDocument } = deps;
   const saveAuthoredDocument = createAuthoredSaver(deps);
   const editServedApp = createServedAppEditor(deps);
   return {
-    authored: createAuthoredDoor({ ...deps, saveAuthoredDocument }),
     authoredScreen: createAuthoredScreenDoor({ ...deps, saveAuthoredDocument }),
     refusedScreen: createRefusedScreenDoor(deps),
     edit: createEditDoor({ ...deps, editServedApp }),

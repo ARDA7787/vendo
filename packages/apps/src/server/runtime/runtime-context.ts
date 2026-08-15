@@ -21,7 +21,6 @@ import {
 } from "@vendoai/core";
 import type {
   AppDocument,
-  AppPlan,
   AdmissionOrigin,
 } from "../../contract/index.js";
 import { createAccessChecks } from "../doors/access-checks.js";
@@ -191,7 +190,7 @@ export interface AppsRuntimeContext {
     ctx: RunContext,
   ): Promise<
     | { kind: "assembled"; app: AppDocument }
-    | { kind: "escalate" }
+    | { kind: "escalate"; why: string }
     | { kind: "failed"; issues: string[] }
   >;
 
@@ -210,9 +209,9 @@ export interface AppsRuntimeContext {
     | { ok: true; result: BoxEditResult; doc: AppDocument; servedOk: boolean }
     | { ok: false; result: BoxEditResult }
   >;
-  /** Run the server work a plan declared, on an app that is already STORED. */
+  /** Run the server work an escalation asked for, on an app that is already STORED. */
   runServerWork(
-    input: { plan: AppPlan; planText?: string; document: AppDocument; request: string },
+    input: { document: AppDocument; request: string; why: string; served?: boolean },
     ctx: RunContext,
     deps: GenerationDependencies,
   ): Promise<{
@@ -223,8 +222,7 @@ export interface AppsRuntimeContext {
     issues?: string[];
     failed?: string[];
   }>;
-  /** Author one automation onto a STORED app: plan, land, arm, audit. The ONE
-   *  wiring the public door and the escalated-plan path share. */
+  /** Author one automation onto a STORED app: plan, land, arm, audit. */
   authorAutomation: ReturnType<typeof createAutomationLane>;
   /** Forward ONE already-authorized request into the app's machine. */
   forwardToBox(app: AppDocument, request: BoxRequest, ctx: RunContext): Promise<BoxResponse>;
@@ -236,6 +234,13 @@ export interface AppsRuntimeContext {
   claimSlot(appId: AppId, slot: string, ctx: RunContext): Promise<void>;
   /** The terminal record for an id no engine will ever land. */
   markUnbuilt(appId: AppId, name: string, reason: string, ctx: RunContext): Promise<void>;
+  /** An assembler run has started for this id — `AppDocument.building`. */
+  beginBuild(appId: AppId): void;
+  /** Whether one is running right now, which is what makes a screen's first
+   *  painting save a BUILD's rather than a harness's. */
+  buildingNow(appId: AppId): boolean;
+  /** The assembler came back, so the row may mount — `AppDocument.building`. */
+  settleBuild(appId: AppId): Promise<void>;
   /** Where a placed app's build stands, read off its record every time. */
   entryFor(row: PlacementRow, ctx: RunContext): Promise<PlacementEntry | undefined>;
 
@@ -392,6 +397,39 @@ const createDoors = (
   return { review, reviewerAsserted, interchange, fnCaller, manifestTriggers, caller, opener };
 };
 
+/**
+ * `AppDocument.building`, wired ONCE around the assembler rather than at each
+ * door that runs one.
+ *
+ * A build is in flight for exactly as long as `assemble` is, so the three doors
+ * that call one (`create`'s route, the `vendo_make` front door, and an edit)
+ * cannot disagree about when it ends — and the `finally` means an assembler that
+ * threw, escalated or came back empty settles the row just as a finished one
+ * does. What the window is FOR is the screen agent's saves, which land
+ * mid-`assemble`: only those mark their row unmountable, so a harness writing
+ * `app.tsx` straight through the workspace is untouched.
+ */
+const withBuildTracking = (
+  config: AppsConfig,
+  { beginBuild, settleBuild }: Pick<AppsRuntimeContext, "beginBuild" | "settleBuild">,
+): AppsConfig => {
+  const screen = config.screen;
+  if (screen === undefined) return config;
+  return {
+    ...config,
+    screen: {
+      assemble: async (input, ctx) => {
+        beginBuild(input.appId);
+        try {
+          return await screen.assemble(input, ctx);
+        } finally {
+          await settleBuild(input.appId);
+        }
+      },
+    },
+  };
+};
+
 /** 06-apps §1 — `createApps`' closure, wired in dependency order. */
 export const createRuntimeContext = (
   config: AppsConfig,
@@ -405,12 +443,16 @@ export const createRuntimeContext = (
     appId: AppId,
     mutate: (doc: AppDocument) => AppDocument,
   ): Promise<AppDocument> => updateAppRow(stores.engine, appId, mutate, "box");
-  const base = { config, ...stores, ...audit, ...access, ...machine, updateAppDocument, runtime };
+  // Before `base`, because the assembler `base` carries is the TRACKED one.
+  const placement = createPlacementRows({ ...stores, ...audit, ...access });
+  const base = {
+    config: withBuildTracking(config, placement),
+    ...stores, ...audit, ...access, ...machine, updateAppDocument, runtime,
+  };
   const approvals = createApprovalFlow(base);
   const journal = createEditJournal(base);
   const doors = createDoors(base);
-  const placement = createPlacementRows(base);
-  const generation = createGenerationContext(config);
+  const generation = createGenerationContext(base.config);
   const box = createBoxLane({ ...base, ...approvals, ...journal, ...doors });
   return { ...base, ...approvals, ...journal, ...doors, ...placement, ...generation, ...box };
 };
