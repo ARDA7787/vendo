@@ -67,7 +67,8 @@
         "tag": "Beta",
         "pages": [
           "vendo-agent/quickstart",
-          "vendo-agent/overview"
+          "vendo-agent/overview",
+          "vendo-agent/linkwarden"
         ]
       },
       {
