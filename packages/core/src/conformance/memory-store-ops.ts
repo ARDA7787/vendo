@@ -1,4 +1,5 @@
-import { assertEngineCollection } from "../engine-collections.js";
+import type { AuditEvent } from "../audit.js";
+import { assertEngineCollection, assertIndexedField, collectionKind } from "../engine-collections.js";
 import { VendoError } from "../errors.js";
 import type { IsoDateTime } from "../ids.js";
 import { VENDO_STORE_WIRE_FORMAT, type StoreWireStatus } from "../store-wire.js";
@@ -6,6 +7,7 @@ import {
   APP_DATA_COLLECTION_PATTERN,
   APP_DATA_OWNER_PATTERN,
   type AppDataTarget,
+  type CollectionFootprint,
   type RecordInput,
   type RecordQuery,
   type StoreOps,
@@ -22,6 +24,30 @@ let monotonicMs = 0;
 const isoNow = (): IsoDateTime => {
   monotonicMs = Math.max(Date.now(), monotonicMs + 1);
   return new Date(monotonicMs).toISOString() as IsoDateTime;
+};
+
+/** The forward walk's echoed bound: a resume token naming the last row a page
+    ended on, its indexed VALUE and its ID together. The value alone cannot say
+    where inside a group of rows sharing it the page stopped, and those groups
+    are routine — `vendo_runs.started_at` is caller-supplied at millisecond
+    precision. Prefixed because a caller's first bound is a plain field value,
+    and anything that does not decode as a token is read as one. The encoding is
+    this reference's own: the token is opaque contract and only ever travels
+    back to the implementation that minted it. */
+const WATERMARK_TOKEN = "wm1_";
+
+const encodeWatermark = (value: string, id: string): string =>
+  `${WATERMARK_TOKEN}${JSON.stringify([value, id])}`;
+
+const decodeWatermark = (after: string): { value: string; id: string } | undefined => {
+  if (!after.startsWith(WATERMARK_TOKEN)) return undefined;
+  try {
+    const parsed = JSON.parse(after.slice(WATERMARK_TOKEN.length)) as unknown;
+    if (!Array.isArray(parsed) || typeof parsed[0] !== "string" || typeof parsed[1] !== "string") return undefined;
+    return { value: parsed[0], id: parsed[1] };
+  } catch {
+    return undefined;
+  }
 };
 
 /** The synthetic harness appId a thread's state rides under (the store's
@@ -218,7 +244,46 @@ export function memoryStoreOps(): StoreOps {
     },
     async list(collection, query) {
       assertEngineCollection(collection);
-      return rows.list(collection, query);
+      if (query?.watermark === undefined) return await rows.list(collection, query);
+      const { field, after } = query.watermark;
+      assertIndexedField(collection, field);
+      if (query.cursor !== undefined) {
+        throw new VendoError(
+          "validation",
+          "engine.list takes a watermark or a cursor, never both — they page in opposite directions",
+        );
+      }
+      // The bound is on the row's own INDEXED FIELD, which for the one
+      // collection that declares one is CALLER-SUPPLIED: a host writes
+      // `startedAt: new Date().toISOString()`, so a burst of runs shares one
+      // millisecond. This reference stamps its own arrival clock on `createdAt`
+      // and that clock is monotonic, so walking it could never tie — and the
+      // tie is the case the walk has to survive. Read what the caller wrote.
+      const valueOf = (r: VendoRecord): string => {
+        const supplied = (r.data as { startedAt?: unknown }).startedAt;
+        return collection === "vendo_runs" && typeof supplied === "string" ? supplied : r.createdAt;
+      };
+      // A bare bound keeps its strictly-after-the-instant meaning; a token
+      // resumes exactly after the row it names, on the same (value, id) key the
+      // page is ordered by. Ascending, because a forward walk resumes where it
+      // stopped, and tie-broken on the id the token carries — an order that
+      // disagreed with the bound would skip rows at every page boundary.
+      const resume = decodeWatermark(after);
+      const forward = [...col(collection).values()]
+        .filter((r) => (resume === undefined
+          ? valueOf(r) > after
+          : valueOf(r) > resume.value || (valueOf(r) === resume.value && r.id > resume.id)))
+        .sort((a, b) => (valueOf(a) === valueOf(b)
+          ? (a.id < b.id ? -1 : 1)
+          : (valueOf(a) < valueOf(b) ? -1 : 1)));
+      const page = forward.slice(0, pageLimit(query.limit));
+      const last = page.at(-1);
+      return {
+        records: page.map(copyRecord),
+        // The bound to send next time: the row this page ended on, or the
+        // caller's own bound back unchanged when nothing was there to move it.
+        watermark: last === undefined ? after : encodeWatermark(valueOf(last), last.id),
+      };
     },
     async claim(collection, expected, replacement) {
       assertEngineCollection(collection);
@@ -604,6 +669,54 @@ export function memoryStoreOps(): StoreOps {
   };
 
   // ---------------------------------------------------------------------------
+  // audit — the typed read over the append-only drawer
+  // ---------------------------------------------------------------------------
+
+  const audit: StoreOps["audit"] = {
+    async list(query = {}) {
+      const page = await rows.list("vendo_audit", {
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+        ...(query.limit === undefined ? {} : { limit: query.limit }),
+      });
+      // Filtering AFTER the page is a reference's licence, not the contract:
+      // a real backend narrows in its own statement. What the suite pins is
+      // WHICH rows come back, in what order, and that the cursor walks them
+      // all — none of which this shortcut changes.
+      const events = page.records
+        .map((record) => record.data as AuditEvent)
+        .filter((event) =>
+          (query.kind === undefined || event.kind === query.kind)
+          && (query.venue === undefined || event.venue === query.venue)
+          && (query.outcome === undefined || event.outcome === query.outcome)
+          && (query.decidedBy === undefined || event.decidedBy === query.decidedBy));
+      return { events, ...(page.cursor === undefined ? {} : { cursor: page.cursor }) };
+    },
+  };
+
+  // ---------------------------------------------------------------------------
+  // secrets — plaintext here BY DESIGN: a reference has nothing to protect and
+  // no key to hold, and a fake cipher would prove nothing the real one does.
+  // ---------------------------------------------------------------------------
+
+  const vault = new Map<string, string>();
+  const secrets: StoreOps["secrets"] = {
+    async get(name) {
+      return vault.get(name) ?? null;
+    },
+    async set(name, value) {
+      vault.set(name, value);
+    },
+    async list() {
+      // Sorted, because "the order the Map happened to be written in" is not an
+      // answer any two implementations would agree on.
+      return [...vault.keys()].sort();
+    },
+    async delete(name) {
+      vault.delete(name);
+    },
+  };
+
+  // ---------------------------------------------------------------------------
   // status
   // ---------------------------------------------------------------------------
 
@@ -614,8 +727,29 @@ export function memoryStoreOps(): StoreOps {
     transcripts,
     harness,
     workspace,
+    audit,
+    secrets,
     lifecycle,
+    /** Serialized JSON length, which is this reference's honest answer to "how
+        much is in here": it grows with every row and shrinks when rows leave,
+        which is the whole of what a footprint promises. */
+    async footprint() {
+      const measured: CollectionFootprint[] = [];
+      for (const [collection, records] of collections) {
+        let bytes = 0;
+        for (const record of records.values()) {
+          bytes += JSON.stringify({ id: record.id, data: record.data, refs: record.refs }).length;
+        }
+        if (bytes > 0) measured.push({ collection, kind: collectionKind(collection), bytes });
+      }
+      return measured.sort((a, b) => (a.collection < b.collection ? -1 : 1));
+    },
     async status(): Promise<StoreWireStatus> {
+      // Still 35: `ops` is a LEVEL over STORE_WIRE_PATHS' order, and this
+      // reference has no batch append (op 36), so it cannot claim anything past
+      // 35 — whatever it serves further down the list. That is the level's known
+      // coarseness, not a bug in it: the only thing any client reads it for is
+      // STORE_WIRE_APPEND_MESSAGES_OPS, and 35 is the right answer there.
       return { format: VENDO_STORE_WIRE_FORMAT, ops: 35 };
     },
   };
