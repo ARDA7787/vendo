@@ -30,9 +30,11 @@ import {
   isExprBinding,
   validateAppDocument,
   validateTree,
+  vendoRouteParams,
   type KitSlotSpec,
   type NormalizedCatalog,
   type Tree,
+  type VendoRouteMap,
 } from "../../contract/index.js";
 import type {
   AppDocument,
@@ -422,6 +424,9 @@ export const catalogIssues = async (
 };
 
 const CHILDLESS: ReadonlySet<string> = new Set(KIT_CHILDLESS_NAMES);
+/** The one brick that takes a route (`kit/specs.ts`). Pinned to its spec by the
+ *  route check's own test, so renaming the brick cannot leave this behind. */
+const KIT_LINK = "Link";
 
 /** A Kit element sitting in a PROP — what a slot holds. The screen VM
  *  stamps the SLOT's own element `$element` and leaves the ones nested under it
@@ -555,6 +560,53 @@ export const kitNestingIssues = (tree: Tree): FactIssue[] => {
   return issues;
 };
 
+/**
+ * A `<Link to>` that will never move anybody.
+ *
+ * `resolveVendoRoute` answers `undefined` two ways — a name the host never
+ * registered, and a registered path whose `:params` the link left unfilled — and
+ * the brick renders the SAME dead text for both. That is a silent break of
+ * exactly the kind the nesting rule above exists to catch: the model wrote a way
+ * out of the screen, the person got dead words, and generation said it passed.
+ * So both refusals move to where they can be repaired, and they move together:
+ * catching one and not the other would leave a hole precisely where a reader
+ * would assume there is none.
+ *
+ * One function, both artifacts, for the reason `kitNestingIssues` is: a wire tree
+ * and the tree a `.tsx` screen paints reach the same renderer.
+ *
+ * Both messages hand over what the repair needs — the registered names for the
+ * first, the unfilled param names for the second — because a link SELECTS from
+ * the host's registry and fills its blanks; it never writes a URL.
+ */
+export const routeIssues = (tree: Tree, routes: VendoRouteMap | undefined): FactIssue[] => {
+  if (routes === undefined) return [];
+  const names = Object.keys(routes);
+  const issues: FactIssue[] = [];
+  for (const node of tree.nodes) {
+    if (node.component !== KIT_LINK) continue;
+    // Own keys only: `to` is model-written, and `routes["toString"]` on a plain
+    // object answers with Object's own (the a1-slots reading of the same risk).
+    const to = node.props?.to;
+    if (typeof to !== "string") continue;
+    const route = Object.prototype.hasOwnProperty.call(routes, to) ? routes[to] : undefined;
+    if (route === undefined) {
+      issues.push(atProp(node.id, "to", `names route "${to}" on <${KIT_LINK}>, which this host never registered — it would render as plain text and go nowhere. ${names.length === 0 ? "This host registered no routes at all, so nothing may link out of a screen; drop the link." : `The registered routes are: ${names.join(", ")}. A link NAMES one of these; it never writes a URL.`}`));
+      continue;
+    }
+    // Read "filled" the way the RESOLVER reads it (`params?.[key] === undefined`),
+    // so the floor and the render can never disagree about which links work. The
+    // lookup keys come from the host's own path, not from the model.
+    const given = node.props?.params as Record<string, unknown> | undefined;
+    const takes = vendoRouteParams(route.path);
+    const missing = takes.filter((key) => given?.[key] === undefined);
+    if (missing.length > 0) {
+      issues.push(atProp(node.id, "params", `names route "${to}" on <${KIT_LINK}> but leaves ${missing.map((key) => `"${key}"`).join(", ")} unfilled — that route's path takes ${takes.map((key) => `:${key}`).join(", ")}, and a link missing one of them renders as plain text and goes nowhere. Write params={{ ${missing.map((key) => `${key}: …`).join(", ")} }} beside to="${to}".`));
+    }
+  }
+  return issues;
+};
+
 /** A query naming a tool the host does not have. The message lists the real
  *  ones — a model reading it can pick, and a human reading it learns the
  *  surface. `fn:` queries are the app's own server code, not host tools. */
@@ -673,6 +725,7 @@ export const factChecks = (deps: FloorDependencies): Check[] => [
     ...hostReshapeIssues(tree, deps),
   ]),
   treeCheck("kit-nesting", (tree) => kitNestingIssues(tree)),
+  treeCheck("routes-exist", (tree) => routeIssues(tree, deps.routes)),
   treeCheck("expressions-compute", (tree) => exprIssues(tree)),
   treeCheck("query-inputs-literal", (tree) => queryInputIssues(tree)),
   treeCheck("no-string-interpolation", (tree) => interpolationIssues(tree)),
