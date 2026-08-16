@@ -255,27 +255,15 @@ export function resolveVendoRoute(
   return unfilled ? undefined : { to, path, ...(params === undefined ? {} : { params }) };
 }
 
-/** AGENT-1 — 03 §3 item (4): the model-facing summary of the host components a
- * generated view may use and how the host's brand should feel. One succinct
- * block; the agent injects it only for venues that render trees.
- *
- * THE catalog summary — it lived in the umbrella (`vendo/src/catalog.ts`) and
- * belongs beside the catalog shape it reduces, so a second rendering of the same
- * two config keys cannot start disagreeing with this one. */
-export function catalogThemeSummary(
-  catalog: NormalizedCatalog,
-  theme?: VendoTheme,
-): string | undefined {
-  const sections: string[] = [];
-  if (catalog.length > 0) {
-    const lines = catalog.map((entry) =>
-      `- ${entry.name}: ${entry.description.split("\n", 1)[0] ?? ""}`.trimEnd());
-    sections.push(`Host components (usable in generated views beside the built-in primitives)\n${lines.join("\n")}`);
-  }
-  if (theme !== undefined) {
-    sections.push(
-      `Theme: ${theme.density} density, ${theme.motion} motion, ${theme.typography.fontFamily} typography.`,
-    );
-  }
-  return sections.length > 0 ? sections.join("\n\n") : undefined;
-}
+/** How this host's brand FEELS, in one line, for the thinker that does not
+ * render. Its companion — the host component list this used to render beside the
+ * theme — is gone: `renderBriefingPack` renders that list for the rung that
+ * actually writes a screen, and two renderings of one config key is what the
+ * briefing pack exists to prevent. The theme half is NOT a second copy of
+ * anything: the pack hands the screen agent the tokens VERBATIM, and this is a
+ * sentence. It is also the one observable that says the theme surface resolved
+ * at all (server.test.ts's profile/profileDir/disk seam). */
+export const themeSummary = (theme?: VendoTheme): string | undefined =>
+  theme === undefined
+    ? undefined
+    : `Theme: ${theme.density} density, ${theme.motion} motion, ${theme.typography.fontFamily} typography.`;
