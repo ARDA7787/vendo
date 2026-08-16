@@ -1,7 +1,7 @@
 ---
 title: "vendo init"
 sidebarTitle: "vendo init"
-description: "What vendo init scans, every file it writes, how framework and auth detection decide, and what --agent prints instead."
+description: "What vendo init scans, every file it writes, how framework and auth detection decide, and how --agent hands its questions to a coding agent."
 ---
 
 ```bash
@@ -53,7 +53,7 @@ ONE STEP LEFT — paste this yourself (init never edits your files)
 ────────────────────────────────────────────────────────────────
 ```
 
-The same step rides `--agent` as a `mount` object and as the first entries of `manualSteps`. Until it lands, `vendo doctor` fails with [E-WIRE-004](/production/troubleshooting/e-wire-004) and reprints it.
+The same step rides the `--agent` write run's receipt, in `pasteEdits`. Until it lands, `vendo doctor` fails with [E-WIRE-004](/production/troubleshooting/e-wire-004) and reprints it.
 
 A host with its own components writes one `"use client"` file holding the component registry and the provider, and mounts that instead. The registry carries component references, which cannot cross a Server Component boundary.
 
@@ -121,20 +121,24 @@ There is no interview. An interactive run stops only for Enter-to-accept decisio
 npx vendo init --agent
 ```
 
-`--agent` is read-only. It prints a JSON plan and writes nothing.
+`--agent` changes how init's questions travel, not what init asks. Called with no answers, it detects what it can and prints ONE JSON object holding the questions it still needs answered. It writes nothing and exits `0`.
 
-| Field | Carries |
+Each question carries its options, the recommended pick, and the flag that answers it. Your coding agent relays them to you in chat, then re-runs init with your answers as flags:
+
+```bash
+npx vendo init --agent --use-case embedded --auth clerk --byo
+```
+
+That run writes. Pass every answer on the first call and there is no ask pass at all: init writes in one go.
+
+The `status` field tells the two runs apart, so an agent never has to guess whether the repo was touched.
+
+| `status` | Carries |
 | --- | --- |
-| `framework` | what detection landed on |
-| `writes` | every file init would create |
-| `codeChanges` | their diffs |
-| `mount` | the layout paste as `{ file, lines, why }` |
-| `edits` | pastes for files that already exist, such as a route missing its `serverActions` wiring |
-| `manualSteps` | the same pastes as printable lines |
-| `extraction` | the deterministically extracted tools, with warnings |
-| `riskRecommendations` | per-tool advice |
+| `questions` | `detected` (framework and any auth preset), and `questions`: each one a chat-ready `prompt` with its `options` |
+| `written` | `wrote` (every file of the install), `pasteEdits` (the mount and any other paste), `tools`, `riskRecommendations`, and `judgment`, whose `checklist` names the four calls only a reader of the code can make |
 
-Running `--agent` alone writes no `.vendo/` files, so `vendo doctor` still reports a missing install. Scaffold with `vendo init --yes`.
+The answer flags are the ones init already has: `--use-case`, `--auth`, `--cloud-key` or `--byo`, and on the MCP path `--posture` and `--service-key`. Nothing else is asked. `--base-url`, the `zod` bump, uncertain theme slots, and the closing live check never surface in agent mode. They take exactly the defaults `--yes` takes.
 
 ## Every flag
 
@@ -154,7 +158,7 @@ Running `--agent` alone writes no `.vendo/` files, so `vendo doctor` still repor
 | `--posture <name>` | `local`, `broker` | how outside agents sign in. `--use-case mcp` only |
 | `--service-key` | | generate a machine-to-machine service key. `--use-case mcp` only |
 | `--yes` | | skip every prompt and take the detected defaults |
-| `--agent` | | print the JSON plan and write nothing |
+| `--agent` | | ask through a coding agent: print the questions as JSON, or write when the answers ride along |
 | `--force` | | regenerate Vendo-owned files under `.vendo/`. Never replaces host source |
 | `--check` / `--no-check` | | run `vendo doctor` at the end, or skip it |
 

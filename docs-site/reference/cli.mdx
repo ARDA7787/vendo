@@ -58,13 +58,15 @@ Init never writes to a file you authored. Mounting `<VendoProvider>` is the one 
 | Flag | Effect |
 | --- | --- |
 | `--yes` | skip every prompt and take the detected defaults |
-| `--agent` | print a read-only JSON plan and write nothing |
+| `--agent` | route the questions through a coding agent instead of a terminal prompt |
 | `--force` | regenerate Vendo-owned files under `.vendo/`. Never replaces host source |
 | `--check` / `--no-check` | run `vendo doctor` at the end, or skip it. Never changes init's exit code |
 
 `--cloud-key` and `--byo` answer the same question, as do `--ai` and `--no-ai` and `--check` and `--no-check`. Passing both halves of a pair exits `1`.
 
 `--ai-polish` is the older spelling of `--ai` and still works.
+
+With no answers on the command line, `--agent` prints one JSON object of the questions it still needs answered, writes nothing, and exits `0`. The agent relays them to you and re-runs init with your answers as flags, and that run writes. Answers passed on the first call skip the ask pass and write in one go. Full shape on [Agent mode](/reference/vendo-init#agent-mode).
 
 The full walkthrough is on [vendo init](/reference/vendo-init).
 
@@ -370,7 +372,7 @@ Machine-readable entry points, for a coding agent driving the install.
 | `https://vendo.run/auth.md` | The raw claim-ceremony protocol behind `vendo login` |
 | `https://docs.vendo.run/llms.txt` | Index of every docs page for LLM ingestion |
 | `https://docs.vendo.run/llms-full.txt` | The whole docs site as one file |
-| `npx vendo init --agent` | Read-only JSON plan. Writes nothing |
+| `npx vendo init --agent` | Init's setup questions as one JSON object, answered back as flags on a re-run |
 | `npx vendo doctor --json` | One machine-readable install report on stdout |
 | `npx vendo sync --json` | One machine-readable sync report on stdout |
 | `.claude/skills/vendo-setup/` | Setup skill shipped in the npm tarball; init writes it when `.claude/` exists |
