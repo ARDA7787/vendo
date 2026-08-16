@@ -80,6 +80,29 @@ export async function workspaceHostCandidates(root: string): Promise<string[]> {
   return candidates;
 }
 
+/** Both supported spellings of the Supabase preset specifier — the scoped
+    umbrella and the unscoped `vendoai` alias re-export ("both names ship the
+    same wire"; greptile on #1374: an alias-wired host missed E-AUTH-009
+    entirely). A regex, not string literals, so the dependency guard never
+    reads an import-shaped alias specifier here (same reason as
+    LEGACY_ROOT_IMPORT above). */
+export const SUPABASE_PRESET_IMPORT = /["'](?:@vendoai\/vendo|vendoai)\/auth\/supabase["']/;
+
+/** Whether any host source imports the Supabase auth preset. Import marker
+    only, comments stripped: outside a known Vendo composition file a bare
+    `supabase(` call is the host's OWN Supabase client, not the preset
+    (expense.fyi defines exactly such a helper). Same bounded walk as
+    `detectVendoWiring`, so a host too big to scan is judged consistently. */
+export async function wiresSupabaseAuth(root: string): Promise<boolean> {
+  const files = await walk(root, (relativePath) => SOURCE_FILE.test(relativePath), SOURCE_SCAN_MAX_FILES);
+  for (const file of files) {
+    const source = await readFile(file, "utf8").catch(() => "");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    if (SUPABASE_PRESET_IMPORT.test(code)) return true;
+  }
+  return false;
+}
+
 /** Bounded source scan shared by init and doctor so their wiring verdicts
     agree. */
 export async function detectVendoWiring(root: string): Promise<VendoWiring> {

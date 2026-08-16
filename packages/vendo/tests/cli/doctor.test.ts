@@ -1748,6 +1748,107 @@ describe("vendo doctor error codes + fix_refs", () => {
     expect(report.checks.find((check) => check.id === "config/mount")).toMatchObject({ status: "ok" });
   });
 
+  // ENG-422 (field: expense.fyi): a composition wiring supabase() with neither
+  // server-side env name set passes every static check and then fails its
+  // FIRST signed-in turn. Doctor names the pair before the turn does.
+  const supabaseRoute =
+    'import { supabase } from "@vendoai/vendo/auth/supabase";\n' +
+    'import { createVendo, nextVendoHandler } from "@vendoai/vendo/server";\n' +
+    "const vendo = createVendo({ auth: supabase() });\n" +
+    "export const { GET, POST } = nextVendoHandler(vendo);\n";
+
+  it("warns E-AUTH-009 when supabase() is wired and neither server env name is set", async () => {
+    const root = await healthy();
+    await writeFile(join(root, "app", "api", "vendo", "[...vendo]", "route.ts"), supabaseRoute);
+    const { report } = await jsonChecks({ targetDir: root, fetchImpl: successfulProbeFetch(), env: {} });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toMatchObject({
+      status: "warning",
+      error_code: "E-AUTH-009",
+    });
+  });
+
+  it("passes wiring/supabase-env when either server env name is present", async () => {
+    const root = await healthy();
+    await writeFile(join(root, "app", "api", "vendo", "[...vendo]", "route.ts"), supabaseRoute);
+    const { report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+      env: { SUPABASE_URL: "http://127.0.0.1:54321" },
+    });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toMatchObject({ status: "ok" });
+  });
+
+  it("says nothing about supabase env on a host that does not wire supabase()", async () => {
+    const root = await healthy();
+    const { report } = await jsonChecks({ targetDir: root, fetchImpl: successfulProbeFetch(), env: {} });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toBeUndefined();
+  });
+
+  // The check is framework-neutral (greptile on #1374): a non-Next host that
+  // wires the preset fails its first signed-in turn just the same, so it gets
+  // the same warning — discovered by import marker, not by Next's file layout.
+  const supabaseServerModule =
+    'import { supabase } from "@vendoai/vendo/auth/supabase";\n' +
+    'import { createVendo } from "@vendoai/vendo/server";\n' +
+    "createVendo({ auth: supabase(), models: { default: model }, principal });\n";
+
+  it("warns E-AUTH-009 on an Express host wiring supabase() with no server env", async () => {
+    const root = await expressHost(true);
+    await writeFile(join(root, "src", "server.ts"), supabaseServerModule);
+    const { report } = await jsonChecks({ targetDir: root, fetchImpl: successfulProbeFetch(), env: {} });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toMatchObject({
+      status: "warning",
+      error_code: "E-AUTH-009",
+    });
+  });
+
+  it("passes wiring/supabase-env on an Express host once a server env name is set", async () => {
+    const root = await expressHost(true);
+    await writeFile(join(root, "src", "server.ts"), supabaseServerModule);
+    const { report } = await jsonChecks({
+      targetDir: root,
+      fetchImpl: successfulProbeFetch(),
+      env: { SUPABASE_JWT_SECRET: "local-jwt-secret" },
+    });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toMatchObject({ status: "ok" });
+  });
+
+  it("warns E-AUTH-009 on a custom-runtime host wiring supabase() with no server env", async () => {
+    const root = await customHost(true);
+    await writeFile(join(root, "src", "worker.ts"), supabaseServerModule);
+    const { report } = await jsonChecks({ targetDir: root, fetchImpl: successfulProbeFetch(), env: {} });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toMatchObject({
+      status: "warning",
+      error_code: "E-AUTH-009",
+    });
+  });
+
+  it("recognizes the unscoped vendoai alias spelling of the preset import", async () => {
+    const root = await expressHost(true);
+    // Assembled at runtime: an import-shaped alias literal in this file would
+    // read as a real cross-package import to the dependency guard.
+    const aliasSpecifier = ["vendoai", "auth", "supabase"].join("/");
+    await writeFile(join(root, "src", "server.ts"),
+      `import { supabase } from "${aliasSpecifier}";\n` +
+      'import { createVendo } from "@vendoai/vendo/server";\n' +
+      "createVendo({ auth: supabase(), models: { default: model }, principal });\n");
+    const { report } = await jsonChecks({ targetDir: root, fetchImpl: successfulProbeFetch(), env: {} });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toMatchObject({
+      status: "warning",
+      error_code: "E-AUTH-009",
+    });
+  });
+
+  it("does not read a commented-out preset import as supabase wiring", async () => {
+    const root = await expressHost(true);
+    await writeFile(join(root, "src", "server.ts"),
+      '// import { supabase } from "@vendoai/vendo/auth/supabase";\n' +
+      'import { createVendo } from "@vendoai/vendo/server";\n' +
+      "createVendo({ models: { default: model }, principal });\n");
+    const { report } = await jsonChecks({ targetDir: root, fetchImpl: successfulProbeFetch(), env: {} });
+    expect(report.checks.find((check) => check.id === "wiring/supabase-env")).toBeUndefined();
+  });
+
   // Visible-surface gate (0.4.1 E2E cert B3): green must mean a user can SEE
   // the agent — <VendoProvider> alone is a provider that renders nothing.
   it("fails E-WIRE-006 when nothing visible is mounted, and exits 1", async () => {
