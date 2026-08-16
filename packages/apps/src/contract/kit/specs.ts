@@ -41,8 +41,13 @@ const seriesInput = z.array(z.union([
  * `$handler` callback (`genui/component/vm-program.ts` `emitValue`), so the
  * table would be handed an async door, not something it may call while it
  * paints. An element serializes; a closure does not.
+ *
+ * The DESCRIPTION is the marker a slot is known by: `z.unknown()` prints as
+ * `any` and `any` admitted exactly that function, so the component screen's
+ * typings print a described slot as an element type instead and the compiler
+ * refuses the closure (`checking/screen-typings.ts` `SLOT_PROP_DESCRIPTION`).
  */
-const slot = z.unknown();
+const slot = z.unknown().describe("holds Kit elements");
 const tableColumn = z.object({
   key: z.string(),
   label: z.string().optional(),
@@ -692,7 +697,7 @@ const BASE_SPECS: KitComponentSpec[] = [
             // Code-only: a panel passed inline instead of as a child. Wire
             // trees cannot express an element in an attribute, so they nest
             // panels as children (the shape the plan skeleton emits).
-            content: z.unknown().optional(),
+            content: slot.optional(),
           }),
         ])),
         "tab labels, or {value,label} items",
@@ -719,7 +724,7 @@ const BASE_SPECS: KitComponentSpec[] = [
     group: "feedback",
     summary: "Self-managing collapsible sections. Good for long apps.",
     props: {
-      items: config(z.array(z.object({ label: z.string(), content: z.unknown() })), "sections", { required: true }),
+      items: config(z.array(z.object({ label: z.string(), content: slot })), "sections", { required: true }),
       multiple: config(z.boolean(), "allow several open at once"),
     },
     examples: ["<Accordion items={[{label:\"Terms\",content:<Text .../>}]}/>"],
@@ -753,7 +758,7 @@ const BASE_SPECS: KitComponentSpec[] = [
       label: copy(z.string(), "the hint, as plain text"),
       // Code-only, exactly like `Tabs.tabs[].content`: a slot holds an ELEMENT,
       // and a wire attribute cannot. Optional is what keeps Tooltip wire-usable.
-      content: config(z.unknown(), "code-only: Kit elements rendered as the hint instead of label"),
+      content: config(slot, "code-only: Kit elements rendered as the hint instead of label"),
     },
     examples: ['<Tooltip label="Sent 3 days ago"><Icon name="clock"/></Tooltip>'],
   },
@@ -923,6 +928,10 @@ const SLOTS: Readonly<Record<string, Record<string, KitSlotSpec>>> = {
     actions: { doc: "elements at the end of the tab row", content: region },
   },
   Accordion: { content: { doc: "ONE section's body", content: region, at: "items" } },
+  // The read tier, and no `at`: the hint is a prop of its own, and a hover
+  // popup is READ — nothing in one can be reliably operated, so a control there
+  // would be the same trap `rowActions` exists to keep out of a cell.
+  Tooltip: { content: { doc: "Kit elements rendered as the hint instead of the label" } },
   EmptyState: { icon: { doc: "a Kit mark drawn in the disc instead of a lucide name", content: mark } },
   Steps: { marker: { doc: "a glyph drawn in place of the step's numbered disc", content: mark } },
   Modal: { header, footer },
