@@ -10,7 +10,7 @@
  * pins the two in step).
  */
 import { z } from "zod";
-import { config, copy, data, type KitComponentSpec, type PropClass, type PropSpec } from "./schema.js";
+import { config, copy, data, type KitComponentSpec, type KitSlotSpec, type PropClass, type PropSpec } from "./schema.js";
 
 // ---- shared zod fragments -------------------------------------------------
 const rows = z.array(z.record(z.string(), z.unknown()));
@@ -703,11 +703,62 @@ const BASE_SPECS: KitComponentSpec[] = [
   },
 ];
 
+/**
+ * THE SLOTS — every place the Kit takes an ELEMENT instead of a value, in one
+ * table. The generated prompt teaches from it and the nesting check enforces
+ * it: an element under a key that is NOT declared here is refused rather than
+ * dropped at render, which is the silent-breakage class this floor exists for.
+ * A slot's key is the last segment of where the element sits, so `columns[].cell`
+ * and `marker` are the slots `cell` and `marker`.
+ *
+ * THE LAW: a slot is declared here only when the React component RENDERS it —
+ * a `ReactNode` prop it actually paints (`@vendoai/ui`). Teaching a slot the Kit
+ * does not implement is worse than teaching none: the prompt tells the model to
+ * write it, every check passes it, and the renderer drops it in silence. That is
+ * the same silent-breakage this table exists to refuse, arriving through the
+ * table itself. `@vendoai/ui`'s `test/kit/slot-drift.test.tsx` puts a probe in
+ * every slot declared here and fails unless it finds it in the DOM, so the two
+ * move together at every merge.
+ *
+ * Vocabulary: no `content` means the read-only value tier
+ * (`KIT_SLOT_CONTENT_NAMES`) — right for a slot painted per row, which is
+ * written ONCE for every row and so has no row of its own to act on. A REGION
+ * is a place, and holds whatever the Kit holds; a MARK is one glyph, pill or
+ * word beside something else.
+ */
+const region: readonly string[] = BASE_SPECS.map((spec) => spec.name);
+const mark: readonly string[] = ["Icon", "Avatar", "Badge", "EnumBadge", "Text"];
+
+const SLOTS: Readonly<Record<string, Record<string, KitSlotSpec>>> = {
+  DataTable: {
+    cell: { doc: "Kit value components composed for ONE row, in place of the column's plain text", perRow: true, at: "columns" },
+  },
+  CardList: {
+    cell: { doc: "Kit value components composed for ONE item, in place of the field's plain text", perRow: true, at: "fields" },
+  },
+  KeyValue: { cell: { doc: "Kit value components composed for the record, in place of the field's plain text", perRow: true, at: "items" } },
+  Timeline: {
+    cell: { doc: "Kit components rendered as ONE entry's body", perRow: true },
+    marker: { doc: "a glyph drawn in place of the entry's dot", content: mark },
+  },
+  Tabs: { content: { doc: "ONE tab's panel, written inline instead of as a child", content: region, at: "tabs" } },
+  Accordion: { content: { doc: "ONE section's body", content: region, at: "items" } },
+};
+
+/** Where a slot's element sits, as ONE comparable string: `columns[].cell` for a
+ *  field of a description object, `marker` for a slot that is a prop of its own.
+ *  The prompt teaches this string and the nesting check matches on it, so the
+ *  place a component READS and the place the floor admits are the same place. */
+export const kitSlotPath = (name: string, slot: KitSlotSpec): string =>
+  slot.at === undefined ? name : `${slot.at}[].${name}`;
+
 /** Every spec, with each shared adjective folded into the components that read
  *  it — so validation, the wire's allowed-prop set and the screen typings admit
- *  it exactly where it lands, and refuse it where it would be dropped. */
+ *  it exactly where it lands, and refuse it where it would be dropped — and its
+ *  slots, which the same consumers read. */
 export const KIT_SPECS: KitComponentSpec[] = BASE_SPECS.map((spec) => ({
   ...spec,
+  slots: SLOTS[spec.name],
   props: {
     ...spec.props,
     ...Object.fromEntries(SHARED_PROPS
@@ -736,9 +787,10 @@ export const KIT_CHILDLESS_NAMES: readonly string[] = KIT_SPECS
   .filter((spec) => spec.takesChildren !== true)
   .map((spec) => spec.name);
 
-/** What a `cell` slot may hold: the value tier, plus the two arrangers. A cell
- *  is read, never operated — an interactive control in one has no row to act
- *  on and no room to be pressed. */
+/** What a slot that declares no vocabulary of its own may hold: the value tier,
+ *  plus the two arrangers. It is the tier every PER-ROW slot keeps — a cell is
+ *  read, never operated, and an interactive control in one has no row to act on
+ *  and no room to be pressed. */
 export const KIT_SLOT_CONTENT_NAMES: readonly string[] = [
   "Text", "Money", "DateTime", "Percent", "Num", "EnumBadge", "Badge", "Sparkline", "Progress",
   "Stack", "Row",
