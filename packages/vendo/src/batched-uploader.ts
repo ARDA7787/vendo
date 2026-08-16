@@ -26,6 +26,9 @@ export interface BatchedUploader<T> {
 export interface BatchedUploaderOptions<T> {
   /** The console API path this stream POSTs to. */
   path: string;
+  /** The verb, when the route is not a POST (the config report PUTs a whole
+   *  document rather than appending to a stream). */
+  method?: string;
   /** ADAPTER RULE: the key and base URL arrive from the composition seam. The
    *  uploader never reads the environment for either. */
   cloud: { apiKey: string; baseUrl?: string };
@@ -79,6 +82,7 @@ export function createBatchedUploader<T>(options: BatchedUploaderOptions<T>): Ba
       try {
         const response = await cloudKeyFetch<unknown>(options.path, {
           apiKey: options.cloud.apiKey,
+          ...(options.method === undefined ? {} : { method: options.method }),
           // The seam already resolved VENDO_CLOUD_URL into baseUrl; an empty
           // env pins resolution to it (or the console default) so no hidden
           // process-env read survives here (adapter rule).
@@ -95,7 +99,11 @@ export function createBatchedUploader<T>(options: BatchedUploaderOptions<T>): Ba
         }
         if (!options.accept(response)) throw new Error(`Invalid Vendo Cloud ${options.path} response`);
         return;
-      } catch {
+      } catch (error) {
+        // The console understood and refused: the same batch gets the same
+        // answer, so a retry only re-sends it. 5xx and transport errors stay
+        // retryable.
+        if (((error as { status?: number }).status ?? 500) < 500) return;
         const retryDelay = retryDelaysMs[attempt];
         if (retryDelay === undefined) return;
         await delay(retryDelay);
