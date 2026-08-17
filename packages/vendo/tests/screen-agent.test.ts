@@ -22,13 +22,16 @@
  * deployment in `packages/vendo/tests/screen-route.e2e.test.ts`.
  */
 import {
+  setLogger,
   type AppId,
   type Json,
+  type RunContext,
   type ToolDescriptor,
+  type VendoLogEvent,
   type VendoViewPart,
 } from "@vendoai/core";
 import { createAppFloor, SCREEN_FILE, type HostToolInfo } from "@vendoai/apps";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { EDIT_APP_TOOL, REPAIR_STEPS, SAVE_APP_TOOL, SCREEN_STEPS, screenAssembler } from "../src/screen-agent.js";
 import {
   boundRegistry,
@@ -43,6 +46,10 @@ import {
   type ScriptedModel,
   type TestWorkspace,
 } from "../src/agent-doubles.test-util.js";
+
+afterEach(() => {
+  setLogger(undefined);
+});
 
 const APP = "app_screen" as AppId;
 
@@ -139,6 +146,8 @@ function harness(options: {
   /** What a named tool answers, for the verbs whose ANSWER is what the loop acts
    *  on (`validate`). Everything else says `{ ok: true }`. */
   answers?: Record<string, Json>;
+  /** The runtime's memory door, for the tests about what a REFUSING one costs. */
+  remember?: (appId: AppId, decisions: string, ctx: RunContext) => Promise<void>;
 }): Harness {
   const guard = testGuard(options.guardPolicy);
   const descriptors = options.tools ?? [spendSummary, sendMoney, validate, askUser, vendoMake];
@@ -197,6 +206,7 @@ function harness(options: {
       return workspace;
     },
     render: () => ({ floor }),
+    ...(options.remember === undefined ? {} : { remember: options.remember }),
   });
 
   return {
@@ -347,8 +357,40 @@ describe("assembly writes through the real path and the seam paints it", () => {
     // …and the gauntlet refused to put them on screen, so no view and no row.
     expect(screen.emitted).toHaveLength(0);
     expect(screen.deliveredCalls).toHaveLength(0);
-    // The front door is what turns this into a fall-through: it finds no ROW.
-    expect(result.kind).toBe("assembled");
+    // The run says so itself, in the floor's own words. It used to answer
+    // `assembled` and leave the front door to notice there was no ROW — which held
+    // only while the refused save was also the run's first.
+    expect(result).toEqual({
+      kind: "unavailable",
+      why: expect.stringContaining("does not compile as TSX"),
+    });
+  });
+
+  /** No row YET is not a failure, so a memory door answering `not-found` is an
+   *  info line, not a warning that sends an operator hunting for a broken store.
+   *  The check read `instanceof VendoError`, and a host bundle's second
+   *  `@vendoai/core` copy mints a different class — so the field kept firing the
+   *  warning it was told it had stopped firing. */
+  it("demotes a not-found from ANOTHER realm's VendoError, exactly like its own", async () => {
+    const logs: VendoLogEvent[] = [];
+    setLogger((event) => { logs.push(event); });
+    const screen = harness({
+      turns: [
+        toolCallTurn(SAVE_APP_TOOL, { content: GOOD_APP, decisions: "Totals are the host's." }),
+        textTurn("done"),
+      ],
+      remember: async () => {
+        throw Object.assign(new Error("app not found: app_screen"), {
+          name: "VendoError",
+          code: "not-found",
+        });
+      },
+    });
+    await screen.assemble("show me my spending");
+
+    const codes = logs.map((event) => event.code);
+    expect(codes).not.toContain("vendo.screen-agent-decisions-not-recorded");
+    expect(codes).toContain("vendo.screen-agent-decisions-no-row");
   });
 
   /** The gate is FAIL-OPEN by design (`validate-gate.ts`): a validate that could
