@@ -83,6 +83,13 @@ import {
 export interface ComponentScreenIssue {
   code: string;
   message: string;
+  /** …except this one is not about the screen at all: one of the three machines
+   *  this gauntlet needs could not RUN here, so nothing was read and no rewrite
+   *  can help. Set where the refusal is minted, because that is the only place
+   *  that knows which happened, and carried out through the floor
+   *  (`ComponentPaintResult.environment`) so a writing loop gives up instead of
+   *  spending its budget repairing a screen nothing ever checked. */
+  environment?: true;
 }
 
 /** One `useQuery` call, as the check will execute it. */
@@ -128,6 +135,14 @@ export interface ComponentScreenOptions {
 }
 
 const issue = (code: string, message: string): ComponentScreenIssue => ({ code, message });
+
+/** A machine of this gauntlet that could not run — the compiler, the type
+ *  checker or the engine. Three codes rather than one, because a caller that
+ *  routes still needs to know WHICH; one mark, because what every reader of the
+ *  sentence has to know is the same: this deployment cannot check screens, and
+ *  the hand that fixes it is the one that built the server. */
+const unavailable = (code: string, message: string): ComponentScreenIssue =>
+  ({ code, message, environment: true });
 
 const refuse = (
   issues: ComponentScreenIssue[],
@@ -569,9 +584,9 @@ export async function checkComponentScreen(opts: ComponentScreenOptions): Promis
     // A toolchain that cannot compile is a FAILED check, not a skipped one:
     // nothing downstream can run without the compiled screen, and a gate that
     // read nothing must not answer "fine".
-    return refuse([issue("compile", error instanceof ScreenToolchainUnavailable
-      ? `the screen could not be compiled: ${error.message}, so nothing about this screen was checked. This check refuses to pass a screen it never read.`
-      : compileMessage(error))]);
+    return refuse([error instanceof ScreenToolchainUnavailable
+      ? unavailable("toolchain-unavailable", `the screen could not be compiled: ${error.message}, so nothing about this screen was checked. This check refuses to pass a screen it never read.`)
+      : issue("compile", compileMessage(error))]);
   }
   const compiled = forms.engine;
 
@@ -607,7 +622,7 @@ export async function checkComponentScreen(opts: ComponentScreenOptions): Promis
     typed = { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
   if (!typed.ok) {
-    return refuse([issue("typecheck-unavailable", `the screen could not be type-checked: ${typed.why}. This check refuses to pass a screen it never read — make the TypeScript compiler reachable where the build runs.`)], { compiled, queryPlan });
+    return refuse([unavailable("typecheck-unavailable", `the screen could not be type-checked: ${typed.why}. This check refuses to pass a screen it never read — make the TypeScript compiler reachable where the build runs.`)], { compiled, queryPlan });
   }
   if (typed.issues.length > 0) return refuse([...typed.issues], { compiled, queryPlan });
 
@@ -629,8 +644,10 @@ export async function checkComponentScreen(opts: ComponentScreenOptions): Promis
     painted = await toolchain.paint({ compiledSource: compiled, queries, catalog: names, now: Date.now() });
   } catch (error) {
     // A paint answers a screen that failed with a verdict, so a THROW is the
-    // engine itself never starting.
-    return refuse([issue("run", `the screen was never executed: the screen engine would not start (${error instanceof Error ? error.message : String(error)}). This check refuses to pass a screen it could not render.`)], { compiled, queryPlan });
+    // engine itself never starting — this deployment's third machine missing,
+    // not a screen to repair. Its own code for the same reason: `run` is the
+    // class for a screen that RAN, and these two must never read alike.
+    return refuse([unavailable("engine-unavailable", `the screen was never executed: the screen engine would not start (${error instanceof Error ? error.message : String(error)}). This check refuses to pass a screen it could not render.`)], { compiled, queryPlan });
   }
   if (!painted.ok) {
     return refuse([issue("run", renderMessage(painted.kind, painted.message))], { compiled, queryPlan });

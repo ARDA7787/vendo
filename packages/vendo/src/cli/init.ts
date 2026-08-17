@@ -14,7 +14,7 @@ import { initQuestions } from "./init-questions.js";
 import { rendererFlowOptions, runSyncFlow, writeFonts, type SyncFlowResult } from "./sync-flow.js";
 import { BRIEF_TEMPLATE } from "./extract/stages.js";
 import { ENV_KEY_VARS, resolveDevCredential, describeDevCredential, type DevCredential } from "../dev-creds/resolve.js";
-import { detectFramework, detectVendoWiring, workspaceHostCandidates, type HostFramework } from "./framework.js";
+import { NEXT_SERVER_EXTERNALS, NEXT_SERVER_EXTERNALS_LINE, SERVER_EXTERNALS_ARRAY, blankComments, detectFramework, detectVendoWiring, missingServerExternals, nextConfigPath, transpileConflictNote, transpiledServerExternals, workspaceHostCandidates, type HostFramework } from "./framework.js";
 import {
   AUTH_FAMILY_INFO,
   detectAuthPreset,
@@ -516,6 +516,56 @@ interface PlannedChange {
   after: string;
   diff: string;
 }
+
+/** What may sit between an assignment and the config object's `{`: nothing, or
+    the one plugin call that wraps it. An arrow or a function body is not a
+    config object, and inserting a property into one writes broken code. */
+const CONFIG_OBJECT_TAIL = String.raw`\s*[\w.$]*\(?\s*\{`;
+const EXPORTED_CONFIG_OBJECT = new RegExp(String.raw`(?:export\s+default|module\.exports\s*=)${CONFIG_OBJECT_TAIL}`);
+/** The name a config exports rather than declaring inline, plugin call and all
+    (`export default withMDX(nextConfig);`). */
+const EXPORTED_CONFIG_NAME = /(?:export\s+default|module\.exports\s*=)[^;{]*?([\w$]+)\)?\s*;?\s*$/m;
+
+/** Where a property may be inserted: just past the `{` of the object this
+    config EXPORTS. Takes comment-BLANKED source (see `blankComments`), so a
+    commented-out export is never taken for the real one. Anchored on the export,
+    so an earlier `const withAnalyzer = require("…")({ … })` is not either. Null
+    when the file exports something this cannot read as an object literal — a
+    dynamic config is the developer's paste, never a rewrite. */
+function configObjectBrace(code: string): number | null {
+  const name = EXPORTED_CONFIG_NAME.exec(code)?.[1];
+  const opener = name === undefined
+    ? EXPORTED_CONFIG_OBJECT
+    : new RegExp(String.raw`\b(?:const|let|var)\s+${name}\s*(?::[^=;{]*)?=${CONFIG_OBJECT_TAIL}`);
+  const match = opener.exec(code);
+  return match === null ? null : match.index + match[0].length;
+}
+
+/** The next.config a Next host needs, given what it is missing: the names
+    spliced into the list it already keeps, or the whole property at the top of
+    the object it exports. Null when neither shape is there.
+
+    Every offset is read off the comment-blanked source, which `blankComments`
+    keeps the same length as `raw` — so a commented-out list is neither read as
+    configuration nor written into, and the edit still lands on the real text. */
+function nextConfigWithExternals(raw: string, missing: readonly string[]): string | null {
+  const names = missing.map((name) => JSON.stringify(name)).join(", ");
+  const code = blankComments(raw);
+  const array = SERVER_EXTERNALS_ARRAY.exec(code);
+  if (array !== null) {
+    // Prepended, so a list written one name per line keeps its own indentation.
+    const at = array.index + array[1]!.length;
+    const listed = array[2]!;
+    return `${raw.slice(0, at)}${names}${listed.trim() === "" ? "" : `,${listed.startsWith("\n") ? "" : " "}`}${raw.slice(at)}`;
+  }
+  const brace = configObjectBrace(code);
+  return brace === null ? null : `${raw.slice(0, brace)}\n  ${NEXT_SERVER_EXTERNALS_LINE}${raw.slice(brace)}`;
+}
+
+const NEXT_CONFIG_SCAFFOLD = `const nextConfig = {\n  ${NEXT_SERVER_EXTERNALS_LINE}\n};\n\nexport default nextConfig;\n`;
+
+const NEXT_EXTERNALS_WHY =
+  "@vendoai/apps is the entry that matters: its checker imports esbuild through a variable specifier the bundler cannot see, so an \"esbuild\" entry alone is inert. Bundled, that import resolves from your app root, where pnpm never hoists esbuild, and every generated screen fails its checks while the app looks fine. Doctor fails E-CFG-004 until the line is there.";
 
 /** 04-actions §1 risk ladder projected as advice: destructive asks first,
     writes get reviewed, reads auto-run (no entry). */
@@ -1175,6 +1225,34 @@ async function buildPlan(options: InitOptions, confirmAuth?: ConfirmAuth, select
         after: packageAfter,
         diff: diff(path, packageBefore, packageAfter),
       });
+    }
+  }
+  // The one Next setting a Vendo install cannot work without (see
+  // NEXT_SERVER_EXTERNALS). A config init cannot read as an object literal is
+  // the developer's paste, exactly like every other file it did not write.
+  if (framework === "next") {
+    const found = await nextConfigPath(root);
+    const before = found === null ? null : await readOptional(found);
+    const missing = before === null ? NEXT_SERVER_EXTERNALS : missingServerExternals(before);
+    if (missing.length > 0) {
+      const absolute = found ?? join(root, "next.config.mjs");
+      const path = relative(root, absolute);
+      // A host that TRANSPILES one of these keeps the paste whatever its shape:
+      // Next hard-fatals on a package named in both lists, so writing the
+      // property for them would brick the dev server this run just wired.
+      const conflicting = before === null ? [] : transpiledServerExternals(before);
+      const after = conflicting.length > 0
+        ? null
+        : before === null
+          ? NEXT_CONFIG_SCAFFOLD
+          : nextConfigWithExternals(before, missing);
+      if (after === null) {
+        edits.push({
+          file: path,
+          lines: [`… add inside the config object: ${NEXT_SERVER_EXTERNALS_LINE}`],
+          why: conflicting.length === 0 ? NEXT_EXTERNALS_WHY : `${transpileConflictNote(conflicting)} ${NEXT_EXTERNALS_WHY}`,
+        });
+      } else changes.push({ absolute, path, before, after, diff: diff(path, before, after) });
     }
   }
   // Agent surface: a host that already uses skills (.claude/ exists) gets the

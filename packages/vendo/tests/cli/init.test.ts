@@ -7,6 +7,7 @@ import { createGuard } from "@vendoai/guard";
 import { createStore } from "@vendoai/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtractionHarness } from "../../src/cli/extract/harness.js";
+import { NEXT_SERVER_EXTERNALS, NEXT_SERVER_EXTERNALS_LINE } from "../../src/cli/framework.js";
 import { firstSentence, prettyThemeReview, runInit, type InitReceipt } from "../../src/cli/init.js";
 import type { InitQuestions } from "../../src/cli/init-questions.js";
 import { CLI_VERSION, type Output } from "../../src/cli/shared.js";
@@ -192,8 +193,9 @@ describe("vendo init (zero-question)", () => {
 
     // The summary lists what changed; nothing is left to paste.
     const logs = sink.logs.join("\n");
-    expect(logs).toContain("Wired (2 files):");
+    expect(logs).toContain("Wired (3 files):");
     expect(logs).toContain("+ " + join("app", "api", "vendo", "[...vendo]", "route.ts"));
+    expect(logs).toContain("+ next.config.mjs");
     expect(logs).not.toContain("~ " + join("app", "layout.tsx"));
     expect(logs).toContain("~ package.json");
     // No auth dependency in the fixture: one calm advisory, nothing guessed.
@@ -2087,6 +2089,117 @@ describe("the sync hooks init installs (decision 2)", () => {
     const scripts = (JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
     expect(scripts.predev).toBe("vendo sync --engine codex");
     expect(scripts.prebuild).toBe("vendo sync --strict --ai && tsc");
+  });
+});
+
+/** Next bundles @vendoai/apps into the server chunk, so the app checker's
+    deliberately bundler-hidden `import("esbuild")` resolves at runtime from the
+    app root — where pnpm never hoists esbuild — and every generated screen fails
+    its checks. Our own examples only escaped it by setting this by hand. */
+describe("the next.config repair (Next hosts)", () => {
+  /** Never trim this entry. The checker reaches esbuild through a VARIABLE
+      specifier behind bundler-ignore comments, so once @vendoai/apps is bundled
+      there is no static "esbuild" request for Next to match — a bare "esbuild"
+      entry is inert, and the list only ever worked in this repo because the
+      monorepo root hoists esbuild. Proven live: stage G rendered a screen in 28s
+      once the PACKAGE was externalized. */
+  it("keeps @vendoai/apps on the externals list — an esbuild entry alone is inert", () => {
+    expect(NEXT_SERVER_EXTERNALS).toContain("@vendoai/apps");
+  });
+
+  it("adds serverExternalPackages to the config object the host already exports", async () => {
+    const root = await fixture();
+    await writeFile(join(root, "next.config.ts"),
+      'import type { NextConfig } from "next";\n\nconst nextConfig: NextConfig = {\n  reactStrictMode: true,\n};\n\nexport default nextConfig;\n');
+    expect(await run(root, output())).toBe(0);
+    const config = await readFile(join(root, "next.config.ts"), "utf8");
+    expect(config).toContain('serverExternalPackages: ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"],');
+    expect(config).toContain("reactStrictMode: true");
+  });
+
+  /** A commented-out list is what a host debugging its bundle leaves behind.
+      Reading one as real configuration skipped the repair AND, on the branch
+      that splices, wrote the names into the comment. */
+  it("ignores a commented-out list and adds the real property", async () => {
+    const root = await fixture();
+    await writeFile(join(root, "next.config.ts"),
+      'const nextConfig = {\n  // serverExternalPackages: ["esbuild"],\n  reactStrictMode: true,\n};\n\nexport default nextConfig;\n');
+    expect(await run(root, output())).toBe(0);
+    const config = await readFile(join(root, "next.config.ts"), "utf8");
+    expect(config).toContain('serverExternalPackages: ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"],');
+    expect(config, "the host's comment is left exactly as they wrote it").toContain('  // serverExternalPackages: ["esbuild"],');
+  });
+
+  it("ignores a commented-out export when picking the object to edit", async () => {
+    const root = await fixture();
+    await writeFile(join(root, "next.config.ts"),
+      "/* export default { reactStrictMode: false }; */\nexport default { reactStrictMode: true };\n");
+    expect(await run(root, output())).toBe(0);
+    const config = await readFile(join(root, "next.config.ts"), "utf8");
+    expect(config).toContain("/* export default { reactStrictMode: false }; */");
+    expect(config).toMatch(/export default \{\n {2}serverExternalPackages/);
+  });
+
+  it("splices only the missing names into a list the host already keeps", async () => {
+    const root = await fixture();
+    await writeFile(join(root, "next.config.ts"),
+      'const nextConfig = {\n  serverExternalPackages: ["@electric-sql/pglite"],\n};\n\nexport default nextConfig;\n');
+    expect(await run(root, output())).toBe(0);
+    expect(await readFile(join(root, "next.config.ts"), "utf8"))
+      .toContain('serverExternalPackages: ["@vendoai/apps", "esbuild", "@vendoai/store", "@electric-sql/pglite"],');
+  });
+
+  it("writes a minimal config when the host has none, and re-running changes nothing", async () => {
+    const root = await fixture();
+    const sink = output();
+    expect(await agentRun(root, sink)).toBe(0);
+    const written = await readFile(join(root, "next.config.mjs"), "utf8");
+    expect(written).toContain('serverExternalPackages: ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"],');
+    expect(receiptOf(sink.logs).wrote).toContain("next.config.mjs");
+    expect(await run(root, output())).toBe(0);
+    expect(await readFile(join(root, "next.config.mjs"), "utf8")).toBe(written);
+  });
+
+  /** Next hard-fatals at boot on a package named in BOTH transpilePackages and
+      serverExternalPackages (our own demo-bank hit it). A source-linked host
+      that transpiles @vendoai/apps must therefore get the paste, never the
+      write: init following its own advice would brick their dev server. */
+  it("keeps the paste when the host transpiles a package we would externalize", async () => {
+    const root = await fixture();
+    const source = 'const nextConfig = {\n  transpilePackages: ["@vendoai/apps"],\n};\n\nexport default nextConfig;\n';
+    await writeFile(join(root, "next.config.ts"), source);
+    const sink = output();
+    expect(await agentRun(root, sink)).toBe(0);
+    expect(await readFile(join(root, "next.config.ts"), "utf8"), "init must not brick the host").toBe(source);
+    const paste = receiptOf(sink.logs).pasteEdits.find((edit) => edit.file === "next.config.ts");
+    expect(paste?.lines.join("\n")).toContain(NEXT_SERVER_EXTERNALS_LINE);
+    expect(paste?.why).toContain("Remove @vendoai/apps from transpilePackages first");
+  });
+
+  it("still edits when the transpilePackages entry is only a comment", async () => {
+    const root = await fixture();
+    await writeFile(join(root, "next.config.ts"),
+      'const nextConfig = {\n  // transpilePackages: ["@vendoai/apps"],\n};\n\nexport default nextConfig;\n');
+    expect(await run(root, output())).toBe(0);
+    expect(await readFile(join(root, "next.config.ts"), "utf8")).toContain(NEXT_SERVER_EXTERNALS_LINE);
+  });
+
+  it("hands back the paste instead of rewriting a config it cannot read", async () => {
+    const root = await fixture();
+    const dynamic = "export default (phase) => ({ reactStrictMode: true });\n";
+    await writeFile(join(root, "next.config.mjs"), dynamic);
+    const sink = output();
+    expect(await agentRun(root, sink)).toBe(0);
+    expect(await readFile(join(root, "next.config.mjs"), "utf8")).toBe(dynamic);
+    const paste = receiptOf(sink.logs).pasteEdits.find((edit) => edit.file === "next.config.mjs");
+    expect(paste?.lines.join("\n")).toContain('serverExternalPackages: ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"],');
+    expect(sink.logs.join("\n")).toContain("next.config.mjs");
+  });
+
+  it("leaves an Express host's tree alone", async () => {
+    const root = await expressFixture(true);
+    expect(await run(root, output())).toBe(0);
+    expect(Object.keys(await tree(root)).filter((path) => path.startsWith("next.config"))).toEqual([]);
   });
 });
 

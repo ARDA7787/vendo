@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { stripBom } from "./shared.js";
+import { exists, stripBom } from "./shared.js";
 import { walk } from "./theme/walk.js";
 
 export type HostFramework = "next" | "express" | "unknown";
@@ -63,6 +63,71 @@ export async function detectFramework(root: string): Promise<HostFramework> {
     return "unknown";
   }
 }
+
+/** What Next must leave OUT of the server bundle. `@vendoai/apps` is the entry
+    that fixes the bug, and listing `esbuild` alone does NOT: the apps checker
+    imports it through a VARIABLE specifier behind bundler-ignore comments (apps
+    src/server/checking/toolchain.ts), so there is no static "esbuild" request
+    for Next to match against the list. Bundle @vendoai/apps and that import
+    becomes a bare runtime resolve from the app root, where pnpm never hoists
+    esbuild — every generated screen then fails its checks while the app looks
+    fine. Externalizing the PACKAGE keeps the import inside it, where esbuild is
+    a declared dependency. PGlite's Emscripten module and the store that loads it
+    stay external for their own reason: they break under production chunking. */
+export const NEXT_SERVER_EXTERNALS: readonly string[] = ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"];
+
+/** The property exactly as init writes it and doctor tells you to paste it. */
+export const NEXT_SERVER_EXTERNALS_LINE =
+  `serverExternalPackages: [${NEXT_SERVER_EXTERNALS.map((name) => JSON.stringify(name)).join(", ")}],`;
+
+/** The list, under either spelling: Next 15's `serverExternalPackages` and Next
+    14's `experimental.serverComponentsExternalPackages` (renamed, same wiring).
+    Group 1 is everything through the `[`, group 2 the names already listed. */
+export const SERVER_EXTERNALS_ARRAY = /(server(?:Components)?ExternalPackages\s*:\s*\[)([^\]]*)/;
+
+/** The host's next.config, whichever extension it uses; null when it has none. */
+export async function nextConfigPath(root: string): Promise<string | null> {
+  for (const file of ["next.config.ts", "next.config.js", "next.config.mjs"]) {
+    if (await exists(join(root, file))) return join(root, file);
+  }
+  return null;
+}
+
+/** The source with every comment BLANKED to spaces rather than removed, so it
+    stays the same LENGTH and an index into it is an index into the original.
+    A commented-out `serverExternalPackages` line is exactly what a host
+    debugging its bundle leaves behind, and reading one as configuration greened
+    E-CFG-004 on a host that was still broken. Deliberately not a parser: it
+    blanks a `//` inside a string literal too, and the cost of that is a printed
+    paste instead of an edit — never a wrong edit. */
+export function blankComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (comment) => comment.replace(/[^\n]/g, " "));
+}
+
+const TRANSPILE_ARRAY = /transpilePackages\s*:\s*\[([^\]]*)/;
+
+const listsName = (list: string, name: string): boolean =>
+  list.includes(`"${name}"`) || list.includes(`'${name}'`);
+
+/** Which externals a next.config's TEXT does not already carry. */
+export function missingServerExternals(source: string): string[] {
+  const listed = SERVER_EXTERNALS_ARRAY.exec(blankComments(source))?.[2] ?? "";
+  return NEXT_SERVER_EXTERNALS.filter((name) => !listsName(listed, name));
+}
+
+/** Which of those the host TRANSPILES — the one state where the property must
+    not be written for them. Next REFUSES a package named in both lists and
+    hard-fatals at boot, so a source-linked host (our own demo-bank was one)
+    that follows the advice unedited loses its dev server. */
+export function transpiledServerExternals(source: string): string[] {
+  const listed = TRANSPILE_ARRAY.exec(blankComments(source))?.[1] ?? "";
+  return NEXT_SERVER_EXTERNALS.filter((name) => listsName(listed, name));
+}
+
+/** The extra sentence init's paste and doctor's finding both carry in that
+    state: the fix is two steps, and doing only the second one bricks the host. */
+export const transpileConflictNote = (conflicting: readonly string[]): string =>
+  `Remove ${conflicting.join(", ")} from transpilePackages first — Next refuses a package named in both lists and hard-fatals at boot.`;
 
 /** The workspace packages that look like the real host, for an init run one
     level too high: a monorepo root declares neither next nor express, so

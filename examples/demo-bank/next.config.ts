@@ -5,12 +5,15 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   // Served in place at demos.vendo.run/maple — see ./src/lib/base-path.
   basePath: BASE_PATH,
-  // The apps engine syntax-checks generated islands with esbuild (native
-  // binary) — keep it out of the Turbopack server bundle. PGlite's Emscripten
-  // module breaks under Turbopack's production chunking ("f.instantiateWasm
-  // is not a function"), so it stays external too — including @vendoai/store,
-  // which loads PGlite for the local default store.
-  serverExternalPackages: ["esbuild", "@electric-sql/pglite", "@vendoai/store"],
+  // @vendoai/apps is the load-bearing entry: its engine syntax-checks generated
+  // islands with esbuild through a VARIABLE specifier the bundler cannot see, so
+  // an "esbuild" entry alone is inert — bundle the package and that import
+  // becomes a bare resolve from this app's root. It only ever worked here
+  // because the monorepo root hoists esbuild. PGlite's Emscripten module breaks
+  // under Turbopack's production chunking ("f.instantiateWasm is not a
+  // function"), so it stays external too — including @vendoai/store, which loads
+  // PGlite for the local default store.
+  serverExternalPackages: ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"],
   // Dev-only: resolve the whole @vendoai workspace graph to its TypeScript
   // source so edits anywhere in packages/*/src hot-reload here instead of
   // waiting on a `pnpm build`. Turbopack matches the request verbatim, so
@@ -20,15 +23,17 @@ const nextConfig: NextConfig = {
   // only part of it leaves one bundle holding a src copy and a dist copy of
   // the same module, and state keyed by module identity (harnesses' WeakMap of
   // adapter slots, store's of internals) then splits silently across the two.
-  // @vendoai/store is the lone holdout — it is externalized for PGlite above,
-  // and node cannot require .ts. `next build` skips the block entirely and
+  // @vendoai/apps and @vendoai/store are the holdouts — both are externalized
+  // above (apps for its runtime esbuild import, store for PGlite), and an
+  // externalized package must not stay aliased here: Turbopack HARD-FATALS on a
+  // package named in BOTH transpilePackages and serverExternalPackages, and node
+  // cannot require .ts anyway. `next build` skips the block entirely and
   // resolves dist/ like a published install would.
   ...(process.env.NODE_ENV === "development"
     ? {
         transpilePackages: [
           "@vendoai/actions",
           "@vendoai/agents",
-          "@vendoai/apps",
           "@vendoai/automations",
           "@vendoai/core",
           "@vendoai/guard",
@@ -46,10 +51,6 @@ const nextConfig: NextConfig = {
             "@vendoai/actions/presets/auth-js": "../../packages/actions/src/presets/auth-js.ts",
             "@vendoai/actions/sync": "../../packages/actions/src/sync/public.ts",
             "@vendoai/agents": "../../packages/agents/src/index.ts",
-            "@vendoai/apps": "../../packages/apps/src/server/index.ts",
-            "@vendoai/apps/contract": "../../packages/apps/src/contract/index.ts",
-            "@vendoai/apps/e2b": "../../packages/apps/src/server/escalation/e2b/index.ts",
-            "@vendoai/apps/testing": "../../packages/apps/src/server/testing/index.ts",
             "@vendoai/automations": "../../packages/automations/src/index.ts",
             "@vendoai/core": "../../packages/core/src/index.ts",
             "@vendoai/core/conformance": "../../packages/core/src/conformance/index.ts",

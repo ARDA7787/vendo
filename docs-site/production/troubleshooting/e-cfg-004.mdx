@@ -1,0 +1,59 @@
+---
+title: "E-CFG-004"
+sidebarTitle: "E-CFG-004"
+description: "A Next.js host's next.config does not list @vendoai/apps in serverExternalPackages, so every generated screen fails its checks."
+---
+
+```text config/next-externals
+broken: next.config.ts does not list @vendoai/apps in serverExternalPackages
+```
+
+`check: config/next-externals` · `error_code: E-CFG-004` · `doctor exits: 1`
+
+## What you're seeing
+
+The app builds, the pages render, the agent answers — and every screen a user
+asks for comes back failed. Nothing else looks wrong.
+
+## Why
+
+Vendo syntax-checks each generated screen with `esbuild`, imported at runtime
+through a variable specifier behind bundler-ignore comments. Without
+`serverExternalPackages`, Next bundles `@vendoai/apps` into the server chunk, so
+that import becomes a bare resolve from your app root instead — and under pnpm's
+strict `node_modules`, esbuild was never hoisted there (it lives only under
+`node_modules/.pnpm/@vendoai+apps…`). The checker cannot load, so every screen
+fails the checks floor.
+
+**Listing `"esbuild"` on its own does not fix this.** There is no static
+`"esbuild"` request in the bundle for Next to match against the list — the
+specifier is a variable. `@vendoai/apps` is the entry that matters: externalize
+the package and the import stays inside it, where esbuild is a declared
+dependency.
+
+PGlite and `@vendoai/store` are on the same list for a different reason:
+PGlite's Emscripten module breaks under production chunking.
+
+## The fix
+
+Add the line inside your config object.
+
+```ts next.config.ts focus={2}
+const nextConfig = {
+  serverExternalPackages: ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"],
+};
+
+export default nextConfig;
+```
+
+On Next 14 the key is `experimental.serverComponentsExternalPackages` — same
+list, old name and location (renamed in Next 15).
+
+`npx vendo init` writes this line for you. It falls back to printing it when
+your config is one it cannot read as an object literal — a function of `phase`,
+for instance — because it never rewrites a file whose shape it is not sure of.
+
+## Related errors
+
+- [E-CFG-001](/production/troubleshooting/e-cfg-001): a required `.vendo/` file is missing
+- [E-CFG-003](/production/troubleshooting/e-cfg-003): a different config disagreement, the OpenAPI mount

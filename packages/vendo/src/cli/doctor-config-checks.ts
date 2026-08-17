@@ -11,6 +11,7 @@ import { describeDevCredential, resolveDevCredential } from "../dev-creds/resolv
 import { SLOT_PIN_ENV } from "../dev-creds/model.js";
 import type { DoctorRun } from "./doctor-report.js";
 import { EJECT_MANIFEST_FILE, type EjectedManifest } from "./eject.js";
+import { NEXT_SERVER_EXTERNALS, NEXT_SERVER_EXTERNALS_LINE, detectFramework, missingServerExternals, nextConfigPath, transpileConflictNote, transpiledServerExternals } from "./framework.js";
 import { walk } from "./theme/walk.js";
 import { exists, readOptional } from "./shared.js";
 
@@ -26,6 +27,32 @@ export async function checkConfigFiles(run: DoctorRun): Promise<void> {
     }
   }
   if (!await exists(join(root, ".vendo", "data", ".gitignore"))) run.warn("config/data-gitignore", "E-CFG-002", ".vendo/data/.gitignore is missing");
+}
+
+/** The bundler seam a Next install lives or dies on (NEXT_SERVER_EXTERNALS):
+ *  without @vendoai/apps on the list Next bundles it into the server chunk, the
+ *  checker's esbuild import becomes a bare runtime resolve from the app root —
+ *  where pnpm never hoists esbuild — and every generated screen fails its checks
+ *  while the app itself looks fine. `vendo init` writes the line; a host whose
+ *  config it could not read, or that never ran init, lands here. */
+export async function checkNextServerExternals(run: DoctorRun): Promise<void> {
+  const { root } = run;
+  if (await detectFramework(root) !== "next") return;
+  const configPath = await nextConfigPath(root);
+  const source = configPath === null ? null : await readOptional(configPath);
+  const missing = source === null ? NEXT_SERVER_EXTERNALS : missingServerExternals(source);
+  if (missing.length === 0) {
+    run.pass("config/next-externals", `next.config keeps ${NEXT_SERVER_EXTERNALS.join(", ")} out of the server bundle`);
+    return;
+  }
+  const conflicting = source === null ? [] : transpiledServerExternals(source);
+  run.fail("config/next-externals", "E-CFG-004",
+    `${configPath === null ? "next.config" : relative(root, configPath)} does not list ${missing.join(", ")} in serverExternalPackages — `
+    + "@vendoai/apps is the entry that matters, and an \"esbuild\" entry without it is inert (the checker's esbuild import uses a variable "
+    + "specifier the bundler cannot see). Bundled, that import resolves from your app root, where pnpm never hoists esbuild, and every "
+    + `generated screen fails its checks while the rest of the app looks fine. Add inside the config object: ${NEXT_SERVER_EXTERNALS_LINE} `
+    + (conflicting.length === 0 ? "" : `${transpileConflictNote(conflicting)} `)
+    + "(Next 14 spells it experimental.serverComponentsExternalPackages).");
 }
 
 /** Platforms whose container filesystem is wiped on every redeploy — the same
