@@ -50,18 +50,19 @@
           {
             "group": "Get started",
             "pages": [
+              "what-is-vendo",
               "index",
               "how-vendo-works"
             ]
           },
           {
-            "group": "Give it to your agent",
+            "group": "Install with your agent",
             "pages": [
-              "agents/index"
+              "give-it-to-your-agent"
             ]
           },
           {
-            "group": "In your product",
+            "group": "Vendo's Full-Stack Agent",
             "pages": [
               "product/quickstart",
               "product/how-it-works",
@@ -78,21 +79,21 @@
             ]
           },
           {
-            "group": "In your backend",
-            "pages": [
-              "backend/quickstart",
-              "backend/converse",
-              "backend/run",
-              "backend/your-own-surface"
-            ]
-          },
-          {
             "group": "From outside agents",
             "pages": [
               "outside-agents/quickstart",
               "outside-agents/how-the-door-works",
               "outside-agents/your-own-agent",
               "outside-agents/service-keys-and-broker"
+            ]
+          },
+          {
+            "group": "In your backend",
+            "pages": [
+              "backend/quickstart",
+              "backend/converse",
+              "backend/run",
+              "backend/your-own-surface"
             ]
           },
           {
