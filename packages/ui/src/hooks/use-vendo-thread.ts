@@ -11,6 +11,7 @@ import {
 } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVendoProvider } from "../context.js";
+import { identityState } from "./identity-state.js";
 import { currentSituation } from "../situation.js";
 import { publishThreadRun, retireThreadRun, type VendoBeat } from "../chrome/run-activity.js";
 import { publishWorkbenchPart } from "../chrome/workbench-store.js";
@@ -79,7 +80,7 @@ const NO_BEATS: readonly VendoBeat[] = [];
 /** Clients whose provider prompt-cache this page already primed — the warm
  *  call is per-deployment-per-user, so once per client instance is the
  *  whole job (and strict-mode double effects must not pay it twice). */
-const warmedClients = new WeakSet<object>();
+const warmedClients = new WeakMap<object, number>();
 
 function vendoApproval(part: UIMessage["parts"][number]): VendoApprovalPart | undefined {
   if (part.type !== "data-vendo-approval") return undefined;
@@ -193,9 +194,17 @@ export function useVendoThread(threadId?: string) {
   // the provider entry outlives any single mount, and strict-mode double
   // effects must not buy the cache write twice. Best-effort by design.
   useEffect(() => {
-    if (warmedClients.has(client)) return;
-    warmedClients.add(client);
-    client.threads.warm().catch(() => {});
+    // The mark is EPOCH-KEYED (greptile on #1445, twice): a refused warm at
+    // epoch N primed nothing, and the conversation remounting after sign-in
+    // (epoch N+1) deserves the warm-up the plain once-per-client mark denied
+    // it — no delete-vs-remount ordering to race. And the refusal is stamped
+    // with the epoch its request BEGAN in, so a stale 403 landing after the
+    // sign-in cannot re-close the latch and un-render the composer.
+    const identity = identityState(client);
+    const at = identity.epoch();
+    if (warmedClients.get(client) === at) return;
+    warmedClients.set(client, at);
+    client.threads.warm().catch((reason: unknown) => identity.note(reason, at));
   }, [client]);
   // Beats belong to the RUNNING turn: clearing on the settle (rather than on the
   // next turn's start) is one rule that answers both halves of §3.4's ephemeral
