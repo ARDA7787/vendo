@@ -224,6 +224,7 @@ function modelRow(): BootRow | undefined {
 export function bootSummaryFor(composition: VendoComposition): BootSummary {
   const { config, composed, sandbox, inference, connections, guard, hostedStoreComposed, store }
     = composition;
+  const { membershipsSeam } = composition;
   const rows: BootRow[] = [];
   const warnings: BootWarning[] = [];
 
@@ -259,6 +260,13 @@ export function bootSummaryFor(composition: VendoComposition): BootSummary {
   // deployment can tell the operator.
   const ephemeral = ephemeralStoreWarning(store);
   if (ephemeral !== undefined) warnings.push(ephemeral);
+
+  // What bounds the users' file drawer. Only when the host actually filled the
+  // seam: unset, the store's own blobs back it and the store row above already
+  // names where those live, so a second row would say the same thing twice.
+  if (config.files !== undefined) {
+    rows.push({ label: "files", venue: "byo", detail: "createVendo({ files })" });
+  }
 
   if (inference.agent.venue === "custom") {
     rows.push({ label: "models", venue: "custom", detail: "createVendo({ models })" });
@@ -298,6 +306,14 @@ export function bootSummaryFor(composition: VendoComposition): BootSummary {
     rows.push({ label: "auth", venue: "preset", detail: "createVendo({ auth })" });
   } else {
     rows.push({ label: "auth", venue: "custom", detail: "createVendo({ principal })" });
+  }
+
+  // Tenant connectors are per-ORG, and an org only ever reaches a request
+  // through the memberships seam (build contract §9.1). Without one, no run can
+  // ever assert an org and no overlay can ever be selected — the seam is not
+  // serving, so it says nothing, like every other unfilled seam above.
+  if (membershipsSeam !== undefined) {
+    rows.push({ label: "tenants", venue: "store", detail: "vendo.tenantConnectors" });
   }
 
   const posture = guard.status().posture;
