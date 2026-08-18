@@ -65,8 +65,8 @@ export const complianceChecks: Check[] = [
   {
     name: "no-unmasked-accounts",
     kind: "fact",
-    run: async ({ document }) => {
-      const printed = JSON.stringify(document.tree ?? {});
+    run: async ({ renderedTree }) => {
+      const printed = JSON.stringify(renderedTree ?? {});
       return /\b\d{9,}\b/.test(printed)
         ? [{ severity: "block", where: "document", message: UNMASKED_ACCOUNT }]
         : [];

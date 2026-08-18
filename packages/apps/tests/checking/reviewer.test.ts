@@ -6,7 +6,6 @@
  */
 import {
   VENDO_APP_FORMAT,
-  type ShapeType,
 } from "@vendoai/core";
 import {
   SCREEN_FILE,
@@ -28,29 +27,10 @@ const tools: HostToolInfo[] = [{
   inputSchema: { type: "object", properties: {} },
 }];
 
-const toolShapes: Record<string, ShapeType> = {
-  host_listInvoices: {
-    kind: "object",
-    fields: {
-      data: {
-        kind: "array",
-        items: {
-          kind: "object",
-          fields: {
-            id: { kind: "string" },
-            client: { kind: "string" },
-            amountCents: { kind: "number" },
-          },
-        },
-      },
-    },
-  },
-};
-
 const catalog: NormalizedCatalog = [];
 
 const deps = (model: FloorDependencies["model"]): FloorDependencies =>
-  ({ model, catalog, tools, toolShapes });
+  ({ model, catalog, tools });
 
 /** The app the reviewer judges: its `app.tsx`, spelled exactly as the row spells
  *  it. The reviewer reads the STORED screen and nothing else. */
@@ -158,7 +138,6 @@ describe("host and pack judgment rules reach the reviewer (F2)", () => {
       { name: "unattended-irreversibility", kind: "judgment" as const, rule: NO_UNATTENDED },
     ];
     const layer = createCheckingLayer({
-      deps: deps(model),
       checks: [reviewerCheck(deps(model), samples, judgmentRules(packChecks)), ...packChecks],
     });
 
@@ -300,7 +279,7 @@ describe("the AI reviewer", () => {
       where: '<Button> labeled "Remind client"',
       message: 'the button calls host_listInvoices, which only reads invoices — it sends no reminder; drop the button or say so honestly',
     }]));
-    const layer = createCheckingLayer({ deps: deps(model), checks: [reviewerCheck(deps(model), samples)] });
+    const layer = createCheckingLayer({ checks: [reviewerCheck(deps(model), samples)] });
 
     // An app with no title: one fact finding, alongside whatever the reviewer says.
     const findings = await layer.run({

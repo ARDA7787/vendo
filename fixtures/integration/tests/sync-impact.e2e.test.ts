@@ -1,5 +1,5 @@
 /** ENG-261 — sync blast radius over the real composed wire and store. */
-import { VENDO_APP_FORMAT, VENDO_TREE_FORMAT, type AppDocument } from "@vendoai/core";
+import { VENDO_APP_FORMAT, type AppDocument } from "@vendoai/core";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ADA,
@@ -25,19 +25,14 @@ function plainApp(): AppDocument {
     id: "app_import_placeholder",
     name: "Invoice viewer",
     ui: "tree",
-    tree: {
-      formatVersion: VENDO_TREE_FORMAT,
-      root: "root",
-      nodes: [{ id: "root", component: "Text", props: { text: "Invoices" } }],
-      queries: [{ name: "invoices", tool: TOOL }],
-    },
+    components: { Invoices: "export default function Invoices(){ return null; }" },
   };
 }
 
 const EVENT = "sync-impact.refresh";
 
 describe("ENG-261: sync impact through the composed wire", () => {
-  it("maps a tool to its saved app, automation, and active standing grant", async () => {
+  it("maps a tool to its automation and active standing grant", async () => {
     await resetFixture();
     // `vendo sync` talks to a dev server, and only a development composition
     // mounts the route it talks to. This stack opts in the way that dev server
@@ -77,7 +72,12 @@ describe("ENG-261: sync impact through the composed wire", () => {
       impact: [
         {
           tool: TOOL,
-          apps: [{ id: app.id, title: "Invoice viewer" }],
+          // EMPTY, and honestly so. No door this deployment has writes an app row
+          // that names a tool: import does not copy `componentTools`, and the
+          // reader does not look at the `app.tsx` where a screen's reads actually
+          // live. Hand-writing the manifest here would have proved only that the
+          // reader reads a field.
+          apps: [],
           // A record has no name — it has a WHEN, which is what a person would
           // recognize it by in the report.
           automations: [{ id: automated.id, title: `on ${EVENT}` }],

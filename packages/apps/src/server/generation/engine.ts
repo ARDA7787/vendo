@@ -9,11 +9,11 @@
  * ./lanes.ts. What is ENFORCED lives in ./validation and ../checking.
  */
 import {
+  type ShapeType,
   type ToolSemantics,
 } from "@vendoai/core";
 import {
   type AppDocument,
-  type Tree,
 } from "../../contract/index.js";
 import type { LanguageModel, ModelMessage } from "ai";
 import type { FloorDependencies } from "../checking/deps.js";
@@ -34,24 +34,18 @@ export interface GenerationDependencies extends FloorDependencies {
   /** Narrowed to REQUIRED: the floor can run its deterministic half without a
    *  model, but a generation cannot happen without one. */
   model: LanguageModel;
+  /** Each tool's declared response schema in structural form
+   *  (`shapeFromJsonSchema`), keyed by tool: the shape cards the prompts render
+   *  and the automation planner reads. It sits here rather than on the floor
+   *  because no check reads it — the screen type check works off the tools'
+   *  own `outputSchema`. */
+  toolShapes?: Readonly<Record<string, ShapeType>>;
   /** Per-tool field semantics from `.vendo/semantics.json`: annotated shape
    *  cards and Kit format defaults. Keyed by tool name. */
   semantics?: Readonly<Record<string, ToolSemantics>>;
 }
 
 export type GeneratedAppDocument = Omit<AppDocument, "id">;
-
-/**
- * A stored document's `tree` (the open UIPayload the store speaks) and the
- * genui `Tree` are the same structure under two names. These two casts are the
- * ONLY bridge between them — an `as unknown as` on a tree anywhere else is a
- * smell. `asTree` trusts its caller about presence, exactly as the casts it
- * replaced did: guard `undefined` before converting.
- */
-export const asTree = (tree: GeneratedAppDocument["tree"]): Tree => tree as unknown as Tree;
-
-export const asPayload = (tree: Tree): NonNullable<GeneratedAppDocument["tree"]> =>
-  tree as unknown as NonNullable<GeneratedAppDocument["tree"]>;
 
 // Anthropic prompt-caching breakpoint (mirrors packages/agent/src/agent.ts's
 // CACHE_BREAKPOINT). providerOptions.anthropic is ignored by every other
