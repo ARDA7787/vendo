@@ -60,6 +60,7 @@ import {
 } from "@vendoai/store";
 import {
   createHarnessRuntime,
+  createTurnTimings,
   latestUserIntent,
   provideHarnessAdapters,
   THREAD_ID_HEADER,
@@ -396,12 +397,34 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
     },
 
     async stream(input) {
+      // The turn's clock, started at the top: `durationMs` used to begin after
+      // the opening reads, which is why a slow store was invisible in it.
+      const timings = createTurnTimings();
       validateMessage(input?.message);
       // The message choke (limits.ts owns the counting, the policy and the
       // recording): asked BEFORE the thread is resolved, so a refused message
       // costs no read, no write and no model call.
       const verdict = await config.limiter?.gate("message", input.ctx);
       if (verdict?.allow === false) return limitResponse(verdict);
+      // Assembled once, per turn, for WHOEVER thinks. The venue gate and the guard's
+      // directions live in here, which is why it is composition's job and not the
+      // harness's. Which discovery section it may promise is decided by what is
+      // actually on the listing: a curated surface has `find_tools`, an uncurated one
+      // has the connector pair (and only with connectors configured), or neither.
+      //
+      // STARTED HERE and awaited after the store phase. It needs only the
+      // request's ctx and the rail this harness carries — neither of which the
+      // store below can change — so assembling it after the reads meant the turn
+      // paid the store's wait and the guard's `directions` wait end to end.
+      // Started after the limiter gate, not before: a refused message must still
+      // cost nothing.
+      const rail = config.harness.toolSurface?.curated !== false
+        ? "find-tools" as const
+        : config.connectorDiscovery === true ? "connectors" as const : false;
+      const systemRead = config.system(input.ctx, { discovery: rail });
+      // A rejection is delivered where the prompt is awaited below; this only
+      // keeps a store-phase throw from turning it into an unhandled one.
+      void systemRead.catch(() => {});
       // The turn's opening reads, in ONE call where the store serves it: the
       // thread row, the workspace index, and the harness slot. Each part is
       // exactly what its own op answers, so the doors below decide on the same
@@ -415,6 +438,10 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
       // without costing a read, which is what it always cost.
       const given = input.threadId as ThreadId | undefined;
       const { subject } = input.ctx.principal;
+      // The store phase: the handshake, the envelope read, the thread resolve,
+      // the opening write and the workspace open — everything before the prompt
+      // is assembled. One span, because it is one wait for the person.
+      const storeAt = Date.now();
       const batched = (given === undefined || isThreadId(given)) && await servesTurn();
       // Minted HERE only when the envelope will ask for it: a turn has to name
       // its thread before it can read it, and a first turn still has a
@@ -531,6 +558,7 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
           ...(index === undefined ? {} : { index }),
         }),
       ]);
+      timings.add("store", Date.now() - storeAt);
       // §1.6 — the render seam, built for THIS turn's ctx and handed to the
       // runtime's generic `wrapWorkspace` slot: the runtime owns WHERE the wrap
       // happens and what `emit` writes to; composition owns WHAT wraps.
@@ -539,26 +567,37 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
       // every tool call passes the bridge's `onCall`, and `liveTurn`'s disposer
       // is the runtime's turn end (it retracts the publication in the run's
       // `finally`). Names and counts only — no argument and no result.
-      const startedAt = Date.now();
       const toolNames = new Set<string>();
       let toolCalls = 0;
-      const emitRun = (outcome: "ok" | "error", errorCode: string | null): void => emitUsage({
-        name: "agent_run",
-        durationMs: Date.now() - startedAt,
-        // No rail carries the thinker's step count out of the harness runtime
-        // (the workbench's `step-start` is dev-only, gated on VENDO_WORKBENCH),
-        // so this stays 0 until the runtime publishes one.
-        steps: 0,
-        toolCalls,
-        tools: [...toolNames].sort(),
-        modelFamily: modelFamilyOf(config.models),
-        outcome,
-        errorCode,
-      });
+      const emitRun = (outcome: "ok" | "error", errorCode: string | null): void => {
+        const durationMs = timings.elapsed();
+        const { ttft = 0, store = 0, prompt = 0, tools: toolsMs = 0, guard = 0 } = timings.ms;
+        emitUsage({
+          name: "agent_run",
+          durationMs,
+          ttftMs: ttft,
+          storeMs: store,
+          promptMs: prompt,
+          // Whatever the other four leave over — the thinker's own wall time,
+          // which is what a slow turn is usually made of.
+          modelMs: Math.max(0, durationMs - store - prompt - toolsMs - guard),
+          toolsMs,
+          guardMs: guard,
+          steps: timings.steps,
+          toolCalls,
+          tools: [...toolNames].sort(),
+          modelFamily: modelFamilyOf(config.models),
+          outcome,
+          errorCode,
+        });
+      };
       const bridge = config.bridge?.(input.ctx, thread.id) as ToolBridgeOptions | undefined;
       const runtime = createHarnessRuntime({
         tools: config.tools,
         guard: config.guard,
+        // The same collector the marks above went into: the runtime adds the
+        // ones only it can see (the first output, the model calls).
+        timings,
         // Read off THIS turn's mount, so a skill the host stopped shipping is
         // gone the moment they deploy — no stale copy to invalidate.
         skills: createTurnSkills(workspace),
@@ -572,7 +611,14 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
           ...transcript,
           list: async (principal, threadId) =>
             threadId === thread.id && principal.subject === thread.subject
-              ? structuredClone(thread.messages)
+              // The ARRAY the turn is running, not a copy of it. The runtime
+              // takes its own deep copies of both the canonical transcript and
+              // the pristine one it diffs persistence against, so it never
+              // writes through this — and handing it the same array is what
+              // lets it SEE that its stored history and its incoming history
+              // are one thing, and skip re-validating the transcript against
+              // itself (runtime.ts).
+              ? thread.messages
               : transcript.list(principal, threadId),
         },
         harnessState: {
@@ -647,21 +693,21 @@ export function createHarnessTurns(config: HarnessTurnsConfig): HarnessTurns {
         }),
       });
 
-      // Assembled once, per turn, for WHOEVER thinks. The venue gate and the guard's
-      // directions live in here, which is why it is composition's job and not the
-      // harness's. Which discovery section it may promise is decided by what is
-      // actually on the listing: a curated surface has `find_tools`, an uncurated one
-      // has the connector pair (and only with connectors configured), or neither.
-      const rail = config.harness.toolSurface?.curated !== false
-        ? "find-tools" as const
-        : config.connectorDiscovery === true ? "connectors" as const : false;
-      const system = await config.system(input.ctx, { discovery: rail });
+      // What the prompt still COSTS the turn, now that it was assembled beside
+      // the store phase: the wait left over once the reads are done. The phase
+      // split has to keep summing to the wall clock (`modelMs` is the
+      // remainder), so an overlapped span must be billed once, to whichever
+      // phase was still waiting — and a prompt that finished first is honestly
+      // worth ~0ms to this turn.
+      const promptAt = Date.now();
+      const system = await systemRead;
       // Spec 2026-08-05 §2, relocated (sub-1s shipment): the screen snapshot is
       // delivered BESIDE the stable prompt, not inside it — it changes every
       // message, and volatile bytes ahead of stable ones are what kept the
       // provider's prompt cache cold. Same block builder, same this-turn-only
       // life: the ctx and `Turn.situation`, never the store.
       const situation = situationPromptBlock(input.ctx.context);
+      timings.add("prompt", Date.now() - promptAt);
       const response = await runtime.run<never>({
         harness: config.harness,
         threadId: thread.id,

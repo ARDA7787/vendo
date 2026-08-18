@@ -31,6 +31,15 @@ const EVENT_COLLECTION = "vendo_channel_events";
  *  will make, and matches the window a conversation itself lives in. */
 const DELIVERY_MEMORY_MS = 24 * 60 * 60_000;
 
+/** How often one process bothers to sweep those rows. Pruning is housekeeping,
+ *  not correctness — nothing reads a stale row, it is only storage — but it used
+ *  to run on EVERY message, re-listing the whole conversation and deleting
+ *  row by row before the turn could start. So it becomes a sweep, kept per
+ *  conversation: a conversation's first delivery pays for it (which is what
+ *  keeps a serverless deployment, where every instance is cold, bounded exactly
+ *  as before) and the burst of texts behind it does not. */
+const PRUNE_INTERVAL_MS = 60 * 60_000;
+
 const ASK_COLLECTION = "vendo_channel_asks";
 /** An approval id IS the row id, and the guard mints them `apr_<uuid>`
  *  (guard.ts:205) — so a row that is not one was not written by this file. */
@@ -398,6 +407,11 @@ async function deliveryRowId(eventId: string): Promise<string> {
 export class ChannelEventLog {
   constructor(private readonly store: StoreAdapter) {}
 
+  /** Per conversation, not one clock for the process: a single shared clock
+   *  lets one chatty conversation spend every interval, and every other
+   *  conversation's expired rows are then never considered again. */
+  private readonly sweptAt = new Map<string, number>();
+
   /** True when this delivery is ours to run, false when it already ran. */
   async claim(eventId: string, conversationId: string): Promise<boolean> {
     const id = await deliveryRowId(eventId);
@@ -407,7 +421,10 @@ export class ChannelEventLog {
       data: { eventId, seenAt: new Date(Date.now()).toISOString() },
       refs: { conversation: conversationId },
     });
-    await this.prune(conversationId);
+    if (Date.now() - (this.sweptAt.get(conversationId) ?? 0) >= PRUNE_INTERVAL_MS) {
+      this.sweptAt.set(conversationId, Date.now());
+      await this.prune(conversationId);
+    }
     return true;
   }
 
