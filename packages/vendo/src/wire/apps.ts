@@ -140,7 +140,11 @@ async function answerUnservableApp(wire: WireContext, appId: string, ctx: RunCon
   }
 }
 
-async function openWithPendingWindow(wire: WireContext, appId: string, ctx: RunContext): Promise<Response> {
+/** Both open routes, which differ only in whether the embed's build window is
+ *  open: `pending: false` is what the runtime already did for an absent option
+ *  (`createAppOpener`), and an unflagged open can never answer `pending`, so the
+ *  arrival line below reads the same on either. */
+async function openApp(wire: WireContext, appId: string, ctx: RunContext, pending: boolean): Promise<Response> {
   const { deps } = wire;
   // The ONLY thing this arm guards is the open. The flag rides through to the
   // runtime, which answers a build still in flight with `{kind:"pending"}` plus —
@@ -148,17 +152,40 @@ async function openWithPendingWindow(wire: WireContext, appId: string, ctx: RunC
   // something to show.
   let surface: Awaited<ReturnType<typeof deps.apps.open>>;
   try {
-    surface = await deps.apps.open(appId, ctx, { pending: true });
+    surface = await deps.apps.open(appId, ctx, { pending });
   } catch (reason) {
+    // About the STORED artifact, never about this request: the only input this
+    // door takes is the app id, and a bad one is not-found. So the caller is told
+    // WHAT is wrong in the refusal's own words, through the terminal answer this
+    // wire already speaks (`{kind:"failed"}` — the shape persistence/open.ts:249
+    // returns for a document with no screen left). As a bare 400 it carried no
+    // reason and read as "try again": an agent retried one identical response for
+    // 7.7 minutes, until its turn budget died.
+    //
+    // No `retryable` claim rides along, because this door's refusals are a MIXED
+    // class. A screen's OWN fault is permanent (it will not compile, it throws on
+    // the shape its queries really return), but the same refusal also carries a
+    // deployment with no compiler or engine, a query the guard blocked, an
+    // unconnected toolkit, and a read awaiting approval
+    // (server/checking/component-screen.ts) — every one of those can open fine
+    // later, and only the floor knows which one it had. So this states the
+    // failure and its reason, and asserts nothing about a retry.
+    if (isVendoError(reason) && reason.code === "validation") {
+      return json({ kind: "failed", reason: reason.message });
+    }
     // Cross-realm safe (`isVendoError`): a second @vendoai/core copy's not-found
     // read as an unknown fault here, which 501'd the poll instead of answering it.
-    if (!(isVendoError(reason) && reason.code === "not-found")) throw reason;
+    // Only the flagged route rescues it; unflagged keeps its contracted 404.
+    if (!(pending && isVendoError(reason) && reason.code === "not-found")) throw reason;
     return await answerUnservableApp(wire, appId, ctx);
   }
-  // Arrival, outside that catch on purpose — a mark's own not-found must never be
-  // read as the open's. A `pending` answer put nothing on screen (the whole point
-  // of the flag), so it is not a render; the opener's build-window decision is the
-  // gate, and nothing re-reads `building` to guess at it.
+  // Arrival — THIS is what "rendering marks it seen" means: a person's browser
+  // asked for a surface to put on screen. The runtime door is not the place for it
+  // (an agent's `vendo_apps_open` and an automation both pass through there).
+  // Outside that catch on purpose — a mark's own not-found must never be read as
+  // the open's. A `pending` answer put nothing on screen (the whole point of the
+  // flag), so it is not a render; the opener's build-window decision is the gate,
+  // and nothing re-reads `building` to guess at it.
   if (surface.kind !== "pending") await markArrival(deps, appId, ctx);
   return json(surface);
 }
@@ -279,16 +306,7 @@ export const appRoutes: RouteEntry[] = [
       }
     }
     if (op(wire, "GET", "open")) {
-      if (wire.url.searchParams.get("pending") === "1") return openWithPendingWindow(wire, appId, ctx);
-      const surface = await deps.apps.open(appId, ctx);
-      // Arrival — THIS is what "rendering marks it seen" means: a person's
-      // browser asked for a surface to put on screen. The runtime door is not
-      // the place for it (an agent's `vendo_apps_open` and an automation both
-      // pass through there); a build still in flight never reaches this line,
-      // because open() answers not-found until it can serve. Non-fatal: the
-      // surface is already served, and bookkeeping does not get to unserve it.
-      await markArrival(deps, appId, ctx);
-      return json(surface);
+      return openApp(wire, appId, ctx, wire.url.searchParams.get("pending") === "1");
     }
     if (op(wire, "POST", "call")) {
       const body = await requestJson(request);
