@@ -14,7 +14,7 @@ import type {
   OverridesFile,
   ServerActionHandler,
 } from "@vendoai/actions";
-import type { AppsConfig, SandboxAdapter, AppsRuntime } from "@vendoai/apps";
+import type { AppsConfig, SandboxAdapter, AppsRuntime, SlotDescriptor } from "@vendoai/apps";
 import type { VendoAgent as ComposedAgent } from "@vendoai/agents";
 import type { AutomationsEngine } from "@vendoai/automations";
 import type {
@@ -180,6 +180,12 @@ export interface CreateVendoConfig {
       and loads on demand. Names are global as authored and a collision with
       another contributor fails at boot naming both. */
   skills?: readonly Skill[];
+  /** Slots this deployment ALWAYS has, declared here instead of reported by a
+      page render. The registry is otherwise page-reported and ages out
+      (`SLOT_DECAY_MS`), which leaves an agent-only product — no page of ours
+      renders a <VendoSlot> — with nowhere to pin. A declared slot never
+      decays and needs no render. */
+  slots?: readonly SlotDescriptor[];
   /** Host components available to generated apps: the name-keyed registry
       object (01 §14 — the same object serves <VendoProvider>; the server ignores
       each entry's `component` reference) or the array form. Entry names must
@@ -417,6 +423,11 @@ export interface CreateVendoConfig {
       bridge, and the connector-discovery registry's own search results, and a
       harness cannot reach two of those three. */
   toolOutputCap?: number;
+  /** What one browser upload may carry through the drop door (`POST /files`),
+      in bytes. Default UPLOAD_MAX_BYTES (5 MiB). A DOOR cap, not a storage cap:
+      `vendo.putUserFile` is a trusted server caller and is bounded by whatever
+      backs `files:` instead. */
+  uploadMaxBytes?: number;
   /** ENG-252 — cap on the uncurated initial tool loadout; the rest stay
       discoverable via `find_tools`. Defaults to the agent block's
       DEFAULT_MAX_INITIAL_TOOLS. A discovery-rail knob, and the rail is built
