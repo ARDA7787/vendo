@@ -32,6 +32,7 @@ comes after it.
 ```http
 POST /api/vendo/files?name=sales-2026.csv
 Content-Type: text/csv
+x-vendo-upload: 1
 
 month,revenue
 jan,31000
@@ -43,6 +44,11 @@ jan,31000
 
 The body is the file's own raw bytes under its own media type — there is no
 multipart form to assemble, so the name rides the query string, percent-encoded.
+
+`x-vendo-upload` is required and its value is not read. A raw body cannot be
+`application/json`, so this door sits outside the wire's CSRF floor and asks for
+a header a cross-site form post cannot set. Without it the upload comes back a
+`400`. The client below sends it for you.
 
 <Note>
   **Same name replaces.** Upload `sales-2026.csv` again and the new file *is*
@@ -113,8 +119,22 @@ it.
 Ask for a dashboard of a spreadsheet and the agent builds an app, copying what
 it needs — the rows of a table become the app's own saved items.
 
+Saved items are the app's **own** storage, not a second window onto the drawer.
+An app keeps only the collections it declares, each one apart from every other
+app's, and the agent is what reads and writes them. The drawer is untouched by
+any of it — the agent can list and read a user's files, and has no tool that
+writes one.
+
 That copy is a **snapshot, not a live link**. The app does not read the user's
 files afterwards, and nothing re-reads them on its behalf.
+
+Say a user drops `sales-2026.csv` — eleven rows, one per month through November
+— and asks for a dashboard. The agent builds one over those eleven. In December
+they upload `sales-2026.csv` again, now twelve rows: the drawer's copy is
+replaced, and the dashboard still holds the eleven it was built from. It holds
+them until the person asks for a refresh. The agent then reads the new file,
+rewrites the app's saved items to the twelve, and answers in words — the file
+was replaced, the app updated. What changed is the app and what it has saved.
 
 <Note>
   **Refresh is the agent's job, never a background sync.** Send a newer
