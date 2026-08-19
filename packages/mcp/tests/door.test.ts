@@ -3094,6 +3094,9 @@ describe("createMcpDoor first-party service auth", () => {
       ["no client_secret", { client_secret: null }, "invalid_request"],
       ["no subject_token", { subject_token: null }, "invalid_request"],
       ["an empty subject_token", { subject_token: "" }, "invalid_request"],
+      ["a whitespace-only subject_token", { subject_token: "   " }, "invalid_request"],
+      // The one a template string leaves behind when the id was not loaded yet.
+      ["a subject_token that is the literal \"undefined\"", { subject_token: "undefined" }, "invalid_request"],
       ["no subject_token_type", { subject_token_type: null }, "invalid_request"],
       ["a subject_token_type this door does not speak", { subject_token_type: "urn:ietf:params:oauth:token-type:jwt" }, "invalid_request"],
       ["another server's resource", { resource: "https://other.example/mcp" }, "invalid_target"],
@@ -3112,6 +3115,12 @@ describe("createMcpDoor first-party service auth", () => {
     // while every assertion above still passed. The BODIES must be identical.
     expect(new Set(refusals).size, refusals.join("\n")).toBe(1);
 
+    // A subject nobody is, on the other hand, MUST be an oracle: it is the
+    // caller's own bug, and only this refusal is positioned to name the fix.
+    const blank = await serviceExchange(harness.door, { subject_token: "undefined" });
+    expect((await blank.json() as { error_description: string }).error_description)
+      .toContain("vendo.tokenFor(user.id)");
+
     const wrongType = await serviceExchange(harness.door, {}, "application/json");
     expect(wrongType.status).toBe(400);
     expect(await wrongType.json()).toMatchObject({ error: "invalid_request" });
@@ -3119,6 +3128,49 @@ describe("createMcpDoor first-party service auth", () => {
     // Nothing was minted and nothing was audited along the way.
     expect(harness.store.rows("vendo_mcp_grants")).toEqual([]);
     expect(harness.audits).toEqual([]);
+  });
+
+  it("refuses a blank subject from `authorize` too, not only from `session`", async () => {
+    // The prebuilt-session posture already dies on it (oauth/server.ts:284).
+    const fromSession = makeHarness({
+      oauth: {
+        async session() { return { subject: "" }; },
+        async principal(subject) { return { kind: "user", subject }; },
+      },
+    });
+    const sessionClient = await register(fromSession.door);
+    const refusedSession = await authorize(fromSession.door, sessionClient.body.client_id);
+    expect(refusedSession.status).toBe(400);
+    expect(await refusedSession.json()).toMatchObject({ error: "invalid_request" });
+
+    // The authorize-only posture hands the SAME blank subject to the SAME
+    // #approve, so it must die the same way rather than mint a code for nobody.
+    const fromAuthorize = makeHarness({ authorizeSubject: () => "" });
+    const authorizeClient = await register(fromAuthorize.door);
+    const refusedAuthorize = await authorize(fromAuthorize.door, authorizeClient.body.client_id);
+    expect(refusedAuthorize.headers.get("location"), "an authorization code was issued to nobody").toBeNull();
+    expect(refusedAuthorize.status).toBe(400);
+    expect(fromAuthorize.store.rows("vendo_mcp_grants")).toEqual([]);
+  });
+
+  it("cannot turn a whitespace-only `authorize` subject into a working session", async () => {
+    // The door refuses a whitespace subject on the service-key exchange, but
+    // not from an adapter — it leans on `principal()` instead for every subject
+    // it does not itself refuse (oauth/server.ts:676-679). A realistic host
+    // resolves principals by lookup, and no user is called "  ".
+    const users = new Set(["user_1"]);
+    for (const nobody of ["  ", "undefined"]) {
+      const harness = makeHarness({
+        authorizeSubject: () => nobody,
+        principal: (subject) => (users.has(subject) ? { kind: "user", subject } : null),
+      });
+      const client = await register(harness.door);
+      const tokens = await issue(harness.door, client.body.client_id);
+
+      // Minted, but dead on arrival: the kill switch is what has to hold here.
+      const used = await harness.door.handler(mcpRequest(tokens.access_token));
+      expect(used.status, `a token minted for ${JSON.stringify(nobody)} opened a live MCP session`).toBe(401);
+    }
   });
 
   it("serves both keys through a rotation, and refuses one the door no longer lists", async () => {
