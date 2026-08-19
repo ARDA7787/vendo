@@ -23,6 +23,7 @@ import {
   GrantSetCard,
   useApprovalModal,
   NoPolicyNotice,
+  Remixable,
   VendoOverlay,
   VendoPalette,
   VendoSlot,
@@ -31,6 +32,7 @@ import {
   VendoToolResult,
   vendoToast,
   type VendoCommand,
+  type VendoThreadProps,
 } from "../../src/chrome/index.js";
 import { AppFrame, PayloadView, TreeView } from "../../src/tree/index.js";
 import { browserTreeFixture } from "../fixtures/tree.js";
@@ -1841,6 +1843,74 @@ const pinnedViewTree: UIPayload = {
   ],
 };
 
+/** S2 — the ✦ is ONE DOOR. Two host components side by side: an unremixed one,
+ *  whose ✦ opens the conversation about it, and a remixed one, wearing the pin
+ *  chrome's single menu (Edit in chat · Update · Revert). */
+function PlainMerchants() {
+  return <section style={{ padding: 16 }}><h2 style={{ margin: 0, fontSize: 16 }}>Top merchants</h2><p style={{ margin: "6px 0 0" }}>Blue Bottle · $124.50</p></section>;
+}
+
+function RemixedMerchants() {
+  return <section style={{ padding: 16 }}><h2 style={{ margin: 0, fontSize: 16 }}>Recent payees</h2><p style={{ margin: "6px 0 0" }}>Ritual · $88.00</p></section>;
+}
+
+/** The third case: a remix the build never produced. Its seed row exists, so
+ *  the ✦ is the remix's chrome — over the host's own untouched markup. */
+function FailedMerchants() {
+  return <section style={{ padding: 16 }}><h2 style={{ margin: 0, fontSize: 16 }}>Subscriptions</h2><p style={{ margin: "6px 0 0" }}>Netflix · $15.49</p></section>;
+}
+// A production bundle erases `Function.name`, so a wrapped component must carry
+// `displayName` for the affordance to exist at all (remixable.tsx `slotOf`) —
+// and this harness is built for real, which is how the browser gate catches it.
+PlainMerchants.displayName = "PlainMerchants";
+RemixedMerchants.displayName = "RemixedMerchants";
+FailedMerchants.displayName = "FailedMerchants";
+
+function remixClient(client: VendoClient): VendoClient {
+  const remix = {
+    format: "vendo/app@1", id: "app_remix", name: "Recent payees", ui: "tree" as const,
+    seed: { component: "RemixedMerchants" },
+  };
+  // The FAILED remix is not stubbed: its seed row and its terminal `failed`
+  // envelope both come from the wire fixture (vite.config.ts), so the wrapper
+  // discovers it and reads its dead end through the ordinary client — the same
+  // path a real build failure travels. Only the SUCCEEDING remix is canned,
+  // because the harness has no model to write one.
+  return {
+    ...client,
+    apps: {
+      ...client.apps,
+      get: async (id: string) => (id === remix.id ? remix : await client.apps.get(id)),
+      list: async () => [remix, ...(await client.apps.list()).filter(app => app.seed !== undefined)],
+      open: async (id: string, options?: { pending?: boolean }) => (id === remix.id
+        ? { kind: "tree", payload: pinnedViewTree }
+        : await client.apps.open(id, options)),
+    } as VendoClient["apps"],
+  };
+}
+
+/** The host's own starter cards on the empty landing — what the panel shows a
+ *  person who opened it with nothing in mind, exactly as the demo host wires
+ *  them (VendoLayer). The ✦ opens the SAME panel about a particular component,
+ *  which is where these five have to get out of the way. */
+function StarterThread(props: VendoThreadProps) {
+  return <VendoThread {...props} suggestions={MAPLE_SUGGESTIONS} discoverability="quiet" />;
+}
+
+function RemixableScenario() {
+  const client = useMemo(() => remixClient(baseClient), []);
+  return (
+    <VendoProvider client={client} components={components} theme={mapleTheme}>
+      <div style={{ display: "grid", gap: 32, maxWidth: 560 }}>
+        <Remixable><PlainMerchants /></Remixable>
+        <Remixable><RemixedMerchants /></Remixable>
+        <Remixable><FailedMerchants /></Remixable>
+      </div>
+      <VendoOverlay launcher="none" thread={StarterThread} />
+    </VendoProvider>
+  );
+}
+
 /** Existing-agents polish — a BYO chat page: plain host markup (Georgia serif,
  *  no Vendo chrome, like the examples' quickstarts) rendering a `vendo_*` tool
  *  output through `VendoToolResult` against the real wire fixture. */
@@ -1958,6 +2028,7 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/slot-building": return { title: "Inline slot — a build landing in place", content: <SlotBuildingScenario /> };
     case "/slot-states": return { title: "Inline slot — ready / failed", content: <SlotStatesScenario /> };
     case "/slot-picker": return { title: "Add to… — embed writes a placement", content: <SlotPickerScenario />, ownProvider: true };
+    case "/remixable": return { title: "Remixable — the ✦ is one door into the chat", content: <RemixableScenario />, ownProvider: true };
     case "/appframe": return { title: "App execution planes", content: <AppFrameScenario /> };
     case "/appframe-resize": return { title: "App frame resize — the host's bounds win", content: <AppFrameResizeScenario /> };
     case "/appframe-devserver": return { title: "Live dev-server preview (HMR)", content: <DevServerPreviewScenario /> };
