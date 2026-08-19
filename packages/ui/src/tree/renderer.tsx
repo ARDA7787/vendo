@@ -89,6 +89,15 @@ export interface TreeViewProps {
    * payload before component screens — nothing boots and nothing changes.
    */
   interactive?: ScreenInteractive;
+  /**
+   * The wall a live screen's dates and money resolve against: a locale, and an
+   * IANA zone. The screen engine carries no ICU, so both are answered by the
+   * host's real `Intl` against these two — and unset they are `"en-US"` and
+   * `"UTC"`, which is a server's wall. A surface that wants the VIEWER's says so:
+   * `timeZone={Intl.DateTimeFormat().resolvedOptions().timeZone}`.
+   */
+  locale?: string;
+  timeZone?: string;
 }
 
 export interface PayloadRendererProps {
@@ -101,6 +110,9 @@ export interface PayloadRendererProps {
   /** As {@link TreeViewProps.onParked}. */
   onParked?: (parked: ParkedPress) => void;
   onStateChange?(state: Record<string, Json>): void;
+  /** As {@link TreeViewProps.locale} and {@link TreeViewProps.timeZone}. */
+  locale?: string;
+  timeZone?: string;
 }
 
 /**
@@ -495,7 +507,7 @@ interface NodeRendererProps {
   marks: ReadonlyMap<string, NodeMark>;
 }
 
-const EMPTY_LAYOUT_COMPONENTS = new Set(["Stack", "Row", "Grid"]);
+const EMPTY_LAYOUT_COMPONENTS = new Set(["Stack", "Row", "Grid", "SplitPane"]);
 
 /**
  * The `$expr` interpreter is a WebAssembly module that loads once. Evaluation
@@ -848,6 +860,8 @@ function StatefulTreeView({
   onParked,
   onStateChange,
   interactive,
+  locale,
+  timeZone,
 }: TreeViewProps) {
   // The surface is its own theme boundary. A host mounts one wherever it likes
   // — demo-bank's Apps page is a bare AppFrame on a host page, outside any
@@ -902,20 +916,22 @@ function StatefulTreeView({
   }, []);
   // What the screen may render: the Kit plus whatever this host registered.
   const catalog = useMemo(() => [...KIT_COMPONENT_NAMES, ...Object.keys(components)], [components]);
-  const screen = useScreen({ interactive, base: painted, catalog, runAction, onFailure: failNode });
+  const screen = useScreen({ interactive, base: painted, catalog, locale, timeZone, runAction, onFailure: failNode });
   // Every press still waiting on an approval, read straight off the outcome
   // slots that hold its notice — resolving one clears the slot, which is also
   // what stops the watch.
   const parked = useMemo(() => new Map(Object.entries(outcomes).flatMap(([nodeId, outcome]) =>
     outcome?.status === "pending-approval" ? [[nodeId, outcome.approvalId] as [string, string]] : [])), [outcomes]);
   // The approval's answer lands in the SAME per-node slot the press itself
-  // fills, and EVERY terminal answer re-reads the screen. Not just the happy
-  // one: the re-read is also the only thing that RE-BOOTS the screen, and a
-  // screen's own `useState` (the "Sending…" flag a generated handler sets
-  // before it awaits) has no other way back — a declined press used to leave
-  // its own controls locked forever over data that never changed. A tree with
-  // no query plan (a plain action tree) has nothing to re-read; its notice
-  // still settles.
+  // fills, and EVERY terminal answer re-reads the screen — but the two kinds of
+  // answer want different things from that re-read. An EXECUTED call moved the
+  // data, and the screen keeps its own state: a supply re-renders what is already
+  // standing, so a draft, a dialog and a selection all survive. A REFUSAL —
+  // declined, or expired unanswered — moved nothing, and the only thing that
+  // needs undoing is the screen's own `useState`: the "Sending…" flag a generated
+  // handler sets before it awaits, which used to leave a declined press locked
+  // forever. That one boots fresh. A tree with no query plan (a plain action tree)
+  // has nothing to re-read; its notice still settles.
   useParkedApprovals(parked, (nodeId, resolution) => {
     const settled: ToolOutcome = resolution.state === "executed" ? resolution.outcome : {
       status: "blocked",
@@ -927,7 +943,7 @@ function StatefulTreeView({
     // the repaint, because the re-read's reads run through `runAction` and an
     // ok read clears this very slot.
     setOutcomes((current) => ({ ...current, [nodeId]: undefined }));
-    void screen.refresh(nodeId).then(() => {
+    void screen.refresh(nodeId, resolution.state !== "executed").then(() => {
       if (settled.status !== "ok") setOutcomes((current) => ({ ...current, [nodeId]: settled }));
     });
   });
