@@ -137,6 +137,7 @@
               "production/vendo-cloud",
               "production/auth",
               "production/telemetry",
+              "production/mcp-call-timeout",
               {
                 "group": "Troubleshooting",
                 "pages": [
