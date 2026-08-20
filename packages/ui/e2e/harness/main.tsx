@@ -960,6 +960,34 @@ function RemixHolesScenario() {
   );
 }
 
+/** Two host components, both wrapped in `<Remixable>`. `SpendCard` split;
+ *  `LegacyCard` did not, and `vendo sync` said so in its report. */
+function SpendCard() {
+  return <article className="host-card"><h3>Spend card</h3><p>This one split.</p></article>;
+}
+SpendCard.displayName = "SpendCard";
+
+function LegacyCard() {
+  return <article className="host-card"><h3>Legacy card</h3><p>This one did not split.</p></article>;
+}
+LegacyCard.displayName = "LegacyCard";
+
+/** `.vendo/generated/remix-wiring.ts` as the host hands it to the provider — the
+ *  SAME const `createVendo({ remixWiring })` takes. Its keys are the slots sync
+ *  could split, and `LegacyCard` is not among them. */
+const gateWiring = { SpendCard: { tools: {}, holes: {} } };
+
+function RemixGateScenario() {
+  return (
+    <VendoProvider client={baseClient} remixWiring={gateWiring} theme={mapleTheme}>
+      <div style={{ display: "grid", gap: 24, maxWidth: 560 }}>
+        <Remixable><SpendCard /></Remixable>
+        <Remixable><LegacyCard /></Remixable>
+      </div>
+    </VendoProvider>
+  );
+}
+
 function AppFrameScenario() {
   const cover = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='320'%3E%3Crect width='640' height='320' fill='%23ede9fe'/%3E%3Crect x='36' y='48' width='380' height='30' rx='8' fill='%238b5cf6'/%3E%3Crect x='36' y='106' width='550' height='18' rx='6' fill='%23c4b5fd'/%3E%3Crect x='36' y='145' width='490' height='18' rx='6' fill='%23ddd6fe'/%3E%3C/svg%3E";
   return (
@@ -2105,6 +2133,7 @@ function scenario(pathname: string): { title: string; theme?: Partial<VendoTheme
     case "/tree": return { title: "Tree containment", content: <TreeScenario /> };
     case "/tree-injected": return { title: "Injected payload (captured host component)", content: <InjectedTreeScenario /> };
     case "/tree-holes": return { title: "Remix holes — npm + host sub-component, from the generated wiring", content: <RemixHolesScenario />, ownProvider: true };
+    case "/remixable-gate": return { title: "Remix ✦ — offered only where sync could split the component", content: <RemixGateScenario />, ownProvider: true };
     case "/tree-inclient": return { title: "In-client venue (hash-pinned approval)", content: <InClientScenario /> };
     case "/tree-review": return { title: "Review-kind standing (pending / rejected)", content: <ReviewStandingScenario /> };
     case "/tree-drift": return { title: "Seed drift (host component updated)", content: <SeedDriftScenario /> };

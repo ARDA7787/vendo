@@ -17,6 +17,10 @@ export interface VendoContextValue {
   client: VendoClient;
   /** Host catalog implementations, by registered name (08 §2). */
   components: Record<string, ComponentType>;
+  /** The slots `vendo sync` could split — the generated wiring's own keys, and
+      exactly the components a ✦ may appear on. Empty when the host wired no
+      wiring: nothing has ported, so nothing offers a remix. */
+  remixSlots: ReadonlySet<string>;
   /** Resolved brand tokens (defaults ⊕ provider overrides). */
   theme: VendoTheme;
   /** The host's `.vendo/fonts.css` text — the brand's `@font-face` rules, as
@@ -116,10 +120,14 @@ export function hostComponentMap(components: HostComponentsInput | undefined): R
 
 /** The client half of the generated remix wiring (`vendo sync` writes
  * `.vendo/generated/remix-wiring.ts`; `holes` binds a name the ported screen
- * renders to the component itself). Read STRUCTURALLY, so the host hands the
- * whole generated const over — `tools` and all — exactly as it hands it to
+ * renders to the component itself, and the wiring's KEYS are the slots sync
+ * could split). Read STRUCTURALLY, so the host hands the whole generated const
+ * over — `tools` and all — exactly as it hands it to
  * `createVendo({ remixWiring })`. */
-export type RemixWiringInput = Record<string, { holes?: Record<string, ComponentType<never>> }>;
+export type RemixWiringInput = Record<string, {
+  tools?: Record<string, unknown>;
+  holes?: Record<string, ComponentType<never>>;
+}>;
 
 /** Every slot's holes, folded name-keyed — a component name is global here, so
  * two slots rendering the same hole are one entry rather than a collision. */
@@ -136,12 +144,20 @@ export function VendoProvider(props: {
       carries its own base. */
   baseUrl?: string;
   components?: HostComponentsInput;
-  /** The same generated const `createVendo({ remixWiring })` takes. Its holes
-      join the components map as its WEAKEST leg — mirroring the server, where a
-      hole is the weakest leg of the catalog (`vendo` compose-surfaces.ts) — so a
-      `components` entry for the same name still wins. Both ends need it: the
-      client screen VM's vocabulary is built from this map too (tree/renderer.tsx),
-      so a hole missing here is a name the port cannot even paint. */
+  /** The same generated const `createVendo({ remixWiring })` takes. It is read
+      two ways, and both ends need it.
+
+      Its HOLES join the components map as its WEAKEST leg — mirroring the
+      server, where a hole is the weakest leg of the catalog (`vendo`
+      compose-surfaces.ts) — so a `components` entry for the same name still
+      wins. The client screen VM's vocabulary is built from this map too
+      (tree/renderer.tsx), so a hole missing here is a name the port cannot even
+      paint.
+
+      Its KEYS name the slots sync could split, and `<Remixable>` offers the ✦
+      on those and only those — sync already refused the rest, loudly, in its
+      report. Unset is the honest zero: no slot has ported, so no component
+      offers a remix, and none paints a hole. */
   remixWiring?: RemixWiringInput;
   theme?: Partial<VendoTheme>;
   /** The host's `.vendo/fonts.css` text — see VendoContextValue.fonts. */
@@ -180,6 +196,7 @@ export function VendoProvider(props: {
     () => ({
       client: client ?? createVendoClient(baseUrl === undefined ? {} : { baseUrl }),
       components: { ...remixHoles(remixWiring), ...hostComponentMap(components) },
+      remixSlots: new Set(Object.keys(remixWiring ?? {})),
       theme: resolveTheme(defaultVendoTheme, theme),
       fonts,
       transport,
