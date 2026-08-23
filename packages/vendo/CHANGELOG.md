@@ -1,5 +1,76 @@
 # @vendoai/vendo
 
+## 0.39.0
+
+### Minor Changes
+
+- fd913fe: `vendo init` states facts and links out. Every instruction it used to print —
+  the `<VendoProvider>` mount paste, the AI SDK and Mastra loop snippets, the MCP
+  client steps, the doctor gate, the agent tail — was a second copy of something
+  the docs already carry, and a terminal cannot keep a copy correct. The run now
+  ends on four computed lines: what it wired, what it detected, the guard posture
+  it left, and one URL for the use case you picked. `--agent` receives the same
+  facts as structured JSON (`wrote`, `detected`, `guardPosture`, `continueUrl`)
+  instead of `pasteEdits`.
+
+  A backend agent is a real answer to the first question now (`--use-case
+backend`), so `vendo doctor` stops demanding a mounted UI from a server-side
+  install and the run points at the backend quickstart.
+
+  The models question decides the wiring. Choosing Vendo Cloud no longer writes
+  `anthropic("claude-sonnet-4-6")` into your composition because an
+  `ANTHROPIC_API_KEY` happened to be in your shell — the runtime resolves the
+  model from `VENDO_API_KEY`, so nothing is written. Choosing your own key writes
+  the provider line as before. Init records the key its wiring actually reads, and
+  `vendo doctor`'s E-MODEL-001 now names that one variable instead of listing
+  three provider keys the resolver never consults.
+
+  Nothing prompts after the up-front questions. "Where does this app run in dev?"
+  moved ahead of the AI pass, the uncertain-theme-slot review is gone (uncertain
+  slots keep what was extracted and the run says which), and the zod-floor bump
+  prints its command rather than asking. Every stage spinner carries elapsed time,
+  and the AI pass says up front that it can take several minutes.
+
+  `vendo init --check` / `--no-check` are removed: doctor is a standalone command,
+  and init succeeds or fails on its own work.
+
+### Patch Changes
+
+- fd913fe: `vendo init`'s MCP arm stops asking how outside agents sign in. That was never
+  one answer: the dev machine wants the door's own OAuth (it works on `http`, zero
+  config) and the deployment wants the Cloud broker — and nobody knows their
+  deployment while they are installing.
+
+  A Cloud key settles both. With one in hand init asks nothing at all: it writes
+  the dev sign-in key into `.env.local`, which is dev-only and gitignored, so the
+  machine keeps its own door while the deployment — which never sees that variable
+  — takes the broker, and the run closes on one line saying so. With no key it
+  asks once, in the models question's slot rather than beside it, because one free
+  Cloud key answers both: _Vendo Cloud (recommended) or bring your own keys?_
+  Choosing Cloud runs the `vendo login` ceremony inline; a login that does not
+  complete prints one line and finishes the install on the bring-your-own path.
+  `--yes` never opens a browser, and `--agent` relays the one question as JSON.
+
+  `--posture` and `--service-key` still do exactly what they did, as flags, for a
+  host that wants a Cloud-fronted door and no sign-in key on its dev machine.
+
+  New `vendo doctor` warning **E-MCP-010**: a `VENDO_SERVICE_KEY` set alongside a
+  Cloud key on an https deployment holds the door local against the broker that
+  key already provisions. Advisory, not a failure — running your own door there is
+  a legitimate choice.
+
+  - @vendoai/core@0.39.0
+  - @vendoai/store@0.39.0
+  - @vendoai/actions@0.39.0
+  - @vendoai/guard@0.39.0
+  - @vendoai/apps@0.39.0
+  - @vendoai/automations@0.39.0
+  - @vendoai/harnesses@0.39.0
+  - @vendoai/ui@0.39.0
+  - @vendoai/mcp@0.39.0
+  - @vendoai/knowledge@0.39.0
+  - @vendoai/agents@0.39.0
+
 ## 0.38.0
 
 ### Minor Changes

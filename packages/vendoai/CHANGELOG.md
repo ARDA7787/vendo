@@ -1,5 +1,13 @@
 # vendoai
 
+## 0.39.0
+
+### Patch Changes
+
+- Updated dependencies [fd913fe]
+- Updated dependencies [fd913fe]
+  - @vendoai/vendo@0.39.0
+
 ## 0.38.0
 
 ### Patch Changes
