@@ -43,7 +43,7 @@ Init never writes to a file you authored. Mounting `<VendoProvider>` is the one 
 | `--ai` / `--no-ai` | | force the AI judgment pass on or off |
 | `--base-url <url>` | a full `http(s)` URL | where the app runs **in dev**. Lands in `.env.local` as `VENDO_BASE_URL`; never a deployed URL |
 | `--theme <slot=value>` | repeatable | answers an uncertain theme slot |
-| `--posture <name>` | `local`, `broker` | how outside agents sign in. `--use-case mcp` only |
+| `--posture <name>` | `local`, `broker` | which authorization server fronts the door. Not asked — `broker` opts out of the dev sign-in key. `--use-case mcp` only |
 | `--service-key` | | generate a machine-to-machine service key. `--use-case mcp` only |
 
 `--posture broker` with a dev URL that is not `https://` exits `1`: Vendo Cloud registers that origin as the tenant's forwarding address and refuses one that is not https, so the door would be written and then fail on its first request. Take `--posture local` — zero config, and it works on http — or pass an https origin. The check reads the URL the run actually resolved, so it catches a broker posture picked at the prompt too, not just `--posture broker` on the command line.
