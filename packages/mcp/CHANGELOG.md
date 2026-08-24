@@ -1,5 +1,13 @@
 # @vendoai/mcp
 
+## 0.41.1
+
+### Patch Changes
+
+- Updated dependencies [97be645]
+  - @vendoai/apps@0.41.1
+  - @vendoai/core@0.41.1
+
 ## 0.41.0
 
 ### Patch Changes
