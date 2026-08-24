@@ -54,11 +54,8 @@ import type { CloudAppsClient, PublishRecord, ShareSnapshot } from "../persisten
 import type { GenerationDependencies } from "../generation/engine.js";
 import type { BuildMachineEnv, LifecycleClock } from "../escalation/machine-lifecycle.js";
 import type { AppMachineStatus } from "../escalation/manifest-triggers.js";
-import type { InClientApproval } from "../remix/inclient.js";
 import type { SeedBaseline, SeedDrift } from "../../contract/index.js";
-import type { RemixRejection, ReviewQueueEntry } from "../remix/review.js";
 import type { SandboxAdapter } from "../escalation/sandbox.js";
-import type { ShipDiff } from "../remix/ship-diff.js";
 import type { SlotRegistry } from "../persistence/slots.js";
 
 /**
@@ -160,11 +157,11 @@ export interface AppsConfig {
   onDocumentEdit?: (previous: AppDocument, next: AppDocument, editor: string) => Promise<void>;
   /**
    * Build contract §9.9 (lane H's other half) — an ADDITIVE, ctx-aware venue
-   * state merged into the open payload beside the in-client verdict. Lane H's
-   * adoption card rides it, which is why it takes the RunContext: the card is
-   * served only to callers with `can(editor)`, so the decision is per-caller,
-   * not per-document. Returned keys spread onto the payload; `inClient`,
-   * `data` and `pinDrift` are reserved and never overwritten.
+   * state spread onto the open payload. It takes the RunContext so a per-caller
+   * decision stays per-caller, not per-document: a state served only to callers
+   * with `can(editor)` is decided here, never baked into the document. Returned
+   * keys spread onto the payload; the reserved keys (`inClient`, `data`,
+   * `seedDrift`, `seedUnapplied`, `dataUnavailable`) are skipped (open.ts).
    */
   venueState?: (app: AppDocument, ctx: RunContext) => Promise<Record<string, unknown> | undefined>;
   /**
@@ -237,15 +234,6 @@ export interface AppsConfig {
    */
   briefing?: (ctx: RunContext) => Promise<BriefingPack>;
   seedBaselines?: SeedBaseline[];
-  /** Remix review (round-2 hardening 2026-08-02) — the host's reviewer
-   *  assertion for the review-kind lifecycle. Reviewing crosses owner
-   *  boundaries, so it is never inferred from a principal alone: `reviewer`
-   *  answers whether THIS caller may read the full queue, reject, and approve
-   *  review-kind remixes. Unset, the queue serves only the caller's own
-   *  submissions and reject/approve-as-reviewer refuse, naming this hook. */
-  review?: {
-    reviewer?(ctx: RunContext): boolean | Promise<boolean>;
-  };
   /** ADAPTER RULE — the share/publish seam (see cloud.ts): the umbrella wires
    * the Cloud console client when VENDO_API_KEY fills the unset slot; this
    * block never reads the environment. Unset → share/publish fail with
@@ -569,10 +557,8 @@ export interface AppsRuntime {
    * `saves: false` asks for the same five-stage gauntlet with the ROW HALF off —
    * no `authoredScreen`, no `refusedScreen`. `open()` needs it: a component
    * screen's tree is what rendering it produces, so opening one paints it, and a
-   * paint that is a READ must never write. It is not a hypothetical — a
-   * review-kind app serving an older APPROVED snapshot (`serveDocFor`) paints
-   * that snapshot, so a writing floor stored it straight back over the row and
-   * the pending version the reviewer was looking at ceased to exist.
+   * paint that is a READ must never write — otherwise a reopen would store its
+   * paint straight back over the row.
    */
   floor(ctx: RunContext, options?: { saves?: boolean }): AppFloor;
   /**
@@ -797,9 +783,8 @@ export interface AppsRuntime {
      * route rides: wake the app's machine on demand and proxy ONE HTTP request
      * to its $PORT (the box serves `POST /fn/<name>` per the contract; the
      * caller shapes the path). Editor-scoped: writing through someone else's
-     * app is an edit. Additive like `proxy`/`inClient` — not part of the frozen
-     * §1 method table. Lane B's machine lifecycle owns the wake internals
-     * behind this door.
+     * app is an edit. Additive — not part of the frozen §1 method table. Lane
+     * B's machine lifecycle owns the wake internals behind this door.
      */
     request(appId: AppId, request: BoxRequest, ctx: RunContext): Promise<BoxResponse>;
     /**
@@ -812,43 +797,8 @@ export interface AppsRuntime {
     redact(appId: AppId, value: Json): Promise<Json>;
   };
   /**
-   * 06-apps §9 — additive trust-axis surface (like `proxy`/`agentToolRisk`,
-   * not part of the frozen §1 method table). OSS carries the enforcement
-   * machinery: the ship-diff a reviewer reads, the stored approval records,
-   * and the hash-pin verdict `open()` rides to the client. Cloud's review
-   * console MINTS approvals in production; `approve` is the documented local
-   * injection seam (demos, dev, host-built review flows).
-   */
-  inClient: {
-    shipDiff(appId: AppId, ctx: RunContext): Promise<ShipDiff>;
-    approve(input: { appId: AppId; approvedBy: string }, ctx: RunContext): Promise<InClientApproval>;
-  };
-  /**
-   * Remix final shape (2026-08-02) — additive review-kind lifecycle surface
-   * (same additive precedent as `inClient`/`seed`). A review-kind remix (an
-   * app forked from a baseline captured with `review: true`) is invisible to
-   * its own user until a host reviewer approves; the approved version then
-   * mounts natively in place, riding the §9 hash-pin machinery. These two
-   * methods are the reviewer's side and cross owner boundaries BY DESIGN
-   * (the reviewer is not the remixing user), so both are gated on the host's
-   * reviewer assertion ({@link AppsConfig.review} `reviewer`): this is the
-   * production path — a self-hoster mounts their own admin-authenticated
-   * route over it (Cloud's console is the hosted equivalent). Without the
-   * hook, `queue` serves only the caller's own submissions and `reject`
-   * refuses, naming the hook.
-   */
-  review: {
-    /** Every review-kind version awaiting review, oldest submission first —
-     *  the full queue for an asserted reviewer, the caller's own items
-     *  otherwise. */
-    queue(ctx: RunContext): Promise<ReviewQueueEntry[]>;
-    /** Reject the app's CURRENT version with a note the user's panel surfaces.
-     *  The work is not deleted; a new version supersedes the rejection. */
-    reject(input: { appId: AppId; note: string }, ctx: RunContext): Promise<RemixRejection>;
-  };
-  /**
-   * 06-apps §8 — additive remix surface (same additive precedent as `inClient`,
-   * not part of the frozen §1 method table).
+   * 06-apps §8 — additive remix surface (not part of the frozen §1 method
+   * table).
    *
    * `from` is the ✦ gesture: fork and first edit as ONE operation, producing an
    * ordinary screen app that carries a `seed`. `drift` reports that the host
@@ -881,7 +831,7 @@ export interface AppsRuntime {
   };
   /**
    * execution-v2 — additive machine lifecycle surface (same additive precedent
-   * as `inClient`/`seed`). An app with no `machine` on its document
+   * as `seed`). An app with no `machine` on its document
    * is a layer-1 tree app; presence of `machine` means layer 2+ — the layer is
    * always derived from presence, never stored. Wake single-flight and idle
    * auto-sleep live in-process; a multi-instance host can wake one app twice

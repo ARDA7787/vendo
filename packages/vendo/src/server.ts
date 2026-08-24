@@ -27,7 +27,6 @@ import { createContextResolver } from "./wire/context.js";
 import { doctorBaseUrlRoutes, doctorRoutes } from "./wire/doctor.js";
 import {
   activityRoutes,
-  devRoutes,
   orgsRoutes,
   statusRoutes,
   syncImpactRoutes,
@@ -252,19 +251,17 @@ function jsonMutationRequired(request: Request, path: string): boolean {
 /** The wire route TABLE (kill-list B4): every route as (method, pattern,
     handler), assembled from the per-area modules under src/wire/. Entries are
     matched IN ORDER, preserving the old if-chain's precedence exactly:
-    1. the dev-only injection seams (fall through in production),
-    2. /doctor/base-url, then the doctor probe routes — mounted only in a
+    1. /doctor/base-url, then the doctor probe routes — mounted only in a
        development composition,
-    3. the machine surfaces — webhooks, tick, sync impact — all raw-path
+    2. the machine surfaces — webhooks, tick, sync impact — all raw-path
        matches ahead of any segment decoding,
-    4. the user surfaces: threads → approvals → connections → grants →
+    3. the user surfaces: threads → approvals → connections → grants →
        the orgs cloud-required seam → apps → automations → runs →
        activity/status.
     A handler returning undefined falls through to later entries (grouped
     handlers keep the old chain's method/operation fall-out), and no match at
     all answers not-found. */
 const wireRoutesFor = (deps: WireDeps): readonly RouteEntry[] => [
-  ...devRoutes,
   // Mounted everywhere on purpose — it reports a PRODUCTION misconfiguration.
   ...doctorBaseUrlRoutes,
   // The doctor probes take no principal, and one of them (POST /doctor/act-as)
