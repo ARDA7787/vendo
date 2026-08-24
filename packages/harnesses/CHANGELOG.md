@@ -1,5 +1,32 @@
 # @vendoai/harnesses
 
+## 0.42.0
+
+### Minor Changes
+
+- 7bbfd3f: Built apps: the build lane. A consented build now runs the person's ask inside a disposable box — npm from the registry, the code written and tested in the box, the files sealed by the host — and the box is handed no store credentials at all. Approving a build card comes straight back instead of holding the request open for the whole build, and a reseal that fails keeps the app it was rebuilding. `@vendoai/harnesses` gains a `./claude-code/box` entry point carrying the box pool and the env/egress it boots with, so composition can reach them without the Agent SDK.
+- 7bbfd3f: Built apps: five fixes found by a live proof against a real box. The build brief now sends the in-box agent to a real disk path, so the bundle it produces is where the host actually reads it — every build previously landed on "the build's own test did not pass" while a working bundle sat on the box. The build watchdog waits longer than the box's own message budget instead of killing real builds at four minutes. An app awaiting the person's yes now reads as pending rather than "This app can't be opened any more". A failed build keeps the app's name instead of renaming it to a cut of the prompt. And a propose that cannot finish takes its standing card back instead of leaving an ask with no build behind it. `@vendoai/harnesses` exports `BOX_WORKSPACE_ROOT` and `MESSAGE_BUDGET_MS`.
+- 7bbfd3f: Built apps: reviewer triage on the build lane. Escalating now ENDS the screen agent's turn, so a run cannot write a screen after asking for a build. A build is only offered where the deployment can also seal it, a refusal reads the app row at the moment it refuses (so a watchdog can no longer tombstone an app that has since been sealed, or stand one back up that was deleted mid-build), a seal clears any failure an earlier terminal write recorded, and a rejected seal writes no orphan blobs. The sealed bundle's document escapes a script end tag in any case, the frame answers a host call the host refused instead of leaving the app loading, re-sends the brand tokens when the host's palette or fonts change after boot, and requires the protocol's stamp on the boot handshake. The build's progress line is a live region, `useApp`'s `status` clears when the app lands, and a whitespace-only inference credential is treated as no credential.
+
+### Patch Changes
+
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+  - @vendoai/apps@0.42.0
+  - @vendoai/core@0.42.0
+  - @vendoai/guard@0.42.0
+
 ## 0.41.1
 
 ### Patch Changes

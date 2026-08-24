@@ -1,5 +1,33 @@
 # @vendoai/ui
 
+## 0.42.0
+
+### Minor Changes
+
+- 7bbfd3f: Built apps: rendering a sealed bundle. An app whose artifact is a seal opens as `{kind:"bundle", entry}` and is served by the new `GET /apps/:id/bundle/:hash` — the sealed bytes inline in their own document, behind `Content-Security-Policy: default-src 'none'` as a real header, so the frame makes no network request at all. `@vendoai/ui` renders it in an iframe sandboxed `allow-scripts` with no `allow-same-origin`, which makes the app's origin opaque: brand tokens are posted in at render rather than baked into the seal, and host data reaches the app through one door only — a postMessage call that lands on the same guarded tool path a screen's press does, with the viewer's own permissions.
+- 7bbfd3f: Retire the persistent per-app machine surface. A built app is now a sealed bundle the host serves, so nothing needs a machine that outlives the build: the `AppsRuntime.machine` lifecycle doors (`available`, `ping`, `report`), the §9.8 served-app proxy (`AppsRuntime.serve`, `GET /apps/:id/serve/**`), the editor-level box door (`AppsRuntime.box.request` / `.redact`, `POST /apps/:id/fn/:name`), the whole `/box/*` callback surface with its per-app bearer, and the embed keepalive (`POST /apps/:id/machine/ping`, `client.apps.pingMachine`) are all gone. The `ui` package loses `HttpFrame` and its keepalive wiring; `BundleFrame` and `bundleUrl` are what render an app now. `@vendoai/box-template` is deleted — the box image no longer bakes a per-app web template, and its harness keeps only the session half. `vendo_app_tokens` leaves the engine allowlist (v9), and the store's promote no longer re-owns a bearer that no longer exists. `packages/apps`' `prewired-schema` moves to `server/checking/`, beside the validator that reads it.
+- 7bbfd3f: Built apps, last mile: a standing consent card a person can actually answer. An approval that was already waiting when the page loaded now raises its card on mount instead of only after — a build ask can outlive the tab that raised it, and the yes is meant to work whenever it lands, so an ask that only existed while you were watching was not a standing one. The card also says what it is asking: it reads the same plain-words ladder the approval card and its queue row read (the ask as a question, then every real input under it) rather than a bare tool label, it offers Deny beside Approve, and `vendo_app_build` joins the shared title table, so the consent moment reads "Build this app for real?" instead of "Vendo app build". Once the yes lands, the build's own status line reaches the person on that same surface — a detached build has no turn to stream into, and `useApp` now hands back the `status` the build window's poll was already receiving and discarding. A toast's hint moved under its text rather than beside its buttons, which is where it has to be to carry a sentence.
+- 7bbfd3f: Built apps: the build now says what it is doing, and a sealed bundle renders in the host's own font. `BuildRequest.onStatus` was emitted by the build lane and supplied by nobody, so a build narrated itself to no one; the door now writes the lane's latest line onto the app row (`AppDocument.buildStatus`) and the pending poll answers with it (`PendingSurface.status`), which the forming card reads in place of the generic "Building …". One label, replaced each time — no stream, no subscription, no new route — and a status write that fails never fails the build. Brand fonts now travel with the brand tokens at render: `sendFrameTheme` carries the host's `.vendo/fonts.css` faces into the frame, which installs them as its own sheet, and the bundle route's CSP gains `font-src data:` so an inlined face can load. The seal still holds nothing font-related, and the frame still makes no network request of any kind.
+- 7bbfd3f: Built apps: reviewer triage on the build lane. Escalating now ENDS the screen agent's turn, so a run cannot write a screen after asking for a build. A build is only offered where the deployment can also seal it, a refusal reads the app row at the moment it refuses (so a watchdog can no longer tombstone an app that has since been sealed, or stand one back up that was deleted mid-build), a seal clears any failure an earlier terminal write recorded, and a rejected seal writes no orphan blobs. The sealed bundle's document escapes a script end tag in any case, the frame answers a host call the host refused instead of leaving the app loading, re-sends the brand tokens when the host's palette or fonts change after boot, and requires the protocol's stamp on the boot handshake. The build's progress line is a live region, `useApp`'s `status` clears when the app lands, and a whitespace-only inference credential is treated as no credential.
+
+### Patch Changes
+
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+- Updated dependencies [7bbfd3f]
+  - @vendoai/apps@0.42.0
+  - @vendoai/core@0.42.0
+
 ## 0.41.1
 
 ### Patch Changes

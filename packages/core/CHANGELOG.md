@@ -1,5 +1,28 @@
 # @vendoai/core
 
+## 0.42.0
+
+### Minor Changes
+
+- 7bbfd3f: Retire the persistent per-app machine surface. A built app is now a sealed bundle the host serves, so nothing needs a machine that outlives the build: the `AppsRuntime.machine` lifecycle doors (`available`, `ping`, `report`), the §9.8 served-app proxy (`AppsRuntime.serve`, `GET /apps/:id/serve/**`), the editor-level box door (`AppsRuntime.box.request` / `.redact`, `POST /apps/:id/fn/:name`), the whole `/box/*` callback surface with its per-app bearer, and the embed keepalive (`POST /apps/:id/machine/ping`, `client.apps.pingMachine`) are all gone. The `ui` package loses `HttpFrame` and its keepalive wiring; `BundleFrame` and `bundleUrl` are what render an app now. `@vendoai/box-template` is deleted — the box image no longer bakes a per-app web template, and its harness keeps only the session half. `vendo_app_tokens` leaves the engine allowlist (v9), and the store's promote no longer re-owns a bearer that no longer exists. `packages/apps`' `prewired-schema` moves to `server/checking/`, beside the validator that reads it.
+- 7bbfd3f: add the sealed-bundle document shape: `AppBundle` and `AppBuildProposal` (with their schemas), the `bundle`/`proposal` fields and the `"bundle"` ui kind on `AppDocument`, and the `vendo_parked_build` engine collection
+- 7bbfd3f: Retire the server lane and the machine stack it keystoned. Generation's
+  `generation/lanes.ts` and the escalation box lane are gone, and with them the six
+  modules they held up — the in-box agent (`box-agent`), egress approval, the `fn`
+  runtime, the machine lifecycle, and the `vendo.json` manifest fold-in and its
+  triggers — plus the box-lane secret redaction. `AppsConfig.machine`, `BoxRequest`
+  and `BoxResponse` leave the runtime config, the served-app arms leave `open`,
+  `write-surface`, `apps-surface`, `edit-journal` and `app-validation`, the create
+  door's machine escalate path leaves `build-surface`, and the egress half leaves
+  `approval-flow`. In core the app document's `ui` enum narrows to `"tree" |
+"bundle"`, `machine` / `AppMachine` / `appMachineSchema` are gone, and the
+  `vendo_egress_approval` row leaves the engine allowlist (v10). The composition
+  loses the whole machine lane: the box inference door, the implicit egress domains
+  and the `VENDO_BOX_EDIT_TIMEOUT_MS` / `VENDO_BOX_EDIT_POLL_MS` knobs that only fed
+  it.
+- 7bbfd3f: Built apps, last mile: a standing consent card a person can actually answer. An approval that was already waiting when the page loaded now raises its card on mount instead of only after — a build ask can outlive the tab that raised it, and the yes is meant to work whenever it lands, so an ask that only existed while you were watching was not a standing one. The card also says what it is asking: it reads the same plain-words ladder the approval card and its queue row read (the ask as a question, then every real input under it) rather than a bare tool label, it offers Deny beside Approve, and `vendo_app_build` joins the shared title table, so the consent moment reads "Build this app for real?" instead of "Vendo app build". Once the yes lands, the build's own status line reaches the person on that same surface — a detached build has no turn to stream into, and `useApp` now hands back the `status` the build window's poll was already receiving and discarding. A toast's hint moved under its text rather than beside its buttons, which is where it has to be to carry a sentence.
+- 7bbfd3f: Built apps: the build now says what it is doing, and a sealed bundle renders in the host's own font. `BuildRequest.onStatus` was emitted by the build lane and supplied by nobody, so a build narrated itself to no one; the door now writes the lane's latest line onto the app row (`AppDocument.buildStatus`) and the pending poll answers with it (`PendingSurface.status`), which the forming card reads in place of the generic "Building …". One label, replaced each time — no stream, no subscription, no new route — and a status write that fails never fails the build. Brand fonts now travel with the brand tokens at render: `sendFrameTheme` carries the host's `.vendo/fonts.css` faces into the frame, which installs them as its own sheet, and the bundle route's CSP gains `font-src data:` so an inlined face can load. The seal still holds nothing font-related, and the frame still makes no network request of any kind.
+
 ## 0.41.1
 
 ## 0.41.0
