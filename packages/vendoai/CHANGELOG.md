@@ -1,5 +1,12 @@
 # vendoai
 
+## 0.40.0
+
+### Patch Changes
+
+- Updated dependencies [3310b54]
+  - @vendoai/vendo@0.40.0
+
 ## 0.39.0
 
 ### Patch Changes

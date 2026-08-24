@@ -1,5 +1,16 @@
 # @vendoai/ui
 
+## 0.40.0
+
+### Minor Changes
+
+- 3310b54: remove `vendo eject` and its template machinery
+
+### Patch Changes
+
+- @vendoai/core@0.40.0
+- @vendoai/apps@0.40.0
+
 ## 0.39.0
 
 ### Patch Changes
