@@ -4,7 +4,6 @@ import { useState, type FormEvent } from "react";
 import type { AppId } from "@vendoai/core";
 import { createVendoClient, hostComponentMap, useApp, useApps } from "@vendoai/ui";
 import { AppFrame } from "@vendoai/ui/tree";
-import { VendoRoot } from "@/components/vendo/VendoRoot";
 import { withBasePath } from "@/lib/base-path";
 import { mapleRegistry } from "@/vendo/registry";
 import { Card, CardContent } from "@/components/ui/card";
@@ -46,6 +45,7 @@ function OpenApp({ appId }: { appId: AppId }) {
           {surface ? (
             <AppFrame
               key={appId}
+              appId={appId}
               surface={surface}
               components={hostComponentMap(mapleRegistry)}
               onAction={({ action, payload }) => client.apps.call(appId, action, payload ?? {})}
@@ -163,10 +163,9 @@ function AppsWorkspace() {
   );
 }
 
+// No <VendoRoot> of its own: `app/layout.tsx` already mounts one around every
+// page, and a nested provider is the one this page's surfaces actually read —
+// so it shadowed the layout's, brand fonts and all.
 export default function MapleAppsPage() {
-  return (
-    <VendoRoot>
-      <AppsWorkspace />
-    </VendoRoot>
-  );
+  return <AppsWorkspace />;
 }

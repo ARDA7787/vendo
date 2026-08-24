@@ -36,6 +36,10 @@ export interface AppListRow extends AppDocument {
 export type OpenSurface =
   | { kind: "tree"; payload: UIPayload; components?: Record<string, string> }
   | { kind: "http"; url: string }
+  /** A SEALED bundle. `entry` is the content hash of the file the frame boots,
+   *  so it is both the address to fetch (`GET /apps/:id/bundle/:hash`) and the
+   *  frame's remount key. */
+  | { kind: "bundle"; entry: string }
   | { kind: "resuming"; cover?: string }
   /**
    * The build turn terminally FAILED (model error, quota, timeout): the app
@@ -53,6 +57,14 @@ export type OpenSurface =
  *  keep the contracted not-found. */
 export interface PendingSurface {
   kind: "pending";
+  /**
+   * What the build last said about itself (`AppDocument.buildStatus`) — one
+   * line, replaced each time, and the WHOLE of the progress channel FINAL SPEC
+   * v1 allows: no stream, no subscription, nothing held open. Absent until the
+   * lane speaks, and absent for a build that never does, in which case the
+   * embed keeps the label it already had.
+   */
+  status?: string;
   /**
    * The app's tree AS IT FORMS, so the embed's existing poll paints stepped
    * assembly instead of a blind bar. GEOMETRY ONLY — node ids, component names

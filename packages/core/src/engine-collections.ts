@@ -7,7 +7,13 @@ import { VendoError } from "./errors.js";
 // refusal still quoting v5 would be describing a build without that entry.
 // 7: dropped `vendo_inclient_approvals` and `vendo_remix_rejections` with the
 // removal of in-client native execution and the remix review flow.
-export const ENGINE_ALLOWLIST_VERSION = 7;
+// 8: added `vendo_parked_build`, the approval-keyed record of a build nobody
+// has consented to yet.
+// 9: dropped `vendo_app_tokens` with the per-app box bearer — a sealed bundle
+// is served by the host and holds no store credential of its own.
+// 10: dropped `vendo_egress_approval` with the persistent-machine egress flow —
+// a build box's registry egress is granted for the build minute, not stored.
+export const ENGINE_ALLOWLIST_VERSION = 10;
 
 /** What a collection HOLDS. `knowledge` is the retrieval corpus — documents and
     the chunks an engine mints from them; everything else is `storage`.
@@ -80,9 +86,8 @@ export const ENGINE_COLLECTION_REGISTRY = {
   vendo_pin_baselines: { kind: "storage" }, // PIN_BASELINES_COLLECTION, packages/vendo/src/cli/cloud/seed-baselines.ts:26
   vendo_placements: { kind: "storage" }, // PLACEMENTS_COLLECTION, packages/apps/src/server/persistence/placements.ts:48
   vendo_placement_slots: { kind: "storage" }, // PLACEMENT_SLOTS_COLLECTION, packages/apps/src/server/persistence/placements.ts:54
-  vendo_app_tokens: { kind: "storage" }, // APP_TOKEN_COLLECTION, packages/apps/src/server/persistence/app-token.ts:12
   vendo_parked_action: { kind: "storage" }, // COLLECTION, packages/apps/src/server/persistence/parked-action.ts:50
-  vendo_egress_approval: { kind: "storage" }, // COLLECTION, packages/apps/src/server/escalation/egress-approval.ts:96
+  vendo_parked_build: { kind: "storage" }, // COLLECTION, packages/apps/src/server/persistence/parked-build.ts
   vendo_slots: { kind: "storage" }, // SLOTS_COLLECTION, packages/apps/src/server/persistence/slots.ts:24
   vendo_app_seen: { kind: "storage" }, // APP_SEEN_COLLECTION, packages/apps/src/server/persistence/app-seen.ts:26
   vendo_workspace_commits: { kind: "storage" }, // WORKSPACE_COMMITS, packages/store/src/ops.ts:27
