@@ -1,5 +1,19 @@
 # @vendoai/agents
 
+## 0.46.0
+
+### Patch Changes
+
+- Updated dependencies [5cee3a5]
+  - @vendoai/core@0.46.0
+  - @vendoai/apps@0.46.0
+  - @vendoai/harnesses@0.46.0
+  - @vendoai/actions@0.46.0
+  - @vendoai/automations@0.46.0
+  - @vendoai/guard@0.46.0
+  - @vendoai/mcp@0.46.0
+  - @vendoai/store@0.46.0
+
 ## 0.45.0
 
 ### Patch Changes
