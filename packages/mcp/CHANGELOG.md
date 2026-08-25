@@ -1,5 +1,12 @@
 # @vendoai/mcp
 
+## 0.43.0
+
+### Patch Changes
+
+- @vendoai/core@0.43.0
+- @vendoai/apps@0.43.0
+
 ## 0.42.0
 
 ### Patch Changes

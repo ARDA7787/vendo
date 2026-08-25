@@ -1,5 +1,7 @@
 # @vendoai/core
 
+## 0.43.0
+
 ## 0.42.0
 
 ### Minor Changes
