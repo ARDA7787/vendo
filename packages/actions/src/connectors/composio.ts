@@ -39,6 +39,7 @@ interface ComposioConnectedAccount {
 }
 
 const MAX_PAGES = 50;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Auth configs change on dashboard timescales; thread mounts must not
  * re-walk them. */
@@ -165,9 +166,10 @@ export function composioConnector(config: {
   entityId?: (ctx: RunContext) => string;
   apps?: string[];
   baseUrl?: string;
+  timeoutMs?: number;
 }): Connector {
   const baseUrl = config.baseUrl ?? "https://backend.composio.dev";
-  let normalizedToRaw = new Map<string, { raw: string; toolkit: string }>();
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   async function composioFetch(
     path: string,
@@ -176,15 +178,33 @@ export function composioConnector(config: {
     const url = joinUrl(baseUrl, path);
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, value);
     debugConnectorHttp("composio", options.method ?? "GET", path);
-    const response = await fetch(url, {
-      method: options.method ?? "GET",
-      headers: {
-        "x-api-key": config.apiKey,
-        accept: "application/json",
-        ...(options.body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-    });
+    const controller = new AbortController();
+let timedOut = false;
+const timeout = setTimeout(() => {
+  timedOut = true;
+  controller.abort();
+}, timeoutMs);
+
+let response: Response;
+try {
+  response = await fetch(url, {
+    method: options.method ?? "GET",
+    headers: {
+      "x-api-key": config.apiKey,
+      accept: "application/json",
+      ...(options.body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+    signal: controller.signal,
+  });
+} catch (error) {
+  if (timedOut) {
+    throw new Error(`Composio ${path} request timed out after ${timeoutMs}ms`);
+  }
+  throw error;
+} finally {
+  clearTimeout(timeout);
+}
     const text = await response.text();
     let payload: unknown;
     try {
