@@ -1,5 +1,113 @@
 # @vendoai/vendo
 
+## 0.48.0
+
+### Minor Changes
+
+- 79f177f: An escalated build asks on the standard consent protocol instead of answering
+  as a success.
+
+  `vendo_make` used to return a `status: "ok"` receipt reading
+  `"awaiting-consent"` when the screen agent escalated to the builder, so the
+  parked approval was invisible to everything that routes on the outcome: no
+  in-thread approval card, and an outside agent over MCP was handed plain success
+  for work nobody had authorized. It now returns the ordinary
+  `pending-approval` outcome — which is what publishes the `data-vendo-approval`
+  part the thread renders the card from, and what the MCP door maps to its
+  approval-ref result.
+
+  `ToolOutcome`'s `pending-approval` gains three optional fields for the tool that
+  parks an ask of its OWN: `descriptor` (the ask's own — what a CARD derives its
+  words from), `approval` (`{ id, question, notes }` — the same ask already in
+  words, for a surface that renders no card) and `say` (the assistant's sentence
+  meanwhile). All three are optional and additive; every shipped producer and
+  reader is untouched.
+
+  The descriptor rides the `data-vendo-approval` part, so the in-thread card is
+  graded and worded off the BUILD. Graded off the calling tool it read
+  `vendo_make`'s "read", and told a person that spending a build machine reads
+  their data. And because a standing ask has no parked native call to render
+  from — nor may it have one, since the runtime abandons every still-parked ask
+  at the next turn — the thread now paints the shipped `ApprovalCard` from that
+  part directly, deciding over the wire like the queue and the toast, with no
+  `remember` disclosure. Before this the transcript showed only the calling
+  tool's beat, "wasn't allowed", for a question nobody had been asked yet.
+
+  Such a card also now SURVIVES the turn. A parked call is swept denied at turn
+  end so a live-but-dead card cannot accrete in the queue — which, for a build,
+  tombstoned the app the moment the turn that asked for it ended.
+
+  An answered card SETTLES, and the assistant stops talking over it. In-thread
+  consent cards resolve into the settled record on decide — including a decide the
+  wire says was already answered (or swept), which used to leave the buttons live
+  under an error on a closed question. And `say` is now the refusal the harness
+  hands the model for a tool that parked its own ask, so the model relays the one
+  sentence the door wrote ("I've asked for your go-ahead — the card above has the
+  details.") instead of narrating its own paragraphs under a card that is already
+  asking.
+
+  `MakeReceipt.status` drops `"awaiting-consent"`; nothing produces it any more.
+
+- 79f177f: The MCP door speaks the built-app world an outside agent now meets.
+
+  A SEALED bundle is the app, and it is not a page: it boots inside the host's own
+  UI, in a sandboxed frame whose only way out is the host's postMessage bridge. So
+  `vendo_apps_open` answers a bundle with the open-in-product card an app with a
+  url of its own already took — the product's name and the deployment's public url,
+  "Open Spending in Maple: https://…" — and a deployment that named no public url
+  still says the app is built and ready rather than handing back a content hash,
+  which was the whole of the previous answer.
+
+  The two build-window waits stop arriving as failures. An app whose build the
+  person has not approved, and one still being built, both refuse an open with a
+  not-found; the door names them ("waiting on the user's build approval", "still
+  being built") on every leg it serves — its own apps path and the one the bound
+  registry owns — so an agent narrates the wait instead of telling someone their
+  app is gone. A build that failed for good comes back as its reason, plus whether
+  asking again may work, instead of a JSON record to paraphrase. Each answer still
+  rides as `structuredContent` under its own `kind`, so a loop reads the state
+  rather than the English.
+
+  The umbrella's door port stops narrowing what an open may answer: it forwarded
+  trees and http surfaces and threw "this is a server app resuming in-product" at
+  everything else — a rung that no longer exists.
+
+- 79f177f: `<VendoApproval>` — the outside-agent approval as one element.
+
+  An agent that lives outside your product parks a guarded call and ships the ask
+  to your page. This renders it on THE card the in-product agent asks on — the
+  shipped `<ApprovalCard>` itself, not a lookalike built from the same shell (spec
+  §16 — one consent surface everywhere) — decides it against your wire, and
+  settles into its own receipt. Two props: the `approval` block off the parked
+  outcome (`{ id, question, notes }` — the words are already chosen, because such
+  an agent never holds the `ApprovalRequest` they are derived from) and the
+  `VendoClient` the decision is spent on.
+
+  `ApprovalCardProps` gains an optional `ask` for exactly that case: the ask
+  already in words, which skips the `consentAsk` derivation instead of asking a
+  surface with no request to fake one. Absent, the card derives as it always has.
+
+  An ask that is no longer waiting — already answered on another surface, or
+  expired — settles into that same receipt rather than leaving buttons up that
+  cannot work.
+
+### Patch Changes
+
+- Updated dependencies [79f177f]
+- Updated dependencies [79f177f]
+- Updated dependencies [79f177f]
+  - @vendoai/core@0.48.0
+  - @vendoai/apps@0.48.0
+  - @vendoai/harnesses@0.48.0
+  - @vendoai/ui@0.48.0
+  - @vendoai/mcp@0.48.0
+  - @vendoai/actions@0.48.0
+  - @vendoai/agents@0.48.0
+  - @vendoai/automations@0.48.0
+  - @vendoai/guard@0.48.0
+  - @vendoai/knowledge@0.48.0
+  - @vendoai/store@0.48.0
+
 ## 0.47.0
 
 ### Minor Changes
