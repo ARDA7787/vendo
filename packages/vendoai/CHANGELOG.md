@@ -1,5 +1,11 @@
 # vendoai
 
+## 0.49.0
+
+### Patch Changes
+
+- @vendoai/vendo@0.49.0
+
 ## 0.48.1
 
 ### Patch Changes
