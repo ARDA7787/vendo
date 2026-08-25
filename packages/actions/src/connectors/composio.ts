@@ -169,6 +169,7 @@ export function composioConnector(config: {
   timeoutMs?: number;
 }): Connector {
   const baseUrl = config.baseUrl ?? "https://backend.composio.dev";
+  let normalizedToRaw = new Map<string, { raw: string; toolkit: string }>();
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   async function composioFetch(
@@ -179,40 +180,37 @@ export function composioConnector(config: {
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, value);
     debugConnectorHttp("composio", options.method ?? "GET", path);
     const controller = new AbortController();
-let timedOut = false;
-const timeout = setTimeout(() => {
-  timedOut = true;
-  controller.abort();
-}, timeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
 
-let response: Response;
-try {
-  response = await fetch(url, {
-    method: options.method ?? "GET",
-    headers: {
-      "x-api-key": config.apiKey,
-      accept: "application/json",
-      ...(options.body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-    signal: controller.signal,
-  });
-} catch (error) {
-  if (timedOut) {
-    throw new Error(`Composio ${path} request timed out after ${timeoutMs}ms`);
-  }
-  throw error;
-} finally {
-  clearTimeout(timeout);
-}
-    const text = await response.text();
-    let payload: unknown;
     try {
-      payload = text ? JSON.parse(text) : {};
-    } catch {
-      throw new Error(`Composio ${path} response was not valid JSON (${response.status})`);
+      const response = await fetch(url, {
+        method: options.method ?? "GET",
+        headers: {
+          "x-api-key": config.apiKey,
+          accept: "application/json",
+          ...(options.body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let payload: unknown;
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        throw new Error(`Composio ${path} response was not valid JSON (${response.status})`);
+      }
+      return { ok: response.ok, status: response.status, payload };
+    } catch (error) {
+      if (timedOut) throw new Error(`Composio ${path} request timed out after ${timeoutMs}ms`);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    return { ok: response.ok, status: response.status, payload };
   }
 
   /** Walk a cursor-paginated Composio listing to completion (fail-closed on
