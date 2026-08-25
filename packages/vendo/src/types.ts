@@ -42,6 +42,7 @@ import type {
   VendoTheme,
 } from "@vendoai/apps/contract";
 import type { GuardRules, PolicyFile, VendoGuard } from "@vendoai/guard";
+import type { ShellLimits } from "@vendoai/harnesses/vendo";
 import type { HostOAuthAdapter } from "@vendoai/mcp";
 import type { VendoStore } from "@vendoai/store";
 import type { VendoAgentTools } from "./agent-tools.js";
@@ -429,6 +430,23 @@ export interface CreateVendoConfig {
     federation?: { secret: string };
     serviceAuth?: { keys: readonly string[] };
   };
+  /** The agent's hands over the user's own files (spec 2026-08-23 §1): one
+      in-process `bash` over the workspace, on the same guarded registry as
+      everything else. ON by default — a deployment's users drop files into chat
+      whether or not anyone configured anything, and an agent that cannot open
+      them is the whole problem this exists to fix.
+
+      `false` withholds the tool entirely. The object form keeps it and moves its
+      ceilings: `limits.maxExecutionTimeMs` (default 30 000) is one call's wall
+      clock, `limits.maxOutputBytes` (default 1 000 000) is how much one call may
+      produce before the shell stops it.
+
+      It rides the RESIDENT BRAIN, not the deployment: `vendo()` runs in this
+      process and has the workspace in hand, so the tool composes for it and for
+      an `agent()` that adopted it. A harness that thinks on a MACHINE
+      (`claudeCode()`) already has a real disk and reaches it its own way, so this
+      flag is silently irrelevant there rather than half-wired. */
+  shell?: boolean | { limits?: ShellLimits };
   /** 10-mcp §3 plus its additive prebuilt flow — the host's session + identity seam. Threaded top-level like
       `actAs`/`principal` (the door is agnostic; the umbrella owns the shape).
       REQUIRED when `mcp` is true: the door cannot mint principals without it. */
