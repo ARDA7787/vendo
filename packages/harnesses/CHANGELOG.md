@@ -1,5 +1,101 @@
 # @vendoai/harnesses
 
+## 0.44.0
+
+### Minor Changes
+
+- 31c8e30: Files live where the work lives, and are really deleted when it is.
+
+  A file dropped into chat used to go into one global drawer, live there forever,
+  and belong to nothing. Now it belongs to the CONVERSATION: the upload lands in a
+  staging area, and the turn that receives the message moves it to
+  `/user/threads/<thread>/files/<name>` and rewrites the message before storing it,
+  so the agent's shell finds it at a stable address and later turns on that thread
+  still can. `/user/files` is now what its name always suggested — a keep-shelf for
+  things the user asked you to save — and the three `vendo_user_files_*` tools say
+  so, so the model stops shelving everything by reflex. Staged files that were never
+  sent are swept by the next turn.
+
+  Two real leaks close with it, both of which existed before this change:
+
+  - Deleting a conversation deleted ONE row. Its messages stayed in
+    `vendo_thread_messages` forever, unreachable by any later erasure because the
+    join that identified them had gone with the row, and its harness state stayed
+    with them. The delete now runs the cascade that already existed — thread row,
+    messages and state in one transaction — and sweeps the conversation's files,
+    including the blobs behind them.
+  - Deleting an app never touched its workspace files or their objects. It now runs
+    the store's own app cascade, which does.
+
+  Nothing in the file model is harness-specific: a sandboxed harness materialises a
+  conversation's files exactly as it materialises everything else, with no new code.
+
+- 31c8e30: The shell can write and run JavaScript.
+
+  `bash` now carries `js-exec`: the agent writes a script and runs it in a QuickJS
+  sandbox on a worker thread — 64 MiB, 30 seconds, no network — with
+  `require("node:fs")` bound to the SAME virtual workspace bash sees. That is the
+  difference between "reshape this spreadsheet" being a page of `awk` and being
+  five lines of the language the model writes best.
+
+  It is a capability, not a flag: on a runtime with no `node:worker_threads` (edge,
+  Workers) the shell is still the whole shell — bash, the coreutils, the parsers —
+  and the tool simply does not advertise `js-exec` to the model.
+
+- 31c8e30: The agent has hands: one real `bash` over the user's own files.
+
+  Every deployment running the default `vendo()` harness — no keys, no config —
+  now projects one more tool: `bash`. It is a full shell (grep, sed, awk, jq, sort,
+  cut, find, pipes, redirection) running IN THIS PROCESS over the same per-user
+  workspace the file drawer already lives in, so a dropped CSV is something the
+  agent can actually work on instead of something it can only page through 200
+  lines at a time. There is no machine to provision, no sandbox key, and no network
+  or package manager inside the shell — the interpreter is
+  [just-bash](https://www.npmjs.com/package/just-bash) and the filesystem is the
+  store, so the mounts the workspace already enforces (`/user` and
+  `/orgs/<org>` writable, `/host` read-only, everything else `EACCES`) are the whole
+  containment story. Each session also gets an in-memory `/tmp` that lasts the
+  conversation and is never saved.
+
+  It rides the ONE guarded registry like every other tool: graded `write`, so the
+  host's rules, grants and the kill switch apply to it unchanged, and every call
+  lands an audit row.
+
+  One security default moves with it, and it is worth reading twice: the
+  `cautious` preset no longer raises an approval card for `bash`. It is the only
+  tool exempted, and only from the prompt — the `write` grade is exactly what keeps
+  the audit row, the host's own rules and the kill switch over it. A shell that
+  asked before every `wc -l` would be unusable in chat and simply cannot run in an
+  automation, which has nobody to answer the card. A deployment that wants the
+  confirmation back adds a rule of its own for `bash`, and it wins.
+
+  `createVendo({ shell: false })` withholds it; `createVendo({ shell: { limits } })`
+  moves its per-call wall clock (30 s) and output ceiling (1 MB). It composes for
+  the resident brain only — a harness that thinks on a machine already has a real
+  disk and reaches it its own way.
+
+- 31c8e30: The shell can open the formats people actually send.
+
+  `pdftotext`, `xlsx2csv` and `docx2txt` are now commands inside the agent's shell.
+  They write text to stdout, so they pipe into `grep`, `awk` and everything else —
+  `pdftotext invoice.pdf | grep -o 'Total.*'` is one call, not a capability
+  conversation. A PDF, a spreadsheet or a Word document dropped into chat stops
+  being a file the agent can only name.
+
+  They run in the host process against the same virtual filesystem the shell has
+  (unpdf's serverless pdf.js, SheetJS Community Edition, and a zip read with
+  fflate — no native code, no conversion service, no network), and each library
+  loads the first time its format is actually parsed, so a deployment that never
+  sees a PDF never pays for pdf.js.
+
+### Patch Changes
+
+- Updated dependencies [31c8e30]
+- Updated dependencies [31c8e30]
+  - @vendoai/apps@0.44.0
+  - @vendoai/core@0.44.0
+  - @vendoai/guard@0.44.0
+
 ## 0.43.0
 
 ### Patch Changes

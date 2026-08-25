@@ -1,5 +1,22 @@
 # @vendoai/agents
 
+## 0.44.0
+
+### Patch Changes
+
+- Updated dependencies [31c8e30]
+- Updated dependencies [31c8e30]
+- Updated dependencies [31c8e30]
+- Updated dependencies [31c8e30]
+  - @vendoai/apps@0.44.0
+  - @vendoai/harnesses@0.44.0
+  - @vendoai/store@0.44.0
+  - @vendoai/core@0.44.0
+  - @vendoai/guard@0.44.0
+  - @vendoai/actions@0.44.0
+  - @vendoai/mcp@0.44.0
+  - @vendoai/automations@0.44.0
+
 ## 0.43.0
 
 ### Patch Changes
