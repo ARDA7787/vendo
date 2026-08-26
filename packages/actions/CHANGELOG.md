@@ -1,5 +1,13 @@
 # @vendoai/actions
 
+## 0.51.1
+
+### Patch Changes
+
+- b333af7: fix: fail closed on actAs host credentials when the request origin is untrusted; stop 404s from poisoning the learned base URL
+  - @vendoai/core@0.51.1
+  - @vendoai/apps@0.51.1
+
 ## 0.51.0
 
 ### Minor Changes
