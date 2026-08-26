@@ -1340,6 +1340,77 @@ describe("09 §2 composition", () => {
     expect(await probe.json()).toEqual({ ok: true });
   });
 
+  /**
+   * The FALL-THROUGH variant of the poisoning attack. A grouped ("*") route
+   * matches a path then dispatches by method inside — `/threads/:id` serves GET
+   * and DELETE and falls through to a 404 for anything else. Learning the base
+   * at handler ENTRY (once the PATH matched) let an attacker freeze it from a
+   * route-shaped 404 that never reached a real route, partially reopening
+   * VEGA-INFO-00037. The learner now fires only for a TERMINAL match, so the
+   * fall-through never teaches the base and a real loopback request still can.
+   */
+  it("SECURITY: a route-shaped 404 (grouped route, unhandled method) never becomes the learned base", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    const { vendo } = await setup();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const target = input instanceof Request ? input : new Request(input, init);
+      return vendo.handler(target);
+    }));
+
+    // The attacker's Host arrives FIRST, on a path that MATCHES the grouped
+    // /threads/:id route but with a method it does not serve — so the handler
+    // falls through to a 404. Before the fix, matching the pattern already froze
+    // the base to attacker.evil.
+    const notFound = await vendo.handler(requestFrom("https://attacker.evil", "PUT", "/threads/thr_x", {}));
+    expect(notFound.status).toBe(404);
+
+    // A real loopback request can therefore still become the learned, TRUSTED
+    // base — the fall-through 404 did not poison it — so the present probe's
+    // credentials round-trip to it.
+    const probe = await vendo.handler(requestFrom("http://localhost:3000", "POST", "/doctor/present", {}, {
+      authorization: "Bearer vendo-doctor-present",
+      cookie: "vendo_doctor_present=1",
+    }));
+    expect(await probe.json()).toEqual({ ok: true });
+  });
+
+  /**
+   * The METHOD-SPECIFIC variant of the same attack, and why "method !== '*'" was
+   * never a safe proxy for "cannot fall through". The router contract is
+   * `Promise<Response | undefined>` for EVERY entry (agents/http/router.ts), so a
+   * method-specific route can match, run its side effects, then return undefined
+   * to fall through to a 404. `POST /automations/:id/:op` does exactly that for an
+   * op it does not serve (wire/automations.ts). Learning the base at entry for
+   * every non-"*" route let this route-shaped 404 with a spoofed Host freeze it,
+   * reopening VEGA-INFO-00037. The learner now fires only for a TERMINAL match
+   * (a non-undefined Response), whatever the method.
+   */
+  it("SECURITY: a method-specific route that falls through (unknown op) never becomes the learned base", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("VENDO_BASE_URL", "");
+    const { vendo } = await setup();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const target = input instanceof Request ? input : new Request(input, init);
+      return vendo.handler(target);
+    }));
+
+    // The attacker's Host arrives FIRST, on the method-specific
+    // `POST /automations/:id/:op` route with an op it does not serve — the
+    // handler resolves context, then returns undefined and falls through to 404.
+    const notFound = await vendo.handler(requestFrom("https://attacker.evil", "POST", "/automations/aut_x/bogus", {}));
+    expect(notFound.status).toBe(404);
+
+    // A real loopback request can therefore still become the learned, TRUSTED
+    // base — the method-specific fall-through 404 did not poison it — so the
+    // present probe's credentials round-trip to it.
+    const probe = await vendo.handler(requestFrom("http://localhost:3000", "POST", "/doctor/present", {}, {
+      authorization: "Bearer vendo-doctor-present",
+      cookie: "vendo_doctor_present=1",
+    }));
+    expect(await probe.json()).toEqual({ ok: true });
+  });
+
   it("09-vendo §2 install-dx wave 1.1: logs one loud console.error at composition when NODE_ENV=production and VENDO_BASE_URL is unset", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("VENDO_BASE_URL", "");
