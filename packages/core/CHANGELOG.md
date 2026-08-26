@@ -1,5 +1,13 @@
 # @vendoai/core
 
+## 0.51.0
+
+### Minor Changes
+
+- 54a3545: Remove dead in-client remnants (review-flag capture chain, stale MCP shim bundle now regenerated + drift-guarded, orphaned scenarios); keep the inClient strip and sandboxed-path constants.
+
+## 0.50.0
+
 ## 0.49.1
 
 ## 0.49.0
