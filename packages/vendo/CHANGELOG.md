@@ -1,5 +1,26 @@
 # @vendoai/vendo
 
+## 0.51.0
+
+### Minor Changes
+
+- 54a3545: Remove dead in-client remnants (review-flag capture chain, stale MCP shim bundle now regenerated + drift-guarded, orphaned scenarios); keep the inClient strip and sandboxed-path constants.
+
+### Patch Changes
+
+- Updated dependencies [54a3545]
+  - @vendoai/core@0.51.0
+  - @vendoai/apps@0.51.0
+  - @vendoai/actions@0.51.0
+  - @vendoai/mcp@0.51.0
+  - @vendoai/agents@0.51.0
+  - @vendoai/automations@0.51.0
+  - @vendoai/guard@0.51.0
+  - @vendoai/harnesses@0.51.0
+  - @vendoai/knowledge@0.51.0
+  - @vendoai/store@0.51.0
+  - @vendoai/ui@0.51.0
+
 ## 0.50.0
 
 ### Minor Changes
