@@ -170,7 +170,10 @@ export function composioConnector(config: {
 }): Connector {
   const baseUrl = config.baseUrl ?? "https://backend.composio.dev";
   let normalizedToRaw = new Map<string, { raw: string; toolkit: string }>();
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs =
+    config.timeoutMs !== undefined && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0 && config.timeoutMs <= 2_147_483_647
+      ? config.timeoutMs
+      : DEFAULT_TIMEOUT_MS;
 
   async function composioFetch(
     path: string,
