@@ -132,33 +132,52 @@ export const composeConfig = (input: CreateVendoConfig): Pick<VendoComposition,
   // before anything is constructed, rather than as a dead link months later.
   validateRouteConfig(config.routes);
   validateUploadMaxBytes(config.uploadMaxBytes);
-  // 09-vendo §2.1 — one preset or the per-seam trio, never mixed. Checked
+  // 09-vendo §2.1 — one preset or the per-seam keys, never mixed. Checked
   // before anything is constructed so a miswired config leaks no resources.
+  // `memberships` is in the list for the reason the others are, and harder: it
+  // decides whether Vendo asks Cloud who the caller's orgs are, so a top-level
+  // one lost to `auth.memberships` handed a host the directory they thought
+  // they had just declined.
   if (config.auth !== undefined) {
-    const mixed = (["principal", "actAs", "oauth"] as const)
+    const mixed = (["principal", "actAs", "oauth", "memberships"] as const)
       .filter((key) => config[key] !== undefined);
     if (mixed.length > 0) {
       throw new VendoError(
         "validation",
-        `createVendo({ auth }) already fills the principal, actAs, and oauth seams from one preset (09-vendo §2.1); remove ${mixed.map((key) => `\`${key}\``).join(", ")} or drop \`auth\` — one preset or the per-seam trio, never mixed.`,
+        `createVendo({ auth }) already fills the principal, actAs, oauth and memberships seams from one preset (09-vendo §2.1); remove ${mixed.map((key) => `\`${key}\``).join(", ")} or drop \`auth\` — one preset or the per-seam keys, never mixed.`,
       );
     }
+  }
+  // One registry, one name: `components` is what `<VendoProvider>` already
+  // called it, and `catalog` is the same slot under its old spelling. Setting
+  // both is a config that cannot be read two ways without picking a winner
+  // silently, so it refuses here beside the other slot-filled-twice checks.
+  if (config.components !== undefined && config.catalog !== undefined) {
+    throw new VendoError(
+      "validation",
+      "createVendo({ components }) and createVendo({ catalog }) are the same component registry; "
+      + "keep `components` (the name `<VendoProvider components>` already uses) and drop `catalog`.",
+    );
   }
   // agents-v0 §Product — the embed's seam onto @vendoai/agents. Checked here,
   // beside the auth mixing check and for the same reason: a slot filled twice
   // is a wiring mistake the host hears about before anything is constructed.
   const composed = adoptAgent(config);
-  // The three seams the identity story fills: from the preset or from the
-  // per-seam trio. Absent preset halves leave their seams unset — but the
-  // principal is not optional. Vendo mints no principals of its own, so a
-  // deployment with neither `auth` nor `principal` has no one to serve and
-  // says so here, beside the other config refusals, before anything is built.
+  // The seams the identity story fills: from `auth` — a preset's result or the
+  // object a host wrote, one door either way — or from the deprecated per-seam
+  // trio. Absent halves leave their seams unset, but the principal is not
+  // optional. Vendo mints no principals of its own, so a deployment with
+  // neither `auth` nor `principal` has no one to serve and says so here, beside
+  // the other config refusals, before anything is built. The fix names the ONE
+  // DOOR, never the deprecated key: an error message is where most hosts learn
+  // this API's shape, so it may only ever teach the shape we want them on.
   const resolvePrincipal = config.auth?.principal ?? config.principal;
   if (resolvePrincipal === undefined) {
     throw new VendoError(
       "validation",
-      "createVendo needs an identity: add `principal: async () => ({ kind: \"user\", subject: \"dev\" })` "
-      + "(or an `auth` preset). Vendo no longer mints anonymous sessions.",
+      "createVendo needs an identity: add "
+      + "`auth: { principal: async () => ({ kind: \"user\", subject: \"dev\" }) }` "
+      + "(or a preset — `auth: authJs()`). Vendo no longer mints anonymous sessions.",
     );
   }
   const actAsSeam = config.auth === undefined ? config.actAs : config.auth.actAs;
@@ -178,12 +197,13 @@ export const composeConfig = (input: CreateVendoConfig): Pick<VendoComposition,
   // engine and the MCP door all inherit it.
   const cloud = membershipsSeam === undefined ? cloudKeyOptions() : undefined;
   const directory = cloud === undefined ? undefined : cloudDirectory(cloud);
-  // Spec 2026-08-05 §1 — the [User] facts seam rides the preset only (decision
-  // 5: no seam for raw principal-trio hosts — a hand-rolled `principal` has no
-  // facts channel).
+  // Spec 2026-08-05 §1 — the [User] facts seam rides `auth`, in either of its
+  // spellings: a preset's result or the object a host wrote. It has no per-seam
+  // twin on purpose. The deprecated top-level `principal` is a bare function
+  // with nowhere to hang a second seam, which is the whole reason `auth` is the
+  // one door — a host who wants facts writes `auth: { principal, facts }`.
   const userFactsSeam = config.auth?.facts;
-  // The limits pools seam rides the preset for the same reason: a hand-rolled
-  // `principal` has no session to read shared meters off.
+  // The limits pools seam rides the same door for the same reason.
   const userPoolsSeam = config.auth?.pools;
   // The TTL sweep's cadence and clock. One timer serves both surviving legs
   // (expired parked BYO calls and stranded approvals), so the knob is the

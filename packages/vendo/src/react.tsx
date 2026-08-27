@@ -37,10 +37,12 @@ export {
   // chrome/humanize.ts
   type ToolMeta,
   type ToolMetaMap,
-  // chrome/embeds.tsx — the BYO-agent embeds (existing-agents)
+  // chrome/embeds.tsx — the BYO-agent embeds (existing-agents), and the guard
+  // a host's own message-part renderer branches on.
   VendoAppEmbed,
   VendoApprovalEmbed,
   VendoToolResult,
+  isVendoToolPart,
   // chrome/vendo-approval.tsx — the outside-agent ask, as one element.
   VendoApproval,
   type PendingApproval,
@@ -117,7 +119,7 @@ export {
   type GuardPosture,
   type VendoStatus,
 } from "@vendoai/ui";
-// The visible agent surface (launcher pill + panel) — re-exported from the
+// The agent conversation panel — re-exported from the
 // chrome subpath so the init-scaffolded layout wrapper can import everything
 // from "@vendoai/vendo/react": hosts only get @vendoai/vendo as a direct
 // dependency, and under pnpm strict linking the transitive "@vendoai/ui/chrome"

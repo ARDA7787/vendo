@@ -10,6 +10,13 @@ const requiredJsonValueSchema = z.unknown().refine(
 /** 01-core §4 */
 export const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
+/** Every tool Vendo puts in an agent's hands is namespaced under this prefix,
+ *  so it never collides with the host loop's own tools and a renderer can tell
+ *  the two apart by name alone. Named here, in the layer everything shares,
+ *  because both the pack that WRITES the names (`VENDO_TOOL_PACK_PREFIX`) and
+ *  the chat surface that READS them (`isVendoToolPart`) hold this string. */
+export const VENDO_TOOL_PREFIX = "vendo_";
+
 /** 01-core §4/§16 — the app runtime's reserved agent-tool namespace. Tools
  *  under this prefix are the only ones whose ok-outcome may carry an
  *  OpenSurface onto the view channel; the agent bridge and the apps runtime
@@ -162,6 +169,25 @@ export const VENDO_TOOL_TITLES: Readonly<Record<string, string>> = {
   vendo_report_capability_miss: "Note what I can't do",
 };
 
+/**
+ * The consumer-voice SENTENCE for the tools Vendo itself projects — {@link
+ * VENDO_TOOL_TITLES}' other half, here for the same reason: the consent card
+ * and the words-only surfaces must say one thing, and neither can read the
+ * other's copy.
+ *
+ * Ruling 14 keeps a DESCRIPTOR's `description` off the consent ladder at every
+ * rung, and this table does not reopen that door: a descriptor's sentence is
+ * authored for the MODEL or minted by extraction, while nothing can reach this
+ * table except copy Vendo wrote by hand for a person to read. Host tools are
+ * not here — a host's own sentence is its `ToolMeta.description`, and that
+ * still outranks this.
+ */
+export const VENDO_TOOL_NOTES: Readonly<Record<string, string>> = {
+  [VENDO_APP_BUILD_TOOL]: "Build this app for real: a sandbox installs the packages it needs,"
+    + " writes and tests the code, and the result is sealed. It spends a build machine,"
+    + " so it needs the person's yes.",
+};
+
 /** Prettify a raw tool id / slug into a human label:
     `host_email_send` → "Email send", `fn:listInvoices` → "List invoices",
     `gmail_GMAIL_CREATE_EMAIL_DRAFT` → "Gmail create email draft".
@@ -200,16 +226,22 @@ export function humanizeToolName(raw: string): string {
  * identifier stays the CALL name; this is the one place the human label enters
  * the model's vocabulary.
  *
- * A title equal to the name adds nothing (`ToolListing.title` falls back to the
- * name) and would teach exactly the wrong vocabulary, so it is dropped.
+ * A title equal to the name is no title at all (`ToolListing.title` falls back to
+ * the name), and neither is a missing one — so the label falls back down the SAME
+ * ladder the render layer walks (`toolTitle`, ui/humanize.ts): our own table, then
+ * the prettified id. Dropping the label instead is what leaked
+ * `host_getClient` into a TaxDome answer — the screen's beat said "Get client"
+ * while the model, told to say the title and given none, had only the identifier.
+ * Both sides now read one ladder, so they cannot say different words.
  */
 export function modelToolDescription(
   tool: { name: string; title?: string; description: string },
 ): string {
-  const title = tool.title?.trim();
-  return title === undefined || title === "" || title === tool.name
-    ? tool.description
-    : `${title} — ${tool.description}`;
+  const authored = tool.title?.trim();
+  const title = authored === undefined || authored === "" || authored === tool.name
+    ? VENDO_TOOL_TITLES[tool.name] ?? humanizeToolName(tool.name)
+    : authored;
+  return `${title} — ${tool.description}`;
 }
 
 /** The message prefix the apps runtime stamps on a terminally failed BUILD's

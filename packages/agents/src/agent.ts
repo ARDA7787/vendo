@@ -14,6 +14,7 @@ import {
   selectSandbox,
 } from "@vendoai/apps";
 import {
+  consoleUrlFromEnv,
   VendoError,
   type FilesAdapter,
   type Harness,
@@ -103,7 +104,7 @@ export interface AgentConfig {
    * firing cannot drift into two agents wearing one name. `undefined` meaning
    * "the default" is what keeps a conditional that falls through from silently
    * stripping the rules; replacing wholesale hands the base rules and the
-   * forgery-safe `[User]`/`[Situation]` blocks to the host, to keep or to drop.
+   * forgery-safe `[User]`/`[Context]` blocks to the host, to keep or to drop.
    */
   system?: SystemPromptHook;
 }
@@ -248,7 +249,7 @@ export function provideCloudAdapters(adapters: CloudAdapters): void {
 const cloudKey = (): { apiKey: string; baseUrl?: string } | undefined => {
   const apiKey = process.env["VENDO_API_KEY"];
   if (apiKey === undefined || apiKey === "") return undefined;
-  const baseUrl = process.env["VENDO_CLOUD_URL"];
+  const baseUrl = consoleUrlFromEnv();
   return { apiKey, ...(baseUrl === undefined ? {} : { baseUrl }) };
 };
 
@@ -356,7 +357,8 @@ export function agent(config: AgentConfig): VendoAgent {
     if ((await resolveDevCredential()).rung !== "none") return;
     throw new VendoError(
       "validation",
-      "agent({ model }) is required — vendo(), the default brain, thinks with it. Pass one — "
+      "agent({ model }) is required — vendo(), the default brain, thinks with it. The shortest "
+      + "way is `npx vendoai@latest login`, which mints a VENDO_API_KEY. Or pass your own — "
       + "`model: anthropic(\"claude-sonnet-4-6\")`, importing `anthropic` from `@ai-sdk/anthropic` "
       + "— or name a harness that brings its own, e.g. `harness: claudeCode()`, importing "
       + "`claudeCode` from `@vendoai/harnesses/claude-code`.",

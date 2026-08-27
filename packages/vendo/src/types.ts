@@ -167,20 +167,39 @@ export interface CreateVendoConfig {
       deployment that sets nothing at all still fills every seat, and fails
       honestly with instructions when no credential exists. */
   models?: ModelsConfig;
-  /** 09-vendo §2.1 — ONE host-identity preset filling the principal, actAs, and
-      oauth seams from one config key. Mutually exclusive with all three:
-      mixing throws VendoError("validation") at compose time. */
+  /** 09-vendo §2.1 — the ONE DOOR for everything identity-shaped. It takes
+      either spelling of the same value:
+
+      ```ts
+      createVendo({ auth: authJs() });               // a preset's result
+      createVendo({ auth: {                          // an object you write
+        principal: async (req) => resolveSession(req),
+        facts: async (req) => ({ plan: "pro" }),
+      } });
+      ```
+
+      A preset is just a function returning one of these, so nothing here is
+      reserved to the preset path — `facts`, `pools`, `memberships`, `actAs` and
+      `oauth` are all hand-writable ({@link HostAuthPreset}).
+
+      Mutually exclusive with the per-seam `principal`/`actAs`/`oauth`/
+      `memberships` keys: mixing throws VendoError("validation") at compose
+      time. */
   auth?: HostAuthPreset;
-  /** Per-seam escape hatch: host session → principal. REQUIRED unless an
-      `auth` preset fills the same seam — Vendo mints no principals of its own,
-      so a deployment with neither refuses to compose (09 §2). Returning null
-      says this visitor has no identity, and the request is refused with
-      `forbidden`; give logged-out visitors a principal of your own choosing if
-      you want them served. */
+  /** Host session → principal.
+      @deprecated Use the one door: `auth: { principal }`. Same function, same
+      seam, and `auth` is also where `facts`, `pools`, `memberships`, `actAs`
+      and `oauth` live — this key can only ever fill one of them. Still works;
+      it just cannot grow. */
   principal?: (req: Request) => Promise<Principal | null>;
   /** Per-seam escape hatch: the caller's orgs and teams, the twin of
-      `auth.memberships` for a host on the `principal` trio. Same seam, same
-      precedence as `actAs` and `oauth` — set it and it wins outright.
+      `auth.memberships` for a host on the deprecated `principal` trio. Same
+      seam, same precedence as `actAs` and `oauth` — set it and it wins outright.
+
+      Read ONLY when `auth` is unset, and mutually exclusive with it: `auth`
+      carries its own `memberships`, so a config with both throws
+      VendoError("validation") at compose time rather than quietly keeping the
+      one inside `auth`. Put it there.
 
       This is also how a keyed deployment DECLINES the Cloud tenant directory:
       with `VENDO_API_KEY` set and this seam unset, Vendo resolves memberships
@@ -214,9 +233,17 @@ export interface CreateVendoConfig {
       another contributor fails at boot naming both. */
   skills?: readonly Skill[];
   /** Host components available to generated apps: the name-keyed registry
-      object (01 §14 — the same object serves <VendoProvider>; the server ignores
-      each entry's `component` reference) or the array form. Entry names must
-      mirror the client-side components map 1:1. */
+      object (01 §14 — the server ignores each entry's `component` reference) or
+      the array form.
+
+      ONE registry, ONE name: this is the same object `<VendoProvider components>`
+      takes, and it is spelled `components` at both ends. Entry names mirror the
+      client-side map 1:1. */
+  components?: ComponentCatalog | ComponentRegistry;
+  /** The component registry under its old name.
+      @deprecated Use `components` — the same object, the same spelling the
+      client half already used. Still works; setting both throws
+      VendoError("validation") at compose time. */
   catalog?: ComponentCatalog | ComponentRegistry;
   /** The host's own pages a generated view may link to, keyed by the name a
       `<Link to>` reaches for. Each entry's `description` is what picks between
@@ -265,27 +292,38 @@ export interface CreateVendoConfig {
       Configured, it composes the `vendo_knowledge_search` agent tool; unset,
       the tool does not exist (precedence: selectKnowledge). */
   knowledge?: KnowledgeAdapter;
-  /** Where outside-service tools come from — ONE list, two spellings, mixed
-      freely.
+  /** Connectors — the tools YOUR deployment brings, under ONE credential you
+      hold: `openApiConnector({…})`, `mcpConnector({…})`, `composioConnector({…})`,
+      `cloudTools({…})`, or a host's own {@link Connector}. Each is used verbatim.
 
-      A STRING names a Vendo Cloud connector toolkit (`"gmail"`, `"slack"`):
-      the composed cloudTools/cloudConnections pair is scoped to exactly the
-      strings in this list, so the discovery index, the executable tools and the
-      connect dock's catalog all bind to the same set instead of lazily
-      advertising the console's whole catalog. Strings need VENDO_API_KEY —
-      without one there is no broker, so the toolkits mount nothing and the
-      connect surface refuses by naming the key (the honest unconfigured path,
-      never a silent drop).
+      Unset lets VENDO_API_KEY default the unscoped Cloud connector; an empty
+      array is still a choice ("no connectors").
 
-      A {@link Connector} OBJECT is an explicit provider (`composioConnector({…})`,
-      `cloudTools({…})`, a host's own) and is used verbatim.
-
-      Unset lets VENDO_API_KEY default the unscoped Cloud connector, exactly as
-      before; an empty array is still a choice ("no connectors"). */
+      @deprecated STRING entries. A bare service name in this list means
+      {@link CreateVendoConfig.connectedAccounts} — a different product, where
+      each USER holds the credential — so it moves to that key:
+      `connectedAccounts: ["gmail", "slack"]`. Strings here still work for one
+      more minor and warn once; naming services in both keys is refused. */
   connectors?: readonly (string | Connector)[];
+  /** Connected accounts — the services each of your USERS connects for
+      themselves (`["gmail", "slack"]`). The user OAuths once, the broker holds
+      their credential, and every later call runs as them.
+
+      The list scopes three things to exactly these services — the tools the
+      agent sees, the accounts the connect surface offers, and the catalog it
+      advertises — so they can never drift apart.
+
+      Needs VENDO_API_KEY: without one there is no broker, so the services mount
+      nothing and the connect surface refuses by naming the key (the honest
+      unconfigured path, never a silent drop). Unset lets VENDO_API_KEY default
+      the unscoped Cloud connector; an empty array is still a choice ("no
+      connected accounts"). */
+  connectedAccounts?: readonly string[];
   /** 04-actions §3 — an explicit connections adapter; always wins over the
       defaults (precedence: selectConnections). */
   connections?: ConnectionsService;
+  /** Scoped auth material for away host-API execution.
+      @deprecated Use the one door: `auth: { principal, actAs }`. */
   actAs?: ActAs;
   /** 04-actions §1 (ENG-248): the server-action registration map emitted by the
       generated wiring file, keyed `"<module>#<exportName>"`. Server-action tools
@@ -309,7 +347,7 @@ export interface CreateVendoConfig {
       `holes` binds the component names the port renders as holes to the
       host/npm components themselves, and ONE catalog governs both ends of that
       name: it joins the component catalog here, so the checks floor types the
-      ported screen against the same names the renderer paints by. A `catalog`
+      ported screen against the same names the renderer paints by. A `components`
       entry for the same name wins, because a hole carries nothing but a name.
       The component REFERENCE is the client's half, untouched here exactly as a
       catalog entry's `component` is (01 §14); it reaches the renderer through
@@ -386,7 +424,7 @@ export interface CreateVendoConfig {
       ACTIONS USE (`actions.descriptors()`/`execute()`, or the first turn
       that loads tools), not at `createVendo` itself — wrap that call);
       `theme`/`brief`/`catalog` are trusted typed config, the same
-      posture as the existing `catalog` key (zod parsing exists for untyped
+      posture as the top-level `components` key (zod parsing exists for untyped
       file bytes, not typed config). `policy` is the parsed `policy.json`
       document (the guard's `PolicyFile` shape — what the file read parses
       into today), for a deployment that holds its policy in memory instead of
@@ -447,9 +485,10 @@ export interface CreateVendoConfig {
       (`claudeCode()`) already has a real disk and reaches it its own way, so this
       flag is silently irrelevant there rather than half-wired. */
   shell?: boolean | { limits?: ShellLimits };
-  /** 10-mcp §3 plus its additive prebuilt flow — the host's session + identity seam. Threaded top-level like
-      `actAs`/`principal` (the door is agnostic; the umbrella owns the shape).
-      REQUIRED when `mcp` is true: the door cannot mint principals without it. */
+  /** 10-mcp §3 plus its additive prebuilt flow — the host's session + identity
+      seam. REQUIRED when `mcp` is true: the door cannot mint principals
+      without it.
+      @deprecated Use the one door: `auth: { principal, oauth }`. */
   oauth?: HostOAuthAdapter;
   /** A whole agent built by `agent()` from `@vendoai/agents` — the seam the
       agents-v0 spec names ("Vendo's embed consumes it across a real seam").

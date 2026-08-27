@@ -35,7 +35,7 @@
  * resumes on the same session) and worse for cost (a parked write holds a
  * sandbox for up to 90s). Recorded in the lane's close note as a deviation.
  */
-import { isVendoError, log, VENDO_DEV_PORT, VENDO_DEV_PORT_ENV, VendoError, WARM_THREAD_PREFIX } from "@vendoai/core";
+import { consoleUrlFromEnv, isVendoError, log, VENDO_DEV_PORT, VENDO_DEV_PORT_ENV, VendoError, WARM_THREAD_PREFIX } from "@vendoai/core";
 import type { CheckoutFile, SyncFile, TreeState } from "../materialize.js";
 import { emptyTree } from "../materialize.js";
 import { MESSAGE_BUDGET_MS, type SessionMachine, type SessionMessage } from "./machine.js";
@@ -688,7 +688,7 @@ export function inferenceEnv(): Record<string, string> {
     key = pairKey;
     url = pairUrl;
   } else if (cloudKey !== undefined) {
-    const base = (set("VENDO_CLOUD_URL") ?? "https://console.vendo.run").replace(/\/+$/, "");
+    const base = (consoleUrlFromEnv(source) ?? "https://console.vendo.run").replace(/\/+$/, "");
     key = cloudKey;
     url = base.endsWith("/api/v1") ? base : `${base}/api/v1`;
     // The gateway serves the vendo model family as literal ids, so EVERY slot is
@@ -703,6 +703,20 @@ export function inferenceEnv(): Record<string, string> {
   // The bare origin: the SDK re-appends /v1 and wants no trailing slash.
   env["ANTHROPIC_BASE_URL"] = url.replace(/\/+$/, "").replace(/\/v1$/, "");
   return env;
+}
+
+/**
+ * The reusable inference credential a boxed session holds, for a redactor to
+ * strip from anything the turn streams back to the user (VEGA-INFO-00021). It is
+ * exactly the value that becomes the box's `ANTHROPIC_API_KEY`, read through the
+ * SAME selection law as `inferenceEnv()` so the two can never name a different
+ * secret. Empty when the box gets no credential (a no-key BYO deployment) — then
+ * there is nothing to redact. The 8-char floor keeps a pathological short value
+ * from blanking legitimate output.
+ */
+export function inferenceSecrets(): readonly string[] {
+  const key = inferenceEnv()["ANTHROPIC_API_KEY"];
+  return key !== undefined && key.length >= 8 ? [key] : [];
 }
 
 /** The host the Agent SDK talks to when nothing overrides `ANTHROPIC_BASE_URL`. */

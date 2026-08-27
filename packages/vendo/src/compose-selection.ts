@@ -7,6 +7,8 @@
  */
 import type { Connector } from "@vendoai/actions";
 import {
+  consoleUrlFromEnv,
+  VendoError,
   type KnowledgeAdapter,
   type SecretsProvider,
   type StoreAdapter,
@@ -14,6 +16,7 @@ import {
 import { bindKnowledgeStore, cloudKnowledge } from "@vendoai/knowledge";
 import { envSecrets } from "@vendoai/store";
 import { chainSecrets, cloudSecrets } from "./cloud-secrets.js";
+import { warnDeprecatedOnce } from "./config-keys.js";
 import { cloudTools } from "./cloud-tools.js";
 import {
   byoConnections,
@@ -30,40 +33,83 @@ import { environment } from "./wire/shared.js";
 export const DEFAULT_TOOL_OUTPUT_CAP = 32_000;
 
 /** The shared Cloud-default leg of the ADAPTER RULE: VENDO_API_KEY fills a
-    seam the host left unset, VENDO_CLOUD_URL overrides the console base URL. */
+    seam the host left unset, VENDO_CONSOLE_URL overrides the console base URL. */
 export function cloudKeyOptions(): { apiKey: string; baseUrl?: string } | undefined {
   const apiKey = environment("VENDO_API_KEY");
   if (apiKey === undefined) return undefined;
-  const baseUrl = environment("VENDO_CLOUD_URL");
+  const baseUrl = consoleUrlFromEnv();
   return { apiKey, ...(baseUrl === undefined ? {} : { baseUrl }) };
 }
+
+/** TWO products, two keys. `connectors` carries objects — the tools the
+    DEPLOYMENT brings under one credential the host holds. `connectedAccounts`
+    names services each USER connects for themselves.
+
+    One key used to carry both, with the spelling deciding which product a host
+    meant: `connectors: ["gmail"]` was connected accounts and
+    `connectors: [mcpConnector({…})]` was a connector. Strings still resolve
+    here for one more minor, and say where they went; naming services in BOTH
+    keys is refused rather than merged, because which key scopes the connect
+    dock would be a guess.
+
+    Answers `undefined` for a slot no key filled — the only state that still
+    lets VENDO_API_KEY default the UNSCOPED Cloud connector. An empty array on
+    either key is a choice ("no connected accounts"), not silence. */
+export function selectConnectedAccounts(
+  connectedAccounts: readonly string[] | undefined,
+  connectors: readonly (string | Connector)[] | undefined,
+  warn?: (message: string) => void,
+): readonly string[] | undefined {
+  const strings = (connectors ?? []).filter((entry): entry is string => typeof entry === "string");
+  if (strings.length === 0) return connectedAccounts;
+  if (connectedAccounts !== undefined) {
+    throw new VendoError(
+      "validation",
+      `services are named in two places: \`connectors: [${strings.map(quoted).join(", ")}]\` and `
+      + `\`connectedAccounts: [${connectedAccounts.map(quoted).join(", ")}]\`. Which one scopes the connect `
+      + "dock would be a guess, so move every service name into `connectedAccounts` and leave `connectors` "
+      + "for connector objects.",
+    );
+  }
+  warnDeprecatedOnce(
+    "connectors.strings",
+    `a service name in \`connectors\` is deprecated: use \`connectedAccounts: [${strings.map(quoted).join(", ")}]\`. `
+    + "`connectors` carries connector objects — one credential you hold — and `connectedAccounts` names the "
+    + "services each user connects for themselves. Strings still work for one more minor.",
+    ...(warn === undefined ? [] : [warn]),
+  );
+  return strings;
+}
+
+const quoted = (name: string): string => `"${name}"`;
 
 /** ADAPTER RULE, connectors seam: which Connector[] feeds the actions registry,
     and which Cloud toolkits the composed pair is scoped to.
 
-    ONE list carries both spellings. A Connector object is used verbatim; a
-    string names a Cloud toolkit, and the strings together compose the scoped
-    cloudTools connector — which is also what the connections seam below scopes
-    its catalog to, so connect and use can never advertise different sets.
+    A Connector object is used verbatim. The connected-account service names
+    (whichever key carried them — see selectConnectedAccounts) compose the
+    scoped cloudTools connector, which is also what the connections seam below
+    scopes its catalog to, so connect and use can never advertise different
+    sets.
 
-    An explicitly passed list always wins — including an empty one ("no
-    connectors" is a choice). Only a wholly unset slot lets VENDO_API_KEY
-    default the UNSCOPED Cloud tools connector. Strings with no key mount
+    An explicitly filled slot always wins — including an empty one ("no
+    connectors" is a choice). Only a slot NEITHER key filled lets VENDO_API_KEY
+    default the UNSCOPED Cloud tools connector. Named services with no key mount
     nothing: there is no broker to reach them through, and the connections seam
     says so by name rather than dropping them quietly. */
 export function selectConnectors(
   configured: readonly (string | Connector)[] | undefined,
-  toolkits: string[],
+  toolkits: readonly string[] | undefined,
 ): Connector[] {
   const apiKey = environment("VENDO_API_KEY");
-  const baseUrl = environment("VENDO_CLOUD_URL");
+  const baseUrl = consoleUrlFromEnv();
   const cloudArgs = { ...(baseUrl === undefined ? {} : { baseUrl }) };
-  if (configured === undefined) {
+  if (configured === undefined && toolkits === undefined) {
     return apiKey === undefined ? [] : [cloudTools({ apiKey, ...cloudArgs })];
   }
-  const explicit = configured.filter((entry): entry is Connector => typeof entry !== "string");
-  if (toolkits.length === 0 || apiKey === undefined) return explicit;
-  return [...explicit, cloudTools({ apiKey, ...cloudArgs, apps: toolkits })];
+  const explicit = (configured ?? []).filter((entry): entry is Connector => typeof entry !== "string");
+  if (toolkits === undefined || toolkits.length === 0 || apiKey === undefined) return explicit;
+  return [...explicit, cloudTools({ apiKey, ...cloudArgs, apps: [...toolkits] })];
 }
 
 /** ADAPTER RULE, knowledge seam (ENG-368): which KnowledgeAdapter (if any)
@@ -74,7 +120,7 @@ export function selectConnectors(
          `vendoKnowledge()` is handed the composed store here
          (bindKnowledgeStore), so the host never plumbs one;
       2. VENDO_API_KEY makes the Cloud engine the default for the seam the host
-         left unfilled (VENDO_CLOUD_URL overrides the console base URL) —
+         left unfilled (VENDO_CONSOLE_URL overrides the console base URL) —
          the same rung every other Cloud-backed seam above already has;
       3. nothing configured at all: no adapter, no tool. That silence is
          intended — the agent must not advertise a knowledge base the host
@@ -103,7 +149,7 @@ export function selectKnowledge(
       2. BYO — a connector's own connections capability (connections must live
          where the connector executes);
       3. VENDO_API_KEY makes the Cloud adapter the default for the seam the
-         host left unfilled (VENDO_CLOUD_URL overrides the console base URL);
+         host left unfilled (VENDO_CONSOLE_URL overrides the console base URL);
       4. the unconfigured fallback, which fails closed with setup guidance.
     The adapters themselves never read the environment. */
 /** Wraps a connections adapter so a successful `disconnect` drops the
@@ -132,28 +178,31 @@ export function withDisconnectInvalidation(
 export function selectConnections(
   configured: ConnectionsService | undefined,
   connectors: Connector[],
-  toolkits: string[],
+  toolkits: readonly string[] | undefined,
 ): ConnectionsService {
   if (configured !== undefined) return configured;
   if (connectors.some(hasConnections)) return byoConnections(connectors);
+  const named = toolkits ?? [];
   const cloud = cloudKeyOptions();
-  // Named toolkits with no key: the honest unconfigured surface, but saying
+  // Named services with no key: the honest unconfigured surface, but saying
   // which fix THIS config needs. Silently mounting nothing was the old
   // `connectorApps` trap and it does not survive in any form.
   if (cloud === undefined) {
     return unconfiguredConnections(
-      toolkits.length === 0
+      named.length === 0
         ? undefined
-        : `createVendo({ connectors: [${toolkits.map((toolkit) => `"${toolkit}"`).join(", ")}] }) names Vendo Cloud `
-          + "toolkits, which are brokered by the console: set VENDO_API_KEY, or pass a connector object "
-          + `instead (composioConnector({ apps: [${toolkits.map((toolkit) => `"${toolkit}"`).join(", ")}] }))`,
+        : `createVendo({ connectedAccounts: [${named.map(quoted).join(", ")}] }) names services brokered by `
+          + "the console: set VENDO_API_KEY, or pass a connector object instead "
+          + `(composioConnector({ apps: [${named.map(quoted).join(", ")}] }))`,
     );
   }
   // The same scoping the composed cloudTools carries — the connect dock's
-  // catalog must never advertise a toolkit the agent cannot invoke.
+  // catalog must never advertise a toolkit the agent cannot invoke, and that
+  // includes the host who named NO services: `connectedAccounts: []` scopes the
+  // dock to nothing, where a slot neither key filled stays unscoped.
   return cloudConnections({
     ...cloud,
-    ...(toolkits.length === 0 ? {} : { apps: toolkits }),
+    ...(toolkits === undefined ? {} : { apps: [...toolkits] }),
   });
 }
 
@@ -166,7 +215,7 @@ export function selectConnections(
          non-empty env value wins (the hard BYO rule: setting a Vendo key
          never shadows a secret the operator already ships in the env) — and
          VENDO_API_KEY chains the Cloud secrets provider behind it for the
-         names the environment leaves unset (VENDO_CLOUD_URL overrides the
+         names the environment leaves unset (VENDO_CONSOLE_URL overrides the
          console base URL);
       3. keyless, the envSecrets default alone (unchanged behavior).
     The providers themselves never read VENDO_API_KEY; a Cloud lookup failure

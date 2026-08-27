@@ -29,7 +29,6 @@ export const SURFACE_MARKERS: readonly string[] = [
   "<VendoOverlay",
   "<VendoThread",
   "<VendoTrigger",
-  "<VendoPalette",
   "<VendoSlot",
   "<VendoAppEmbed",
   "<VendoApprovalEmbed",
@@ -195,6 +194,17 @@ export async function wiresClerkAuth(root: string): Promise<boolean> {
     unlike the Supabase marker this needs no composition-file narrowing. */
 export async function wiresTenantConnectors(root: string): Promise<boolean> {
   return hostSourceMatches(root, /\.tenantConnectors\b/);
+}
+
+/** Whether the host's guard is wired to read its rules from a FILE. The empty
+    policy object is that and nothing else — it is what `vendo init` writes
+    (cli/init-scaffolds.ts) and the one spelling whose only meaning is "the
+    rules live at the default path". Inline rules, a preset name and an
+    explicitly named `file` all say something different and are deliberately
+    not matched: the first two replace the file, the third fails loud on its
+    own (guard/src/policy.ts:115). */
+export async function wiresPolicyFile(root: string): Promise<boolean> {
+  return hostSourceMatches(root, /\bpolicy\s*:\s*\{\s*\}/);
 }
 
 /** Whether the host builds its OWN store. Load-bearing for anything that reads

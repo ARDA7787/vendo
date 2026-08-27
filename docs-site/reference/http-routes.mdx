@@ -18,13 +18,19 @@ Most routes resolve a principal through `principal(req)`. Three surfaces never c
 
 | Route | Method | Body → Response |
 | --- | --- | --- |
-| `/threads` | POST | `{ threadId?, message, context? }` → an AI SDK UI message stream (SSE), one conversational turn. The response carries `X-Vendo-Thread-Id`. `context` is the situation channel, capped at 8 KiB UTF-8 on a code-point boundary and dropped rather than refused |
+| `/threads` | POST | `{ threadId?, message, context? }` → an AI SDK UI message stream (SSE), one conversational turn. The response carries `X-Vendo-Thread-Id`. `context` fills the prompt's `[Context]` block, capped at 8 KiB UTF-8 on a code-point boundary and dropped rather than refused |
 | `/threads/warm` | POST | no body → `204`. Warms the prompt cache. An engine without a `warm` seam still answers `204` |
 | `/threads/:id/stream` | GET | resume a live turn: SSE with `X-Vendo-Thread-Id`, or `204` when nothing is in flight |
 | `/threads/:id/heartbeat` | POST | `{ active: boolean }`. Beaten by the client while a turn streams so the server can idle-abort on a runtime that never surfaces a disconnect. Only the caller's own in-flight turns answer `true` |
 | `/threads/:id/steer` | POST | `{ text, messageId }` → `{ landed: boolean }`. Steers the caller's own in-flight turn |
 | `/threads` | GET | `ThreadSummary[]` |
 | `/threads/:id` | GET · DELETE | one thread · delete it |
+
+## Files
+
+| Route | Method | Body → Response |
+| --- | --- | --- |
+| `/files` | POST | the raw file bytes are the body — no multipart — and the name rides the query string as `?name=<percent-encoded>` → the stored `UploadedFile`. Requires the `x-vendo-upload` header, which is what stands in for the JSON CSRF floor an upload cannot satisfy. Bounded by `uploadMaxBytes`, and an over-cap declared `content-length` is refused before the body is read |
 
 ## Approvals and grants
 
@@ -62,6 +68,9 @@ Mounted unless `apps: false`.
 | `/apps/:id/export` | GET | `.vendoapp` bytes |
 | `/apps/:id/fork` | POST | `AppDocument` |
 | `/apps/:id/bundle/:hash` | GET | a sealed bundle's bytes, as the document its frame renders. Answered behind `Content-Security-Policy: default-src 'none'` and cached immutably, because the url is the content's own hash. Viewer level, so a person who may see a shared app may render it |
+| `/apps/:id/props` | POST | `{ props }` → the updated seed. Writes `seed.props` and nothing else, so it mints no version and is safe to call on every render the props really change on. The runtime filters the payload to the captured baseline's declared props |
+| `/apps/:id/grants` | GET | `{ level, grants, orgs }` — the ✦ share toggle's read: the caller's access level on this app, the app's grant list, and the caller's orgs, in one round trip |
+| `/apps/:id/grants/:principal` | PUT · DELETE | `{ level }` → `{ grants }` · revoke → `{ grants }`. The access level lives in the runtime, so the MCP door inherits the same rules |
 | `/apps/:id/place` | POST | `{ slot }` → `{ evicted? }`. A slot holds one app per subject, so whatever it held is evicted |
 | `/apps/:id/unplace` | POST | `{ slot }` → `{}`. Unplacing a slot this app does not hold is not an error |
 | `/apps/:id/reject-review` | POST | `{ note }` → the rejection. The note is required and the work is not deleted |
@@ -184,11 +193,12 @@ A verification failure returns `401`, resolves no principal, starts no run, and 
 
 ## CSRF floor
 
-Cookie-authenticated state-changing requests require `Content-Type: application/json`. The exceptions are exactly three, and none of them carries ambient credentials.
+Cookie-authenticated state-changing requests require `Content-Type: application/json`. The exceptions are exactly four, and each one proves itself another way.
 
 | Exception | Proves itself by |
 | --- | --- |
 | `/apps/import` | demanding `application/octet-stream` or `application/vnd.vendo.app`, a non-safelisted media type that forces a preflight |
+| `/files` | demanding the `x-vendo-upload` header. An upload's `Content-Type` is the file's own, and `text/plain` is CORS-safelisted, so a media-type toll would prove nothing here |
 | `/webhooks/:source` | its signature |
 | `/tick` | its bearer secret or its signature alone. It checks no content type, and its body is empty |
 

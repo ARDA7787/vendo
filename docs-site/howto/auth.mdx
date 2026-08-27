@@ -1,0 +1,196 @@
+---
+title: "Wire auth"
+sidebarTitle: "Wire auth"
+icon: "key"
+description: "Hand Vendo your existing sign-in, so every thread, app, and grant belongs to the user who made it."
+---
+
+Vendo mints no identity of its own. You hand it your sign-in, and the subject it
+resolves scopes everything that request touches.
+
+<Steps>
+
+<Step title="Hand your auth to createVendo">
+
+One key. The preset decodes the session already in the request and reads its own
+provider's environment variable for the secret.
+
+<CodeGroup>
+
+```ts Auth.js
+import { authJs } from "@vendoai/vendo/auth/auth-js";
+import { createVendo } from "@vendoai/vendo/server";
+
+// AUTH_SECRET, then NEXTAUTH_SECRET
+export const vendo = createVendo({ auth: authJs() });
+```
+
+```ts Clerk
+import { clerk } from "@vendoai/vendo/auth/clerk";
+import { createVendo } from "@vendoai/vendo/server";
+
+// CLERK_SECRET_KEY, plus optional CLERK_JWT_KEY
+export const vendo = createVendo({ auth: clerk() });
+```
+
+```ts Supabase
+import { supabase } from "@vendoai/vendo/auth/supabase";
+import { createVendo } from "@vendoai/vendo/server";
+
+// SUPABASE_JWT_SECRET and/or SUPABASE_URL
+export const vendo = createVendo({ auth: supabase() });
+```
+
+```ts Auth0
+import { auth0 } from "@vendoai/vendo/auth/auth0";
+import { createVendo } from "@vendoai/vendo/server";
+
+// AUTH0_DOMAIN, or AUTH0_ISSUER_BASE_URL
+export const vendo = createVendo({ auth: auth0() });
+```
+
+```ts JWT
+import { jwt } from "@vendoai/vendo/auth/jwt";
+import { createVendo } from "@vendoai/vendo/server";
+
+// your own HS256 bearer — no vendor variable to read,
+// so this is the one preset that takes an argument
+export const vendo = createVendo({
+  auth: jwt({ secret: () => process.env.HOST_API_JWT_SECRET }),
+});
+```
+
+```ts Custom
+import { createVendo } from "@vendoai/vendo/server";
+import { getSession } from "@/lib/session";
+
+// no vendor to name — write the object a preset returns
+export const vendo = createVendo({
+  auth: {
+    principal: async (request) => {
+      const user = await getSession(request);
+      if (!user) return null;
+      return { kind: "user", subject: user.id };
+    },
+  },
+});
+```
+
+```ts No auth yet
+import { createVendo } from "@vendoai/vendo/server";
+
+// what `vendo init --auth none` writes: every visitor
+// is the same person. Swap in a real session lookup.
+export const vendo = createVendo({
+  auth: {
+    principal: async () => ({
+      kind: "user" as const,
+      subject: "demo-user",
+    }),
+  },
+});
+```
+
+</CodeGroup>
+
+`subject` is the whole model, so use the immutable id from your own tables —
+never an email or a username someone can change.
+
+`auth` is one door with two spellings. A preset is a function that returns the
+object above, so anything a preset fills you can also write by hand — and every
+other identity seam is a sibling key in the same object:
+
+- **`principal`** — who is asking. The only required one.
+- **`facts`** — what you assert about them, rendered as the prompt's `[User]`
+  block ([Context](/customize/context)).
+- **`pools`** — shared meters their usage counts into ([Limits](/users-orgs/limits)).
+- **`memberships`** — their orgs and teams ([Orgs](/users-orgs/orgs-and-memberships)).
+- **`actAs`** — how to mint scoped credentials for away runs.
+- **`oauth`** — how the MCP door reads that same session
+  ([Outside agents](/outside-agents/how-the-door-works)).
+
+Spread a preset to keep its work and change one member — this is how you serve
+logged-out visitors without giving up the preset:
+
+```ts
+import { authJs } from "@vendoai/vendo/auth/auth-js";
+import { createVendo } from "@vendoai/vendo/server";
+
+const base = authJs();
+const guest = { kind: "user" as const, subject: "guest", ephemeral: true };
+
+export const vendo = createVendo({
+  auth: { ...base, principal: async (req) => (await base.principal(req)) ?? guest },
+});
+```
+
+`vendo init` picks the preset off your `package.json` and writes this line for
+you. `--auth authJs|clerk|supabase|auth0|jwt|none` picks it without the prompt
+([vendo init](/reference/vendo-init)).
+
+</Step>
+
+<Step title="Share the resolver with your own routes">
+
+Your own agent loop or surface has to land on the same subject the wire does.
+Hoist `auth` so both read one instance, and export its resolver beside `vendo`.
+
+```ts lib/vendo.ts focus={4,6}
+import { authJs } from "@vendoai/vendo/auth/auth-js";
+import { createVendo } from "@vendoai/vendo/server";
+
+const auth = authJs();
+export const vendo = createVendo({ auth });
+export const resolvePrincipal = (req: Request) => auth.principal(req);
+```
+
+A hand-written door hoists identically — `const auth = { principal: … }` — so
+these three lines are the same either way. Your route imports one answer:
+
+```ts app/api/chat/route.ts focus={4}
+import { resolvePrincipal, vendo } from "@/lib/vendo";
+
+export async function POST(req: Request) {
+  const caller = await resolvePrincipal(req);
+  // …hand `caller` to your loop
+}
+```
+
+Tell `vendo init` you bring your own agent loop and it writes both lines for you.
+
+</Step>
+
+<Step title="Sign in and ask for something only your account can see">
+
+Sign in to your own app as a real user, open the panel, and ask:
+
+```text
+"What did I spend last month?"
+```
+
+The agent reaches your API as that person, so the answer is theirs — and so is
+every thread, app, and grant the turn creates.
+
+</Step>
+
+</Steps>
+
+## Good to know
+
+- **Your loop and your wire route have to resolve the same subject.** A mismatch
+  has no error; the embed just polls a screen it will never be shown.
+- **Top-level `principal`, `actAs`, and `oauth` are deprecated aliases.** They
+  still work and will keep working through this major, but they are one seam
+  each with nowhere to grow — `auth` is the key that holds all six. Mixing the
+  two shapes throws at composition, and so does `auth` beside the top-level
+  `memberships` seam.
+- **The `vendo:` namespace is reserved.** A resolver that returns one of those
+  subjects is refused at the wire — `vendo:webhook:<source>` and
+  `vendo:org:<orgId>` are minted by Vendo itself.
+- **`null` refuses the request** and the chrome goes quiet until a full page
+  load — dispatch `new Event("vendo:identity-changed")` if you sign users in
+  without one. Serve logged-out visitors with an `ephemeral: true` principal
+  ([Your users](/users-orgs/your-users)).
+- **next-auth v4 is not supported.** Its cookie names and JWE derivation are
+  structurally unreadable here — move to v5, or stay on `--auth none` until you
+  do.
