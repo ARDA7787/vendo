@@ -25,13 +25,17 @@ export function authConfigLines(auth: AuthMatch, hoisted = false): string {
   const pad = hoisted ? "" : "  ";
   return `${pad}// ${origin} — ${auth.preset}() fills the identity seams\n` +
     `${pad}// (request→user, actAs, door OAuth); options and the per-seam escape\n` +
-    `${pad}// hatch: https://docs.vendo.run/production/auth.\n` +
+    `${pad}// hatch: https://docs.vendo.run/howto/auth.\n` +
     (hoisted ? `const auth = ${auth.preset}();\n` : `  auth: ${auth.preset}(),\n`);
 }
 
-/** The anonymous-composition principal line (no auth preset wired). The
-    subject matches the demo principal both existing-agents quickstarts set in
-    their chat routes — the wire route MUST resolve the same subject as the
+/** The anonymous-composition identity block (no auth preset wired), written
+    through the ONE DOOR `auth:` takes by hand — the same key a preset fills, so
+    the host who later adds `facts`, `memberships` or the door's `oauth` adds a
+    member to this object instead of learning a second config shape.
+
+    The subject matches the demo principal both existing-agents quickstarts set
+    in their chat routes — the wire route MUST resolve the same subject as the
     host's agent loop, or every app/approval created in chat is invisible to
     the embeds, which call this route directly (0.4.1 E2E cert blocker B4:
     a `() => null` wire against a demo-user chat route rendered an infinite
@@ -45,7 +49,10 @@ export function anonymousPrincipalLines(typescript: boolean): string {
     `  // agent loop uses (the docs' chat routes set this demo principal), or apps\n` +
     `  // and approvals created in chat are invisible to the embeds, which call\n` +
     `  // this route directly. Replace both sides with your real session lookup.\n` +
-    `  principal: async () => ({ kind: ${kind}, subject: "demo-user" }),\n`;
+    `  // Everything identity-shaped lives here: https://docs.vendo.run/howto/auth.\n` +
+    `  auth: {\n` +
+    `    principal: async () => ({ kind: ${kind}, subject: "demo-user" }),\n` +
+    `  },\n`;
 }
 
 /** The preset's own import line (its own subpath, never "@vendoai/vendo/server"
@@ -123,19 +130,26 @@ function sharedIdentity(auth: AuthMatch | null): { binding: string; key: string;
         `export const resolvePrincipal = (req: Request) => auth.principal(req);\n`,
     };
   }
+  // No preset — the host writes the SAME `auth` object a preset would have
+  // returned, so both arms hoist one `auth` binding, pass one `auth` key, and
+  // read the resolver off it. The reader who later wants facts or the MCP
+  // door's oauth half adds a member here rather than learning a second shape.
   return {
     // The subject matches the demo principal both existing-agents quickstarts
     // used to set in their chat routes by hand (0.4.1 E2E cert blocker B4: two
     // sides that disagree render an infinite skeleton). One binding, so they
     // cannot.
     binding: `// Who your callers act as. The wire and your own agent loop both resolve\n` +
-      `// through this one function, so they can never land on different subjects —\n` +
+      `// through this one object, so they can never land on different subjects —\n` +
       `// a mismatch has no error; the embeds just poll a screen nobody is shown.\n` +
-      `// Replace it with your real session lookup.\n` +
-      `const principal = async () => ({ kind: "user" as const, subject: "demo-user" });\n`,
-    key: `  principal,\n`,
+      `// Replace it with your real session lookup. Facts, orgs, actAs and the MCP\n` +
+      `// door's oauth half all live here too: https://docs.vendo.run/howto/auth.\n` +
+      `const auth = {\n` +
+      `  principal: async () => ({ kind: "user" as const, subject: "demo-user" }),\n` +
+      `};\n`,
+    key: `  auth,\n`,
     resolver: `// Your own agent loop resolves its caller here — import this beside \`vendo\`.\n` +
-      `export const resolvePrincipal = (_req: Request) => principal();\n`,
+      `export const resolvePrincipal = (_req: Request) => auth.principal();\n`,
   };
 }
 
@@ -400,19 +414,14 @@ export function customServerSource(typescript: boolean, auth: AuthMatch | null =
         getVendo: `(env = {})`,
         handle: `(request, env = {})`,
       };
-  const clientHint = typescript
-    ? ` *   // in the client entry — theme.json adopts the host brand (08 §4);\n` +
-      ` *   // the cast narrows TypeScript's widened JSON-module string literals;\n` +
-      ` *   // <VendoOverlay /> is the visible surface (launcher pill + panel):\n` +
-      ` *   import { VendoOverlay, VendoProvider } from "@vendoai/vendo/react";\n` +
-      ` *   import theme from "<path-to>/.vendo/theme.json";\n` +
-      ` *   import type { VendoTheme } from "@vendoai/vendo";\n` +
-      ` *   root.render(<VendoProvider baseUrl="/api/vendo" theme={theme as VendoTheme}><App /><VendoOverlay /></VendoProvider>);\n`
-    : ` *   // in the client entry — theme.json adopts the host brand (08 §4);\n` +
-      ` *   // <VendoOverlay /> is the visible surface (launcher pill + panel):\n` +
-      ` *   import { VendoOverlay, VendoProvider } from "@vendoai/vendo/react";\n` +
-      ` *   import theme from "<path-to>/.vendo/theme.json";\n` +
-      ` *   root.render(<VendoProvider baseUrl="/api/vendo" theme={theme}><App /><VendoOverlay /></VendoProvider>);\n`;
+  // One hint for both languages: `VendoTheme` widens its adjective fields, so
+  // the JSON import assigns with no cast and TypeScript pastes what JavaScript
+  // pastes.
+  const clientHint = ` *   // in the client entry — theme.json adopts the host brand (08 §4);\n` +
+    ` *   // <VendoOverlay /> is the conversation panel (opens from a trigger, the palette, or a slot):\n` +
+    ` *   import { VendoOverlay, VendoProvider } from "@vendoai/vendo/react";\n` +
+    ` *   import theme from "<path-to>/.vendo/theme.json";\n` +
+    ` *   root.render(<VendoProvider baseUrl="/api/vendo" theme={theme}><App /><VendoOverlay /></VendoProvider>);\n`;
   return `/**\n` +
     ` * Route your runtime's requests through this module:\n` +
     ` *   // Cloudflare Workers:\n` +
@@ -495,22 +504,14 @@ export function expressServerSource(typescript: boolean, auth: AuthMatch | null 
     ? `    init.body = Readable.toWeb(request) as ReadableStream<Uint8Array>;\n`
     : `    init.body = Readable.toWeb(request);\n`;
 
-  // The client-entry hint mirrors the host's language: the TS variant needs the
-  // VendoTheme cast (JSON-module literals widen to string), the JS variant must
-  // not show type-only syntax a JavaScript host cannot paste.
-  const clientHint = typescript
-    ? ` *   // in the client entry — theme.json adopts the host brand (08 §4);\n` +
-      ` *   // the cast narrows TypeScript's widened JSON-module string literals;\n` +
-      ` *   // <VendoOverlay /> is the visible surface (launcher pill + panel):\n` +
-      ` *   import { VendoOverlay, VendoProvider } from "@vendoai/vendo/react";\n` +
-      ` *   import theme from "<path-to>/.vendo/theme.json";\n` +
-      ` *   import type { VendoTheme } from "@vendoai/vendo";\n` +
-      ` *   root.render(<VendoProvider baseUrl="/api/vendo" theme={theme as VendoTheme}><App /><VendoOverlay /></VendoProvider>);\n`
-    : ` *   // in the client entry — theme.json adopts the host brand (08 §4);\n` +
-      ` *   // <VendoOverlay /> is the visible surface (launcher pill + panel):\n` +
-      ` *   import { VendoOverlay, VendoProvider } from "@vendoai/vendo/react";\n` +
-      ` *   import theme from "<path-to>/.vendo/theme.json";\n` +
-      ` *   root.render(<VendoProvider baseUrl="/api/vendo" theme={theme}><App /><VendoOverlay /></VendoProvider>);\n`;
+  // One hint for both languages: `VendoTheme` widens its adjective fields, so
+  // the JSON import assigns with no cast and TypeScript pastes what JavaScript
+  // pastes.
+  const clientHint = ` *   // in the client entry — theme.json adopts the host brand (08 §4);\n` +
+    ` *   // <VendoOverlay /> is the conversation panel (opens from a trigger, the palette, or a slot):\n` +
+    ` *   import { VendoOverlay, VendoProvider } from "@vendoai/vendo/react";\n` +
+    ` *   import theme from "<path-to>/.vendo/theme.json";\n` +
+    ` *   root.render(<VendoProvider baseUrl="/api/vendo" theme={theme}><App /><VendoOverlay /></VendoProvider>);\n`;
   return `/**\n` +
     ` * Add these wiring lines in your host:\n` +
     ` *   app.use("/api/vendo", mountVendo());\n` +

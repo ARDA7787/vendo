@@ -90,7 +90,9 @@ describe("a build's ask never arrives as a toast", () => {
     const client = createVendoClient({ baseUrl: wire.url });
     render(
       <VendoProvider client={client}>
-        <VendoOverlay />
+        {/* The badge rides the launcher pill, which is opt-in, so this
+            surface asks for it. */}
+        <VendoOverlay launcher={{}} />
         <VendoToasts approvals pollMs={40} />
       </VendoProvider>,
     );

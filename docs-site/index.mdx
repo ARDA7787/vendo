@@ -1,6 +1,7 @@
 ---
 title: "Set up Vendo with your agent"
 sidebarTitle: "Quickstart"
+tag: "Start here"
 description: "One paste. Your coding agent installs Vendo, runs init, and wires it into whatever your repo already is."
 ---
 
@@ -10,34 +11,14 @@ import AgentPromptCard from "/snippets/agent-prompt-card.mdx"
 
 Your agent picks the right setup for your repo. You confirm it.
 
-## Just want an agent?
-
-The smallest thing Vendo does needs no CLI, no init, and nothing moved around.
-Install one package and write one call:
-
-```ts
-import { agent } from "@vendoai/agents";
-
-const support = agent({
-  name: "support",
-  instructions: "Answer in the product's voice; never invent account numbers.",
-});
-
-console.log((await support.chat("Where is order A-1001?")).text);
-```
-
-Give it tools, put it on a route, or hand it a schedule from there:
-[backend quickstart](/backend/quickstart). Everything below is the rest of
-Vendo — the embedded surface and the generated screens — and `init` is how you
-get there.
-
 ## Quickstart
 
 No agent handy? Do it by hand. Three steps.
 
 <Steps>
   <Step title="Install">
-    One package. Only the blocks your project uses ship.
+    One package, installed in the app you already have, on Node 20 or newer.
+    Only the blocks your project uses ship.
 
     <CodeGroup>
 
@@ -51,7 +32,12 @@ No agent handy? Do it by hand. Three steps.
 
     </CodeGroup>
 
-    On pnpm the install downloads everything and then exits 1 with `Ignored build scripts: @mongodb-js/zstd, esbuild, node-liblzma`. None of the three needs compiling — Vendo reaches esbuild through its Node API, which that script has nothing to do with, and the other two are the shell's optional native `tar` backends, behind guarded imports nothing calls. pnpm writes the three names into your `pnpm-workspace.yaml` with a placeholder; set all three to `false` and install again.
+    On pnpm the install downloads everything, then exits 1 with `Ignored build
+    scripts: @mongodb-js/zstd, esbuild, node-liblzma`. None of the three needs
+    compiling — Vendo reaches esbuild through its Node API, and the other two
+    are the shell's optional native `tar` backends behind guarded imports
+    nothing calls. pnpm writes the three names into your `pnpm-workspace.yaml`
+    with a placeholder; set all three to `false` and install again.
 
     ```yaml pnpm-workspace.yaml
     allowBuilds:
@@ -62,27 +48,13 @@ No agent handy? Do it by hand. Three steps.
   </Step>
 
   <Step title="Run npx vendo init">
-    init reads your repo before it asks anything. Then it writes the wiring.
+    init reads your repo before it asks anything, asks how people will use your
+    agent, and writes the wiring. It ends with the list of files it touched and
+    a link to the quickstart for the path you chose.
 
-    ```bash terminal focus={1}
-    $ npx vendo init
-
-      Your stack
-      Next.js · App Router · TypeScript · pnpm
-      Clerk auth (@clerk/nextjs)
-
-    ? How will people use your agent?
-        Embedded in my app — chat + generated UI            recommended
-        Through my own agent loop (AI SDK / Mastra)
-        From outside agents over MCP (experimental)
-
-      … init takes it from there: it asks how you want to run models,
-        writes the wiring, and prints one snippet for you to paste.
+    ```bash
+    npx vendo init
     ```
-
-    Paste the snippet init prints. It comes with your real paths already filled in, and it is the only edit you make by hand.
-
-    On Next.js it also adds one line to your `next.config` — `serverExternalPackages: ["@vendoai/apps", "esbuild", "@electric-sql/pglite", "@vendoai/store"]`. Vendo checks every generated screen with esbuild at runtime, so its checker has to stay out of the server bundle. If init could not read your config, it prints the line instead and `vendo doctor` holds you to it ([E-CFG-004](/production/troubleshooting/e-cfg-004)).
   </Step>
 
   <Step title="Continue in your direction">

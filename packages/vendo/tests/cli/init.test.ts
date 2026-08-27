@@ -304,7 +304,7 @@ describe("vendo init (zero-question)", () => {
     expect(route).toContain(`auth: ${preset}(),`);
     // The detected line carries its escape hatch, and the preset owns the
     // principal seam — no hand-wired anonymous resolver remains.
-    expect(route).toContain("https://docs.vendo.run/production/auth");
+    expect(route).toContain("https://docs.vendo.run/howto/auth");
     expect(route).not.toContain("principal");
     // Detection is silent: no question, no advisory.
     expect(sink.logs.join("\n")).not.toContain("Auth:");
@@ -373,8 +373,11 @@ describe("vendo init (zero-question)", () => {
       selectAuth: async () => "none",
     })).toBe(0);
     const route = await readFile(join(root, "lib", "vendo.ts"), "utf8");
-    expect(route).not.toContain("auth:");
-    expect(route).toContain('principal: async () => ({ kind: "user" as const, subject: "demo-user" })');
+    // Anonymous still writes `auth:` — the one door — but as the host's OWN
+    // object: no preset call, no preset import, nothing to uninstall.
+    expect(route).not.toMatch(/auth: \w+\(/);
+    expect(route).not.toContain("@vendoai/vendo/auth/");
+    expect(route).toContain(`  auth: {\n    principal: async () => ({ kind: "user" as const, subject: "demo-user" }),\n  },\n`);
     const advisories = sink.logs.filter((line) => line.includes("Auth:"));
     expect(advisories).toHaveLength(1);
     expect(advisories[0]).toContain("left anonymous");
@@ -440,7 +443,7 @@ describe("vendo init (zero-question)", () => {
     expect(route).toContain("auth: clerk(),");
     expect(route).toContain("// Selected Clerk — clerk() fills the identity seams");
     expect(route).not.toContain("Detected");
-    expect(route).toContain("https://docs.vendo.run/production/auth");
+    expect(route).toContain("https://docs.vendo.run/howto/auth");
     expect(route).not.toContain("principal");
     // …plus one install hint, since @clerk/backend is not in package.json.
     const advisories = sink.logs.filter((line) => line.includes("Auth:"));
@@ -462,12 +465,15 @@ describe("vendo init (zero-question)", () => {
       selectAuth: async () => "jwt",
     })).toBe(0);
     const route = await readFile(join(root, "lib", "vendo.ts"), "utf8");
-    expect(route).not.toContain("auth:");
-    expect(route).toContain('principal: async () => ({ kind: "user" as const, subject: "demo-user" })');
+    // Anonymous still writes `auth:` — the one door — but as the host's OWN
+    // object: no preset call, no preset import, nothing to uninstall.
+    expect(route).not.toMatch(/auth: \w+\(/);
+    expect(route).not.toContain("@vendoai/vendo/auth/");
+    expect(route).toContain(`  auth: {\n    principal: async () => ({ kind: "user" as const, subject: "demo-user" }),\n  },\n`);
     const advisories = sink.logs.filter((line) => line.includes("Auth:"));
     expect(advisories).toHaveLength(1);
     expect(advisories[0]).toContain("auth: jwt({ secret:");
-    expect(advisories[0]).toContain("https://docs.vendo.run/production/auth");
+    expect(advisories[0]).toContain("https://docs.vendo.run/howto/auth");
   });
 
   it("ambiguous detection offers the picker with detected families first (after none)", async () => {
@@ -516,8 +522,11 @@ describe("vendo init (zero-question)", () => {
     const sink = output();
     expect(await run(root, sink)).toBe(0);
     const route = await readFile(join(root, "lib", "vendo.ts"), "utf8");
-    expect(route).not.toContain("auth:");
-    expect(route).toContain('principal: async () => ({ kind: "user" as const, subject: "demo-user" })');
+    // Anonymous still writes `auth:` — the one door — but as the host's OWN
+    // object: no preset call, no preset import, nothing to uninstall.
+    expect(route).not.toMatch(/auth: \w+\(/);
+    expect(route).not.toContain("@vendoai/vendo/auth/");
+    expect(route).toContain(`  auth: {\n    principal: async () => ({ kind: "user" as const, subject: "demo-user" }),\n  },\n`);
     const advisories = sink.logs.filter((line) => line.includes("Auth:"));
     expect(advisories).toHaveLength(1);
     expect(advisories[0]).toContain("next-auth, @clerk/nextjs");
@@ -1877,9 +1886,11 @@ describe("vendo init --agent (ask first, then write)", () => {
     const demo = await fixture();
     expect(await agentRun(demo, output(), { useCase: "agent-loop" })).toBe(0);
     const anonymous = await readFile(join(demo, "lib", "vendo.ts"), "utf8");
-    expect(anonymous).toContain(`const principal = async () => ({ kind: "user" as const, subject: "demo-user" });`);
-    expect(anonymous).toContain("\n  principal,\n");
-    expect(anonymous).toContain("export const resolvePrincipal = (_req: Request) => principal();");
+    // The same hoist, the same key, the same resolver — only what `auth` is
+    // bound to differs between a wired preset and a host's own object.
+    expect(anonymous).toContain(`const auth = {\n  principal: async () => ({ kind: "user" as const, subject: "demo-user" }),\n};`);
+    expect(anonymous).toContain("\n  auth,\n");
+    expect(anonymous).toContain("export const resolvePrincipal = (_req: Request) => auth.principal();");
   });
 
   /** …and nowhere else: the composition is one file across every arm, so an
