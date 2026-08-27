@@ -1,5 +1,11 @@
 # @vendoai/knowledge
 
+## 0.51.2
+
+### Patch Changes
+
+- @vendoai/core@0.51.2
+
 ## 0.51.1
 
 ### Patch Changes
