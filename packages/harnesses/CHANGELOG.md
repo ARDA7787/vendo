@@ -1,5 +1,13 @@
 # @vendoai/harnesses
 
+## 0.52.1
+
+### Patch Changes
+
+- @vendoai/core@0.52.1
+- @vendoai/guard@0.52.1
+- @vendoai/apps@0.52.1
+
 ## 0.52.0
 
 ### Patch Changes
